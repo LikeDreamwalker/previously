@@ -26,6 +26,7 @@ import {
   ensureIndexEntries,
   tryLoadTodaySlice,
   writeAgentTimeline,
+  readAgentTimeline,
   readPreviously,
   writePreviously,
   ensurePreviously,
@@ -207,9 +208,15 @@ export async function beliefUpdate(
 
   const { recentTurns, lastUserMessage } = input;
 
-  // Load profile and previously.md — both are async I/O
+  // Load profile, previously.md, and recent agent cognition
   const userProfile = await loadUserProfile();
   let previouslyContent = "";
+  let agentCognition = "";
+  try {
+    agentCognition = await readAgentTimeline(slice.slice_id);
+  } catch {
+    // No agent.md yet — first turn in slice
+  }
   try {
     previouslyContent = await readPreviously(slice.slice_id);
   } catch {
@@ -225,6 +232,7 @@ export async function beliefUpdate(
       newMessage: lastUserMessage,
       previouslyContent,
       sliceId: slice.slice_id,
+      agentCognition,
     });
 
     beliefUpdates = result.belief_updates;

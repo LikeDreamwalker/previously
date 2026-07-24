@@ -18,6 +18,8 @@ export interface BeliefUpdateInput {
   newMessage: string;
   previouslyContent: string;
   sliceId: string;
+  /** Recent agent cognition (thinking traces + tool calls) as additional evidence. */
+  agentCognition?: string;
 }
 
 export interface BeliefUpdateOutput {
@@ -100,6 +102,23 @@ belief mutations.
 "${newMessage}"
 
 `;
+
+  // Include recent agent cognition as an additional observation lens.
+  // The agent's thinking traces often contain implicit observations about
+  // the user (preferences, patterns, testing behavior) that the raw
+  // conversation text alone doesn't capture.
+  if (input.agentCognition?.trim()) {
+    const cognition = input.agentCognition.length > 1200
+      ? input.agentCognition.slice(-1200)
+      : input.agentCognition;
+    prompt += `## Recent Agent Cognition (what the agent was thinking during previous turns)
+
+${cognition}
+
+The agent's internal reasoning may reveal implicit patterns about the user.
+Use this as supplementary evidence — the user's actual words take priority.
+`;
+  }
 
   if (previouslyContent.trim()) {
     prompt += `## Current Beliefs (previously.md — the agent's understanding of the user)
