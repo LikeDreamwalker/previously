@@ -35,8 +35,7 @@ function resolveName(
 
 /**
  * webSearch tool: Globe icon, the query as the collapsed summary, and the
- * cited answer + source links in the expanded view. Sources render as real
- * anchors so the user can verify what was found.
+ * cited answer + source links in the expanded view.
  */
 export function WebSearchRenderer({
   toolName: _toolName,
@@ -60,7 +59,7 @@ export function WebSearchRenderer({
   const displayName = resolveName(inp, out, state.running, t);
 
   const summary = query ? (
-    <span className="text-muted-foreground text-xs truncate max-w-xs">{query}</span>
+    <span className="max-w-xs truncate text-xs text-muted-foreground">{query}</span>
   ) : null;
 
   const meta =
@@ -82,12 +81,12 @@ export function WebSearchRenderer({
           >
             {sources.map((s, i) => (
               <li key={i} className="flex items-start gap-2 text-xs">
-                <span className="text-muted-foreground shrink-0">[{i + 1}]</span>
+                <span className="shrink-0 text-muted-foreground">[{i + 1}]</span>
                 <a
                   href={s.url}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-blue-600 dark:text-blue-400 underline underline-offset-2 truncate"
+                  className="truncate text-blue-600 underline underline-offset-2 dark:text-blue-400"
                 >
                   {s.title || s.url}
                 </a>

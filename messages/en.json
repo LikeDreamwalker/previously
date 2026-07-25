@@ -103,14 +103,8 @@
       "copiedTooltip": "Copied!"
     },
     "phase": {
-      "label": "Agent progress",
-      "prepare": "Preparing…",
-      "prepareDone": "Prepared",
-      "slicing": "Slicing time…",
-      "slicingDone": "Sliced",
-      "previously": "Updating recap…",
-      "previouslyDone": "Recap updated",
       "thinking": "Thinking…",
+      "thoughtFor": "Thought for {count, plural, one {# second} other {# seconds}}",
       "thinkingDone": "Thought"
     },
     "loadingTips": [

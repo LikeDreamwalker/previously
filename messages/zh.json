@@ -103,14 +103,8 @@
       "copiedTooltip": "已复制"
     },
     "phase": {
-      "label": "智能体进度",
-      "prepare": "正在准备…",
-      "prepareDone": "准备完成",
-      "slicing": "正在切片时间…",
-      "slicingDone": "已切片",
-      "previously": "正在更新前情提要…",
-      "previouslyDone": "已更新前情提要",
       "thinking": "正在思考…",
+      "thoughtFor": "思考了 {count} 秒",
       "thinkingDone": "思考完成"
     },
     "loadingTips": [

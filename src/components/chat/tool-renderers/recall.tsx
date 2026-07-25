@@ -3,7 +3,7 @@
 import type { ToolRenderState } from "@/lib/chat/tool-state";
 import { History } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { ToolLayout } from "../tool-layout";
+import { PhaseIndicator } from "../phase-indicator";
 
 interface RecallToolRendererProps {
   toolName: string;
@@ -26,7 +26,7 @@ interface RecallOutput {
   reasoning?: string;
 }
 
-function resolveName(
+function resolveLabel(
   input: Record<string, unknown> | undefined,
   output: RecallOutput | undefined,
   running: boolean,
@@ -45,6 +45,13 @@ function resolveName(
     : t("recallDone", { query: "…", count: hitCount });
 }
 
+/**
+ * Recall tool renderer using PhaseIndicator in static mode.
+ *
+ * Recall is a tool in the data model (tool-call → tool-result), but it is
+ * rendered with the same PhaseIndicator container as thinking — giving it
+ * phase-level visual weight while staying a fully manual expand/collapse.
+ */
 export function RecallToolRenderer({
   toolName: _toolName,
   input,
@@ -65,38 +72,47 @@ export function RecallToolRenderer({
   const hasHits = hits.length > 0;
   const isRunning = state.running;
 
-  const displayName = resolveName(inp, out, isRunning, t);
+  const label = resolveLabel(inp, out, isRunning, t);
 
-  // Summary for collapsed state
+  // Summary for the header (only when not running)
   const summary = isRunning
-    ? query || ""
+    ? undefined
     : hasHits
       ? t("recallHits", { count: hits.length })
       : t("recallNone");
 
-  // Expanded content — recall hits + raw content
+  // Meta: confidence (only when finished with hits)
+  const meta =
+    !isRunning && confidence !== null
+      ? `${Math.round(confidence * 100)}%`
+      : undefined;
+
+  // Expanded content
   const expandedContent = hasHits ? (
     <div className="space-y-3">
       {/* Reasoning */}
       {reasoning && (
-        <p className="text-xs text-muted-foreground italic leading-relaxed">
+        <p className="text-xs leading-relaxed text-muted-foreground italic">
           {reasoning}
         </p>
       )}
 
-      {/* Hits table */}
+      {/* Hits */}
       <div className="space-y-1.5">
         {hits.map((hit, i) => (
-          <div key={i} className="border-b border-border/30 pb-2 last:border-0 last:pb-0">
+          <div
+            key={i}
+            className="border-b border-border/30 pb-2 last:border-0 last:pb-0"
+          >
             <div className="flex items-start justify-between gap-2">
               <span className="font-mono text-xs text-muted-foreground">
                 {hit.slice_id}
               </span>
-              <span className="text-xs text-muted-foreground shrink-0">
+              <span className="shrink-0 text-xs text-muted-foreground">
                 {Math.round(hit.relevance * 100)}%
               </span>
             </div>
-            <p className="text-xs text-muted-foreground leading-relaxed">
+            <p className="text-xs leading-relaxed text-muted-foreground">
               {hit.reason}
             </p>
             {hit.key_turns && hit.key_turns.length > 0 && (
@@ -107,10 +123,10 @@ export function RecallToolRenderer({
             {/* Raw content for this slice */}
             {rawContents[hit.slice_id] && (
               <details className="mt-1">
-                <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground transition-colors">
+                <summary className="cursor-pointer text-xs text-muted-foreground transition-colors hover:text-foreground">
                   Raw content
                 </summary>
-                <pre className="mt-1 max-h-48 overflow-auto font-mono text-xs leading-relaxed text-muted-foreground whitespace-pre-wrap">
+                <pre className="mt-1 max-h-48 overflow-auto font-mono text-xs leading-relaxed whitespace-pre-wrap text-muted-foreground">
                   {rawContents[hit.slice_id]}
                 </pre>
               </details>
@@ -127,16 +143,17 @@ export function RecallToolRenderer({
       )}
     </div>
   ) : reasoning ? (
-    <p className="text-xs text-muted-foreground leading-relaxed">{reasoning}</p>
+    <p className="text-xs leading-relaxed text-muted-foreground">{reasoning}</p>
   ) : undefined;
 
   return (
-    <ToolLayout
-      name={displayName}
+    <PhaseIndicator
+      mode="static"
       icon={<History className="h-3.5 w-3.5" />}
+      label={label}
       summary={summary}
+      meta={meta}
       state={state}
-      defaultExpanded
       expandedContent={expandedContent}
     />
   );

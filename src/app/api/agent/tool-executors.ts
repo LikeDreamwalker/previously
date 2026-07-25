@@ -32,7 +32,7 @@ import { startLoop } from "@/app/api/loops/start-loop";
 import { readLoopRun, serializeLoop, writeLoopFile } from "@/lib/loops/store";
 import { isAIConfigured, canWrite, DEPLOY_GUIDE_URL } from "@/lib/capabilities";
 import type { LoopRun, LoopStep } from "@/lib/loops/types";
-import { runRecallSearch, type RecallHit, type RecallSearchOutput } from "@/lib/episodic/flash/recall";
+import { runRecallSearch, type RecallHit } from "@/lib/episodic/flash/recall";
 
 // ─── Shared tool contexts ────────────────────────────────────────────────
 
@@ -282,7 +282,8 @@ export async function webSearchExecute(
   if (!isAIConfigured()) {
     return { error: "Web search is not configured (DEEPSEEK_API_KEY missing)." };
   }
-  return searchViaFlash(query);
+
+  return await searchViaFlash(query);
 }
 
 // ── recall — semantic search across past conversation slices ─────────

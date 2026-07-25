@@ -5,9 +5,9 @@ import type { UIMessage } from "ai";
 import { AnimatePresence, motion } from "motion/react";
 import { MarkdownRenderer } from "./markdown";
 import { ThinkingSteps } from "./thinking";
+import { PhaseIndicator } from "./phase-indicator";
 import { MessageActions } from "./message-actions";
 import { ToolRenderer } from "./tool-renderer";
-import { ToolLayout } from "./tool-layout";
 import { Message, MessageContent, MessageFooter } from "@/components/ui/message";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { FileText } from "lucide-react";
@@ -193,12 +193,11 @@ export const ChatMessage = memo(function ChatMessage({ message, onRegenerate, is
                   }
                   if (item.kind === "belief") {
                     return (
-                      <ToolLayout
+                      <PhaseIndicator
                         key={key}
-                        name="更新了前情提要"
-                        summary=""
+                        mode="static"
                         icon={<FileText className="h-3.5 w-3.5" />}
-                        defaultExpanded
+                        label="更新了前情提要"
                         state={{
                           running: false,
                           inputStreaming: false,
