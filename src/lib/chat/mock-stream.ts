@@ -478,7 +478,7 @@ export function buildMockSteps(): MockStep[] {
         type: "data-belief",
         id: uid("belief"),
         data: {
-          phase: "belief",
+          mode: "normal",
           done: true,
           updates: [
             {
@@ -505,41 +505,6 @@ export function buildMockSteps(): MockStep[] {
             "+ 注意到：enjoys discussing streaming patterns and real-time UX",
             "↓ 调整了判断：dislikes verbose documentation — Actually wants thorough documentation with code examples",
             "✕ 移除了过时的印象：prefers minimal UI — User requested richer animations and visual effects",
-          ],
-        },
-      });
-      return setMsg(p);
-    },
-  });
-
-  // ═══════════════════════════════════════════════════════════════════
-  // Phase 7 — Strategy review (agent self-evolution)
-  // ═══════════════════════════════════════════════════════════════════
-
-  steps.push({
-    delay: 600,
-    apply: (msg) => {
-      const p = cloneParts(msg);
-      p.push({
-        type: "data-belief",
-        id: uid("strategy"),
-        data: {
-          phase: "strategy",
-          mode: "normal",
-          done: true,
-          updates: [
-            {
-              action: "reinforce",
-              belief_key: "先 recall 再 readSlice 高效定位相关上下文",
-            },
-            {
-              action: "observe",
-              belief: "用户问架构问题时应同时搜索 web 获取最新实践",
-            },
-          ],
-          summaries: [
-            "↑ 策略确认：先 recall 再 readSlice 高效定位相关上下文",
-            "+ 新策略：用户问架构问题时应同时搜索 web 获取最新实践",
           ],
         },
       });

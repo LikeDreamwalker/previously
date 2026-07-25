@@ -19,6 +19,7 @@ const episodic = vi.hoisted(() => ({
   writePreviously: vi.fn(async () => {}),
   ensurePreviously: vi.fn(async () => ""),
   writeAgentTimeline: vi.fn(async () => ({ path: "", created: false })),
+  readAgentTimeline: vi.fn(async () => ""),
 }));
 
 const maintenance = vi.hoisted(() => ({
@@ -32,8 +33,8 @@ const flashMetadata = vi.hoisted(() => ({
   runMetadataUpdate: vi.fn(),
 }));
 
-const flashBelief = vi.hoisted(() => ({
-  runBeliefUpdate: vi.fn(),
+const flashPreviously = vi.hoisted(() => ({
+  runUpdatePreviously: vi.fn(),
 }));
 
 let timeSilent = false;
@@ -44,7 +45,7 @@ vi.mock("@/lib/episodic/slicer", () => ({
 }));
 vi.mock("@/lib/episodic/maintenance", () => maintenance);
 vi.mock("@/lib/episodic/flash/metadata", () => flashMetadata);
-vi.mock("@/lib/episodic/flash/belief", () => flashBelief);
+vi.mock("@/lib/episodic/flash/update-previously", () => flashPreviously);
 
 // The run's writable: collects everything written for assertions.
 const workflowMock = vi.hoisted(() => {
@@ -68,7 +69,7 @@ vi.mock("@/lib/identity", () => ({
   loadUserProfile: async () => ({ name: "Test" }),
 }));
 
-import { housekeeping, metadataUpdate, beliefUpdate, finalizeTurn } from "@/app/api/chat/steps";
+import { housekeeping, metadataUpdate, updatePreviously, finalizeTurn } from "@/app/api/chat/steps";
 
 function makeSlice(overrides: Partial<TimeSlice> = {}): TimeSlice {
   return {
@@ -210,16 +211,17 @@ describe("metadataUpdate step", () => {
   });
 });
 
-describe("beliefUpdate step", () => {
+describe("updatePreviously step", () => {
   it("updates previously.md with observed beliefs", async () => {
     const slice = makeSlice();
-    flashBelief.runBeliefUpdate.mockResolvedValue({
-      belief_updates: [{ action: "observe", section: "User identity", belief: "测试用户", evidence_slice: "2026/07/14/0900", evidence_turn: "test-id" }],
+    flashPreviously.runUpdatePreviously.mockResolvedValue({
+      belief_updates: [{ action: "observe", section: "User identity", belief: "测试用户", evidence_turn: "test-id" }],
       reasoning: "observed",
+      isDeep: false,
     });
     episodic.readPreviously.mockResolvedValue("## User identity\n\n## User patterns\n\n## Agent strategies\n");
 
-    const result = await beliefUpdate(makeInput("我叫测试"), slice);
+    const result = await updatePreviously(makeInput("我叫测试"), slice, undefined);
 
     expect(result.beliefUpdates).toHaveLength(1);
     expect(episodic.writePreviously).toHaveBeenCalled();
@@ -227,10 +229,10 @@ describe("beliefUpdate step", () => {
 
   it("degrades gracefully when Flash throws — empty updates", async () => {
     const slice = makeSlice();
-    flashBelief.runBeliefUpdate.mockRejectedValue(new Error("flash down"));
+    flashPreviously.runUpdatePreviously.mockRejectedValue(new Error("flash down"));
     episodic.readPreviously.mockResolvedValue("");
 
-    const result = await beliefUpdate(makeInput("anything"), slice);
+    const result = await updatePreviously(makeInput("anything"), slice, undefined);
 
     expect(result.beliefUpdates).toEqual([]);
     expect(result.previouslyContent).toBe("");

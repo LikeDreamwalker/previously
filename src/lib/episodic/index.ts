@@ -56,12 +56,12 @@ export type {
 } from "./flash/metadata";
 
 export {
-  runBeliefUpdate,
-} from "./flash/belief";
+  runUpdatePreviously,
+} from "./flash/update-previously";
 export type {
-  BeliefUpdateInput,
-  BeliefUpdateOutput,
-} from "./flash/belief";
+  UpdatePreviouslyInput,
+  UpdatePreviouslyOutput,
+} from "./flash/update-previously";
 
 export {
   runRecallSearch,

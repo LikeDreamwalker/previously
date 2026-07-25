@@ -84,18 +84,6 @@ export interface BeliefUpdateResult {
   reasoning: string;
 }
 
-/**
- * Result of the strategyReview step — agent self-evolution mutations.
- * Operates on the Agent strategies section of previously.md.
- */
-export interface StrategyReviewResult {
-  slice: TimeSlice;
-  previouslyContent: string;
-  beliefUpdates: BeliefUpdate[];
-  reasoning: string;
-  isDeep: boolean;
-}
-
 /** A background loop the agent started during this turn (for slice writeback). */
 export interface StartedLoopRef {
   loopId: string;

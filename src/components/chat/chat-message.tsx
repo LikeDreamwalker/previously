@@ -10,7 +10,7 @@ import { MessageActions } from "./message-actions";
 import { ToolRenderer } from "./tool-renderer";
 import { Message, MessageContent, MessageFooter } from "@/components/ui/message";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
-import { FileText, Lightbulb, Sparkles } from "lucide-react";
+import { FileText } from "lucide-react";
 import { LoadingTip } from "./loading-tip";
 
 interface ChatMessageProps {
@@ -37,7 +37,7 @@ type StreamItem =
   | { kind: "reasoning"; text: string }
   | { kind: "text"; content: string }
   | { kind: "tool"; toolCallId: string; toolName: string; state: string; input?: unknown; output?: unknown }
-  | { kind: "belief"; phase: string; mode?: string; summaries: string[] };
+  | { kind: "belief"; mode?: string; summaries: string[] };
 
 /** Stable key for a stream item — used by AnimatePresence for enter/exit animation. */
 function itemKey(item: StreamItem, index: number): string {
@@ -80,7 +80,6 @@ function buildStream(parts: readonly AnyPart[], isStreaming: boolean): StreamIte
     } else if (p.type === "data-belief") {
       flushText();
       const d = p.data as {
-        phase?: string;
         mode?: string;
         summaries?: string[];
       } | undefined;
@@ -88,7 +87,6 @@ function buildStream(parts: readonly AnyPart[], isStreaming: boolean): StreamIte
       if (summaries.length > 0) {
         items.push({
           kind: "belief",
-          phase: d?.phase ?? "belief",
           mode: d?.mode,
           summaries,
         });
@@ -201,28 +199,14 @@ export const ChatMessage = memo(function ChatMessage({ message, onRegenerate, is
                     );
                   }
                   if (item.kind === "belief") {
-                    const isStrategy = item.phase === "strategy";
                     const isDeep = item.mode === "deep";
                     return (
                       <PhaseIndicator
                         key={key}
                         mode="static"
-                        icon={
-                          isStrategy
-                            ? (isDeep
-                                ? <Sparkles className="h-3.5 w-3.5" />
-                                : <Lightbulb className="h-3.5 w-3.5" />
-                              )
-                            : <FileText className="h-3.5 w-3.5" />
-                        }
-                        label={
-                          isStrategy
-                            ? isDeep
-                              ? "深度策略回顾"
-                              : "策略微调"
-                            : "更新了前情提要"
-                        }
-                        meta={isStrategy ? (isDeep ? "完整会话" : "本轮") : undefined}
+                        icon={<FileText className="h-3.5 w-3.5" />}
+                        label="更新了前情提要"
+                        meta={isDeep ? "深度回顾" : undefined}
                         state={{
                           running: false,
                           inputStreaming: false,

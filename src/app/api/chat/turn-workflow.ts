@@ -33,8 +33,7 @@ import type {
 import {
   housekeeping,
   metadataUpdate,
-  beliefUpdate,
-  strategyReview,
+  updatePreviously,
   finalizeTurn,
 } from "./steps";
 
@@ -227,14 +226,7 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
 
   const { slice, closedSlice } = await housekeeping(input);
   const meta = await metadataUpdate(input, slice);
-  const belief = await beliefUpdate(input, meta.slice);
-  const strategy = await strategyReview(
-    input,
-    belief.slice,
-    closedSlice,
-    belief.previouslyContent,
-    input.turnId,
-  );
+  const belief = await updatePreviously(input, meta.slice, closedSlice);
 
   // ── Assemble system prompt (lightweight — no Flash injection) ──────────
 
@@ -242,7 +234,7 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
 
 ## What I understand about you
 
-${strategy.previouslyContent}
+${belief.previouslyContent}
 This is my current understanding of who you are and how you work. If any of this is wrong or outdated, tell me and I'll update it.
 
 ## Memory access rules
@@ -296,7 +288,7 @@ You can start durable background loops with the startLoop tool. When the user as
 
   // ── Post-turn persistence ──────────────────────────────────────────────
 
-  await finalizeTurn(strategy.slice, outcome, input.turnId);
+  await finalizeTurn(belief.slice, outcome, input.turnId);
 
   if (streamError !== null) {
     throw streamError;
