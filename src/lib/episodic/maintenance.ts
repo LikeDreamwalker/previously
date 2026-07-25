@@ -132,6 +132,11 @@ export function applyBeliefUpdates(
     }
   }
 
+  // Sections that will receive mutations — used to strip stale placeholders.
+  const mutatedSections = new Set(
+    updates.map((u) => u.section).filter(Boolean),
+  );
+
   let i = 0;
   while (i < lines.length) {
     const line = lines[i];
@@ -151,6 +156,16 @@ export function applyBeliefUpdates(
     if (/^_Active slice:/.test(line)) {
       result.push(`_Active slice: ${currentSliceId} | Last updated: Turn ${updates[0]?.evidence_turn ?? "?"}_`);
       i++;
+      continue;
+    }
+
+    // Strip `_No beliefs yet._` placeholder when the section is receiving mutations.
+    if (line.trim() === "_No beliefs yet._" && currentSection && mutatedSections.has(currentSection)) {
+      i++;
+      // Also skip trailing blank line after the placeholder
+      if (i < lines.length && lines[i].trim() === "") {
+        i++;
+      }
       continue;
     }
 
