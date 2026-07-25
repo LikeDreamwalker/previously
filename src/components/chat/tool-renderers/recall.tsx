@@ -6,7 +6,7 @@ import { useTranslations } from "next-intl";
 import { ToolLayout } from "../tool-layout";
 
 interface RecallToolRendererProps {
-  displayName: string;
+  toolName: string;
   input?: unknown;
   output?: unknown;
   state: ToolRenderState;
@@ -26,8 +26,27 @@ interface RecallOutput {
   reasoning?: string;
 }
 
+function resolveName(
+  input: Record<string, unknown> | undefined,
+  output: RecallOutput | undefined,
+  running: boolean,
+  t: ReturnType<typeof useTranslations>,
+): string {
+  const query = typeof input?.query === "string" ? input.query : "";
+  const hitCount = Array.isArray(output?.hits) ? output.hits.length : 0;
+
+  if (running) {
+    return query
+      ? t("recallRunning", { query })
+      : t("recallRunning", { query: "…" });
+  }
+  return query
+    ? t("recallDone", { query, count: hitCount })
+    : t("recallDone", { query: "…", count: hitCount });
+}
+
 export function RecallToolRenderer({
-  displayName,
+  toolName: _toolName,
   input,
   output,
   state,
@@ -46,6 +65,8 @@ export function RecallToolRenderer({
   const hasHits = hits.length > 0;
   const isRunning = state.running;
 
+  const displayName = resolveName(inp, out, isRunning, t);
+
   // Summary for collapsed state
   const summary = isRunning
     ? query || ""
@@ -58,7 +79,7 @@ export function RecallToolRenderer({
     <div className="space-y-3">
       {/* Reasoning */}
       {reasoning && (
-        <p className="text-[10px] text-muted-foreground italic leading-relaxed">
+        <p className="text-xs text-muted-foreground italic leading-relaxed">
           {reasoning}
         </p>
       )}
@@ -66,12 +87,12 @@ export function RecallToolRenderer({
       {/* Hits table */}
       <div className="space-y-1.5">
         {hits.map((hit, i) => (
-          <div key={i} className="rounded-md border border-border bg-muted/40 px-3 py-2 space-y-1">
+          <div key={i} className="border-b border-border/30 pb-2 last:border-0 last:pb-0">
             <div className="flex items-start justify-between gap-2">
               <span className="font-mono text-xs text-muted-foreground">
                 {hit.slice_id}
               </span>
-              <span className="text-[10px] text-muted-foreground shrink-0">
+              <span className="text-xs text-muted-foreground shrink-0">
                 {Math.round(hit.relevance * 100)}%
               </span>
             </div>
@@ -79,17 +100,17 @@ export function RecallToolRenderer({
               {hit.reason}
             </p>
             {hit.key_turns && hit.key_turns.length > 0 && (
-              <p className="text-[10px] text-muted-foreground">
+              <p className="text-xs text-muted-foreground">
                 Key turns: {hit.key_turns.join(", ")}
               </p>
             )}
             {/* Raw content for this slice */}
             {rawContents[hit.slice_id] && (
               <details className="mt-1">
-                <summary className="cursor-pointer text-[10px] text-muted-foreground hover:text-foreground transition-colors">
+                <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground transition-colors">
                   Raw content
                 </summary>
-                <pre className="mt-1 max-h-48 overflow-auto rounded border border-border/50 bg-muted/30 p-2 font-mono text-[10px] leading-relaxed text-muted-foreground whitespace-pre-wrap">
+                <pre className="mt-1 max-h-48 overflow-auto font-mono text-xs leading-relaxed text-muted-foreground whitespace-pre-wrap">
                   {rawContents[hit.slice_id]}
                 </pre>
               </details>
@@ -100,7 +121,7 @@ export function RecallToolRenderer({
 
       {/* Confidence */}
       {confidence !== null && (
-        <p className="text-[10px] text-muted-foreground">
+        <p className="text-xs text-muted-foreground">
           Confidence: {Math.round(confidence * 100)}%
         </p>
       )}

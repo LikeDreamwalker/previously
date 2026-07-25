@@ -7,6 +7,7 @@ import type React from "react";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { motion } from "motion/react";
 import { cn } from "@/lib/utils";
+import { Card, CardContent } from "@/components/ui/card";
 
 export type ToolLayoutProps = {
   name: string;
@@ -356,18 +357,22 @@ export function ToolLayout({
         >
           <div className="min-h-0">
             {shouldRenderExpandedContent && (
-              <div className="space-y-2 pb-1">
-                {hasError && !hasRenderableContent(expandedContent) && (
-                  <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-md border border-red-500/20 bg-red-500/5 px-3 py-2 font-mono text-xs leading-relaxed text-red-400">
-                    {errorMessage}
-                  </pre>
-                )}
-                {isInterrupted && (
-                  <pre className="rounded-md border border-yellow-500/20 bg-yellow-500/5 px-3 py-2 font-mono text-xs leading-relaxed text-yellow-500">
-                    {t("interrupted")}
-                  </pre>
-                )}
-                {expandedContent}
+              <div className="pt-1.5 pb-1">
+                <Card size="sm">
+                  <CardContent className="max-h-80 overflow-auto text-sm">
+                    {hasError && !hasRenderableContent(expandedContent) && (
+                      <pre className="whitespace-pre-wrap break-all font-mono text-xs leading-relaxed text-red-400">
+                        {errorMessage}
+                      </pre>
+                    )}
+                    {isInterrupted && (
+                      <p className="font-mono text-xs leading-relaxed text-yellow-500">
+                        {t("interrupted")}
+                      </p>
+                    )}
+                    {expandedContent}
+                  </CardContent>
+                </Card>
               </div>
             )}
           </div>

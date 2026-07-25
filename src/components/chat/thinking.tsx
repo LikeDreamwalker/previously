@@ -16,6 +16,7 @@ interface ThinkingBlockProps {
 
 const COMPLETED_STATE: ToolRenderState = {
   running: false,
+  inputStreaming: false,
   interrupted: false,
   denied: false,
   approvalRequested: false,
@@ -24,6 +25,7 @@ const COMPLETED_STATE: ToolRenderState = {
 
 const STREAMING_STATE: ToolRenderState = {
   running: true,
+  inputStreaming: false,
   interrupted: false,
   denied: false,
   approvalRequested: false,
@@ -78,9 +80,7 @@ export function ThinkingSteps({ text, isStreaming = false, durationMs }: Thinkin
   const summary = "";
 
   const expandedContent = hasContent ? (
-    <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground leading-relaxed">
-      <MarkdownRenderer content={text} />
-    </div>
+    <MarkdownRenderer content={text} />
   ) : undefined;
 
   return (

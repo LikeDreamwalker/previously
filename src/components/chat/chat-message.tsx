@@ -43,7 +43,7 @@ type StreamItem =
 function itemKey(item: StreamItem, index: number): string {
   switch (item.kind) {
     case "reasoning":
-      return "reasoning";
+      return `reasoning-${index}`;
     case "text":
       return `text-${index}`;
     case "tool":
@@ -208,7 +208,7 @@ export const ChatMessage = memo(function ChatMessage({ message, onRegenerate, is
                           isActiveApproval: false,
                         }}
                         expandedContent={
-                          <div className="rounded-md border border-border bg-muted/40 px-3 py-2 space-y-1 text-xs text-muted-foreground leading-relaxed">
+                          <div className="space-y-1 text-xs text-muted-foreground leading-relaxed">
                             {item.summaries.map((s, j) => (
                               <div key={j}>{s}</div>
                             ))}
