@@ -168,44 +168,41 @@ ${previouslyContent.slice(0, 4000)}
 
   prompt += `## Your Task
 
-Examine BOTH sources and output mutations.
+You maintain ALL three sections of previously.md. Use the conversation
+(Source A) primarily for User identity/patterns and the cognition
+(Source B) primarily for Agent strategies, but either source can inform
+any section — a user pattern might suggest a strategy, and a cognition
+trace might reveal a user preference.
 
-### For User identity / User patterns (from Source A):
+### For any section:
 
-**observe** — user explicitly states or strongly implies something new
-  - Identity example: "uses Rust daily" with user quote as evidence
-  - Pattern example: "prefers bullet points" with behavioral evidence
-  - Format: "<statement>\n(来源: <user quote> — ${sliceId}-${lastTurnId})"
+**observe** — new belief with concrete evidence
+  - Identity: "<statement>\n(来源: <user quote> — ${sliceId}-${lastTurnId})"
+  - Pattern: "<statement>\n(置信度: 中 | 首次: ${sliceId}-${lastTurnId} | 最近: ${sliceId}-${lastTurnId} | 观察: 1)"
+  - Strategy: "<statement>\n(来源: <cognition excerpt> — ${sliceId}-${lastTurnId})"
 
-**reinforce** — current behavior matches an existing belief
+**reinforce** — existing belief is confirmed by new evidence
   - Match by belief_key (a phrase in the existing bullet)
 
-**contradict** — current behavior undermines an existing belief
+**contradict** — evidence undermines an existing belief
   - note: explain the tension
 
-**discard** — stale belief that hasn't been relevant for many turns
+**discard** — belief is stale, wrong, or a placeholder
 
-### For Agent strategies (from Source B):
+### Document maintenance:
 
-**observe** — a tool call sequence or reasoning pattern worked well
-  - Example: "recall → readSlice efficiently locates context"
-  - Evidence: cite specific thinking/tool-call from cognition
-
-**reinforce** — the cognition confirms an existing strategy
-  - Match by belief_key
-
-**contradict** — a strategy failed or a better approach was found
-
-**discard** — strategy no longer applicable
+If you see "_No beliefs yet._" in a section that has beliefs listed
+below it, discard that placeholder. If an annotation is malformed, fix
+it via reinforce with the corrected text.
 
 ---
 
 IMPORTANT:
 - Return [] if no clear evidence — that's normal
-- Evidence must be specific (quote, tool name, thinking passage)
-- For evidence_slice, use "${sliceId}" (the slice listed above)
-- For evidence_turn, use "${lastTurnId}" (the turn ID listed above)
-- ${isDeep ? "Deep mode: up to 3 mutations OK across all sections" : "Normal mode: 0-1 mutations typical"}
+- For evidence_slice, use "${sliceId}"
+- For evidence_turn, use "${lastTurnId}"
+- ${isDeep ? "Deep mode: full session review. Up to 3 mutations OK." : "Normal mode: last turn only. 0-1 mutations typical."}
+- Both modes have equal authority over ALL three sections
 - Call the flashOutput tool with your analysis.`;
 
   return prompt;
