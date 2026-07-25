@@ -153,7 +153,7 @@ export function PhaseIndicator({
       layout
       transition={{ duration: 0.25, ease: [0.25, 0.1, 0.25, 1.0] }}
       className={cn(
-        "rounded-lg border-l-[3px] border-primary/40 bg-gradient-to-r from-primary/[0.04] to-transparent px-3 py-2",
+        "rounded-lg px-3 py-2.5",
         canToggle && "cursor-pointer transition-colors hover:bg-muted/30",
       )}
       onClick={canToggle ? handleToggle : undefined}
@@ -174,9 +174,9 @@ export function PhaseIndicator({
       })}
     >
       {/* Header row */}
-      <div className="flex min-w-0 items-center gap-2.5">
+      <div className="flex min-w-0 items-center gap-2">
         {/* Icon */}
-        <span className="flex size-4 shrink-0 items-center justify-center text-primary/70">
+        <span className="flex size-4 shrink-0 items-center justify-center text-brand">
           {isRunning ? (
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
           ) : (
@@ -185,7 +185,7 @@ export function PhaseIndicator({
         </span>
 
         {/* Label */}
-        <span className="min-w-0 truncate text-sm font-medium text-foreground/90">
+        <span className="min-w-0 truncate text-sm font-semibold text-foreground/90">
           {label}
         </span>
 
@@ -235,7 +235,7 @@ export function PhaseIndicator({
               <span className="text-xs leading-relaxed font-mono text-muted-foreground">
                 {display}
                 {isTyping && (
-                  <span className="ml-0.5 inline-block h-3 w-px animate-pulse bg-primary/50 align-middle" />
+                  <span className="ml-0.5 inline-block h-3 w-px animate-pulse bg-brand/60 align-middle" />
                 )}
               </span>
             </div>
@@ -246,7 +246,7 @@ export function PhaseIndicator({
       {/* Loading skeleton (streaming, no text yet) */}
       {mode === "streaming" && isRunning && !text && (
         <div className="mt-1.5 pl-6.5">
-          <span className="inline-block h-3 w-32 animate-pulse rounded bg-muted-foreground/10" />
+          <span className="inline-block h-3 w-32 animate-pulse rounded bg-brand/10" />
         </div>
       )}
 

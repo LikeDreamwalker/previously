@@ -25,7 +25,7 @@ export function CodeBlock({ language, code, isStreaming = false }: CodeBlockProp
     <div className="relative group my-3 rounded-lg border border-border overflow-hidden">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-1.5 bg-muted/50 border-b border-border">
-        <span className="text-xs text-muted-foreground font-mono">
+        <span className="text-xs text-brand font-mono font-medium">
           {language ?? t("fallbackLanguage")}
         </span>
         <button
@@ -43,7 +43,7 @@ export function CodeBlock({ language, code, isStreaming = false }: CodeBlockProp
       {/* Code */}
       <pre
         className={`overflow-x-auto p-4 text-xs leading-relaxed bg-muted/20 transition-colors duration-500 ${
-          isStreaming ? "bg-primary/[0.03]" : ""
+          isStreaming ? "bg-brand/[0.04]" : ""
         }`}
       >
         <code className={`language-${language ?? "text"}`}>{code}</code>

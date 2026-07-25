@@ -223,7 +223,7 @@ export const ChatMessage = memo(function ChatMessage({ message, onRegenerate, is
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
                         transition={{ duration: 0.15 }}
-                        className="[&:not(:last-child)]:mb-3"
+                        className="px-3 [&:not(:last-child)]:mb-3"
                       >
                         <MarkdownRenderer
                           content={item.content}

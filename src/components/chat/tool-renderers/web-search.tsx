@@ -86,7 +86,7 @@ export function WebSearchRenderer({
                   href={s.url}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="truncate text-blue-600 underline underline-offset-2 dark:text-blue-400"
+                  className="truncate text-brand underline underline-offset-2"
                 >
                   {s.title || s.url}
                 </a>
