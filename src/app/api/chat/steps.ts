@@ -11,7 +11,8 @@
  *   1. housekeeping     — recover/close/create slice, append user turn, open UI stream
  *   2. metadataUpdate   — Flash reviews slice metadata (focus/summary/tags/tone)
  *   3. beliefUpdate     — Flash observes user patterns → previously.md updates
- *   4. finalizeTurn     — persist agent turn, close UI stream
+ *   4. strategyReview   — Flash reviews agent cognition → strategy evolution
+ *   5. finalizeTurn     — persist agent turn, close UI stream
  *
  * Chunk order for the UI: data-belief → reasoning/text/tool → done.
  */
@@ -40,11 +41,13 @@ import {
 } from "@/lib/episodic/maintenance";
 import { runMetadataUpdate } from "@/lib/episodic/flash/metadata";
 import { runBeliefUpdate } from "@/lib/episodic/flash/belief";
+import { runStrategyReview } from "@/lib/episodic/flash/strategy-review";
 import type {
   TurnInput,
   HousekeepingResult,
   MetadataUpdateResult,
   BeliefUpdateResult,
+  StrategyReviewResult,
   TurnOutcome,
 } from "@/lib/chat/turn-types";
 
@@ -303,7 +306,139 @@ export async function beliefUpdate(
   };
 }
 
-// ─── Step 4: Finalize turn ───────────────────────────────────────────────
+// ─── Step 4: Strategy review (Flash) ─────────────────────────────────────
+
+/**
+ * Flash reviews the agent's own cognition (thinking traces + tool calls)
+ * against the "Agent strategies" section of previously.md and produces
+ * strategy mutations (observe/reinforce/contradict/discard).
+ *
+ * Two modes:
+ *   normal — every turn, reviews only the last cognition entry (~2s)
+ *   deep   — on slice close, reviews the full closed slice's agent.md (~5s)
+ *
+ * The strategy section co-evolves with user beliefs: user patterns on the
+ * left side of previously.md, agent strategies on the right side — both
+ * updated via the same applyBeliefUpdates pipeline.
+ *
+ * Never throws — on failure, returns unchanged content and empty updates.
+ */
+export async function strategyReview(
+  input: TurnInput,
+  slice: TimeSlice,
+  closedSlice: TimeSlice | undefined,
+  previouslyContent: string,
+  lastTurnId: string,
+): Promise<StrategyReviewResult> {
+  "use step";
+
+  const isDeep = closedSlice !== undefined;
+
+  // Read the cognition source based on mode.
+  let agentCognition = "";
+  const sourceSliceId = isDeep ? closedSlice.slice_id : slice.slice_id;
+
+  try {
+    agentCognition = await readAgentTimeline(sourceSliceId);
+  } catch {
+    // No agent.md yet — first turn, nothing to review
+  }
+
+  if (!agentCognition.trim()) {
+    return {
+      slice,
+      previouslyContent,
+      beliefUpdates: [],
+      reasoning: isDeep
+        ? "No cognition history to review for the closed slice"
+        : "No cognition to review this turn",
+      isDeep,
+    };
+  }
+
+  let updatedContent = previouslyContent;
+  let beliefUpdates: BeliefUpdate[] = [];
+  let reasoning = "";
+
+  try {
+    const result = await runStrategyReview({
+      agentCognition,
+      currentStrategies: previouslyContent,
+      sliceId: sourceSliceId,
+      lastTurnId,
+      lastUserMessage: input.lastUserMessage,
+      closedSliceId: closedSlice?.slice_id,
+    });
+
+    beliefUpdates = result.belief_updates;
+    reasoning = result.reasoning;
+
+    console.log(
+      `[Strategy] mode=${isDeep ? "deep" : "normal"} updates=${beliefUpdates.length} ` +
+      `actions=${beliefUpdates.map(u => u.action).join(", ") || "none"}`
+    );
+
+    if (beliefUpdates.length > 0) {
+      updatedContent = applyBeliefUpdates(
+        previouslyContent,
+        beliefUpdates,
+        slice.slice_id,
+      );
+      await writePreviously(slice.slice_id, updatedContent);
+    }
+  } catch (err) {
+    console.warn(
+      "[Strategy] Flash call failed, continuing without strategy update:",
+      err instanceof Error ? err.message : err,
+    );
+  }
+
+  // Emit data-belief UI chunk for strategy evolution visibility.
+  if (beliefUpdates.length > 0) {
+    try {
+      const summaries = beliefUpdates.map((u) => {
+        switch (u.action) {
+          case "observe":
+            return `+ 新策略：${u.belief ?? u.belief_key ?? ""}`;
+          case "reinforce":
+            return `↑ 策略确认：${u.belief_key ?? ""}`;
+          case "contradict":
+            return `↓ 策略调整：${u.belief_key ?? ""}${u.note ? ` — ${u.note}` : ""}`;
+          case "discard":
+            return `✕ 策略移除：${u.belief_key ?? u.reason ?? ""}`;
+          default:
+            return "";
+        }
+      }).filter(Boolean);
+
+      const writer = getWritable<UIMessageChunk>().getWriter();
+      await writer.write({
+        type: "data-belief",
+        id: `strategy-${Date.now()}`,
+        data: {
+          phase: "strategy",
+          mode: isDeep ? "deep" : "normal",
+          done: true,
+          updates: beliefUpdates,
+          summaries,
+        },
+      } as UIMessageChunk);
+      writer.releaseLock();
+    } catch (err) {
+      console.warn("[Strategy] UI chunk failed:", err instanceof Error ? err.message : err);
+    }
+  }
+
+  return {
+    slice,
+    previouslyContent: updatedContent,
+    beliefUpdates,
+    reasoning,
+    isDeep,
+  };
+}
+
+// ─── Step 5: Finalize turn ───────────────────────────────────────────────
 
 /**
  * Persist the agent turn to the episodic slice (the old streamText onFinish),

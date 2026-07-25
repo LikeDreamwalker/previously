@@ -34,6 +34,7 @@ import {
   housekeeping,
   metadataUpdate,
   beliefUpdate,
+  strategyReview,
   finalizeTurn,
 } from "./steps";
 
@@ -224,9 +225,16 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
 
   // ── Pre-turn steps ─────────────────────────────────────────────────────
 
-  const { slice } = await housekeeping(input);
+  const { slice, closedSlice } = await housekeeping(input);
   const meta = await metadataUpdate(input, slice);
   const belief = await beliefUpdate(input, meta.slice);
+  const strategy = await strategyReview(
+    input,
+    belief.slice,
+    closedSlice,
+    belief.previouslyContent,
+    input.turnId,
+  );
 
   // ── Assemble system prompt (lightweight — no Flash injection) ──────────
 
@@ -234,7 +242,7 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
 
 ## What I understand about you
 
-${belief.previouslyContent}
+${strategy.previouslyContent}
 This is my current understanding of who you are and how you work. If any of this is wrong or outdated, tell me and I'll update it.
 
 ## Memory access rules
@@ -288,7 +296,7 @@ You can start durable background loops with the startLoop tool. When the user as
 
   // ── Post-turn persistence ──────────────────────────────────────────────
 
-  await finalizeTurn(belief.slice, outcome, input.turnId);
+  await finalizeTurn(strategy.slice, outcome, input.turnId);
 
   if (streamError !== null) {
     throw streamError;

@@ -512,5 +512,40 @@ export function buildMockSteps(): MockStep[] {
     },
   });
 
+  // ═══════════════════════════════════════════════════════════════════
+  // Phase 7 — Strategy review (agent self-evolution)
+  // ═══════════════════════════════════════════════════════════════════
+
+  steps.push({
+    delay: 600,
+    apply: (msg) => {
+      const p = cloneParts(msg);
+      p.push({
+        type: "data-belief",
+        id: uid("strategy"),
+        data: {
+          phase: "strategy",
+          mode: "normal",
+          done: true,
+          updates: [
+            {
+              action: "reinforce",
+              belief_key: "先 recall 再 readSlice 高效定位相关上下文",
+            },
+            {
+              action: "observe",
+              belief: "用户问架构问题时应同时搜索 web 获取最新实践",
+            },
+          ],
+          summaries: [
+            "↑ 策略确认：先 recall 再 readSlice 高效定位相关上下文",
+            "+ 新策略：用户问架构问题时应同时搜索 web 获取最新实践",
+          ],
+        },
+      });
+      return setMsg(p);
+    },
+  });
+
   return steps;
 }
