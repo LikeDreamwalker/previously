@@ -98,7 +98,36 @@
       "fallbackLanguage": "code",
       "copyTooltip": "Copy code",
       "copiedTooltip": "Copied!"
-    }
+    },
+    "phase": {
+      "label": "Agent progress",
+      "prepare": "Preparing…",
+      "prepareDone": "Prepared",
+      "slicing": "Slicing time…",
+      "slicingDone": "Sliced",
+      "previously": "Updating recap…",
+      "previouslyDone": "Recap updated",
+      "thinking": "Thinking…",
+      "thinkingDone": "Thought"
+    },
+    "loadingTips": [
+      "Your conversations are saved as time slices — 30 minutes of silence closes one and starts the next",
+      "The agent works after you're done — not always-on, but results are waiting when you return",
+      "Every slice is a plain Markdown file — human-readable, git-diffable, no proprietary format",
+      "GitHub is the only database — your memory lives in your own repo, no external storage",
+      "All conversation history under memory/episodic/slices/ — organized by year, month, day, minute",
+      "Strands are keywords threading through slices — follow a topic from 2022 to today in one search",
+      "previously.md is what the agent knows about you — updated every turn as it learns",
+      "agent.md is the agent's reflection diary — it logs its own thinking and tool use, then learns from past patterns",
+      "Your agent's understanding of you self-corrects over time — it observes, reinforces, contradicts, or discards impressions",
+      "Behind every reply, slice metadata refreshes silently — focus, tags, emotional tone, open loops all stay current",
+      "Tool calls appear inline as they happen — expand any card to see what the agent is doing under the hood",
+      "The reasoning block shows the model's internal monologue — look for the brain icon in each reply",
+      "The recall tool returns original conversation content — not summaries, the real words you said",
+      "Background loops run after you close the tab — progress checkpoints back to your repo",
+      "Your agent can search the live web — results woven into the reply with source links",
+      "Demo mode uses pre-seeded personas — connect your own GitHub repo to unlock persistent memory, settings, and background loops"
+    ]
   },
   "timeline": {
     "row": {
