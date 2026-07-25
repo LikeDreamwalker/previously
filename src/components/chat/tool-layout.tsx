@@ -218,13 +218,7 @@ export function ToolLayout({
         layout: { duration: 0.2, ease: [0.25, 0.1, 0.25, 1.0] },
         x: shake ? { duration: 0.3, ease: "easeInOut" } : { duration: 0.15 },
       }}
-      className={cn(
-        "rounded-md border",
-        isRunning && !isInputStreaming
-          ? "border-primary/20"
-          : "border-transparent",
-        "bg-transparent",
-      )}
+      className="rounded-md"
     >
       {/* Shimmer bar — visible while model is deciding tool parameters */}
       {isInputStreaming && (
