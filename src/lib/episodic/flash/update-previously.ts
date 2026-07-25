@@ -65,9 +65,15 @@ const outputSchema = tool({
               "Key phrase to match an existing item. Required for " +
               "'reinforce' / 'contradict' / 'discard'.",
             ),
+          evidence_slice: z
+            .string()
+            .describe(
+              "Slice path in YYYY/MM/DD/HHMM format for the citing evidence. " +
+              "Use the slice ID provided in the context.",
+            ),
           evidence_turn: z
             .string()
-            .describe("Turn ID for citing evidence"),
+            .describe("Turn ID within the evidence slice"),
           note: z
             .string()
             .optional()
@@ -197,6 +203,8 @@ Examine BOTH sources and output mutations.
 IMPORTANT:
 - Return [] if no clear evidence — that's normal
 - Evidence must be specific (quote, tool name, thinking passage)
+- For evidence_slice, use "${sliceId}" (the slice listed above)
+- For evidence_turn, use "${lastTurnId}" (the turn ID listed above)
 - ${isDeep ? "Deep mode: up to 3 mutations OK across all sections" : "Normal mode: 0-1 mutations typical"}
 - Call the flashOutput tool with your analysis.`;
 
