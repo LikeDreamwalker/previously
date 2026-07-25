@@ -5,6 +5,7 @@ import { CircleX, Loader2, Minus, OctagonPause, Plus } from "lucide-react";
 import { useTranslations } from "next-intl";
 import type React from "react";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { motion } from "motion/react";
 import { cn } from "@/lib/utils";
 
 export type ToolLayoutProps = {
@@ -21,6 +22,8 @@ export type ToolLayoutProps = {
   defaultExpanded?: boolean;
   icon?: ReactNode;
   nameClassName?: string;
+  /** When true, the tool is receiving its input parameters (model still deciding args). */
+  inputStreaming?: boolean;
 };
 
 function hasRenderableContent(value: ReactNode) {
@@ -49,8 +52,10 @@ export function ToolLayout({
   defaultExpanded = false,
   icon,
   nameClassName,
+  inputStreaming,
 }: ToolLayoutProps) {
   const t = useTranslations("chat.tool");
+  const isInputStreaming = inputStreaming ?? state.inputStreaming;
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
   const errorMessage =
     state.error && !state.denied ? trimErrorPrefix(state.error) : undefined;
@@ -71,6 +76,21 @@ export function ToolLayout({
   const hasErrorMeta = hasRenderableContent(errorMeta);
   const hasTrailingMeta = !showErrorHeader && !showInterruptedHeader && hasMeta;
   const isRunning = state.running;
+
+  // ── Error shake tracking ─────────────────────────────────────────────
+
+  const prevErrorRef = useRef<string | undefined>(undefined);
+  const [shake, setShake] = useState(false);
+
+  useEffect(() => {
+    if (errorMessage && errorMessage !== prevErrorRef.current) {
+      prevErrorRef.current = errorMessage;
+      setShake(true);
+      const timer = setTimeout(() => setShake(false), 350);
+      return () => clearTimeout(timer);
+    }
+    prevErrorRef.current = errorMessage;
+  }, [errorMessage]);
 
   // ── Auto-expand during streaming, collapse when done ──────────────────
 
@@ -181,7 +201,35 @@ export function ToolLayout({
   );
 
   return (
-    <div className="rounded-md border border-transparent bg-transparent">
+    <motion.div
+      initial={{ opacity: 0, y: 6, scale: 0.97 }}
+      animate={{
+        opacity: 1,
+        y: 0,
+        scale: 1,
+        x: shake ? [0, -3, 3, -3, 3, 0] : 0,
+      }}
+      exit={{ opacity: 0, y: -6, scale: 0.97 }}
+      layout
+      transition={{
+        opacity: { duration: 0.25, ease: [0.25, 0.1, 0.25, 1.0] },
+        y: { duration: 0.25, ease: [0.25, 0.1, 0.25, 1.0] },
+        scale: { duration: 0.25, ease: [0.25, 0.1, 0.25, 1.0] },
+        layout: { duration: 0.2, ease: [0.25, 0.1, 0.25, 1.0] },
+        x: shake ? { duration: 0.3, ease: "easeInOut" } : { duration: 0.15 },
+      }}
+      className={cn(
+        "rounded-md border",
+        isRunning && !isInputStreaming
+          ? "border-primary/20"
+          : "border-transparent",
+        "bg-transparent",
+      )}
+    >
+      {/* Shimmer bar — visible while model is deciding tool parameters */}
+      {isInputStreaming && (
+        <div className="h-0.5 rounded-full bg-gradient-to-r from-transparent via-primary/15 to-transparent bg-[length:200%_100%] animate-shimmer" />
+      )}
       <div
         className={cn(
           "group flex min-w-0 select-none items-center gap-2 rounded-md px-1.5 py-1 text-sm",
@@ -331,7 +379,7 @@ export function ToolLayout({
           </div>
         </div>
       )}
-    </div>
+    </motion.div>
   );
 }
 

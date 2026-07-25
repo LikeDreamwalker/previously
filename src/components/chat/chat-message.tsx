@@ -2,6 +2,7 @@
 
 import { memo, useMemo } from "react";
 import type { UIMessage } from "ai";
+import { AnimatePresence, motion } from "motion/react";
 import { MarkdownRenderer } from "./markdown";
 import { ThinkingSteps } from "./thinking";
 import { MessageActions } from "./message-actions";
@@ -35,8 +36,22 @@ type AnyPart = {
 type StreamItem =
   | { kind: "reasoning"; text: string }
   | { kind: "text"; content: string }
-  | { kind: "tool"; toolName: string; state: string; input?: unknown; output?: unknown }
+  | { kind: "tool"; toolCallId: string; toolName: string; state: string; input?: unknown; output?: unknown }
   | { kind: "belief"; summaries: string[] };
+
+/** Stable key for a stream item — used by AnimatePresence for enter/exit animation. */
+function itemKey(item: StreamItem, index: number): string {
+  switch (item.kind) {
+    case "reasoning":
+      return "reasoning";
+    case "text":
+      return `text-${index}`;
+    case "tool":
+      return `tool-${item.toolCallId}`;
+    case "belief":
+      return `belief-${index}`;
+  }
+}
 
 function buildStream(parts: readonly AnyPart[], isStreaming: boolean): StreamItem[] {
   const items: StreamItem[] = [];
@@ -71,14 +86,30 @@ function buildStream(parts: readonly AnyPart[], isStreaming: boolean): StreamIte
       }
     } else if (p.type?.startsWith("tool-")) {
       flushText();
-      const toolName = p.toolName ?? p.type.replace("tool-", "");
-      items.push({
-        kind: "tool",
-        toolName,
-        state: p.state ?? "running",
-        input: p.input,
-        output: p.output,
-      });
+      const toolCallId = (p as { toolCallId?: string }).toolCallId ?? `anon-${items.length}`;
+      const toolName = (p as { toolName?: string }).toolName ?? p.type.replace("tool-", "");
+
+      // Merge tool parts sharing the same toolCallId into one StreamItem.
+      // The AI SDK emits separate parts for input-streaming → input-available →
+      // output-available; we fold them into a single card so it doesn't remount.
+      const existing = items.find(
+        (it): it is Extract<StreamItem, { kind: "tool" }> =>
+          it.kind === "tool" && it.toolCallId === toolCallId,
+      );
+      if (existing) {
+        existing.state = p.state ?? existing.state;
+        if (p.input !== undefined) existing.input = p.input;
+        if (p.output !== undefined) existing.output = p.output;
+      } else {
+        items.push({
+          kind: "tool",
+          toolCallId,
+          toolName,
+          state: (p as { state?: string }).state ?? "running",
+          input: p.input,
+          output: p.output,
+        });
+      }
     }
   }
   flushText();
@@ -135,11 +166,14 @@ export const ChatMessage = memo(function ChatMessage({ message, onRegenerate, is
         <MessageContent className="min-w-0">
           {hasContent && (
             <div className="space-y-1">
-              {streamItems.map((item, i) => {
+              <AnimatePresence>
+                {streamItems.map((item, i) => {
+                  const key = itemKey(item, i);
+
                   if (item.kind === "reasoning") {
                     return (
                       <ThinkingSteps
-                        key={`thinking-${i}`}
+                        key={key}
                         text={item.text}
                         isStreaming={isStreaming && i === streamItems.length - 1}
                       />
@@ -148,7 +182,7 @@ export const ChatMessage = memo(function ChatMessage({ message, onRegenerate, is
                   if (item.kind === "tool") {
                     return (
                       <ToolRenderer
-                        key={`tool-${i}`}
+                        key={key}
                         toolName={item.toolName}
                         state={item.state}
                         input={item.input}
@@ -160,7 +194,7 @@ export const ChatMessage = memo(function ChatMessage({ message, onRegenerate, is
                   if (item.kind === "belief") {
                     return (
                       <ToolLayout
-                        key={`belief-${i}`}
+                        key={key}
                         name="更新了前情提要"
                         summary=""
                         icon={<FileText className="h-3.5 w-3.5" />}
@@ -185,16 +219,23 @@ export const ChatMessage = memo(function ChatMessage({ message, onRegenerate, is
                   }
                   if (item.kind === "text") {
                     return (
-                      <div key={`text-${i}`} className="[&:not(:last-child)]:mb-3">
+                      <motion.div
+                        key={key}
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        transition={{ duration: 0.15 }}
+                        className="[&:not(:last-child)]:mb-3"
+                      >
                         <MarkdownRenderer
                           content={item.content}
                           isStreaming={isStreaming && i === streamItems.length - 1}
                         />
-                      </div>
+                      </motion.div>
                     );
                   }
                   return null;
                 })}
+              </AnimatePresence>
             </div>
           )}
 
