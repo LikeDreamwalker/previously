@@ -130,7 +130,6 @@ describe("housekeeping step", () => {
     expect(episodic.saveSliceSnapshot).toHaveBeenCalledWith(slice);
     expect(episodic.ensureIndexEntries).toHaveBeenCalledWith(slice);
     expect(episodic.appendTurn).not.toHaveBeenCalled();
-    expect(episodic.ensurePreviously).toHaveBeenCalledWith(slice.slice_id);
     expect(workflowMock.written.map((c) => c.type)).toEqual(["start", "start-step"]);
   });
 
@@ -151,7 +150,6 @@ describe("housekeeping step", () => {
     expect(slice.turns).toHaveLength(3);
     expect(slice.turns[2].content).toBe("follow up");
     expect(episodic.saveSliceSnapshot).toHaveBeenCalledWith(slice);
-    expect(episodic.ensurePreviously).toHaveBeenCalledWith(slice.slice_id);
   });
 
   it("closes a stale slice on time silence and starts a new one", async () => {

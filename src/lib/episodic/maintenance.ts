@@ -133,7 +133,7 @@ export function applyBeliefUpdates(
   }
 
   // Sections that will receive mutations — used to strip stale placeholders.
-  const mutatedSections = new Set(
+  const mutatedSections: Set<string> = new Set(
     updates.map((u) => u.section).filter(Boolean),
   );
 

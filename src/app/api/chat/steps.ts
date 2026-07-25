@@ -105,10 +105,6 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
     });
   }
 
-  // Ensure previously.md exists for this slice (initialize with decay from
-  // last frozen, or create empty template for first-ever slices).
-  await ensurePreviously(slice.slice_id);
-
   // Durable snapshot BEFORE streaming (was fire-and-forget in the inline route):
   // guarantees the user turn is on GitHub, and that the next turn's
   // tryLoadTodaySlice sees it even if the agent never finishes.
@@ -218,70 +214,118 @@ export async function updatePreviously(
   const isDeep = closedSlice !== undefined;
   const { recentTurns, lastUserMessage } = input;
 
-  // Load profile and current previously.md
   const userProfile = await loadUserProfile();
-  let previouslyContent = "";
+  let allBeliefUpdates: BeliefUpdate[] = [];
+  let allReasoning = "";
 
+  // ── Phase 1: Deep review (slice just closed) ──────────────────────────
+  // Enrich the CLOSING slice's previously.md before it gets copied forward.
+  // This way the closed slice carries its own strategies, and the new slice
+  // inherits them through ensurePreviously.
+  if (isDeep && closedSlice) {
+    let closedAgentCognition = "";
+    let closedPreviously = "";
+
+    try {
+      closedAgentCognition = await readAgentTimeline(closedSlice.slice_id);
+    } catch { /* no agent.md */ }
+    try {
+      closedPreviously = await readPreviously(closedSlice.slice_id);
+    } catch { /* no previously.md */ }
+
+    try {
+      const deepResult = await runUpdatePreviously({
+        recentTurns,
+        newMessage: lastUserMessage,
+        previouslyContent: closedPreviously,
+        sliceId: closedSlice.slice_id,
+        lastTurnId: input.turnId,
+        agentCognition: closedAgentCognition,
+        isDeep: true,
+      });
+
+      if (deepResult.belief_updates.length > 0) {
+        const enriched = applyBeliefUpdates(
+          closedPreviously,
+          deepResult.belief_updates,
+          closedSlice.slice_id,
+        );
+        await writePreviously(closedSlice.slice_id, enriched);
+
+        console.log(
+          `[Previously] deep review of ${closedSlice.slice_id}: ` +
+          `${deepResult.belief_updates.length} mutations ` +
+          `sections=${deepResult.belief_updates.map(u => u.section).filter((v, i, a) => a.indexOf(v) === i).join(", ")}`
+        );
+
+        // Collect deep review updates for the UI chunk.
+        allBeliefUpdates.push(...deepResult.belief_updates);
+        allReasoning = deepResult.reasoning;
+      }
+    } catch (err) {
+      console.warn(
+        "[Previously] Deep review failed:",
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  // ── Phase 2: Seed the new slice's previously.md ───────────────────────
+  // Now that the closing slice's previously.md is enriched, copy it forward.
+  // ensurePreviously scans backward and copies from the most recent slice
+  // (which is the one we just enriched above).
+  await ensurePreviously(slice.slice_id);
+
+  // ── Phase 3: Normal review (current slice, every turn) ────────────────
+  let previouslyContent = "";
   try {
     previouslyContent = await readPreviously(slice.slice_id);
-  } catch {
-    // No previously.md yet — use empty template
-  }
+  } catch { /* use empty */ }
 
-  // Read agent cognition — from closed slice (deep) or current slice (normal)
   let agentCognition = "";
-  const cognitionSliceId = isDeep ? closedSlice.slice_id : slice.slice_id;
+  try {
+    agentCognition = await readAgentTimeline(slice.slice_id);
+  } catch { /* no agent.md yet */ }
 
   try {
-    agentCognition = await readAgentTimeline(cognitionSliceId);
-  } catch {
-    // No agent.md yet — first turn in slice, nothing to review
-  }
-
-  let beliefUpdates: BeliefUpdate[] = [];
-  let reasoning = "";
-
-  try {
-    const result = await runUpdatePreviously({
+    const normalResult = await runUpdatePreviously({
       recentTurns,
       newMessage: lastUserMessage,
       previouslyContent,
-      sliceId: cognitionSliceId,
+      sliceId: slice.slice_id,
       lastTurnId: input.turnId,
       agentCognition,
-      isDeep,
-      closedSliceId: closedSlice?.slice_id,
+      isDeep: false,
     });
 
-    beliefUpdates = result.belief_updates;
-    reasoning = result.reasoning;
+    if (normalResult.belief_updates.length > 0) {
+      console.log(
+        `[Previously] normal review: ${normalResult.belief_updates.length} mutations ` +
+        `sections=${normalResult.belief_updates.map(u => u.section).filter((v, i, a) => a.indexOf(v) === i).join(", ")}`
+      );
 
-    console.log(
-      `[Previously] mode=${isDeep ? "deep" : "normal"} updates=${beliefUpdates.length} ` +
-      `sections=${beliefUpdates.map(u => u.section).filter((v, i, a) => a.indexOf(v) === i).join(", ") || "none"} ` +
-      `actions=${beliefUpdates.map(u => u.action).join(", ") || "none"}`
-    );
-
-    if (beliefUpdates.length > 0) {
       const updated = applyBeliefUpdates(
         previouslyContent,
-        beliefUpdates,
+        normalResult.belief_updates,
         slice.slice_id,
       );
       await writePreviously(slice.slice_id, updated);
       previouslyContent = updated;
+
+      allBeliefUpdates.push(...normalResult.belief_updates);
+      if (!allReasoning) allReasoning = normalResult.reasoning;
     }
   } catch (err) {
     console.warn(
-      "[Previously] Flash call failed, continuing without update:",
+      "[Previously] Normal review failed:",
       err instanceof Error ? err.message : err,
     );
   }
 
-  // Emit data-belief UI chunk
-  if (beliefUpdates.length > 0) {
+  // ── Emit UI chunk ─────────────────────────────────────────────────────
+  if (allBeliefUpdates.length > 0) {
     try {
-      const summaries = beliefUpdates.map((u) => {
+      const summaries = allBeliefUpdates.map((u) => {
         switch (u.action) {
           case "observe":
             return u.section === "Agent strategies"
@@ -307,7 +351,7 @@ export async function updatePreviously(
         data: {
           mode: isDeep ? "deep" : "normal",
           done: true,
-          updates: beliefUpdates,
+          updates: allBeliefUpdates,
           summaries,
         },
       } as UIMessageChunk);
@@ -320,9 +364,9 @@ export async function updatePreviously(
   return {
     slice,
     previouslyContent,
-    beliefUpdates,
+    beliefUpdates: allBeliefUpdates,
     userProfile: buildAgentIdentityPrompt(userProfile),
-    reasoning,
+    reasoning: allReasoning,
   };
 }
 
