@@ -9,6 +9,8 @@
 export type ToolRenderState = {
   /** Whether the tool is currently running */
   running: boolean;
+  /** Whether the tool is still receiving input parameters from the model */
+  inputStreaming: boolean;
   /** Whether the tool was interrupted (running when stream stopped) */
   interrupted: boolean;
   /** Error message if the tool failed */
@@ -62,9 +64,11 @@ export function extractRenderState(
   // Tool was running but stream stopped — it was interrupted
   const interrupted = isRunningState && !isStreaming;
   const running = isRunningState && isStreaming;
+  const inputStreaming = part.state === "input-streaming";
 
   return {
     running,
+    inputStreaming,
     interrupted,
     error,
     denied,

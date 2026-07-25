@@ -20,12 +20,12 @@ import { CodeBlock } from "@/components/chat/code-block";
 import { ThinkingSteps } from "@/components/chat/thinking";
 
 const COMPLETED: ReturnType<typeof import("@/lib/chat/tool-state").extractRenderState> = {
-  running: false, interrupted: false, denied: false,
+  running: false, inputStreaming: false, interrupted: false, denied: false,
   approvalRequested: false, isActiveApproval: false,
 };
 
 const RUNNING: typeof COMPLETED = {
-  running: true, interrupted: false, denied: false,
+  running: true, inputStreaming: false, interrupted: false, denied: false,
   approvalRequested: false, isActiveApproval: false,
 };
 

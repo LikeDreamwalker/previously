@@ -93,92 +93,15 @@ export function ToolLayout({
     prevErrorRef.current = errorMessage;
   }, [errorMessage]);
 
-  // ── Auto-expand during streaming, collapse when done ──────────────────
+  // ── Manual expand / collapse ──────────────────────────────────────────
 
-  const AUTO_COLLAPSE_DELAY_MS = 2000;
-
-  const autoExpandedRef = useRef(false);
-  const collapseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const userHoveringRef = useRef(false);
-
-  const clearCollapseTimer = useCallback(() => {
-    if (collapseTimerRef.current) {
-      clearTimeout(collapseTimerRef.current);
-      collapseTimerRef.current = null;
-    }
-  }, []);
-
-  const scheduleCollapse = useCallback(() => {
-    clearCollapseTimer();
-    collapseTimerRef.current = setTimeout(() => {
-      if (!userHoveringRef.current) {
-        setIsExpanded(false);
-        autoExpandedRef.current = false;
-      }
-      // If the user IS hovering, the timer fired but we skipped collapse.
-      // The onMouseLeave handler will re-schedule when they leave.
-    }, AUTO_COLLAPSE_DELAY_MS);
-  }, [clearCollapseTimer]);
-
-  useEffect(() => {
-    if (!hasExpandedDetails) return;
-
-    if (isRunning) {
-      // Streaming: auto-expand so the user can see live content.
-      if (!isExpanded) {
-        autoExpandedRef.current = true;
-        setIsExpanded(true);
-      }
-      // Kill any collapse timer while still running.
-      clearCollapseTimer();
-    } else if (autoExpandedRef.current) {
-      // Just finished (or arrived complete via defaultExpanded):
-      // collapse after delay, unless the user is hovering.
-      scheduleCollapse();
-    }
-
-    return clearCollapseTimer;
-  }, [isRunning, hasExpandedDetails, isExpanded, clearCollapseTimer, scheduleCollapse]);
-
-  // Handle the "arrived complete" case: defaultExpanded + not running →
-  // start expanded, then auto-collapse after delay (like streaming case).
-  useEffect(() => {
-    if (!hasExpandedDetails) return;
-    if (isRunning) return;
-    if (!defaultExpanded) return;
-    if (autoExpandedRef.current) return; // already handled by the other effect
-
-    // One-time: expand on mount for completed data that arrived as one chunk.
-    autoExpandedRef.current = true;
-    setIsExpanded(true);
-    scheduleCollapse();
-    // Only fire once on mount / when defaultExpanded appears.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [defaultExpanded, hasExpandedDetails]);
-
-  // If the user manually toggles, hand control back permanently.
   const handleToggle = useCallback(() => {
     if (!hasExpandedDetails) return;
     if (!isExpanded) setShouldRenderExpandedContent(true);
-    clearCollapseTimer();
-    autoExpandedRef.current = false;
     setIsExpanded(!isExpanded);
-  }, [hasExpandedDetails, isExpanded, clearCollapseTimer]);
+  }, [hasExpandedDetails, isExpanded]);
 
-  // Hover / touch on expanded content pauses the collapse timer.
-  const handleExpandedEnter = useCallback(() => {
-    userHoveringRef.current = true;
-    clearCollapseTimer();
-  }, [clearCollapseTimer]);
-
-  const handleExpandedLeave = useCallback(() => {
-    userHoveringRef.current = false;
-    // Only re-schedule if auto-expanded (not manually toggled).
-    if (autoExpandedRef.current) {
-      scheduleCollapse();
-    }
-  }, [scheduleCollapse]);
-
+  // Delay unmount of the card DOM until the collapse animation finishes.
   useEffect(() => {
     if (!hasExpandedDetails) {
       setShouldRenderExpandedContent(false);
@@ -344,10 +267,6 @@ export function ToolLayout({
         <div
           aria-hidden={!isExpandedPanelVisible}
           inert={!isExpandedPanelVisible}
-          onMouseEnter={handleExpandedEnter}
-          onMouseLeave={handleExpandedLeave}
-          onTouchStart={handleExpandedEnter}
-          onTouchEnd={handleExpandedLeave}
           className={cn(
             "grid overflow-hidden transition-[grid-template-rows,opacity,margin-top] motion-reduce:transition-none",
             isExpandedPanelVisible

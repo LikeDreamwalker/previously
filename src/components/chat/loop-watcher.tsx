@@ -145,7 +145,7 @@ export function LoopWatcher({ messages }: { messages: UIMessage[] }) {
 
     // Cleanup: cancel all inflight fetch readers when the component unmounts.
     return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [completedToolCount]);
 
   return null;

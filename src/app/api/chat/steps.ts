@@ -212,6 +212,7 @@ export async function beliefUpdate(
   const userProfile = await loadUserProfile();
   let previouslyContent = "";
   let agentCognition = "";
+
   try {
     agentCognition = await readAgentTimeline(slice.slice_id);
   } catch {

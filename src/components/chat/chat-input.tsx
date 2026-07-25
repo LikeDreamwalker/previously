@@ -2,7 +2,7 @@
 
 import { useState, useRef, type FormEvent, type ChangeEvent } from "react";
 import { useTranslations } from "next-intl";
-import { ArrowUp, Square, Paperclip, X, Settings } from "lucide-react";
+import { ArrowUp, Square, Paperclip, X, Settings, FlaskConical } from "lucide-react";
 import { useImageAttachments } from "@/hooks/use-image-attachments";
 import { Link } from "@/i18n/navigation";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -11,9 +11,17 @@ interface ChatInputProps {
   onSubmit: (message: string) => void;
   isLoading: boolean;
   onStop?: () => void;
+  onDemo?: () => void;
+  demoRunning?: boolean;
 }
 
-export function ChatInput({ onSubmit, isLoading, onStop }: ChatInputProps) {
+export function ChatInput({
+  onSubmit,
+  isLoading,
+  onStop,
+  onDemo,
+  demoRunning = false,
+}: ChatInputProps) {
   const t = useTranslations("chat.input");
   const [value, setValue] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -127,7 +135,7 @@ export function ChatInput({ onSubmit, isLoading, onStop }: ChatInputProps) {
           onChange={handleChange}
           onKeyDown={handleKeyDown}
           placeholder={t("placeholder")}
-          disabled={isLoading}
+          disabled={isLoading || demoRunning}
           rows={1}
           className="w-full resize-none overflow-y-auto bg-transparent text-foreground placeholder:text-muted-foreground focus:outline-none text-sm"
           style={{ minHeight: "24px", maxHeight: "72px" }}
@@ -161,6 +169,31 @@ export function ChatInput({ onSubmit, isLoading, onStop }: ChatInputProps) {
             className="hidden"
             accept="image/*"
           />
+
+          {/* Mock demo — visual showcase of all render capabilities */}
+          {onDemo && (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <button
+                    type="button"
+                    onClick={onDemo}
+                    disabled={demoRunning || isLoading}
+                    className={`h-7 w-7 rounded-full transition-colors flex items-center justify-center ${
+                      demoRunning
+                        ? "bg-primary/10 text-primary"
+                        : "text-muted-foreground hover:text-amber-500 hover:bg-amber-500/10"
+                    } disabled:opacity-30`}
+                  >
+                    <FlaskConical className="h-3.5 w-3.5" />
+                  </button>
+                }
+              />
+              <TooltipContent side="top">
+                {demoRunning ? "Demo running…" : "Render demo"}
+              </TooltipContent>
+            </Tooltip>
+          )}
 
           {/* Settings */}
           <Tooltip>

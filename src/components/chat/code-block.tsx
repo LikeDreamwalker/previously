@@ -7,9 +7,11 @@ import { Check, Copy } from "lucide-react";
 interface CodeBlockProps {
   language?: string;
   code: string;
+  /** When the message is still streaming in, show a subtle highlight. */
+  isStreaming?: boolean;
 }
 
-export function CodeBlock({ language, code }: CodeBlockProps) {
+export function CodeBlock({ language, code, isStreaming = false }: CodeBlockProps) {
   const t = useTranslations("chat.code");
   const [copied, setCopied] = useState(false);
 
@@ -39,7 +41,11 @@ export function CodeBlock({ language, code }: CodeBlockProps) {
         </button>
       </div>
       {/* Code */}
-      <pre className="overflow-x-auto p-4 text-xs leading-relaxed bg-muted/20">
+      <pre
+        className={`overflow-x-auto p-4 text-xs leading-relaxed bg-muted/20 transition-colors duration-500 ${
+          isStreaming ? "bg-primary/[0.03]" : ""
+        }`}
+      >
         <code className={`language-${language ?? "text"}`}>{code}</code>
       </pre>
     </div>
