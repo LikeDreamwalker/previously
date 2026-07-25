@@ -10,6 +10,7 @@ import { ToolLayout } from "./tool-layout";
 import { Message, MessageContent, MessageFooter } from "@/components/ui/message";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { FileText } from "lucide-react";
+import { LoadingTip } from "./loading-tip";
 
 interface ChatMessageProps {
   message: UIMessage;
@@ -166,6 +167,7 @@ export const ChatMessage = memo(function ChatMessage({ message, onRegenerate, is
                         defaultExpanded
                         state={{
                           running: false,
+                          inputStreaming: false,
                           interrupted: false,
                           denied: false,
                           approvalRequested: false,
@@ -184,17 +186,22 @@ export const ChatMessage = memo(function ChatMessage({ message, onRegenerate, is
                   if (item.kind === "text") {
                     return (
                       <div key={`text-${i}`} className="[&:not(:last-child)]:mb-3">
-                        <MarkdownRenderer content={item.content} />
+                        <MarkdownRenderer
+                          content={item.content}
+                          isStreaming={isStreaming && i === streamItems.length - 1}
+                        />
                       </div>
                     );
                   }
                   return null;
                 })}
+            </div>
+          )}
 
-                {/* Streaming cursor */}
-                {isStreaming && isAssistant && (
-                  <span className="inline-block w-1.5 h-4 bg-primary/50 animate-pulse rounded-sm ml-0.5 align-text-bottom" />
-                )}
+          {/* Loading indicator — persists for the full bubble lifetime */}
+          {isStreaming && isAssistant && (
+            <div className="pt-1.5">
+              <LoadingTip />
             </div>
           )}
 

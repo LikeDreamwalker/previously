@@ -2,12 +2,14 @@
 
 import type { UIMessage } from "ai";
 import { ChatMessage } from "./chat-message";
+import { LoadingTip } from "./loading-tip";
 import { MessageScrollerItem } from "@/components/ui/message-scroller";
+import { Message, MessageContent } from "@/components/ui/message";
 
 interface ChatSectionProps {
   messages: UIMessage[];
   isStreaming: boolean;
-  showThinking: boolean;
+  isLoading: boolean;
   error: Error | undefined;
   lastUserMessageAt: string | null;
 }
@@ -15,11 +17,13 @@ interface ChatSectionProps {
 export function ChatSection({
   messages,
   isStreaming,
-  showThinking,
+  isLoading,
   error,
   lastUserMessageAt,
 }: ChatSectionProps) {
   const lastMessage = messages[messages.length - 1];
+  const hasAssistant = messages.some((m) => m.role === "assistant");
+  const showPlaceholder = isLoading && !hasAssistant;
 
   return (
     <>
@@ -41,12 +45,17 @@ export function ChatSection({
         </MessageScrollerItem>
       ))}
 
-      {/* Pre-stream wait: "正在回忆…" — Flash is the first phase. */}
-      {showThinking && (
-        <MessageScrollerItem messageId="recalling-indicator">
-          <div className="flex items-center gap-2 px-1 py-3 text-sm text-muted-foreground">
-            <span className="inline-block size-2 rounded-full bg-primary/50 animate-pulse" />
-            正在回忆…
+      {/* Placeholder bubble — shown during the brief "submitted" window
+          before the first assistant message arrives. Once the assistant
+          message exists, ChatMessage takes over the loading indicator. */}
+      {showPlaceholder && (
+        <MessageScrollerItem messageId="loading-placeholder">
+          <div className="py-1">
+            <Message align="start" className="gap-1">
+              <MessageContent className="min-w-0">
+                <LoadingTip />
+              </MessageContent>
+            </Message>
           </div>
         </MessageScrollerItem>
       )}

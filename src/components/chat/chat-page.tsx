@@ -2,12 +2,13 @@
 
 import { useChat } from "@ai-sdk/react";
 import { WorkflowChatTransport } from "@ai-sdk/workflow";
-import { useMemo, useState } from "react";
+import { useMemo, useState, useRef, useCallback } from "react";
+import type { UIMessage } from "ai";
 import { ChatInput } from "./chat-input";
 import { ChatSection } from "./chat-section";
 import { LoopWatcher } from "./loop-watcher";
-import { shouldShowThinkingIndicator } from "@/lib/chat/streaming-state";
 import { LoadedIdsProvider, useLoadedIds } from "./loaded-ids-context";
+import { buildMockSteps } from "@/lib/chat/mock-stream";
 import {
   MessageScroller,
   MessageScrollerButton,
@@ -54,6 +55,53 @@ function Inner({ children }: { children: React.ReactNode }) {
   const [lastUserMessageAt, setLastUserMessageAt] = useState<string | null>(null);
   const { snapshot } = useLoadedIds();
 
+  // ── Mock demo state ─────────────────────────────────────────────────
+  const [demoMessages, setDemoMessages] = useState<UIMessage[]>([]);
+  const [demoStreaming, setDemoStreaming] = useState(false);
+  const demoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const runDemo = useCallback(() => {
+    // Clear any running demo
+    if (demoTimerRef.current) return;
+
+    setDemoMessages([]);
+    setDemoStreaming(true);
+    setLastUserMessageAt(new Date().toISOString());
+
+    const steps = buildMockSteps();
+    let current: UIMessage = {
+      id: `demo-msg-${Date.now()}`,
+      role: "assistant",
+      parts: [],
+      createdAt: new Date(),
+    } as UIMessage;
+
+    let cursor = 0;
+    const advance = () => {
+      if (cursor >= steps.length) {
+        setDemoStreaming(false);
+        demoTimerRef.current = null;
+        return;
+      }
+      const step = steps[cursor];
+      demoTimerRef.current = setTimeout(() => {
+        current = step.apply(current);
+        setDemoMessages([current]);
+        cursor++;
+        advance();
+      }, step.delay);
+    };
+    advance();
+  }, []);
+
+  const stopDemo = useCallback(() => {
+    if (demoTimerRef.current) {
+      clearTimeout(demoTimerRef.current);
+      demoTimerRef.current = null;
+    }
+    setDemoStreaming(false);
+  }, []);
+
   // FIXME(#localStorage-resume): disabled — stale run ids from previous
   // mounts were causing the chat to get stuck in streaming state (red stop
   // button). Re-enable once the resume path is cleaned up.
@@ -92,9 +140,14 @@ function Inner({ children }: { children: React.ReactNode }) {
     }),
   });
 
-  const isStreaming = status === "streaming";
+  const isStreaming = status === "streaming" || demoStreaming;
   const isLoading = status === "submitted" || isStreaming;
-  const showThinking = shouldShowThinkingIndicator(status, messages);
+
+  // Merge real + demo messages for rendering
+  const allMessages = useMemo(() => {
+    if (demoMessages.length > 0) return demoMessages;
+    return messages;
+  }, [messages, demoMessages]);
 
   const handleSubmit = (message: string) => {
     setLastUserMessageAt(new Date().toISOString());
@@ -115,9 +168,9 @@ function Inner({ children }: { children: React.ReactNode }) {
 
               {/* Client: AI SDK chat messages */}
               <ChatSection
-                messages={messages}
+                messages={allMessages}
                 isStreaming={isStreaming}
-                showThinking={showThinking}
+                isLoading={isLoading}
                 error={error}
                 lastUserMessageAt={lastUserMessageAt}
               />
@@ -132,7 +185,13 @@ function Inner({ children }: { children: React.ReactNode }) {
 
       <div className="fixed bottom-0 inset-x-0 z-10 pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom,0.5rem))]">
         <div className="mx-auto w-full md:max-w-2xl px-4 sm:px-6 lg:px-8">
-          <ChatInput onSubmit={handleSubmit} isLoading={isLoading} onStop={stop} />
+          <ChatInput
+            onSubmit={handleSubmit}
+            isLoading={isLoading}
+            onStop={demoStreaming ? stopDemo : stop}
+            onDemo={runDemo}
+            demoRunning={demoStreaming}
+          />
         </div>
       </div>
     </div>
