@@ -34,16 +34,23 @@ function HistoryTurn({
   const isUser = role === "user";
 
   return (
-    <div className="py-0.5">
-      {/* Cognition — above agent bubble, left-aligned */}
-      {!isUser && turnId && (
-        <div className="flex justify-start mb-0.5 ml-1">
-          <CognitionPopover sliceId={sliceId} turnId={turnId} />
-        </div>
-      )}
+    <div className="py-1.5">
       <Message align={isUser ? "end" : "start"} className="gap-1">
         <MessageContent className="min-w-0">
           <Bubble variant={isUser ? "secondary" : "ghost"}>
+            {/* Header row: timestamp [· 思考] */}
+            <div className={`flex items-center gap-1.5 mb-1 font-mono text-[0.6rem] text-muted-foreground/50 ${isUser ? "justify-end" : ""}`}>
+              <TimeDisplay
+                timestamp={timestamp}
+                mode={sameDay(timestamp) ? "time" : "full"}
+              />
+              {!isUser && turnId && (
+                <>
+                  <span aria-hidden>·</span>
+                  <CognitionPopover sliceId={sliceId} turnId={turnId} />
+                </>
+              )}
+            </div>
             <BubbleContent>
               {isUser ? (
                 <span className="whitespace-pre-wrap text-sm">{content}</span>
@@ -52,15 +59,6 @@ function HistoryTurn({
               )}
             </BubbleContent>
           </Bubble>
-          {/* Timestamp — below bubble */}
-          <div
-            className={`mt-0.5 text-muted-foreground/50 ${isUser ? "text-right" : "text-left"}`}
-          >
-            <TimeDisplay
-              timestamp={timestamp}
-              mode={sameDay(timestamp) ? "time" : "full"}
-            />
-          </div>
         </MessageContent>
       </Message>
     </div>
