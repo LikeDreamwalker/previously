@@ -1,0 +1,109 @@
+/**
+ * Shared turn-parsing utilities used by both tool executors and the evolution
+ * workflow steps. Pure functions — no I/O, no side effects.
+ */
+
+/** Parse "YYYY-MM-DD-HHMM" into path segments. Returns null on invalid format. */
+export function parseSliceId(sliceId: string): { y: string; m: string; d: string; hm: string } | null {
+  const parts = sliceId.split("-");
+  if (parts.length !== 4) return null;
+  const [y, m, d, hm] = parts;
+  if (!/^\d{4}$/.test(y) || !/^\d{2}$/.test(m) || !/^\d{2}$/.test(d) || !/^\d{4}$/.test(hm)) {
+    return null;
+  }
+  return { y, m, d, hm };
+}
+
+/** Parsed turn from a core.md slice file. */
+export interface ParsedTurn {
+  index: number;
+  header: string;   // "## Turn N -- ISO_TIMESTAMP (role)"
+  content: string;   // turn body text
+  timestamp: string; // ISO 8601
+}
+
+/** Regex for turn headers: "## Turn N -- ISO_TIMESTAMP (role)". */
+export const TURN_HEADER_RE = /^## Turn (\d+) -- (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[^)]*)\s*\((\w+)\)/;
+
+/**
+ * Parse core.md content into frontmatter + array of parsed turns.
+ * Frontmatter is everything before the first turn header.
+ */
+export function parseTurns(raw: string): { frontmatter: string; turns: ParsedTurn[] } {
+  const lines = raw.split("\n");
+  const turns: ParsedTurn[] = [];
+  const frontmatterLines: string[] = [];
+  let currentTurn: { index: number; header: string; timestamp: string; contentLines: string[] } | null = null;
+  let inFrontmatter = true;
+
+  for (const line of lines) {
+    const match = line.match(TURN_HEADER_RE);
+    if (match) {
+      if (currentTurn) {
+        turns.push({
+          index: currentTurn.index,
+          header: currentTurn.header,
+          timestamp: currentTurn.timestamp,
+          content: currentTurn.contentLines.join("\n").trimEnd(),
+        });
+      }
+      currentTurn = {
+        index: parseInt(match[1], 10),
+        header: line,
+        timestamp: match[2],
+        contentLines: [],
+      };
+      inFrontmatter = false;
+    } else if (inFrontmatter) {
+      frontmatterLines.push(line);
+    } else if (currentTurn) {
+      currentTurn.contentLines.push(line);
+    }
+  }
+  // Don't forget the last turn
+  if (currentTurn) {
+    turns.push({
+      index: currentTurn.index,
+      header: currentTurn.header,
+      timestamp: currentTurn.timestamp,
+      content: currentTurn.contentLines.join("\n").trimEnd(),
+    });
+  }
+
+  return { frontmatter: frontmatterLines.join("\n").trimEnd(), turns };
+}
+
+/** Apply a range filter to parsed turns. Returns the filtered turns array. */
+export function applyRange(
+  turns: ParsedTurn[],
+  range: { type: "turns" | "last" | "date"; indices?: number[]; count?: number; after?: string },
+): ParsedTurn[] {
+  switch (range.type) {
+    case "turns": {
+      if (!range.indices || range.indices.length === 0) return turns;
+      const indexSet = new Set(range.indices);
+      return turns.filter((t) => indexSet.has(t.index));
+    }
+    case "last": {
+      const n = range.count ?? 3;
+      return turns.slice(-n);
+    }
+    case "date": {
+      if (!range.after) return turns;
+      const afterMs = new Date(range.after).getTime();
+      if (isNaN(afterMs)) return turns;
+      return turns.filter((t) => new Date(t.timestamp).getTime() >= afterMs);
+    }
+    default:
+      return turns;
+  }
+}
+
+/** Reassemble filtered turns into markdown: frontmatter + selected turn headers & content. */
+export function reassembleSlice(frontmatter: string, turns: ParsedTurn[]): string {
+  const parts = [frontmatter];
+  for (const t of turns) {
+    parts.push(`\n${t.header}\n${t.content}`);
+  }
+  return parts.join("\n");
+}

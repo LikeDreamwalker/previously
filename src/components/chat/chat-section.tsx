@@ -5,6 +5,7 @@ import { ChatMessage } from "./chat-message";
 import { LoadingTip } from "./loading-tip";
 import { MessageScrollerItem } from "@/components/ui/message-scroller";
 import { Message, MessageContent } from "@/components/ui/message";
+import type { EvolutionState } from "./evolution-indicator";
 
 interface ChatSectionProps {
   messages: UIMessage[];
@@ -12,6 +13,7 @@ interface ChatSectionProps {
   isLoading: boolean;
   error: Error | undefined;
   lastUserMessageAt: string | null;
+  evolutionState?: EvolutionState | null;
 }
 
 export function ChatSection({
@@ -20,6 +22,7 @@ export function ChatSection({
   isLoading,
   error,
   lastUserMessageAt,
+  evolutionState,
 }: ChatSectionProps) {
   const lastMessage = messages[messages.length - 1];
   const hasAssistant = messages.some((m) => m.role === "assistant");
@@ -40,6 +43,9 @@ export function ChatSection({
               message.id === lastMessage?.id
                 ? (lastUserMessageAt ?? undefined)
                 : undefined
+            }
+            evolutionState={
+              message.role === "assistant" ? evolutionState : undefined
             }
           />
         </MessageScrollerItem>

@@ -2,13 +2,14 @@
 
 import { useChat } from "@ai-sdk/react";
 import { WorkflowChatTransport } from "@ai-sdk/workflow";
-import { useMemo, useState, useRef, useCallback } from "react";
+import { useMemo, useState, useRef, useCallback, useEffect } from "react";
 import type { UIMessage } from "ai";
 import { ChatInput } from "./chat-input";
 import { ChatSection } from "./chat-section";
 import { LoopWatcher } from "./loop-watcher";
 import { LoadedIdsProvider, useLoadedIds } from "./loaded-ids-context";
 import { buildMockSteps } from "@/lib/chat/mock-stream";
+import type { EvolutionState } from "./evolution-indicator";
 import {
   MessageScroller,
   MessageScrollerButton,
@@ -54,6 +55,8 @@ function Inner({ children }: { children: React.ReactNode }) {
   }));
 
   const [lastUserMessageAt, setLastUserMessageAt] = useState<string | null>(null);
+  const [evolutionState, setEvolutionState] = useState<EvolutionState | null>(null);
+  const evolutionAbortRef = useRef<AbortController | null>(null);
   const { snapshot } = useLoadedIds();
 
   // ── Mock demo state ─────────────────────────────────────────────────
@@ -150,10 +153,80 @@ function Inner({ children }: { children: React.ReactNode }) {
     return messages;
   }, [messages, demoMessages]);
 
+  // Abort in-flight evolution on unmount
+  useEffect(() => {
+    return () => {
+      evolutionAbortRef.current?.abort();
+    };
+  }, []);
+
   const handleSubmit = (message: string) => {
     setLastUserMessageAt(new Date().toISOString());
     sendMessage({ role: "user", parts: [{ type: "text", text: message }] });
+    // Never fire evolution during demo playback
+    if (!demoStreaming) {
+      fireEvolution();
+    }
   };
+
+  /** Fire the evolution workflow in parallel with the chat turn. */
+  const fireEvolution = useCallback(async () => {
+    // Abort any in-flight evolution
+    evolutionAbortRef.current?.abort();
+    const controller = new AbortController();
+    evolutionAbortRef.current = controller;
+
+    setEvolutionState({ running: true, step: "reading" });
+
+    try {
+      const res = await fetch("/api/evolution", {
+        method: "POST",
+        signal: controller.signal,
+      });
+
+      if (!res.ok || !res.body) {
+        setEvolutionState({
+          running: false,
+          error: `Server returned ${res.status}`,
+        });
+        return;
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith("data: ")) continue;
+          try {
+            const chunk = JSON.parse(trimmed.slice(6)) as
+              | { type?: string; data?: EvolutionState }
+              | undefined;
+            if (chunk?.type === "data-evolution" && chunk.data) {
+              setEvolutionState(chunk.data);
+            }
+          } catch {
+            // Skip unparseable lines
+          }
+        }
+      }
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") return;
+      setEvolutionState({
+        running: false,
+        error: err instanceof Error ? err.message : "Evolution request failed",
+      });
+    }
+  }, []);
 
   return (
     <div className="relative h-screen w-full bg-background">
@@ -174,6 +247,7 @@ function Inner({ children }: { children: React.ReactNode }) {
                 isLoading={isLoading}
                 error={error}
                 lastUserMessageAt={lastUserMessageAt}
+                evolutionState={evolutionState}
               />
 
               {/* Side-effects: subscribes to loop streams, toasts on completion */}

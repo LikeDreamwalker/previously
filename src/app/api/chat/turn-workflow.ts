@@ -218,20 +218,16 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
 
   // ── Pre-turn steps ─────────────────────────────────────────────────────
 
-  const { slice, closedSlice } = await housekeeping(input);
-  const previouslyContent = await seedPreviously(slice.slice_id, closedSlice?.slice_id);
+  const { slice } = await housekeeping(input);
+  const previouslyContent = await seedPreviously(slice.slice_id);
 
   // ── Assemble system prompt ──────────────────────────────────────────────
-
-  const sliceClosedNote = closedSlice
-    ? `\n\n**注意**：上一轮对话关闭了一个时间切片（${closedSlice.slice_id}）。如果你觉得这个切片中有值得长期记住的内容，可以调用 \`updatePreviously\` 工具做一次深度回顾。`
-    : "";
 
   const systemPrompt = `## 我对你的理解
 
 ${previouslyContent}
 
-以上是我目前对你的了解。如果有任何过时或错误的，告诉我，我会更新。${sliceClosedNote}
+以上是我目前对你的了解。如果有任何过时或错误的，告诉我，我会更新。
 
 ## 记忆访问规则
 
@@ -248,8 +244,7 @@ ${previouslyContent}
 **以时间思考。** 当 recall 返回结果时，优先选择更近的切片——用户当前的状态通常最重要。当你引用过去的对话时，加入时间锚点（"你上周二提到过……"而不是"你提到过……"），让用户知道你把时间线放对了。从上次之后发生了什么变化，往往比当时说了什么更有用。
 
 你可以用 \`webSearch\` 搜索实时网络以获取当前信息，并在相关时引用到回复中。
-你可以用 \`startLoop\` 启动持久的后台循环任务。当用户要求持续或后台工作，或者你判断任务足够大或足够长，可以在后台自主工作时调用。告诉用户你启动了。
-你可以用 \`updatePreviously\` 来更新我对你的理解。当注意到值得记住的事情、用户纠正你、或时间切片关闭时调用。**重要**：把它放在你回复的最后——先完整回应用户，再调用这个工具。每轮最多调用一次，把多个观察合并到一次调用里。调用完之后不要再继续输出，因为工具返回的是内部操作结果，不是给用户看的内容。`;
+你可以用 \`startLoop\` 启动持久的后台循环任务。当用户要求持续或后台工作，或者你判断任务足够大或足够长，可以在后台自主工作时调用。告诉用户你启动了。`;
 
   // ── Pro agent ──────────────────────────────────────────────────────────
 
@@ -263,7 +258,6 @@ ${previouslyContent}
       useGithub: input.useGithub,
       useDemo: input.useDemo,
       sliceId: slice.slice_id,
-      closedSliceId: closedSlice?.slice_id,
       recentTurns: input.recentTurns,
     }),
   });

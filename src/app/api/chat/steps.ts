@@ -125,7 +125,7 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   } as UIMessageChunk);
   writer.releaseLock();
 
-  return { slice, closedSlice };
+  return { slice };
 }
 
 // ─── Step 2: Seed previously.md (mechanical) ────────────────────────────────
@@ -133,7 +133,7 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
 /**
  * Pure file copy — no LLM. Copies the most recent previously.md forward to
  * the new slice via ensurePreviously(). If a slice just closed and was deep-
- * reviewed by the Previously Agent (called via updatePreviously tool), the
+ * reviewed by the evolution workflow, the
  * enriched version is automatically picked up.
  */
 export async function seedPreviously(

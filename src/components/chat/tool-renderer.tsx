@@ -6,7 +6,6 @@ import { MemoryToolRenderer } from "./tool-renderers/memory-tool";
 import { RecallToolRenderer } from "./tool-renderers/recall";
 import { WebSearchRenderer } from "./tool-renderers/web-search";
 import { LoopToolRenderer } from "./tool-renderers/loop";
-import { UpdatePreviouslyRenderer } from "./tool-renderers/update-previously";
 import { DefaultRenderer } from "./tool-renderers/default";
 
 interface ToolRendererProps {
@@ -67,14 +66,6 @@ export function ToolRenderer({ toolName, state, input, output, isStreaming }: To
           input={input}
           output={output}
           state={renderState}
-        />
-      );
-    case "updatePreviously":
-      return (
-        <UpdatePreviouslyRenderer
-          state={renderState}
-          input={input}
-          output={output}
         />
       );
     case "startLoop":

@@ -13,12 +13,14 @@ import { Message, MessageContent, MessageFooter } from "@/components/ui/message"
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { Activity } from "lucide-react";
 import { LoadingTip } from "./loading-tip";
+import { EvolutionIndicator, type EvolutionState } from "./evolution-indicator";
 
 interface ChatMessageProps {
   message: UIMessage;
   onRegenerate?: () => void;
   isStreaming?: boolean;
   startedAt?: string;
+  evolutionState?: EvolutionState | null;
 }
 
 // ── Unified stream: walk parts in natural order ────────────────────────
@@ -140,7 +142,7 @@ function buildStream(parts: readonly AnyPart[], isStreaming: boolean): StreamIte
   return items;
 }
 
-export const ChatMessage = memo(function ChatMessage({ message, onRegenerate, isStreaming, startedAt }: ChatMessageProps) {
+export const ChatMessage = memo(function ChatMessage({ message, onRegenerate, isStreaming, startedAt, evolutionState }: ChatMessageProps) {
   const t = useTranslations("chat.phase");
   const isUser = message.role === "user";
   const isAssistant = message.role === "assistant";
@@ -190,6 +192,7 @@ export const ChatMessage = memo(function ChatMessage({ message, onRegenerate, is
         <MessageContent className="min-w-0">
           {hasContent && (
             <div className="space-y-1">
+              <EvolutionIndicator state={evolutionState} />
               <AnimatePresence>
                 {streamItems.map((item, i) => {
                   const key = itemKey(item, i);
