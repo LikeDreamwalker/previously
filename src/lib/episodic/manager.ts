@@ -9,22 +9,8 @@
  * local-dev vs GitHub-production switch transparently.
  */
 import matter from "gray-matter";
-import { readFile as readFileGitHub } from "@/lib/tools/readFile";
-import { writeFile as writeFileGitHub } from "@/lib/tools/writeFile";
-import { listFiles as listFilesGitHub } from "@/lib/tools/listFiles";
-import {
-  readFileLocal,
-  writeFileLocal,
-  listFilesLocal,
-} from "@/lib/tools/local-fs";
-import {
-  readFileDemo,
-  listFilesDemo,
-  writeFileDemo,
-  getDemoPersona,
-} from "@/lib/demo/demo-fs";
-import { resolveDataSource, isDemo } from "@/lib/data-source/resolve";
-import { getRepoConfig } from "@/lib/capabilities";
+import { getDemoPersona } from "@/lib/demo/demo-fs";
+import { isDemo, resolveDataSource } from "@/lib/data-source/resolve";
 import type {
   TimeSlice,
   Turn,
@@ -34,49 +20,12 @@ import type {
   MonthlyIndex,
   StrandIndex,
 } from "./types";
+import { fsReadFile, fsWriteFile, fsListFiles } from "./io-helpers";
 
 // ─── Environment detection ───────────────────────────────────────────────
 
 const DATA_SOURCE = resolveDataSource();
-const USE_GITHUB = DATA_SOURCE === "github";
-const USE_DEMO = DATA_SOURCE === "demo";
-
-// Demo data is static (writes are no-op'd), so reads can be cached hard.
 const DEMO_MODE = isDemo(DATA_SOURCE);
-
-// ─── Internal I/O helpers ────────────────────────────────────────────────
-
-async function fsReadFile(path: string): Promise<string> {
-  if (DEMO_MODE) return readFileDemo(path);
-  if (USE_GITHUB) {
-    const { owner, repo } = getRepoConfig();
-    return readFileGitHub(path, repo, owner);
-  }
-  return readFileLocal(path);
-}
-
-async function fsWriteFile(
-  path: string,
-  content: string
-): Promise<{ path: string; created: boolean }> {
-  if (DEMO_MODE) return writeFileDemo(path, content);
-  if (USE_GITHUB) {
-    const { owner, repo } = getRepoConfig();
-    return writeFileGitHub(path, content, repo, owner);
-  }
-  return writeFileLocal(path, content);
-}
-
-async function fsListFiles(
-  path: string
-): Promise<Array<{ name: string; type: "file" | "dir"; path: string }>> {
-  if (DEMO_MODE) return listFilesDemo(path);
-  if (USE_GITHUB) {
-    const { owner, repo } = getRepoConfig();
-    return listFilesGitHub(path, repo, owner);
-  }
-  return listFilesLocal(path);
-}
 
 // ─── In-memory active slice tracking ─────────────────────────────────────
 
@@ -198,7 +147,9 @@ export async function closeSlice(
 
   // Run index maintenance
   await updateMonthlyIndex(slice);
-  await updateStrands(slice);
+  if (slice.tags.length > 0) {
+    await updateStrands(slice);
+  }
 
   // Clear active if this was the active slice
   if (activeSlice?.slice_id === slice.slice_id) {

@@ -75,6 +75,8 @@ export type {
 export {
   generateGlobalTimeline,
   updateGlobalTimeline,
+  formatEntry,
+  buildTimelineContent,
 } from "./flash/global-timeline";
 export type {
   TimelineEntry,

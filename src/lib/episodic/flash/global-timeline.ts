@@ -7,7 +7,7 @@
  * point. Updated on slice close.
  */
 
-import { readFileLocal, writeFileLocal } from "@/lib/tools/local-fs";
+import { fsReadFile, fsWriteFile } from "../io-helpers";
 import { readSliceIndex } from "@/lib/episodic/manager";
 
 const GLOBAL_TIMELINE_PATH = "memory/episodic/timeline.md";
@@ -25,7 +25,7 @@ export interface TimelineEntry {
 
 // ─── Format helpers ────────────────────────────────────────────────────
 
-function formatEntry(entry: TimelineEntry): string {
+export function formatEntry(entry: TimelineEntry): string {
   const tags = entry.tags.length > 0 ? entry.tags.join(", ") : "untagged";
   const status = entry.status === "active" ? "🟡" : "⚫";
   return [
@@ -39,7 +39,7 @@ function formatEntry(entry: TimelineEntry): string {
   ].join("\n");
 }
 
-function buildTimelineContent(entries: TimelineEntry[]): string {
+export function buildTimelineContent(entries: TimelineEntry[]): string {
   const header = [
     "# Global Timeline Index",
     "",
@@ -98,7 +98,7 @@ export async function generateGlobalTimeline(): Promise<string> {
   allEntries.sort((a, b) => b.start.localeCompare(a.start));
 
   const content = buildTimelineContent(allEntries);
-  await writeFileLocal(GLOBAL_TIMELINE_PATH, content);
+  await fsWriteFile(GLOBAL_TIMELINE_PATH, content);
   return content;
 }
 
@@ -109,7 +109,7 @@ export async function generateGlobalTimeline(): Promise<string> {
 export async function updateGlobalTimeline(entry: TimelineEntry): Promise<void> {
   let existing = "";
   try {
-    existing = await readFileLocal(GLOBAL_TIMELINE_PATH);
+    existing = await fsReadFile(GLOBAL_TIMELINE_PATH);
   } catch {
     // No existing timeline — generate fresh
     await generateGlobalTimeline();
@@ -128,12 +128,13 @@ export async function updateGlobalTimeline(entry: TimelineEntry): Promise<void> 
   const before = existing.slice(0, separatorIndex + 5); // include "\n---\n"
   const after = existing.slice(separatorIndex + 5);
 
-  // Update total count
+  // Update total count — parse current, increment, replace
+  const currentCount = parseInt((existing.match(/_Total slices: (\d+)_/)?.[1]) ?? "0", 10);
   const updatedBefore = before.replace(
     /_Total slices: \d+_/,
-    `_Total slices: ${(before.match(/Total slices: (\d+)/)?.[1] ?? "?")}_`,
+    `_Total slices: ${currentCount + 1}_`,
   );
 
   const updated = updatedBefore + "\n" + newEntryText + after;
-  await writeFileLocal(GLOBAL_TIMELINE_PATH, updated);
+  await fsWriteFile(GLOBAL_TIMELINE_PATH, updated);
 }

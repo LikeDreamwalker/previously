@@ -30,6 +30,7 @@ import {
   readPreviously,
   writePreviously,
   ensurePreviously,
+  generateGlobalTimeline,
   type TimeSlice,
 } from "@/lib/episodic";
 import { checkTimeSilence } from "@/lib/episodic/slicer";
@@ -85,12 +86,14 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
     if (checkTimeSilence(lastActivity, silenceMs)) {
       await closeSlice(diskSlice, "time_silence");
       console.log(`[Episodic] Recovered & closed stale slice: ${diskSlice.slice_id}`);
+      await generateGlobalTimeline();
       closedSlice = diskSlice;
       slice = createSlice(lastUserMessage, clientTimezone, input.turnId);
     } else if (diskSlice.turns.length >= config.slicing.maxTurnsPerSlice) {
       // Force-close on turn count (safety net for marathon sessions).
       await closeSlice(diskSlice, "capacity");
       console.log(`[Episodic] Closed at turn cap: ${diskSlice.slice_id} (${diskSlice.turns.length} turns)`);
+      await generateGlobalTimeline();
       closedSlice = diskSlice;
       slice = createSlice(lastUserMessage, clientTimezone, input.turnId);
     } else {
@@ -119,6 +122,7 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   // tryLoadTodaySlice sees it even if the agent never finishes.
   await saveSliceSnapshot(slice);
   await ensureIndexEntries(slice);
+  await generateGlobalTimeline();
 
   // Open the UI message stream. Lifecycle chunks are written INTO the durable
   // run stream (not injected by the route transform) so the POST path and the
@@ -237,7 +241,7 @@ export async function metadataUpdate(
   }
 }
 
-// ─── Step 3: Update previously.md (Flash) ─────────────────────────────────
+// ─── Step 3: Update previously.md (Pro) ────────────────────────────────────
 
 /**
  * Flash reviews BOTH the user conversation AND the agent's own cognition in
@@ -412,6 +416,7 @@ export async function updatePreviously(
           running: false,
           mode: isDeep ? "deep" : "normal",
           summaries,
+          previouslyContent: previouslyContent.slice(0, 5000),
         },
       } as UIMessageChunk);
       writer.releaseLock();
@@ -508,6 +513,7 @@ export async function finalizeTurn(
     await saveSliceSnapshot(slice);
     if (outcome.finishReason === "stop") {
       await ensureIndexEntries(slice);
+      await generateGlobalTimeline();
     }
   }
 

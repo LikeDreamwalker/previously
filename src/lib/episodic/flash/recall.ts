@@ -14,7 +14,7 @@
 import { generateText, tool, isStepCount } from "ai";
 import { deepseek } from "@ai-sdk/deepseek";
 import { z } from "zod";
-import { readFileLocal } from "@/lib/tools/local-fs";
+import { fsReadFile } from "../io-helpers";
 import { readStrands } from "@/lib/episodic/manager";
 import { generateGlobalTimeline } from "@/lib/episodic/flash/global-timeline";
 
@@ -48,10 +48,29 @@ const GLOBAL_TIMELINE_PATH = "memory/episodic/timeline.md";
 
 // ─── Sub-agent tool: readGlobalTimeline ────────────────────────────────
 
+const STALE_THRESHOLD_MS = 6 * 60 * 60 * 1000; // 6 hours
+
 async function readGlobalTimelineImpl(): Promise<string> {
   try {
-    const content = await readFileLocal(GLOBAL_TIMELINE_PATH);
-    if (content.trim()) return content;
+    const content = await fsReadFile(GLOBAL_TIMELINE_PATH);
+    if (content.trim()) {
+      // Defense in depth: check if the timeline is stale.
+      // Even though the lifecycle should keep it fresh, a stale timeline
+      // is worse than a slow regeneration — the recall agent would return
+      // 0 hits if it can't see recent slices.
+      const match = content.match(/_Generated: ([^\n]+)_/);
+      if (match) {
+        const genTime = new Date(match[1]).getTime();
+        const ageMs = Date.now() - genTime;
+        if (ageMs > STALE_THRESHOLD_MS) {
+          console.log(
+            `[Recall] Global timeline stale (${Math.round(ageMs / 3_600_000)}h old), regenerating...`,
+          );
+          return await generateGlobalTimeline();
+        }
+      }
+      return content;
+    }
     // File exists but is empty — regenerate
     return await generateGlobalTimeline();
   } catch {
@@ -95,7 +114,7 @@ function sliceIdToCorePath(sliceId: string): string {
 async function readSliceImpl(sliceId: string): Promise<string> {
   try {
     const path = sliceIdToCorePath(sliceId);
-    const content = await readFileLocal(path);
+    const content = await fsReadFile(path);
     // Return last ~2000 chars for context — enough to see recent turns
     if (content.length > 2500) {
       return (
