@@ -130,7 +130,7 @@ describe("housekeeping step", () => {
     expect(episodic.saveSliceSnapshot).toHaveBeenCalledWith(slice);
     expect(episodic.ensureIndexEntries).toHaveBeenCalledWith(slice);
     expect(episodic.appendTurn).not.toHaveBeenCalled();
-    expect(workflowMock.written.map((c) => c.type)).toEqual(["start", "start-step"]);
+    expect(workflowMock.written.map((c) => c.type)).toEqual(["data-phase", "start", "start-step", "data-phase"]);
   });
 
   it("restores an active slice and appends the new user turn", async () => {

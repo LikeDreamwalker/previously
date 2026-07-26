@@ -105,7 +105,14 @@
     "phase": {
       "thinking": "Thinking…",
       "thoughtFor": "Thought for {count, plural, one {# second} other {# seconds}}",
-      "thinkingDone": "Thought"
+      "thinkingDone": "Thought",
+      "slicing": "Slicing time…",
+      "sliced": "Time sliced",
+      "scanning": "Scanning memory…",
+      "scanned": "Memory scanned",
+      "updatingPreviously": "Updating 前情提要…",
+      "previouslyUpdated": "前情提要 updated",
+      "deepReview": "Deep review"
     },
     "loadingTips": [
       "Your conversations are saved as time slices — 30 minutes of silence closes one and starts the next",

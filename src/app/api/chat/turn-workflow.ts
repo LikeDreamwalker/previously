@@ -240,6 +240,8 @@ When you need context from past conversations, follow this order:
 
 Think of recall as your search engine — you must search before you read. Reading slices blindly without recall is like opening random files without knowing what's inside.
 
+**Think in time.** When recall returns results, prefer more recent slices — the user's current state is usually what matters most. When you cite past conversations, include a time anchor ("Last Tuesday you mentioned…" not just "You mentioned…") so the user knows you're placing it correctly on their timeline. What changed since last time is often more useful than what was said.
+
 You can search the live web with the webSearch tool when you need current or external information beyond the user's memory and your knowledge. Weave what it finds into your prose with inline citations where relevant.
 You can start durable background loops with the startLoop tool. When the user asks for continuous or background work, or when you judge a task is large or long-running enough to work autonomously rather than answer inline, call startLoop with a clear, self-contained goal — it keeps working after this turn and records its progress to memory. Tell the user when you start one. Don't use it for anything you can answer right now.`;
 

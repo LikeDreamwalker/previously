@@ -227,7 +227,11 @@ export function ChatInput({
               type="submit"
               onClick={(e) => handleSubmit(e as unknown as FormEvent)}
               disabled={!hasContent}
-              className="h-8 w-8 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-30 flex items-center justify-center transition-colors"
+              className={`h-8 w-8 rounded-full flex items-center justify-center transition-colors disabled:opacity-30 ${
+                hasContent
+                  ? "bg-[#0066ff] text-white hover:bg-[#0066ff]/90"
+                  : "bg-primary text-primary-foreground"
+              }`}
               title={t("sendTooltip")}
             >
               <ArrowUp className="h-4 w-4" />

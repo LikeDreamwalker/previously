@@ -105,7 +105,14 @@
     "phase": {
       "thinking": "正在思考…",
       "thoughtFor": "思考了 {count} 秒",
-      "thinkingDone": "思考完成"
+      "thinkingDone": "思考完成",
+      "slicing": "正在切片…",
+      "sliced": "已切片",
+      "scanning": "正在扫描记忆…",
+      "scanned": "记忆扫描完成",
+      "updatingPreviously": "前情提要更新中…",
+      "previouslyUpdated": "前情提要已更新",
+      "deepReview": "深度回顾"
     },
     "loadingTips": [
       "你的对话被切成时间片——静默 30 分钟自动收束，开启新的一片",

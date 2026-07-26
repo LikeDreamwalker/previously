@@ -265,12 +265,8 @@ async function attemptUpdate(
     temperature: 0.1,
     tools: { flashOutput: outputSchema },
     toolChoice: "auto",
-    providerOptions: {
-      deepseek: {
-        thinking: { type: "enabled" as const },
-        reasoningEffort: "medium" as const,
-      },
-    },
+    // No thinking — this is a structured extraction task, not a reasoning task.
+    // Thinking tokens add latency with negligible benefit for fact extraction.
   });
 
   const toolCall = result.toolCalls?.[0];

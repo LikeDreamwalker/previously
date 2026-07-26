@@ -1,6 +1,7 @@
 "use client";
 
 import { memo, useMemo } from "react";
+import { useTranslations } from "next-intl";
 import type { UIMessage } from "ai";
 import { AnimatePresence, motion } from "motion/react";
 import { MarkdownRenderer } from "./markdown";
@@ -10,7 +11,7 @@ import { MessageActions } from "./message-actions";
 import { ToolRenderer } from "./tool-renderer";
 import { Message, MessageContent, MessageFooter } from "@/components/ui/message";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
-import { FileText } from "lucide-react";
+import { FileText, Activity } from "lucide-react";
 import { LoadingTip } from "./loading-tip";
 
 interface ChatMessageProps {
@@ -37,7 +38,15 @@ type StreamItem =
   | { kind: "reasoning"; text: string }
   | { kind: "text"; content: string }
   | { kind: "tool"; toolCallId: string; toolName: string; state: string; input?: unknown; output?: unknown }
-  | { kind: "belief"; mode?: string; summaries: string[] };
+  | { kind: "belief"; mode?: string; summaries: string[] }
+  | { kind: "phase"; phase: string; running?: boolean; mode?: string; summaries?: string[] };
+
+/** Maps a running-phase i18n key to its done-state key. */
+const PHASE_DONE_KEYS: Record<string, string> = {
+  slicing: "sliced",
+  scanning: "scanned",
+  updatingPreviously: "previouslyUpdated",
+};
 
 /** Stable key for a stream item — used by AnimatePresence for enter/exit animation. */
 function itemKey(item: StreamItem, index: number): string {
@@ -50,6 +59,8 @@ function itemKey(item: StreamItem, index: number): string {
       return `tool-${item.toolCallId}`;
     case "belief":
       return `belief-${index}`;
+    case "phase":
+      return `phase-${item.phase}-${index}`;
   }
 }
 
@@ -91,6 +102,30 @@ function buildStream(parts: readonly AnyPart[], isStreaming: boolean): StreamIte
           summaries,
         });
       }
+    } else if (p.type === "data-phase") {
+      flushText();
+      const d = p.data as { phase?: string; running?: boolean; mode?: string; summaries?: string[] } | undefined;
+      if (d?.phase) {
+        // Merge with existing phase item of the same name — a phase emits
+        // { running: true } at start and { running: false, summaries: [...] } at end.
+        const existing = items.find(
+          (it): it is Extract<StreamItem, { kind: "phase" }> =>
+            it.kind === "phase" && it.phase === d.phase,
+        );
+        if (existing) {
+          existing.running = d.running ?? false;
+          if (d.mode !== undefined) existing.mode = d.mode;
+          if (d.summaries !== undefined) existing.summaries = d.summaries;
+        } else {
+          items.push({
+            kind: "phase",
+            phase: d.phase,
+            running: d.running ?? false,
+            mode: d.mode,
+            summaries: d.summaries,
+          });
+        }
+      }
     } else if (p.type?.startsWith("tool-")) {
       flushText();
       const toolCallId = (p as { toolCallId?: string }).toolCallId ?? `anon-${items.length}`;
@@ -125,6 +160,7 @@ function buildStream(parts: readonly AnyPart[], isStreaming: boolean): StreamIte
 }
 
 export const ChatMessage = memo(function ChatMessage({ message, onRegenerate, isStreaming, startedAt }: ChatMessageProps) {
+  const t = useTranslations("chat.phase");
   const isUser = message.role === "user";
   const isAssistant = message.role === "assistant";
   const parts = useMemo(
@@ -205,8 +241,8 @@ export const ChatMessage = memo(function ChatMessage({ message, onRegenerate, is
                         key={key}
                         mode="static"
                         icon={<FileText className="h-3.5 w-3.5" />}
-                        label="更新了前情提要"
-                        meta={isDeep ? "深度回顾" : undefined}
+                        label={t("previouslyUpdated")}
+                        meta={isDeep ? t("deepReview") : undefined}
                         state={{
                           running: false,
                           inputStreaming: false,
@@ -221,6 +257,43 @@ export const ChatMessage = memo(function ChatMessage({ message, onRegenerate, is
                               <div key={j}>{s}</div>
                             ))}
                           </div>
+                        }
+                      />
+                    );
+                  }
+                  if (item.kind === "phase") {
+                    // Phase label switches based on running state.
+                    const doneKey = PHASE_DONE_KEYS[item.phase];
+                    const label = item.running
+                      ? t(item.phase)
+                      : doneKey
+                        ? t(doneKey)
+                        : t(item.phase);
+                    const hasSummaries = item.summaries && item.summaries.length > 0;
+                    const isDeep = item.mode === "deep";
+                    return (
+                      <PhaseIndicator
+                        key={key}
+                        mode="static"
+                        icon={<Activity className="h-3.5 w-3.5" />}
+                        label={label}
+                        meta={!item.running && isDeep ? t("deepReview") : undefined}
+                        state={{
+                          running: item.running ?? false,
+                          inputStreaming: false,
+                          interrupted: false,
+                          denied: false,
+                          approvalRequested: false,
+                          isActiveApproval: false,
+                        }}
+                        expandedContent={
+                          hasSummaries
+                            ? <div className="space-y-1 text-xs text-muted-foreground leading-relaxed">
+                                {item.summaries.map((s, j) => (
+                                  <div key={j}>{s}</div>
+                                ))}
+                              </div>
+                            : undefined
                         }
                       />
                     );

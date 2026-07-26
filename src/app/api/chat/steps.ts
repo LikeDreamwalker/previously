@@ -60,6 +60,15 @@ import type {
 export async function housekeeping(input: TurnInput): Promise<HousekeepingResult> {
   "use step";
 
+  // Phase start — show spinner in UI
+  const phaseWriter0 = getWritable<UIMessageChunk>().getWriter();
+  await phaseWriter0.write({
+    type: "data-phase" as `data-${string}`,
+    id: "phase-prepare",
+    data: { phase: "slicing", running: true },
+  } as UIMessageChunk);
+  phaseWriter0.releaseLock();
+
   const { config, clientTimezone, lastUserMessage } = input;
   const silenceMs = config.slicing.timeSilenceMinutes * 60 * 1000;
 
@@ -118,6 +127,11 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   const writer = getWritable<UIMessageChunk>().getWriter();
   await writer.write({ type: "start" } as UIMessageChunk);
   await writer.write({ type: "start-step" } as UIMessageChunk);
+  await writer.write({
+    type: "data-phase" as `data-${string}`,
+    id: "phase-prepare",
+    data: { phase: "slicing", running: false },
+  } as UIMessageChunk);
   writer.releaseLock();
 
   return { slice, closedSlice };
@@ -136,6 +150,14 @@ export async function metadataUpdate(
   slice: TimeSlice
 ): Promise<MetadataUpdateResult> {
   "use step";
+
+  const mw0 = getWritable<UIMessageChunk>().getWriter();
+  await mw0.write({
+    type: "data-phase" as `data-${string}`,
+    id: "phase-metadata",
+    data: { phase: "scanning", running: true },
+  } as UIMessageChunk);
+  mw0.releaseLock();
 
   const { recentTurns, lastUserMessage } = input;
 
@@ -177,12 +199,40 @@ export async function metadataUpdate(
       slice.emotional_tone = meta.emotional_tone as typeof slice.emotional_tone;
     }
 
+    // Emit phase completion with result data for expandable UI.
+    const metaWriter = getWritable<UIMessageChunk>().getWriter();
+    await metaWriter.write({
+      type: "data-phase" as `data-${string}`,
+      id: "phase-metadata",
+      data: {
+        phase: "scanning",
+        running: false,
+        summaries: result.needs_metadata_update
+          ? [`元数据已更新：${result.reasoning}`]
+          : [],
+      },
+    } as UIMessageChunk);
+    metaWriter.releaseLock();
+
     return { slice, metadataUpdated: result.needs_metadata_update, reasoning: result.reasoning };
   } catch (err) {
     console.warn(
       "[Metadata] Flash call failed, continuing without update:",
       err instanceof Error ? err.message : err
     );
+
+    const metaWriter = getWritable<UIMessageChunk>().getWriter();
+    await metaWriter.write({
+      type: "data-phase" as `data-${string}`,
+      id: "phase-metadata",
+      data: {
+        phase: "scanning",
+        running: false,
+        summaries: [],
+      },
+    } as UIMessageChunk);
+    metaWriter.releaseLock();
+
     return { slice, metadataUpdated: false, reasoning: "Flash unavailable" };
   }
 }
@@ -210,6 +260,14 @@ export async function updatePreviously(
   closedSlice: TimeSlice | undefined,
 ): Promise<BeliefUpdateResult> {
   "use step";
+
+  const bw0 = getWritable<UIMessageChunk>().getWriter();
+  await bw0.write({
+    type: "data-phase" as `data-${string}`,
+    id: "phase-belief",
+    data: { phase: "updatingPreviously", running: true },
+  } as UIMessageChunk);
+  bw0.releaseLock();
 
   const isDeep = closedSlice !== undefined;
   const { recentTurns, lastUserMessage } = input;
@@ -345,19 +403,38 @@ export async function updatePreviously(
       }).filter(Boolean);
 
       const writer = getWritable<UIMessageChunk>().getWriter();
+      // Phase completion carries summaries so the UI can expand to show details.
       await writer.write({
-        type: "data-belief",
-        id: `previously-${Date.now()}`,
+        type: "data-phase" as `data-${string}`,
+        id: "phase-belief",
         data: {
+          phase: "updatingPreviously",
+          running: false,
           mode: isDeep ? "deep" : "normal",
-          done: true,
-          updates: allBeliefUpdates,
           summaries,
         },
       } as UIMessageChunk);
       writer.releaseLock();
     } catch (err) {
       console.warn("[Previously] UI chunk failed:", err instanceof Error ? err.message : err);
+    }
+  } else {
+    // Always emit a phase indicator so the UI shows progress even when
+    // there are no belief changes this turn.
+    try {
+      const pw = getWritable<UIMessageChunk>().getWriter();
+      await pw.write({
+        type: "data-phase" as `data-${string}`,
+        id: "phase-belief",
+        data: {
+          phase: "updatingPreviously",
+          running: false,
+          summaries: [],
+        },
+      } as UIMessageChunk);
+      pw.releaseLock();
+    } catch (err) {
+      // non-critical — progress indicator only
     }
   }
 
