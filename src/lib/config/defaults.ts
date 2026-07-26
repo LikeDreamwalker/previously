@@ -9,7 +9,7 @@ import { resolveModelId } from "@/lib/models/registry";
 export const DEFAULTS: UserConfig = {
   slicing: {
     maxTurnsPerSlice: 20,
-    timeSilenceMinutes: 30,
+    timeSilenceMinutes: 15,
   },
   context: {
     recentTurnsLimit: 20,

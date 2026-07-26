@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useCallback, type FormEvent, type ChangeEvent } from "react";
+import { useState, useRef, useCallback, useEffect, type FormEvent, type ChangeEvent } from "react";
 import { useTranslations } from "next-intl";
 import { ArrowUp, Square, Paperclip, X, Settings, FlaskConical, Zap } from "lucide-react";
 import { useImageAttachments } from "@/hooks/use-image-attachments";
@@ -42,7 +42,12 @@ export function ChatInput({
 }: ChatInputProps) {
   const t = useTranslations("chat.input");
   const [value, setValue] = useState("");
-  const [effort, setEffort] = useState<EffortLevel>(getStoredEffort);
+  const [effort, setEffort] = useState<EffortLevel>("medium");
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    setEffort(getStoredEffort());
+    setMounted(true);
+  }, []);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragOver, setIsDragOver] = useState(false);
@@ -233,7 +238,7 @@ export function ChatInput({
                 >
                   <Zap className="h-3 w-3" />
                   <span className="text-[10px] font-medium leading-none">
-                    {EFFORT_LABELS[effort]}
+                    {mounted ? EFFORT_LABELS[effort] : "Med"}
                   </span>
                 </button>
               }

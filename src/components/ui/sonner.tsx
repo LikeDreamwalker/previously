@@ -1,7 +1,7 @@
 "use client";
 
 import { Toaster as Sonner } from "sonner";
-import { useTheme } from "next-themes";
+import { useTheme } from '@teispace/next-themes';
 
 function Toaster({ ...props }: React.ComponentProps<typeof Sonner>) {
   const { theme = "system" } = useTheme();

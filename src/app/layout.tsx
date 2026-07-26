@@ -30,7 +30,7 @@ export default async function RootLayout({
           defaultTheme="system"
           enableSystem
           disableTransitionOnChange
-        >
+          storage='local'>
           {children}
           <Toaster position="top-center" />
         </ThemeProvider>
