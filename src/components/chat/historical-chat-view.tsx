@@ -73,8 +73,8 @@ export function HistoricalChatView({
 }: HistoricalChatViewProps) {
   const turns = useMemo(() => content?.turns ?? [], [content]);
 
-  // ── Loading skeleton ──────────────────────────────────────────────────
-  if (loading) {
+  // ── First-ever load — no content at all ────────────────────────────────
+  if (!content && loading) {
     return (
       <div className="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground">
         <Loader2 className="h-4 w-4 animate-spin" />
@@ -83,7 +83,7 @@ export function HistoricalChatView({
     );
   }
 
-  // ── Empty / not found ─────────────────────────────────────────────────
+  // ── Not found (after load attempt) ──────────────────────────────────────
   if (!content) {
     return (
       <div className="flex items-center justify-center py-12 text-sm text-muted-foreground italic">
@@ -92,72 +92,80 @@ export function HistoricalChatView({
     );
   }
 
-  // ── Empty slice ───────────────────────────────────────────────────────
-  if (turns.length === 0) {
-    return (
-      <div className="flex items-center justify-center py-12 text-sm text-muted-foreground italic">
-        This time slice has no recorded turns.
-      </div>
-    );
-  }
-
+  // ── Content exists — always render it (even while loading next slice) ──
   return (
     <div className="mx-auto max-w-5xl xl:max-w-7xl px-4 sm:px-6 lg:px-8 py-3">
-      {/* Turn list */}
-      <div>
-        {turns.map((turn, i) => (
-          <HistoryTurn
-            key={`${turn.timestamp}-${i}`}
-            role={turn.role}
-            content={turn.content}
-            sliceId={content.slice_id}
-            turnId={turn.turnId}
-            timestamp={turn.timestamp}
-          />
-        ))}
-      </div>
-
-      {/* Footer: open loops / decisions */}
-      {(content.open_loops.length > 0 ||
-        content.decisions.length > 0) && (
-        <div className="mt-4 pt-3 border-t border-border/50">
-          {content.open_loops.length > 0 && (
-            <div className="mb-2">
-              <span className="text-[0.65rem] font-medium text-muted-foreground uppercase tracking-wide">
-                Open Loops
-              </span>
-              <div className="flex flex-wrap gap-1 mt-1">
-                {content.open_loops.map((loop, i) => (
-                  <span
-                    key={i}
-                    className="inline-flex items-center gap-1 rounded-full bg-muted/60 px-2 py-0.5 text-[0.65rem] text-muted-foreground"
-                  >
-                    <span className="text-[0.55rem] opacity-60">↗</span>
-                    {loop}
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
-          {content.decisions.length > 0 && (
-            <div>
-              <span className="text-[0.65rem] font-medium text-muted-foreground uppercase tracking-wide">
-                Decisions
-              </span>
-              <div className="flex flex-wrap gap-1 mt-1">
-                {content.decisions.map((d, i) => (
-                  <span
-                    key={i}
-                    className="inline-flex items-center gap-1 rounded-full bg-muted/60 px-2 py-0.5 text-[0.65rem] text-muted-foreground"
-                  >
-                    <span className="text-[0.55rem] opacity-60">✓</span>
-                    {d}
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
+      {/* Subtle loading bar — only when transitioning to a new slice */}
+      {loading && (
+        <div className="mb-3 h-0.5 bg-muted-foreground/10 rounded-full overflow-hidden">
+          <div className="h-full w-2/5 bg-muted-foreground/20 rounded-full animate-pulse" />
         </div>
+      )}
+
+      {/* Empty slice */}
+      {turns.length === 0 ? (
+        <div className="flex items-center justify-center py-12 text-sm text-muted-foreground italic">
+          This time slice has no recorded turns.
+        </div>
+      ) : (
+        <>
+          {/* Turn list */}
+          <div>
+            {turns.map((turn, i) => (
+              <HistoryTurn
+                key={`${turn.timestamp}-${i}`}
+                role={turn.role}
+                content={turn.content}
+                sliceId={content.slice_id}
+                turnId={turn.turnId}
+                timestamp={turn.timestamp}
+              />
+            ))}
+          </div>
+
+          {/* Footer: open loops / decisions */}
+          {(content.open_loops.length > 0 ||
+            content.decisions.length > 0) && (
+            <div className="mt-4 pt-3 border-t border-border/50">
+              {content.open_loops.length > 0 && (
+                <div className="mb-2">
+                  <span className="text-[0.65rem] font-medium text-muted-foreground uppercase tracking-wide">
+                    Open Loops
+                  </span>
+                  <div className="flex flex-wrap gap-1 mt-1">
+                    {content.open_loops.map((loop, i) => (
+                      <span
+                        key={i}
+                        className="inline-flex items-center gap-1 rounded-full bg-muted/60 px-2 py-0.5 text-[0.65rem] text-muted-foreground"
+                      >
+                        <span className="text-[0.55rem] opacity-60">↗</span>
+                        {loop}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {content.decisions.length > 0 && (
+                <div>
+                  <span className="text-[0.65rem] font-medium text-muted-foreground uppercase tracking-wide">
+                    Decisions
+                  </span>
+                  <div className="flex flex-wrap gap-1 mt-1">
+                    {content.decisions.map((d, i) => (
+                      <span
+                        key={i}
+                        className="inline-flex items-center gap-1 rounded-full bg-muted/60 px-2 py-0.5 text-[0.65rem] text-muted-foreground"
+                      >
+                        <span className="text-[0.55rem] opacity-60">✓</span>
+                        {d}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </>
       )}
     </div>
   );

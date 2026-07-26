@@ -20,6 +20,9 @@ import {
   type SliceContent,
 } from "@/lib/episodic/actions";
 import { getCached, setCache } from "@/lib/chat/slice-cache";
+import { NumberTicker } from "@/components/ui/number-ticker";
+import { TextGenerateEffect } from "@/components/ui/text-generate-effect";
+import { useTranslations } from "next-intl";
 
 function getClientSetting(key: string, fallback: string): string {
   if (typeof window === "undefined") return fallback;
@@ -32,6 +35,67 @@ interface ChatPageProps {
 
 export function ChatPage({ children }: ChatPageProps) {
   return <Inner>{children}</Inner>;
+}
+
+// ─── Gap calculator (from original TimelinePanel) ────────────────────────
+
+type GapInfo =
+  | { count: number; unitKey: string }
+  | { special: string }
+  | null;
+
+function getGapInfo(fromISO: string, now: number): GapInfo {
+  const from = new Date(fromISO).getTime();
+  if (Number.isNaN(from) || now < from) return null;
+  const minutes = Math.floor((now - from) / 60_000);
+  if (minutes < 5) return { special: "moments" };
+  if (minutes < 60) return { count: minutes, unitKey: "minute" };
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return { count: hours, unitKey: "hour" };
+  const days = Math.floor(hours / 24);
+  if (days < 7) return { count: days, unitKey: "day" };
+  if (days < 35) return { count: Math.floor(days / 7), unitKey: "week" };
+  return { count: Math.floor(days / 30), unitKey: "month" };
+}
+
+// ─── Inner ───────────────────────────────────────────────────────────────
+
+function NowPlaceholder({ gapAnchor }: { gapAnchor: string | null }) {
+  const t = useTranslations("timeline");
+  const [gapInfo, setGapInfo] = useState<GapInfo>(null);
+
+  useEffect(() => {
+    setGapInfo(gapAnchor ? getGapInfo(gapAnchor, Date.now()) : null);
+  }, [gapAnchor]);
+
+  return (
+    <div className="flex flex-col items-center pt-24 pb-20 text-center">
+      {gapInfo && (
+        "special" in gapInfo ? (
+          <p className="mb-5 font-mono text-xs tracking-[0.25em] text-muted-foreground/60">
+            {t(`gap.${gapInfo.special}`)}
+          </p>
+        ) : (
+          <p className="mb-5 font-mono text-xs tracking-[0.25em] text-muted-foreground/60">
+            <NumberTicker
+              value={gapInfo.count}
+              className="text-muted-foreground/60"
+            />
+            {" "}
+            {t(`gap.unit.${gapInfo.unitKey}`, { count: gapInfo.count })}
+          </p>
+        )
+      )}
+      <TextGenerateEffect
+        words={t("panel.now")}
+        className="text-5xl sm:text-6xl font-light tracking-tighter leading-none text-foreground"
+        filter={false}
+        duration={0.3}
+        delay={0.2}
+        animateOnView
+      />
+    </div>
+  );
 }
 
 function Inner({ children }: { children: React.ReactNode }) {
@@ -88,22 +152,25 @@ function Inner({ children }: { children: React.ReactNode }) {
     }
   }, [timelineLoadingMore, timelineHasMore, timelineSlices]);
 
-  // Handle slice selection
+  // Handle slice selection — keeps old content visible during fetch
   const handleSelectSlice = useCallback(
     async (sliceId: string) => {
       setSelectedSliceId(sliceId);
 
       if (sliceId === "now") {
         setHistoricalContent(null);
+        setHistoricalLoading(false);
         return;
       }
 
       const cached = getCached(sliceId);
       if (cached) {
         setHistoricalContent(cached.content);
+        setHistoricalLoading(false);
         return;
       }
 
+      // Don't clear previous content — keep it visible while loading
       setHistoricalLoading(true);
       try {
         const content = await getSliceContent(sliceId);
@@ -112,7 +179,7 @@ function Inner({ children }: { children: React.ReactNode }) {
           setCache(sliceId, content, null);
         }
       } catch {
-        setHistoricalContent(null);
+        // Keep previous content on error, don't wipe it
       } finally {
         setHistoricalLoading(false);
       }
@@ -283,37 +350,48 @@ function Inner({ children }: { children: React.ReactNode }) {
         {children}
       </section>
 
-      {/* ── Sticky timeline — snaps below AppHeader (fixed h-12) ────────── */}
-      <div className="sticky top-12 z-10 bg-background/90 backdrop-blur-md">
-        <HorizontalTimeline
-          slices={timelineSlices}
-          selectedId={selectedSliceId}
-          onSelect={handleSelectSlice}
-          onLoadMore={handleLoadMore}
-          hasMore={timelineHasMore}
-          loadingMore={timelineLoadingMore}
-        />
-      </div>
+      {/* ── Screen 2: Timeline + Content — at least full viewport ──────── */}
+      <div className="min-h-screen">
+        {/* ── Sticky timeline — snaps below AppHeader (fixed h-12) ────────── */}
+        <div className="sticky top-12 z-10 bg-background/90 backdrop-blur-md">
+          <HorizontalTimeline
+            slices={timelineSlices}
+            selectedId={selectedSliceId}
+            onSelect={handleSelectSlice}
+            onLoadMore={handleLoadMore}
+            hasMore={timelineHasMore}
+            loadingMore={timelineLoadingMore}
+          />
+        </div>
 
-      {/* ── Chat content — natural document flow ────────────────────────── */}
-      <div className="pb-32">
+        {/* ── Chat content — natural document flow ────────────────────────── */}
+        <div className="pb-24">
         {showingLive ? (
-          <div className="mx-auto max-w-5xl xl:max-w-7xl px-4 sm:px-6 lg:px-8">
-            <ChatSection
-              messages={allMessages}
-              isStreaming={isStreaming}
-              isLoading={isLoading}
-              error={error}
-              lastUserMessageAt={lastUserMessageAt}
-            />
-            <LoopWatcher messages={messages} />
-          </div>
+          allMessages.length === 0 && !isLoading ? (
+            <div className="flex items-center justify-center min-h-[calc(100vh-13rem)]">
+              <NowPlaceholder
+                gapAnchor={timelineSlices[timelineSlices.length - 1]?.start ?? null}
+              />
+            </div>
+          ) : (
+            <div className="mx-auto max-w-5xl xl:max-w-7xl px-4 sm:px-6 lg:px-8">
+              <ChatSection
+                messages={allMessages}
+                isStreaming={isStreaming}
+                isLoading={isLoading}
+                error={error}
+                lastUserMessageAt={lastUserMessageAt}
+              />
+              <LoopWatcher messages={messages} />
+            </div>
+          )
         ) : (
           <HistoricalChatView
             content={historicalContent}
             loading={historicalLoading}
           />
         )}
+      </div>
       </div>
 
       {/* ── Fixed bottom bar ────────────────────────────────────────────── */}
