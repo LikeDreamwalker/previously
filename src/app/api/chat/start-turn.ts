@@ -28,6 +28,8 @@ export interface StartTurnArgs {
   model?: string;
   /** Optional thinking override; only `false` disables the config default. */
   thinking?: boolean;
+  /** Optional reasoning effort override. */
+  effort?: "low" | "medium" | "high";
   /** Client-reported timezone, used when minting a new slice. */
   timezone?: string;
 }
@@ -53,6 +55,7 @@ export async function startTurn(
   // resolveModelId: the client's stored model preference may predate V4.
   const model = resolveModelId(args.model || config.model.provider);
   const thinking = args.thinking !== false && config.model.thinking;
+  const reasoningEffort = args.effort ?? config.model.reasoningEffort;
   const clientTimezone = args.timezone ?? "UTC";
   const { owner, repo } = getRepoConfig();
   const dataSource = resolveDataSource();
@@ -82,6 +85,7 @@ export async function startTurn(
     lastUserMessage,
     model,
     thinking,
+    reasoningEffort,
     clientTimezone,
     config,
     owner,

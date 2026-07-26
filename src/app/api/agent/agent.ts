@@ -35,6 +35,7 @@ export type LoopAgent = WorkflowAgent<LoopToolSet>;
 export function createChatAgent(opts: {
   modelId: string;
   thinking: boolean;
+  reasoningEffort: "low" | "medium" | "high";
   toolsContext: ReturnType<typeof buildChatToolsContext>;
 }): ChatAgent {
   return new WorkflowAgent({
@@ -47,7 +48,7 @@ export function createChatAgent(opts: {
       ? {
           deepseek: {
             thinking: { type: "enabled" as const },
-            reasoningEffort: "medium" as const,
+            reasoningEffort: opts.reasoningEffort,
           },
         }
       : {

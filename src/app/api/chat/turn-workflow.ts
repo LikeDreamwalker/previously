@@ -234,8 +234,12 @@ This is my current understanding of who you are and how you work. If any of this
 
 When you need context from past conversations, follow this order:
 
-1. **Recall first.** Call \`recall\` to search the episodic memory. The recall agent will find relevant slices and return their raw content. Never call readSlice, readTimeline, readStrand, or listStrands before recall has returned results.
-2. **Deep-read if needed.** After recall returns, you may call \`readSlice\` to get full content from specific slices that recall identified as relevant (recall returns truncated content).
+1. **Recall first.** Call \`recall\` to search the episodic memory. The recall agent returns pointers (which slices, which turns, why relevant). Never call readSlice, readTimeline, readStrand, or listStrands before recall has returned results.
+2. **Deep-read if needed.** After recall returns, call \`readSlice\` to get content from specific slices. Use the \`range\` parameter to fetch only what you need:
+   - \`range: { type: "last", count: 3 }\` — get the last 3 turns of a slice
+   - \`range: { type: "turns", indices: [0, 5, 7] }\` — get specific turn numbers
+   - \`range: { type: "date", after: "2026-07-24T00:00:00Z" }\` — get turns after a date
+   - Omit \`range\` to get the full slice (use sparingly for large slices)
 3. **Explore more if needed.** Use \`readStrand\` or \`readTimeline\` only to follow up on leads from the recall results.
 
 Think of recall as your search engine — you must search before you read. Reading slices blindly without recall is like opening random files without knowing what's inside.
@@ -250,6 +254,7 @@ You can start durable background loops with the startLoop tool. When the user as
   const agent = createChatAgent({
     modelId: input.model,
     thinking: input.thinking,
+    reasoningEffort: input.reasoningEffort,
     toolsContext: buildChatToolsContext({
       repo: input.repo,
       owner: input.owner,

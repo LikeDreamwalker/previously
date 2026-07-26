@@ -19,6 +19,7 @@ export async function POST(request: Request): Promise<Response> {
       messages?: unknown;
       model?: unknown;
       thinking?: unknown;
+      effort?: unknown;
       timezone?: unknown;
     };
 
@@ -34,6 +35,11 @@ export async function POST(request: Request): Promise<Response> {
       messages: messages as UIMessage[],
       model: typeof body.model === "string" ? body.model : undefined,
       thinking: typeof body.thinking === "boolean" ? body.thinking : undefined,
+      effort:
+        typeof body.effort === "string" &&
+        ["low", "medium", "high"].includes(body.effort)
+          ? (body.effort as "low" | "medium" | "high")
+          : undefined,
       timezone: typeof body.timezone === "string" ? body.timezone : undefined,
     });
 

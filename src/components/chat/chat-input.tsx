@@ -1,11 +1,29 @@
 "use client";
 
-import { useState, useRef, type FormEvent, type ChangeEvent } from "react";
+import { useState, useRef, useCallback, type FormEvent, type ChangeEvent } from "react";
 import { useTranslations } from "next-intl";
-import { ArrowUp, Square, Paperclip, X, Settings, FlaskConical } from "lucide-react";
+import { ArrowUp, Square, Paperclip, X, Settings, FlaskConical, Zap } from "lucide-react";
 import { useImageAttachments } from "@/hooks/use-image-attachments";
 import { Link } from "@/i18n/navigation";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+
+const EFFORT_KEY = "PREVIOUSLY_EFFORT";
+const EFFORT_LEVELS = ["low", "medium", "high"] as const;
+type EffortLevel = (typeof EFFORT_LEVELS)[number];
+
+function getStoredEffort(): EffortLevel {
+  if (typeof window === "undefined") return "medium";
+  const stored = localStorage.getItem(EFFORT_KEY);
+  return stored && (EFFORT_LEVELS as readonly string[]).includes(stored)
+    ? (stored as EffortLevel)
+    : "medium";
+}
+
+const EFFORT_LABELS: Record<EffortLevel, string> = {
+  low: "Low",
+  medium: "Med",
+  high: "High",
+};
 
 interface ChatInputProps {
   onSubmit: (message: string) => void;
@@ -24,6 +42,7 @@ export function ChatInput({
 }: ChatInputProps) {
   const t = useTranslations("chat.input");
   const [value, setValue] = useState("");
+  const [effort, setEffort] = useState<EffortLevel>(getStoredEffort);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragOver, setIsDragOver] = useState(false);
@@ -94,6 +113,13 @@ export function ChatInput({
     setIsDragOver(false);
     handleDrop(e);
   };
+
+  const cycleEffort = useCallback(() => {
+    const idx = EFFORT_LEVELS.indexOf(effort);
+    const next = EFFORT_LEVELS[(idx + 1) % EFFORT_LEVELS.length];
+    setEffort(next);
+    localStorage.setItem(EFFORT_KEY, next);
+  }, [effort]);
 
   const hasContent = value.trim().length > 0 || images.length > 0;
 
@@ -194,6 +220,28 @@ export function ChatInput({
               </TooltipContent>
             </Tooltip>
           )}
+
+          {/* Thinking intensity */}
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <button
+                  type="button"
+                  onClick={cycleEffort}
+                  disabled={isLoading || demoRunning}
+                  className="h-7 rounded-full text-muted-foreground hover:text-foreground hover:bg-muted-foreground/10 transition-colors flex items-center justify-center gap-1 px-2 disabled:opacity-30"
+                >
+                  <Zap className="h-3 w-3" />
+                  <span className="text-[10px] font-medium leading-none">
+                    {EFFORT_LABELS[effort]}
+                  </span>
+                </button>
+              }
+            />
+            <TooltipContent side="top">
+              Thinking: {effort} — click to cycle
+            </TooltipContent>
+          </Tooltip>
 
           {/* Settings */}
           <Tooltip>

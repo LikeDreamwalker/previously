@@ -37,7 +37,7 @@ export function SettingsForm({
     const res = await saveUserConfig({
       slicing: { maxTurnsPerSlice, timeSilenceMinutes },
       context: { recentTurnsLimit, tokenBudget },
-      model: { provider: modelProvider, thinking: modelThinking },
+      model: { provider: modelProvider, thinking: modelThinking, reasoningEffort: "medium" as const },
     });
     setConfigSaving(false);
     setConfigSavedMsg(res.ok ? t("config.saved") : t("config.saveFailed"));

@@ -33,6 +33,8 @@ export interface TurnInput {
   model: string;
   /** Whether DeepSeek thinking is enabled for this turn. */
   thinking: boolean;
+  /** Reasoning effort level for this turn. */
+  reasoningEffort: "low" | "medium" | "high";
   /** Client-reported timezone, used when minting a new slice. */
   clientTimezone: string;
   /** User config snapshot (loaded once in the route layer). */

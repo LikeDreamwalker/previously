@@ -50,6 +50,7 @@ function Inner({ children }: { children: React.ReactNode }) {
   const [settings] = useState(() => ({
     model: getClientSetting("PREVIOUSLY_MODEL", "deepseek-v4-flash"),
     thinking: getClientSetting("PREVIOUSLY_THINKING", "true") !== "false",
+    effort: getClientSetting("PREVIOUSLY_EFFORT", "medium"),
   }));
 
   const [lastUserMessageAt, setLastUserMessageAt] = useState<string | null>(null);

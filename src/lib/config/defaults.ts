@@ -18,6 +18,7 @@ export const DEFAULTS: UserConfig = {
   model: {
     provider: "deepseek-v4-pro",
     thinking: true,
+    reasoningEffort: "medium" as const,
   },
   onboarded: false,
   datasource: "demo",
