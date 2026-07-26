@@ -142,6 +142,10 @@ export function TimeSliceRow({ slice }: TimeSliceRowProps) {
   const [content, setContent] = useState<SliceContent | null>(null);
   const [loadingContent, setLoadingContent] = useState(false);
 
+  // Normalize fields that may come from JSON as non-arrays
+  const openLoops: string[] = Array.isArray(slice.open_loops) ? slice.open_loops : [];
+  const decisions: string[] = Array.isArray(slice.decisions) ? slice.decisions : [];
+
   // Auto-load content on mount so last turn is always visible
   useEffect(() => {
     let cancelled = false;
@@ -221,16 +225,16 @@ export function TimeSliceRow({ slice }: TimeSliceRowProps) {
           onClick={handleToggleMeta}
           className="text-[0.65rem] text-muted-foreground hover:text-muted-foreground transition-colors mt-0.5"
         >
-          {slice.open_loops.length > 0 && `↗ ${t("ongoing", { count: slice.open_loops.length })}`}
-          {slice.open_loops.length > 0 && slice.decisions.length > 0 && " · "}
-          {slice.decisions.length > 0 && `✓ ${t("decided", { count: slice.decisions.length })}`}
+          {openLoops.length > 0 && `↗ ${t("ongoing", { count: openLoops.length })}`}
+          {openLoops.length > 0 && decisions.length > 0 && " · "}
+          {decisions.length > 0 && `✓ ${t("decided", { count: decisions.length })}`}
           <ChevronRight className="h-2.5 w-2.5 inline ml-0.5" />
         </button>
       )}
 
-      {expandedMeta && slice.open_loops.length > 0 && (
+      {expandedMeta && openLoops.length > 0 && (
         <div className="flex flex-wrap gap-1 mt-1">
-          {slice.open_loops.map((loop, i) => (
+          {openLoops.map((loop, i) => (
             <span key={i} className="inline-flex items-center gap-1 rounded-full bg-muted/60 px-1.5 py-0.5 text-[0.6rem] text-muted-foreground">
               <span className="text-[0.55rem] opacity-60">↗</span>
               {loop}
@@ -239,9 +243,9 @@ export function TimeSliceRow({ slice }: TimeSliceRowProps) {
         </div>
       )}
 
-      {expandedMeta && slice.decisions.length > 0 && (
+      {expandedMeta && decisions.length > 0 && (
         <div className="flex flex-wrap gap-1 mt-0.5">
-          {slice.decisions.map((d, i) => (
+          {decisions.map((d, i) => (
             <span key={i} className="inline-flex items-center gap-1 rounded-full bg-muted/60 px-1.5 py-0.5 text-[0.6rem] text-muted-foreground">
               <span className="text-[0.55rem] opacity-60">✓</span>
               {d}
@@ -250,7 +254,7 @@ export function TimeSliceRow({ slice }: TimeSliceRowProps) {
         </div>
       )}
 
-      {expandedMeta && (slice.open_loops.length > 0 || slice.decisions.length > 0) && (
+      {expandedMeta && (openLoops.length > 0 || decisions.length > 0) && (
         <button
           onClick={handleToggleMeta}
           className="text-[0.6rem] text-muted-foreground hover:text-muted-foreground transition-colors mt-0.5"
