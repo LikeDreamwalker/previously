@@ -102,10 +102,109 @@ function parseSliceId(sliceId: string): { y: string; m: string; d: string; hm: s
   return { y, m, d, hm };
 }
 
+// ── Turn extraction helpers ──────────────────────────────────────────────
+
+/** Parsed turn from a core.md slice file. */
+interface ParsedTurn {
+  index: number;
+  header: string;   // "## Turn N -- ISO_TIMESTAMP (role)"
+  content: string;   // turn body text
+  timestamp: string; // ISO 8601
+}
+
+/** Regex for turn headers: "## Turn N -- ISO_TIMESTAMP (role)". */
+const TURN_HEADER_RE = /^## Turn (\d+) -- (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[^)]*)\s*\((\w+)\)/;
+
+/**
+ * Parse core.md content into frontmatter + array of parsed turns.
+ * Frontmatter is everything before the first turn header.
+ */
+function parseTurns(raw: string): { frontmatter: string; turns: ParsedTurn[] } {
+  const lines = raw.split("\n");
+  const turns: ParsedTurn[] = [];
+  const frontmatterLines: string[] = [];
+  let currentTurn: { index: number; header: string; timestamp: string; contentLines: string[] } | null = null;
+  let inFrontmatter = true;
+
+  for (const line of lines) {
+    const match = line.match(TURN_HEADER_RE);
+    if (match) {
+      if (currentTurn) {
+        turns.push({
+          index: currentTurn.index,
+          header: currentTurn.header,
+          timestamp: currentTurn.timestamp,
+          content: currentTurn.contentLines.join("\n").trimEnd(),
+        });
+      }
+      currentTurn = {
+        index: parseInt(match[1], 10),
+        header: line,
+        timestamp: match[2],
+        contentLines: [],
+      };
+      inFrontmatter = false;
+    } else if (inFrontmatter) {
+      frontmatterLines.push(line);
+    } else if (currentTurn) {
+      currentTurn.contentLines.push(line);
+    }
+  }
+  // Don't forget the last turn
+  if (currentTurn) {
+    turns.push({
+      index: currentTurn.index,
+      header: currentTurn.header,
+      timestamp: currentTurn.timestamp,
+      content: currentTurn.contentLines.join("\n").trimEnd(),
+    });
+  }
+
+  return { frontmatter: frontmatterLines.join("\n").trimEnd(), turns };
+}
+
+/** Apply a range filter to parsed turns. Returns the filtered turns array. */
+function applyRange(
+  turns: ParsedTurn[],
+  range: { type: "turns" | "last" | "date"; indices?: number[]; count?: number; after?: string },
+): ParsedTurn[] {
+  switch (range.type) {
+    case "turns": {
+      if (!range.indices || range.indices.length === 0) return turns;
+      const indexSet = new Set(range.indices);
+      return turns.filter((t) => indexSet.has(t.index));
+    }
+    case "last": {
+      const n = range.count ?? 3;
+      return turns.slice(-n);
+    }
+    case "date": {
+      if (!range.after) return turns;
+      const afterMs = new Date(range.after).getTime();
+      if (isNaN(afterMs)) return turns;
+      return turns.filter((t) => new Date(t.timestamp).getTime() >= afterMs);
+    }
+    default:
+      return turns;
+  }
+}
+
+/** Reassemble filtered turns into markdown: frontmatter + selected turn headers & content. */
+function reassembleSlice(frontmatter: string, turns: ParsedTurn[]): string {
+  const parts = [frontmatter];
+  for (const t of turns) {
+    parts.push(`\n${t.header}\n${t.content}`);
+  }
+  return parts.join("\n");
+}
+
 // ── readSlice — read a time slice's core conversation ─────────────────
 
 export async function readSliceExecute(
-  { sliceId }: { sliceId: string },
+  { sliceId, range }: {
+    sliceId: string;
+    range?: { type: "turns" | "last" | "date"; indices?: number[]; count?: number; after?: string };
+  },
   { context: ctx }: ExecuteOpts<ToolContext>,
 ): Promise<string> {
   "use step";
@@ -115,10 +214,22 @@ export async function readSliceExecute(
   }
   const path = `memory/episodic/slices/${parsed.y}/${parsed.m}/${parsed.d}/${parsed.hm}/timeline/core.md`;
   try {
-    if (ctx.useDemo) return await readFileDemo(path);
-    return ctx.useGithub
-      ? await readFile(path, ctx.repo, ctx.owner)
-      : await readFileLocal(path);
+    let raw: string;
+    if (ctx.useDemo) raw = await readFileDemo(path);
+    else if (ctx.useGithub) raw = await readFile(path, ctx.repo, ctx.owner);
+    else raw = await readFileLocal(path);
+
+    // Apply range filter if requested
+    if (range) {
+      const { frontmatter, turns } = parseTurns(raw);
+      const filtered = applyRange(turns, range);
+      if (filtered.length === 0) {
+        return `${frontmatter}\n\n_(No turns matched the requested range.)_`;
+      }
+      return reassembleSlice(frontmatter, filtered);
+    }
+
+    return raw;
   } catch (e) {
     const msg = domainError(e);
     if (msg === null) throw e;
@@ -300,7 +411,6 @@ export async function recallExecute(
   { context: ctx }: ExecuteOpts<ToolContext>,
 ): Promise<{
   hits: RecallHit[];
-  rawContents: Record<string, string>;
   confidence: number;
   reasoning: string;
 }> {
@@ -315,32 +425,11 @@ export async function recallExecute(
     useDemo: ctx.useDemo,
   });
 
-  // Read raw content for each hit — Flash only returns pointers,
-  // the executor does the mechanical content retrieval
-  const rawContents: Record<string, string> = {};
-  for (const hit of searchResult.hits) {
-    const parsed = parseSliceId(hit.slice_id);
-    if (!parsed) continue;
-    const path = `memory/episodic/slices/${parsed.y}/${parsed.m}/${parsed.d}/${parsed.hm}/timeline/core.md`;
-    try {
-      const content = ctx.useDemo
-        ? await readFileDemo(path)
-        : ctx.useGithub
-          ? await readFile(path, ctx.repo, ctx.owner)
-          : await readFileLocal(path);
-      // Truncate each slice to a reasonable window
-      rawContents[hit.slice_id] =
-        content.length > 3000
-          ? content.slice(-2500)
-          : content;
-    } catch {
-      rawContents[hit.slice_id] = "(Could not read slice content)";
-    }
-  }
-
+  // Flash returns pointers only — the executor no longer reads raw content.
+  // Pro should call readSlice (optionally with range) to fetch content from
+  // slices it actually wants to use, keeping context usage minimal.
   return {
     hits: searchResult.hits,
-    rawContents,
     confidence: searchResult.confidence,
     reasoning: searchResult.reasoning,
   };

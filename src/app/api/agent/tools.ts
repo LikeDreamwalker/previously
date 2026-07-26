@@ -60,11 +60,38 @@ export const conceptTools = {
     description:
       "Read a time slice's conversation record (core timeline). " +
       "Use this when you need to see the full detail of a specific time slice " +
-      "that Flash surfaced in its recall summary.",
+      "that Flash surfaced in its recall summary. " +
+      "Use the optional `range` parameter to fetch only specific turns instead " +
+      "of the entire slice — saves context.",
     inputSchema: z.object({
       sliceId: z
         .string()
         .describe("Slice ID in YYYY-MM-DD-HHMM format, e.g. '2026-07-24-1500'."),
+      range: z
+        .object({
+          type: z
+            .enum(["turns", "last", "date"])
+            .describe(
+              "turns = specific turn indices. last = most recent N turns. " +
+              "date = turns after a given timestamp.",
+            ),
+          indices: z
+            .array(z.number())
+            .optional()
+            .describe("Turn indices (0-based). Only for type 'turns'."),
+          count: z
+            .number()
+            .optional()
+            .describe("Number of recent turns. Only for type 'last'."),
+          after: z
+            .string()
+            .optional()
+            .describe("ISO 8601 timestamp. Only for type 'date'."),
+        })
+        .optional()
+        .describe(
+          "Optional range filter. When omitted, returns the full slice content.",
+        ),
     }),
     contextSchema: toolContextSchema,
     execute: readSliceExecute,

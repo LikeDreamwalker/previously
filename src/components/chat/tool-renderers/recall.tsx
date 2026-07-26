@@ -21,7 +21,6 @@ interface RecallHit {
 
 interface RecallOutput {
   hits?: RecallHit[];
-  rawContents?: Record<string, string>;
   confidence?: number;
   reasoning?: string;
 }
@@ -48,9 +47,9 @@ function resolveLabel(
 /**
  * Recall tool renderer using PhaseIndicator in static mode.
  *
- * Recall is a tool in the data model (tool-call → tool-result), but it is
- * rendered with the same PhaseIndicator container as thinking — giving it
- * phase-level visual weight while staying a fully manual expand/collapse.
+ * Recall returns neutral pointers only — slice IDs, relevance, reasons,
+ * key turn numbers. No raw content is returned; Pro uses readSlice
+ * (with optional range) to fetch content from slices it actually needs.
  */
 export function RecallToolRenderer({
   toolName: _toolName,
@@ -65,7 +64,6 @@ export function RecallToolRenderer({
 
   const out = output as RecallOutput | undefined;
   const hits = Array.isArray(out?.hits) ? out.hits : [];
-  const rawContents = out?.rawContents ?? {};
   const confidence = typeof out?.confidence === "number" ? out.confidence : null;
   const reasoning = typeof out?.reasoning === "string" ? out.reasoning : "";
 
@@ -87,7 +85,7 @@ export function RecallToolRenderer({
       ? `${Math.round(confidence * 100)}%`
       : undefined;
 
-  // Expanded content
+  // Expanded content — hits list only, no raw content
   const expandedContent = hasHits ? (
     <div className="space-y-3">
       {/* Reasoning */}
@@ -97,7 +95,7 @@ export function RecallToolRenderer({
         </p>
       )}
 
-      {/* Hits */}
+      {/* Hits — pointers only */}
       <div className="space-y-1.5">
         {hits.map((hit, i) => (
           <div
@@ -119,17 +117,6 @@ export function RecallToolRenderer({
               <p className="text-xs text-muted-foreground">
                 Key turns: {hit.key_turns.join(", ")}
               </p>
-            )}
-            {/* Raw content for this slice */}
-            {rawContents[hit.slice_id] && (
-              <details className="mt-1">
-                <summary className="cursor-pointer text-xs text-muted-foreground transition-colors hover:text-foreground">
-                  Raw content
-                </summary>
-                <pre className="mt-1 max-h-48 overflow-auto font-mono text-xs leading-relaxed whitespace-pre-wrap text-muted-foreground">
-                  {rawContents[hit.slice_id]}
-                </pre>
-              </details>
             )}
           </div>
         ))}
