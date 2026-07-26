@@ -1,6 +1,6 @@
 "use server";
 
-import { readSliceIndex, readSliceBody, parseSlice, sliceIdToFilePath } from "./manager";
+import { readSliceIndex, readSliceBody, parseSlice, sliceIdToFilePath, readPreviously, readAgentTimeline } from "./manager";
 import type { Turn } from "./types";
 
 export interface SliceSummary {
@@ -186,6 +186,67 @@ export async function getSliceContent(
     };
   } catch (err) {
     console.error(`[Episodic] getSliceContent failed for ${sliceId}:`, err instanceof Error ? err.message : err);
+    return null;
+  }
+}
+
+// ─── Previously / Agent Timeline actions ─────────────────────────────────
+
+/**
+ * Read the previously.md belief-system snapshot for a slice.
+ * Returns null when the file doesn't exist (e.g. brand-new slice with no
+ * previously.md seeded yet).
+ */
+export async function getPreviously(sliceId: string): Promise<string | null> {
+  try {
+    return await readPreviously(sliceId);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read the full agent.md cognition log for a slice.
+ * Returns null when the file doesn't exist.
+ */
+export async function getAgentTimeline(sliceId: string): Promise<string | null> {
+  try {
+    return await readAgentTimeline(sliceId);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Extract a single cognition block from agent.md by turnId.
+ *
+ * agent.md blocks follow the convention:
+ *   ## Cognition {turnId} — {timestamp}
+ *   (thinking + tool-call text…)
+ *
+ * Returns the body text (without the header line), or null when the turn
+ * has no cognition recorded or the file doesn't exist.
+ */
+export async function getTurnCognition(
+  sliceId: string,
+  turnId: string,
+): Promise<string | null> {
+  try {
+    const raw = await readAgentTimeline(sliceId);
+    if (!raw) return null;
+
+    // Split on cognition headers — each block starts with "## Cognition "
+    const blocks = raw.split(/^## Cognition /m);
+    for (const block of blocks) {
+      if (block.startsWith(turnId)) {
+        // Remove the "turnId — timestamp" header line
+        const newlineIdx = block.indexOf("\n");
+        if (newlineIdx === -1) return ""; // header only, no body
+        return block.slice(newlineIdx + 1).trim();
+      }
+    }
+    return null;
+  } catch {
     return null;
   }
 }
