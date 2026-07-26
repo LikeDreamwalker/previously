@@ -155,7 +155,7 @@ export const ChatMessage = memo(function ChatMessage({ message, onRegenerate, is
       <div className="py-1">
         <Message align="end" className="gap-1">
           <MessageContent className="min-w-0">
-            <Bubble variant="default">
+            <Bubble variant="secondary">
               <BubbleContent>
                 <MarkdownRenderer content={userText} />
               </BubbleContent>

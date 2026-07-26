@@ -248,6 +248,12 @@
   animation-delay: calc(var(--stagger-index, 0) * 50ms);
 }
 
+/* Inherit text color from bubble content — prevents .typeset's color:var(--color-foreground)
+   from overriding the bubble variant's text color (e.g. primary-foreground on primary bg) */
+[data-slot="bubble-content"] .typeset {
+  color: inherit;
+}
+
 /* Highlight the newest content during streaming */
 @keyframes text-arrive-glow {
   0% {
