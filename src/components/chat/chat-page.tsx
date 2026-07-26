@@ -9,8 +9,8 @@ import { ChatSection } from "./chat-section";
 import { LoopWatcher } from "./loop-watcher";
 import { buildMockSteps } from "@/lib/chat/mock-stream";
 import type { EvolutionState } from "./evolution-indicator";
+import { EvolutionIndicator } from "./evolution-indicator";
 import { HorizontalTimeline } from "./horizontal-timeline";
-import { PreviouslyBar } from "./previously-bar";
 import { HistoricalChatView } from "./historical-chat-view";
 import {
   getEpisodicState,
@@ -396,7 +396,7 @@ function Inner({ children }: { children: React.ReactNode }) {
 
       {/* ── Fixed bottom bar ────────────────────────────────────────────── */}
       <div className="fixed bottom-0 inset-x-0 z-10">
-        <PreviouslyBar evolutionState={evolutionState} />
+        <EvolutionIndicator state={showingLive ? evolutionState : null} />
         <div className="pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom,0.5rem))]">
           <div className="mx-auto w-full md:max-w-2xl px-4 sm:px-6 lg:px-8">
             <ChatInput

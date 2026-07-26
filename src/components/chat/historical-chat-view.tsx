@@ -1,15 +1,20 @@
 "use client";
 
 import { useMemo } from "react";
-import { Loader2 } from "lucide-react";
+import { Brain, Loader2 } from "lucide-react";
 import type { SliceContent } from "@/lib/episodic/actions";
 import { Message, MessageContent } from "@/components/ui/message";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { MarkdownRenderer } from "./markdown";
 import { CognitionPopover } from "./cognition-popover";
 import { TimeDisplay, sameDay } from "./time-display";
-
-// ─── Types ──────────────────────────────────────────────────────────────
+import {
+  Dialog,
+  DialogTrigger,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 interface HistoricalChatViewProps {
   content: SliceContent | null;
@@ -101,6 +106,58 @@ export function HistoricalChatView({
           <div className="h-full w-2/5 bg-muted-foreground/20 rounded-full animate-pulse" />
         </div>
       )}
+
+      {/* ── Previously On bar + summary ──────────────────────────────────── */}
+      <div className="mb-4">
+        {/* Clickable bar — PhaseIndicator visual style, opens Dialog */}
+        {content.previously ? (
+          <Dialog>
+            <DialogTrigger className="block w-full text-left rounded-lg px-3 py-2.5 cursor-pointer transition-colors hover:bg-muted/30">
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="flex size-4 shrink-0 items-center justify-center text-brand">
+                  <Brain className="h-3.5 w-3.5" />
+                </span>
+                <span className="min-w-0 truncate text-sm font-semibold text-foreground/90">
+                  前情提要
+                </span>
+                <span className="shrink-0 text-xs text-muted-foreground">
+                  点击查看
+                </span>
+              </div>
+            </DialogTrigger>
+            <DialogContent className="sm:max-w-lg max-h-[80vh] overflow-y-auto">
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2 text-sm">
+                  <Brain className="h-4 w-4" />
+                  Previously On
+                </DialogTitle>
+              </DialogHeader>
+              <div className="text-sm leading-relaxed">
+                <MarkdownRenderer content={content.previously} />
+              </div>
+            </DialogContent>
+          </Dialog>
+        ) : (
+          /* Non-clickable bar when no previously.md exists */
+          <div className="rounded-lg px-3 py-2.5">
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="flex size-4 shrink-0 items-center justify-center text-brand">
+                <Brain className="h-3.5 w-3.5" />
+              </span>
+              <span className="min-w-0 truncate text-sm font-semibold text-foreground/90">
+                前情提要
+              </span>
+            </div>
+          </div>
+        )}
+
+        {/* Summary text — small muted, below the bar */}
+        {content.summary && (
+          <p className="mt-1 px-4 text-xs text-muted-foreground leading-relaxed">
+            {content.summary}
+          </p>
+        )}
+      </div>
 
       {/* Empty slice */}
       {turns.length === 0 ? (

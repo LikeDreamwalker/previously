@@ -157,6 +157,8 @@ export interface SliceContent {
   totalChars: number;
   open_loops: string[];
   decisions: string[];
+  /** Previously.md content for this slice, or null if not found. */
+  previously: string | null;
 }
 
 export async function getSliceContent(
@@ -172,6 +174,14 @@ export async function getSliceContent(
       0
     );
 
+    // Try to read previously.md for this slice — 404 / missing is normal
+    let previously: string | null = null;
+    try {
+      previously = await readPreviously(sliceId);
+    } catch {
+      // previously.md doesn't exist for this slice
+    }
+
     return {
       slice_id: slice.slice_id,
       focus: slice.focus,
@@ -183,6 +193,7 @@ export async function getSliceContent(
       totalChars,
       open_loops: slice.open_loops,
       decisions: slice.decisions,
+      previously,
     };
   } catch (err) {
     console.error(`[Episodic] getSliceContent failed for ${sliceId}:`, err instanceof Error ? err.message : err);
