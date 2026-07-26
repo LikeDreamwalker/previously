@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback, type ReactNode } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback, type ReactNode } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { cn } from "@/lib/utils";
 import { Card, CardContent } from "@/components/ui/card";
@@ -21,7 +21,6 @@ export interface PhaseIndicatorProps {
   expandedContent?: ReactNode;
 }
 
-const TICK_MS = 20;
 const FADE_DELAY_MS = 2000;
 const EXPANDED_CONTENT_TRANSITION_MS = 200;
 
@@ -45,35 +44,45 @@ export function PhaseIndicator({
   const [shouldRenderExpandedContent, setShouldRenderExpandedContent] =
     useState(false);
 
-  // ── Typewriter (streaming mode only) ──────────────────────────────────
+  // ── Subtitle-style streaming (streaming mode only) ────────────────────
 
-  const [cursor, setCursor] = useState(0);
   const [typewriterVisible, setTypewriterVisible] = useState(true);
-  const textRef = useRef(streamingText ?? "");
-  textRef.current = streamingText ?? "";
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   const text = streamingText ?? "";
 
-  // Tick cursor forward as text grows.
-  useEffect(() => {
-    if (mode !== "streaming") return;
-    if (cursor >= text.length) return;
-    const id = setInterval(() => {
-      setCursor((prev) => {
-        if (prev >= textRef.current.length) return prev;
-        return prev + 1;
-      });
-    }, TICK_MS);
-    return () => clearInterval(id);
-  }, [mode, text, cursor]);
+  // Current line = everything after the last newline (subtitle style)
+  const currentLine = useMemo(() => {
+    const lastNewline = text.lastIndexOf("\n");
+    return lastNewline >= 0 ? text.slice(lastNewline + 1) : text;
+  }, [text]);
 
-  // Fade out typewriter after streaming finishes + fully typed.
+  // Track newline transitions for fade animation
+  const [lineKey, setLineKey] = useState(0);
+  const prevLineRef = useRef(currentLine);
   useEffect(() => {
     if (mode !== "streaming") return;
-    if (isRunning || cursor < text.length || !text) return;
+    if (currentLine !== prevLineRef.current) {
+      setLineKey((k) => k + 1);
+      prevLineRef.current = currentLine;
+    }
+  }, [mode, currentLine]);
+
+  // Auto-scroll to end as text streams in
+  useEffect(() => {
+    if (mode !== "streaming") return;
+    if (scrollRef.current) {
+      scrollRef.current.scrollLeft = scrollRef.current.scrollWidth;
+    }
+  }, [mode, currentLine]);
+
+  // Fade out the subtitle line after streaming finishes
+  useEffect(() => {
+    if (mode !== "streaming") return;
+    if (isRunning || !text) return;
     const id = setTimeout(() => setTypewriterVisible(false), FADE_DELAY_MS);
     return () => clearTimeout(id);
-  }, [mode, isRunning, cursor, text]);
+  }, [mode, isRunning, text]);
 
   // ── Elapsed timer (streaming mode only) ───────────────────────────────
 
@@ -141,8 +150,7 @@ export function PhaseIndicator({
 
   // ── Derived display values ────────────────────────────────────────────
 
-  const display = mode === "streaming" ? text.slice(0, cursor) : "";
-  const isTyping = mode === "streaming" && cursor < text.length;
+  const isStreamingText = mode === "streaming" && isRunning && text.length > 0;
   const showTypewriter = mode === "streaming" && text && typewriterVisible;
 
   return (
@@ -221,7 +229,7 @@ export function PhaseIndicator({
         )}
       </div>
 
-      {/* Typewriter line (streaming mode) */}
+      {/* Subtitle line (streaming mode) — single line, horizontal scroll */}
       <AnimatePresence>
         {showTypewriter && (
           <motion.div
@@ -232,12 +240,22 @@ export function PhaseIndicator({
             className="overflow-hidden"
           >
             <div className="mt-1.5 pl-6.5">
-              <span className="text-xs leading-relaxed font-mono text-muted-foreground">
-                {display}
-                {isTyping && (
-                  <span className="ml-0.5 inline-block h-3 w-px animate-pulse bg-brand/60 align-middle" />
-                )}
-              </span>
+              <motion.div
+                key={lineKey}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ duration: 0.15 }}
+                ref={scrollRef}
+                className="overflow-x-auto whitespace-nowrap"
+                style={{ scrollbarWidth: "none" }}
+              >
+                <span className="text-xs font-mono text-muted-foreground">
+                  {currentLine}
+                  {isStreamingText && (
+                    <span className="ml-0.5 inline-block h-3 w-px animate-pulse bg-brand/60 align-middle" />
+                  )}
+                </span>
+              </motion.div>
             </div>
           </motion.div>
         )}
