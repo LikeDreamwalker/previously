@@ -284,7 +284,7 @@ function Inner({ children }: { children: React.ReactNode }) {
       </section>
 
       {/* ── Sticky timeline — snaps below AppHeader (fixed h-12) ────────── */}
-      <div className="sticky top-12 z-10 bg-background">
+      <div className="sticky top-12 z-10 bg-background/90 backdrop-blur-md">
         <HorizontalTimeline
           slices={timelineSlices}
           selectedId={selectedSliceId}

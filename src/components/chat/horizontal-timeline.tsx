@@ -43,7 +43,9 @@ export function HorizontalTimeline({
       onWheel={handleWheel}
       className="overflow-x-auto scrollbar-none"
     >
-      <div className="flex justify-center gap-3 px-4 py-2 min-w-min">
+      <div className="relative flex justify-between min-w-full px-6 py-2">
+        {/* Horizontal connector line — runs through all dots */}
+        <div className="absolute left-6 right-6 top-1/2 h-px bg-border/40 -translate-y-px" />
         {/* Load earlier */}
         {hasMore && (
           <button
@@ -77,9 +79,9 @@ export function HorizontalTimeline({
               >
                 <TimeDisplay timestamp={slice.start} mode="date" />
                 <span
-                  className={`h-2 w-2 rounded-full transition-all ${
+                  className={`h-1.5 w-1.5 rounded-full transition-all ${
                     isSelected
-                      ? "bg-foreground scale-125 ring-2 ring-foreground/10"
+                      ? "bg-foreground scale-110 ring-1 ring-foreground/10"
                       : "bg-muted-foreground/30 hover:bg-muted-foreground/50"
                   }`}
                 />
@@ -99,9 +101,9 @@ export function HorizontalTimeline({
         >
           <TimeDisplay timestamp={new Date().toISOString()} mode="date" />
           <span
-            className={`h-2.5 w-2.5 rounded-full border-2 transition-all ${
+            className={`h-2 w-2 rounded-full border transition-all ${
               selectedId === "now"
-                ? "bg-foreground border-foreground scale-110 ring-2 ring-foreground/10"
+                ? "bg-foreground border-foreground scale-110 ring-1 ring-foreground/10"
                 : "bg-transparent border-muted-foreground/30 hover:border-muted-foreground/50"
             }`}
           />
