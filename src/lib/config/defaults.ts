@@ -16,7 +16,7 @@ export const DEFAULTS: UserConfig = {
     tokenBudget: 12000,
   },
   model: {
-    provider: "deepseek-v4-flash",
+    provider: "deepseek-v4-pro",
     thinking: true,
   },
   onboarded: false,

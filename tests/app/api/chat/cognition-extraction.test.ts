@@ -2,55 +2,74 @@ import { describe, it, expect } from "vitest";
 import { extractCognition } from "@/app/api/chat/turn-workflow";
 import type { ModelMessage } from "ai";
 
+// ─── Types ──────────────────────────────────────────────────────────────
+
+interface StepPart {
+  type: string;
+  text?: string;
+  toolCallId?: string;
+  toolName?: string;
+  input?: unknown;
+}
+
+interface CogStep {
+  reasoning?: Array<{ type: string; text: string }>;
+  toolCalls?: Array<{ toolCallId: string; toolName: string; input: unknown }>;
+}
+
 // ─── Helpers ───────────────────────────────────────────────────────────
 
-function msg(role: "assistant", content: Array<Record<string, unknown>>): ModelMessage;
-function msg(role: "tool", content: Array<Record<string, unknown>>): ModelMessage;
-function msg(role: "user", content: string): ModelMessage;
-function msg(
-  role: string,
-  content: string | Array<Record<string, unknown>>,
-): ModelMessage {
+function msg(role: "tool", content: Array<Record<string, unknown>>): ModelMessage {
   return { role, content } as ModelMessage;
+}
+
+function step(opts: {
+  reasoning?: string[];
+  toolCalls?: Array<{ toolCallId: string; toolName: string; input: unknown }>;
+}): CogStep {
+  return {
+    reasoning: opts.reasoning?.map((text) => ({ type: "reasoning", text })),
+    toolCalls: opts.toolCalls,
+  };
 }
 
 // ─── extractCognition ──────────────────────────────────────────────────
 
 describe("extractCognition", () => {
-  it("returns an empty string when there is no reasoning or tool activity", () => {
-    const messages: ModelMessage[] = [
-      msg("assistant", [{ type: "text", text: "Hello!" }]),
-    ];
-    const result = extractCognition(messages);
-    // No thinking, no tools — just a newline
+  it("returns only a newline when there are no steps", () => {
+    const result = extractCognition([], []);
     expect(result).toBe("\n");
   });
 
-  it("extracts reasoning traces under a Thinking section", () => {
-    const messages: ModelMessage[] = [
-      msg("assistant", [
-        { type: "reasoning", text: "The user is asking about Rust runtimes." },
-        { type: "reasoning", text: "I need to check their preferences first." },
-        { type: "text", text: "Let me look into that." },
-      ]),
+  it("extracts reasoning traces from steps under a Thinking section", () => {
+    const steps: CogStep[] = [
+      step({
+        reasoning: [
+          "The user is asking about Rust runtimes.",
+          "I need to check their preferences first.",
+        ],
+      }),
     ];
-    const result = extractCognition(messages);
+    const result = extractCognition([], steps);
     expect(result).toContain("### Thinking");
     expect(result).toContain("The user is asking about Rust runtimes.");
     expect(result).toContain("I need to check their preferences first.");
     expect(result).not.toContain("### Tools");
   });
 
-  it("extracts tool calls with parameters under a Tools section", () => {
+  it("extracts tool calls from steps with result status from messages", () => {
+    const steps: CogStep[] = [
+      step({
+        toolCalls: [
+          {
+            toolCallId: "tc1",
+            toolName: "readMemory",
+            input: { path: "memory/nodes/rust-prefs.md" },
+          },
+        ],
+      }),
+    ];
     const messages: ModelMessage[] = [
-      msg("assistant", [
-        {
-          type: "tool-call",
-          toolCallId: "tc1",
-          toolName: "readMemory",
-          input: { path: "memory/nodes/rust-prefs.md" },
-        },
-      ]),
       msg("tool", [
         {
           type: "tool-result",
@@ -61,7 +80,7 @@ describe("extractCognition", () => {
         },
       ]),
     ];
-    const result = extractCognition(messages);
+    const result = extractCognition(messages, steps);
     expect(result).toContain("### Tools");
     expect(result).toContain("`readMemory`");
     expect(result).toContain('path: "memory/nodes/rust-prefs.md"');
@@ -70,16 +89,19 @@ describe("extractCognition", () => {
     expect(result).not.toContain("very long file content");
   });
 
-  it("marks failed tools with the error reason", () => {
+  it("marks failed tools with the error reason (from messages)", () => {
+    const steps: CogStep[] = [
+      step({
+        toolCalls: [
+          {
+            toolCallId: "tc1",
+            toolName: "readMemory",
+            input: { path: "memory/nodes/missing.md" },
+          },
+        ],
+      }),
+    ];
     const messages: ModelMessage[] = [
-      msg("assistant", [
-        {
-          type: "tool-call",
-          toolCallId: "tc1",
-          toolName: "readMemory",
-          input: { path: "memory/nodes/missing.md" },
-        },
-      ]),
       msg("tool", [
         {
           type: "tool-result",
@@ -90,37 +112,62 @@ describe("extractCognition", () => {
         },
       ]),
     ];
-    const result = extractCognition(messages);
+    const result = extractCognition(messages, steps);
     expect(result).toContain("→ error: File not found");
   });
 
-  it("shows ? when a tool-call has no matching result", () => {
-    const messages: ModelMessage[] = [
-      msg("assistant", [
-        {
-          type: "tool-call",
-          toolCallId: "orphan",
-          toolName: "webSearch",
-          input: { query: "rust" },
-        },
-      ]),
-      // No tool message with this toolCallId
+  it("shows ? when a tool-call has no matching result in messages", () => {
+    const steps: CogStep[] = [
+      step({
+        toolCalls: [
+          {
+            toolCallId: "orphan",
+            toolName: "webSearch",
+            input: { query: "rust" },
+          },
+        ],
+      }),
     ];
-    const result = extractCognition(messages);
+    // No tool message with this toolCallId
+    const result = extractCognition([], steps);
     expect(result).toContain("→ ?");
   });
 
-  it("combines thinking and tools in one entry", () => {
+  it("skips empty reasoning text", () => {
+    const steps: CogStep[] = [
+      step({
+        reasoning: ["", "   ", "Actual reasoning here."],
+      }),
+    ];
+    const result = extractCognition([], steps);
+    expect(result).toContain("Actual reasoning here.");
+    // Empty strings should not produce separate lines
+    expect(result).not.toContain("\n\n");
+  });
+
+  it("combines thinking and tools across multiple steps", () => {
+    const steps: CogStep[] = [
+      step({
+        reasoning: ["Let me search for relevant info."],
+        toolCalls: [
+          {
+            toolCallId: "tc1",
+            toolName: "listMemory",
+            input: { path: "memory/episodic/" },
+          },
+        ],
+      }),
+      step({
+        toolCalls: [
+          {
+            toolCallId: "tc2",
+            toolName: "readMemory",
+            input: { path: "memory/nodes/x.md" },
+          },
+        ],
+      }),
+    ];
     const messages: ModelMessage[] = [
-      msg("assistant", [
-        { type: "reasoning", text: "Let me search for relevant info." },
-        {
-          type: "tool-call",
-          toolCallId: "tc1",
-          toolName: "listMemory",
-          input: { path: "memory/episodic/" },
-        },
-      ]),
       msg("tool", [
         {
           type: "tool-result",
@@ -128,44 +175,6 @@ describe("extractCognition", () => {
           toolName: "listMemory",
           output: "3 entries",
           isError: false,
-        },
-      ]),
-      msg("assistant", [
-        { type: "text", text: "I found 3 relevant files." },
-      ]),
-    ];
-    const result = extractCognition(messages);
-    expect(result).toContain("### Thinking");
-    expect(result).toContain("### Tools");
-    expect(result).toContain("`listMemory`(path: \"memory/episodic/\") → ok");
-  });
-
-  it("handles multiple tool calls across multiple assistant/tool message pairs", () => {
-    const messages: ModelMessage[] = [
-      msg("assistant", [
-        { type: "reasoning", text: "Multi-step plan." },
-        {
-          type: "tool-call",
-          toolCallId: "tc1",
-          toolName: "listMemory",
-          input: { path: "memory/" },
-        },
-      ]),
-      msg("tool", [
-        {
-          type: "tool-result",
-          toolCallId: "tc1",
-          toolName: "listMemory",
-          output: "ok",
-          isError: false,
-        },
-      ]),
-      msg("assistant", [
-        {
-          type: "tool-call",
-          toolCallId: "tc2",
-          toolName: "readMemory",
-          input: { path: "memory/nodes/x.md" },
         },
       ]),
       msg("tool", [
@@ -178,12 +187,15 @@ describe("extractCognition", () => {
         },
       ]),
     ];
-    const result = extractCognition(messages);
-    // Both tools in order
-    const toolsIdx = result.indexOf("### Tools");
+    const result = extractCognition(messages, steps);
+    expect(result).toContain("### Thinking");
+    expect(result).toContain("### Tools");
+    expect(result).toContain("`listMemory`(path: \"memory/episodic/\") → ok");
+    expect(result).toContain("`readMemory`(path: \"memory/nodes/x.md\") → ok");
+    // Both tools in correct order
     const tc1Idx = result.indexOf("`listMemory`");
     const tc2Idx = result.indexOf("`readMemory`");
-    expect(tc1Idx).toBeGreaterThan(toolsIdx);
+    expect(tc1Idx).toBeGreaterThan(-1);
     expect(tc2Idx).toBeGreaterThan(tc1Idx);
   });
 });

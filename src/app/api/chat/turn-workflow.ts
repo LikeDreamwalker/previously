@@ -63,18 +63,25 @@ function extractFinalText(messages: ModelMessage[]): string {
 }
 
 /**
- * Mechanically extract the agent's cognitive process from its message history.
+ * Mechanically extract the agent's cognitive process from its message history
+ * AND step results.
  *
- * Walks through the agent's messages and collects:
- * - Reasoning traces (thinking mode)
- * - Tool calls with key parameters and success/failure status
+ * IMPORTANT: In the WorkflowAgent, `result.messages` does NOT contain reasoning
+ * parts — the agent strips them when building `conversationPrompt` (see
+ * stream-text-iterator.ts:399-415). Reasoning is preserved only in
+ * `result.steps[].reasoning`. Tool-call→result statuses are resolved from
+ * tool-role messages in `result.messages`.
  *
- * Raw tool outputs (file contents, search results) are NOT included — this is
- * a process log, not a data dump. The final text response is omitted (it lives
- * in core.md).
+ * This function merges both sources:
+ *   - Reasoning + tool calls → from steps
+ *   - Tool results (ok/error) → from messages
  */
 export function extractCognition(
   messages: ModelMessage[],
+  steps: Array<{
+    reasoning?: Array<{ type: string; text: string }>;
+    toolCalls?: Array<{ toolCallId: string; toolName: string; input: unknown }>;
+  }>,
 ): string {
   const lines: string[] = [];
 
@@ -96,44 +103,30 @@ export function extractCognition(
     }
   }
 
-  let hasThinking = false;
-  let hasTools = false;
-
-  for (const m of messages) {
-    if (m.role !== "assistant") continue;
-    const parts = Array.isArray(m.content) ? m.content : [];
-    if (typeof m.content === "string") continue;
-
-    for (const part of parts) {
-      const p = part as {
-        type?: string;
-        text?: string;
-        toolCallId?: string;
-        toolName?: string;
-        input?: unknown;
-      };
-
-      if (p.type === "reasoning" && typeof p.text === "string") {
-        if (!hasThinking) {
-          lines.push("\n### Thinking");
-          hasThinking = true;
+  // Process each step: reasoning + tool calls with result status from messages.
+  for (const step of steps) {
+    // ── Reasoning (from steps — NOT available in messages) ──────────
+    if (step.reasoning && step.reasoning.length > 0) {
+      lines.push("\n### Thinking");
+      for (const r of step.reasoning) {
+        if (typeof r.text === "string" && r.text.trim()) {
+          lines.push(r.text);
         }
-        lines.push(p.text);
       }
+    }
 
-      if (p.type === "tool-call" && typeof p.toolName === "string") {
-        if (!hasTools) {
-          lines.push("\n### Tools");
-          hasTools = true;
-        }
-        const params = summarizeToolInput(p.input);
-        const result = toolResults.get(p.toolCallId ?? "");
+    // ── Tool calls (from steps, enriched with result status from messages) ──
+    if (step.toolCalls && step.toolCalls.length > 0) {
+      lines.push("\n### Tools");
+      for (const tc of step.toolCalls) {
+        const params = summarizeToolInput(tc.input);
+        const result = toolResults.get(tc.toolCallId);
         const status = result
           ? result.ok
             ? "ok"
             : `error: ${result.error}`
           : "?";
-        lines.push(`- \`${p.toolName}\`(${params}) → ${status}`);
+        lines.push(`- \`${tc.toolName}\`(${params}) → ${status}`);
       }
     }
   }
@@ -279,7 +272,7 @@ You can start durable background loops with the startLoop tool. When the user as
       text: extractFinalText(result.messages),
       finishReason: result.finishReason,
       startedLoops: extractStartedLoops(result.messages),
-      cognition: extractCognition(result.messages),
+      cognition: extractCognition(result.messages, result.steps),
     };
   } catch (err) {
     streamError = err;

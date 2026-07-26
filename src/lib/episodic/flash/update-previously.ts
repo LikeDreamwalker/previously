@@ -108,17 +108,26 @@ function buildPrompt(input: UpdatePreviouslyInput): string {
   } = input;
 
   let prompt = `You maintain the agent's knowledge base — a document called
-"前情提要" (previously.md) that the agent reads before every turn.
+"previously.md" that the agent reads before every turn.
 It has three sections:
 
   1. User identity  — who the user is (name, role, background)
   2. User patterns  — how the user works (preferences, habits, dislikes)
   3. Agent strategies — how to work with this user effectively
 
-Your job: review the latest conversation AND the agent's own thinking
-traces, then produce mutations for any section where you have clear evidence.
+Your job: thoroughly review ALL available context — the conversation AND the
+agent's cognition log — then produce mutations where you have evidence.
 
-You are CONSERVATIVE. Most turns produce 0-1 mutations. Do not fabricate.
+For User identity / User patterns: be conservative — only report with clear evidence.
+For Agent strategies: analyze the full cognition log. Thinking text is helpful but
+NOT required — tool calls alone carry strategy signal. Consider:
+  - What did the agent choose to do? Why might it have chosen that?
+  - What tools did it use, in what order, with what queries/parameters?
+  - Did it search before responding? In multiple languages? Beyond the literal question?
+  - Did it read memory? Write to memory? Did anything fail?
+
+Not every turn needs an update — but every turn deserves thorough analysis.
+When the cognition log is empty (first turn), it's OK to return nothing.
 
 ---
 
@@ -150,7 +159,37 @@ Recent turns:
 
   prompt += `## Source B — Agent Cognition${isDeep ? " (DEEP — full session)" : " (last turn)"}
 
+The cognition log has two parts:
+  - ### Thinking — agent's internal reasoning (may be empty)
+  - ### Tools — tools the agent called and their outcomes
+
 ${cognitionPreview}
+
+TOOL CALLS → STRATEGIES: Tool choices reveal how the agent works. When you see
+patterns in the cognition log, consider whether they suggest a strategy worth
+recording. Examples of what to look for:
+
+  Agent searched in multiple languages for the same topic
+  → Strategy: "Uses bilingual search for broader coverage"
+  → evidence: specific tool calls that show the pattern
+
+  Agent searched before responding (not after)
+  → Strategy: "Researches before answering rather than responding from memory"
+
+  Agent searched beyond the literal question
+  → Strategy: "Proactively broadens search to adjacent topics"
+
+  Agent read files or past memory
+  → Strategy: "Checks existing context before taking action"
+
+  Agent wrote to memory unprompted
+  → Strategy: "Persists important findings for future turns"
+
+  Tool returned error or empty results
+  → Strategy: "Recognizes when an approach is unavailable and adapts"
+
+Describe HOW the agent works, not WHAT it found. Use exact tool names and
+query topics from the cognition log as evidence.
 
 `;
 
@@ -177,9 +216,12 @@ trace might reveal a user preference.
 ### For any section:
 
 **observe** — new belief with concrete evidence
-  - Identity: "<statement>\n(来源: <user quote> — ${sliceId}-${lastTurnId})"
-  - Pattern: "<statement>\n(置信度: 中 | 首次: ${sliceId}-${lastTurnId} | 最近: ${sliceId}-${lastTurnId} | 观察: 1)"
-  - Strategy: "<statement>\n(来源: <cognition excerpt> — ${sliceId}-${lastTurnId})"
+  - Identity: "<statement>\n(slice: ${sliceId}-${lastTurnId}, from user)"
+  - Pattern: "<statement>\n(confidence: medium | first: ${sliceId}-${lastTurnId} | last: ${sliceId}-${lastTurnId} | obs: 1)"
+  - Strategy: "<statement — include specific evidence in the text>\n(source: ${sliceId}-${lastTurnId})"
+    The system adds the source annotation; you only write the belief statement.
+    Embed evidence in the statement body, e.g.:
+    "Uses bilingual search (CN+EN), e.g. webSearch('topic CN') + webSearch('topic EN')"
 
 **reinforce** — existing belief is confirmed by new evidence
   - Match by belief_key (a phrase in the existing bullet)
@@ -191,38 +233,43 @@ trace might reveal a user preference.
 
 ### Document maintenance:
 
-If you see "_No beliefs yet._" in a section that has beliefs listed
-below it, discard that placeholder. If an annotation is malformed, fix
-it via reinforce with the corrected text.
+"_No beliefs yet._" placeholders are handled by the system — do NOT
+emit discard actions for them. If an annotation is malformed, fix it
+via reinforce with the corrected text.
 
 ---
 
 IMPORTANT:
-- Return [] if no clear evidence — that's normal
+- Analyze ALL available context — conversation + cognition. Don't skip just
+  because one source is thin. Tool calls without thinking still carry signal.
+- Return [] when there is genuinely nothing to report — that's valid.
 - For evidence_slice, use "${sliceId}"
 - For evidence_turn, use "${lastTurnId}"
-- ${isDeep ? "Deep mode: full session review. Up to 3 mutations OK." : "Normal mode: last turn only. 0-1 mutations typical."}
+- ${isDeep ? "Deep mode: full session review. Scan ALL cognition entries for patterns across the entire session." : "Normal mode: review the latest turn. Focus on what changed or what new patterns emerged."}
 - Both modes have equal authority over ALL three sections
 - Call the flashOutput tool with your analysis.`;
 
   return prompt;
 }
 
-// ─── Flash call ────────────────────────────────────────────────────────
+// ─── Pro call (formerly Flash) ──────────────────────────────────────────
 
-const FLASH_RETRY_DELAY_MS = 300;
+const PRO_RETRY_DELAY_MS = 300;
 
 async function attemptUpdate(
   prompt: string,
 ): Promise<{ belief_updates: BeliefUpdate[]; reasoning: string }> {
   const result = await generateText({
-    model: deepseek("deepseek-v4-flash"),
+    model: deepseek("deepseek-v4-pro"),
     prompt,
     temperature: 0.1,
     tools: { flashOutput: outputSchema },
-    toolChoice: "required",
+    toolChoice: "auto",
     providerOptions: {
-      deepseek: { thinking: { type: "disabled" as const } },
+      deepseek: {
+        thinking: { type: "enabled" as const },
+        reasoningEffort: "medium" as const,
+      },
     },
   });
 
@@ -241,11 +288,21 @@ async function attemptUpdate(
     };
   }
 
-  throw new Error("Flash did not call the expected tool");
+  // Pro returned text without calling the tool — use the text as reasoning
+  // but produce no belief updates.
+  if (result.text?.trim()) {
+    console.warn(
+      "[Previously] Pro returned text instead of tool call:",
+      result.text.slice(0, 200),
+    );
+    return { belief_updates: [], reasoning: result.text.slice(0, 200) };
+  }
+
+  throw new Error("Pro did not call the expected tool");
 }
 
 /**
- * Run the merged previously update Flash call.
+ * Run the merged previously update Pro call.
  * Never throws — falls back to empty updates on failure.
  */
 export async function runUpdatePreviously(
@@ -261,14 +318,14 @@ export async function runUpdatePreviously(
       "[Previously] First attempt failed, retrying:",
       firstError instanceof Error ? firstError.message : firstError,
     );
-    await new Promise((resolve) => setTimeout(resolve, FLASH_RETRY_DELAY_MS));
+    await new Promise((resolve) => setTimeout(resolve, PRO_RETRY_DELAY_MS));
     try {
       const result = await attemptUpdate(prompt);
       return { ...result, isDeep: input.isDeep };
     } catch {
       return {
         belief_updates: [],
-        reasoning: "Previously update Flash unavailable",
+        reasoning: "Previously update Pro unavailable",
         isDeep: input.isDeep,
       };
     }

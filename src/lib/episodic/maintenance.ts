@@ -95,7 +95,26 @@ export function applyBeliefUpdates(
   updates: BeliefUpdate[],
   currentSliceId: string,
 ): string {
+  // ── Sanitize: strip lingering undefined- prefix from existing content ──
+  // Old data written before the evidence_slice fix still carries the prefix.
+  // Must run BEFORE the early return — stale data needs cleanup even when
+  // there are zero new mutations.
+  content = content.replace(
+    /\bundefined-(\d{4}[-\/]\d{2}[-\/]\d{2}[-\/]\d{4}-[A-Za-z0-9_-]+)/g,
+    "$1",
+  );
+
   if (!updates.length) return content;
+
+  // ── Sanitize: fix missing/malformed evidence_slice (Fix #4) ──────────
+  // Flash sometimes omits the field, producing "undefined-YYYY-MM-DD-..." in
+  // annotations. Fall back to currentSliceId so annotations are always valid.
+  const currentSlicePath = currentSliceId.replace(/-/g, "/");
+  for (const u of updates) {
+    if (!u.evidence_slice || u.evidence_slice === "undefined") {
+      u.evidence_slice = currentSlicePath;
+    }
+  }
 
   const lines = content.split("\n");
   const result: string[] = [];
@@ -112,12 +131,16 @@ export function applyBeliefUpdates(
   // Pre-process: separate observe from other actions
   for (const u of updates) {
     if (u.action === "observe" && u.belief) {
+      // Dedup (Fix #3): skip if the belief text already exists in the content.
+      // Flash sometimes emits duplicate observations for the same belief.
+      if (content.includes(`- ${u.belief}`)) continue;
+
       const existing = observesBySection.get(u.section) ?? [];
       const annotation =
         u.section === "User identity"
           ? `  (来源: ${u.evidence_slice}-${u.evidence_turn}，用户原话)`
           : u.section === "Agent strategies"
-            ? `  (来源: ${u.belief.slice(0, 80)} — ${u.evidence_slice}-${u.evidence_turn})`
+            ? `  (source: ${u.evidence_slice}-${u.evidence_turn})`
             : `  (置信度: 中 | 首次: ${u.evidence_slice}-${u.evidence_turn} | 最近: ${u.evidence_slice}-${u.evidence_turn} | 观察: 1)`;
       existing.push(`- ${u.belief}\n${annotation}`);
       observesBySection.set(u.section, existing);
@@ -286,7 +309,84 @@ export function applyBeliefUpdates(
     }
   }
 
+  // ── Post-process: clear _No beliefs yet._ from sections with beliefs ──
+  // Fix #5: previously we only stripped the placeholder when a section received
+  // mutations this round. But a section can have beliefs from prior rounds with
+  // no new mutations — the placeholder must still be cleared. Now we iterate all
+  // three sections unconditionally: if a section has ≥1 belief, strip placeholder.
+  finalResult = clearStalePlaceholders(finalResult);
+
   return finalResult;
+}
+
+/** Clear _No beliefs yet._ from any section that already has ≥1 belief bullet. */
+function clearStalePlaceholders(content: string): string {
+  const sectionHeaders = [
+    "## User identity",
+    "## User patterns",
+    "## Agent strategies",
+  ];
+
+  const lines = content.split("\n");
+
+  // First pass: identify which sections have at least one belief bullet.
+  const sectionsWithBeliefs = new Set<string>();
+  let scanSection: string | null = null;
+  for (const line of lines) {
+    for (const h of sectionHeaders) {
+      if (line.startsWith(h)) {
+        scanSection = h.replace("## ", "");
+        break;
+      }
+    }
+    if (
+      line.startsWith("## ") &&
+      !sectionHeaders.some((h) => line.startsWith(h))
+    ) {
+      scanSection = null;
+    }
+    if (scanSection && line.trimStart().startsWith("- ")) {
+      sectionsWithBeliefs.add(scanSection);
+    }
+  }
+
+  // Second pass: strip placeholder from sections that have beliefs.
+  const result: string[] = [];
+  let currentSection: string | null = null;
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+
+    for (const h of sectionHeaders) {
+      if (line.startsWith(h)) {
+        currentSection = h.replace("## ", "");
+        break;
+      }
+    }
+    if (
+      line.startsWith("## ") &&
+      !sectionHeaders.some((h) => line.startsWith(h))
+    ) {
+      currentSection = null;
+    }
+
+    if (
+      line.trim() === "_No beliefs yet._" &&
+      currentSection &&
+      sectionsWithBeliefs.has(currentSection)
+    ) {
+      i++;
+      if (i < lines.length && lines[i].trim() === "") {
+        i++;
+      }
+      continue;
+    }
+
+    result.push(line);
+    i++;
+  }
+
+  return result.join("\n");
 }
 
 /** Find the line index right after a section header's content ends. */

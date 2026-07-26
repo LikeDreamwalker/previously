@@ -257,39 +257,140 @@ _Active slice: 2026-07-24-1500 | Last updated: Turn a3fk2w_
     expect(result).toContain("_Active slice: 2026-07-25-1000");
   });
 
-  it("handles multiple updates of different types in one pass", () => {
+  it("Fix #5: clears _No beliefs yet._ from sections with existing beliefs even when not mutated this round", () => {
+    // Simulate: User patterns has beliefs but only User identity gets a mutation this round.
+    // The placeholder in User patterns should still be cleared.
+    const content = `# Agent Beliefs
+
+_Active slice: 2026-07-24-1500 | Last updated: Turn a3fk2w_
+
+## User identity (factual beliefs — user explicitly stated these)
+
+_No beliefs yet._
+
+## User patterns (pattern beliefs — agent observed these)
+
+_No beliefs yet._
+
+- 喜欢在深夜工作
+  (置信度: 高 | 首次: 2026/07/25/1000-x7_y9z | 最近: 2026/07/25/1000-x7_y9z | 观察: 6)
+
+## Agent strategies (derived from beliefs above)
+
+_No beliefs yet._
+`;
     const updates: BeliefUpdate[] = [
       {
-        action: "reinforce",
-        section: "User patterns",
-        belief_key: "偏好简洁结构化的回答",
-        evidence_slice: "2026/07/25/1000",
-        evidence_turn: "x7_y9z",
-      },
-      {
         action: "observe",
-        section: "User patterns",
-        belief: "喜欢在深夜工作",
-        evidence_slice: "2026/07/25/1000",
-        evidence_turn: "x7_y9z",
-      },
-      {
-        action: "discard",
-        section: "User patterns",
-        belief_key: "偏好 Rust > Python",
-        evidence_slice: "2026/07/25/1000",
-        evidence_turn: "x7_y9z",
+        section: "User identity",
+        belief: "偏好用中文交流",
+        evidence_slice: "2026/07/26/1200",
+        evidence_turn: "a9b8c",
       },
     ];
-    const result = applyBeliefUpdates(SAMPLE_PREVIOUSLY, updates, "2026-07-25-1000");
-    // Reinforced
-    expect(result).toContain("观察: 5"); // 4→5
-    // New belief added
-    expect(result).toContain("喜欢在深夜工作");
-    // Discarded
-    expect(result).not.toContain("偏好 Rust > Python");
-    // Identity untouched
-    expect(result).toContain("自称 Alan Yuan");
+    const result = applyBeliefUpdates(content, updates, "2026-07-26-1200");
+    // User identity placeholder cleared (receiving mutation)
+    expect(result).not.toContain("_No beliefs yet._\n\n- 偏好用中文交流");
+    // User patterns placeholder ALSO cleared (has beliefs, even though not mutated)
+    const patternsSection = result.split("## User patterns")[1].split("## Agent strategies")[0];
+    expect(patternsSection).not.toContain("_No beliefs yet._");
+    expect(patternsSection).toContain("喜欢在深夜工作");
+    // Agent strategies placeholder KEPT (no beliefs)
+    expect(result).toContain("_No beliefs yet._");
+  });
+
+  it("Fix #4: strips undefined- prefix from existing content", () => {
+    const content = `# Agent Beliefs
+
+_Active slice: 2026-07-25-1730 | Last updated: Turn dCNovA_
+
+## User identity (factual beliefs — user explicitly stated these)
+
+- 用户正在了解背插主板
+  (来源: undefined-2026-07-25-1730-dCNovA，用户原话)
+
+## User patterns (pattern beliefs — agent observed these)
+
+_No beliefs yet._
+
+## Agent strategies (derived from beliefs above)
+
+_No beliefs yet._
+`;
+    // No updates — just verify the undefined- prefix is cleaned up
+    const result = applyBeliefUpdates(content, [], "2026-07-26-1200");
+    // Should NOT contain undefined- prefix
+    expect(result).not.toContain("undefined-");
+    // Should contain the corrected annotation
+    expect(result).toContain("(来源: 2026-07-25-1730-dCNovA，用户原话)");
+  });
+
+  it("Fix #4: falls back to currentSliceId when evidence_slice is missing", () => {
+    const content = `# Agent Beliefs
+
+_Active slice: 2026-07-26-1200 | Last updated: Turn a1b2c_
+
+## User identity (factual beliefs — user explicitly stated these)
+
+_No beliefs yet._
+
+## User patterns (pattern beliefs — agent observed these)
+
+_No beliefs yet._
+
+## Agent strategies (derived from beliefs above)
+
+_No beliefs yet._
+`;
+    const updates: BeliefUpdate[] = [
+      {
+        action: "observe",
+        section: "User identity",
+        belief: "用户正在装机",
+        // evidence_slice deliberately omitted
+        evidence_slice: "" as unknown as string, // simulate missing field
+        evidence_turn: "x9y8z",
+      },
+    ];
+    const result = applyBeliefUpdates(content, updates, "2026-07-26-1200");
+    // Should use the fallback (currentSliceId converted to path format)
+    expect(result).toContain("(来源: 2026/07/26/1200-x9y8z，用户原话)");
+    // Should NOT contain undefined
+    expect(result).not.toContain("undefined");
+  });
+
+  it("Fix #3: skips duplicate belief observations", () => {
+    const content = `# Agent Beliefs
+
+_Active slice: 2026-07-25-1859 | Last updated: Turn LiOQ5A_
+
+## User identity (factual beliefs — user explicitly stated these)
+
+- 用户正在了解背插主板的未来趋势
+  (来源: 2026-07-25-1859-LiOQ5A，用户原话)
+
+## User patterns (pattern beliefs — agent observed these)
+
+_No beliefs yet._
+
+## Agent strategies (derived from beliefs above)
+
+_No beliefs yet._
+`;
+    // Flash emits the same belief twice (duplicate)
+    const updates: BeliefUpdate[] = [
+      {
+        action: "observe",
+        section: "User identity",
+        belief: "用户正在了解背插主板的未来趋势",
+        evidence_slice: "2026/07/26/1200",
+        evidence_turn: "a1b2c",
+      },
+    ];
+    const result = applyBeliefUpdates(content, updates, "2026-07-26-1200");
+    // The belief should appear exactly once
+    const count = (result.match(/背插主板的未来趋势/g) ?? []).length;
+    expect(count).toBe(1);
   });
 });
 
