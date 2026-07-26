@@ -13,6 +13,7 @@ import { Message, MessageContent, MessageFooter } from "@/components/ui/message"
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { FileText, Activity } from "lucide-react";
 import { LoadingTip } from "./loading-tip";
+import { PreviouslySheet } from "./previously-sheet";
 
 interface ChatMessageProps {
   message: UIMessage;
@@ -39,7 +40,7 @@ type StreamItem =
   | { kind: "text"; content: string }
   | { kind: "tool"; toolCallId: string; toolName: string; state: string; input?: unknown; output?: unknown }
   | { kind: "belief"; mode?: string; summaries: string[] }
-  | { kind: "phase"; phase: string; running?: boolean; mode?: string; summaries?: string[] };
+  | { kind: "phase"; phase: string; running?: boolean; mode?: string; summaries?: string[]; previouslyContent?: string };
 
 /** Maps a running-phase i18n key to its done-state key. */
 const PHASE_DONE_KEYS: Record<string, string> = {
@@ -104,7 +105,7 @@ function buildStream(parts: readonly AnyPart[], isStreaming: boolean): StreamIte
       }
     } else if (p.type === "data-phase") {
       flushText();
-      const d = p.data as { phase?: string; running?: boolean; mode?: string; summaries?: string[] } | undefined;
+      const d = p.data as { phase?: string; running?: boolean; mode?: string; summaries?: string[]; previouslyContent?: string } | undefined;
       if (d?.phase) {
         // Merge with existing phase item of the same name — a phase emits
         // { running: true } at start and { running: false, summaries: [...] } at end.
@@ -116,6 +117,7 @@ function buildStream(parts: readonly AnyPart[], isStreaming: boolean): StreamIte
           existing.running = d.running ?? false;
           if (d.mode !== undefined) existing.mode = d.mode;
           if (d.summaries !== undefined) existing.summaries = d.summaries;
+          if (d.previouslyContent !== undefined) existing.previouslyContent = d.previouslyContent;
         } else {
           items.push({
             kind: "phase",
@@ -123,6 +125,7 @@ function buildStream(parts: readonly AnyPart[], isStreaming: boolean): StreamIte
             running: d.running ?? false,
             mode: d.mode,
             summaries: d.summaries,
+            previouslyContent: d.previouslyContent,
           });
         }
       }
@@ -271,31 +274,42 @@ export const ChatMessage = memo(function ChatMessage({ message, onRegenerate, is
                         : t(item.phase);
                     const hasSummaries = item.summaries && item.summaries.length > 0;
                     const isDeep = item.mode === "deep";
+                    const showPreviouslyView =
+                      item.phase === "updatingPreviously" &&
+                      !item.running &&
+                      item.previouslyContent &&
+                      item.previouslyContent.trim().length > 0;
                     return (
-                      <PhaseIndicator
-                        key={key}
-                        mode="static"
-                        icon={<Activity className="h-3.5 w-3.5" />}
-                        label={label}
-                        meta={!item.running && isDeep ? t("deepReview") : undefined}
-                        state={{
-                          running: item.running ?? false,
-                          inputStreaming: false,
-                          interrupted: false,
-                          denied: false,
-                          approvalRequested: false,
-                          isActiveApproval: false,
-                        }}
-                        expandedContent={
-                          hasSummaries
-                            ? <div className="space-y-1 text-xs text-muted-foreground leading-relaxed">
-                                {item.summaries.map((s, j) => (
-                                  <div key={j}>{s}</div>
-                                ))}
-                              </div>
-                            : undefined
-                        }
-                      />
+                      <div key={key}>
+                        <PhaseIndicator
+                          mode="static"
+                          icon={<Activity className="h-3.5 w-3.5" />}
+                          label={label}
+                          meta={!item.running && isDeep ? t("deepReview") : undefined}
+                          state={{
+                            running: item.running ?? false,
+                            inputStreaming: false,
+                            interrupted: false,
+                            denied: false,
+                            approvalRequested: false,
+                            isActiveApproval: false,
+                          }}
+                          expandedContent={
+                            hasSummaries
+                              ? <div className="space-y-1 text-xs text-muted-foreground leading-relaxed">
+                                  {item.summaries!.map((s, j) => (
+                                    <div key={j}>{s}</div>
+                                  ))}
+                                </div>
+                              : undefined
+                          }
+                        />
+                        {showPreviouslyView && (
+                          <div className="pl-7 -mt-1 mb-1">
+                            <PreviouslySheet content={item.previouslyContent!} />
+                          </div>
+                        )}
+                      </div>
                     );
                   }
                   if (item.kind === "text") {

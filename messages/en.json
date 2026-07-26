@@ -112,7 +112,11 @@
       "scanned": "Memory scanned",
       "updatingPreviously": "Updating 前情提要…",
       "previouslyUpdated": "前情提要 updated",
-      "deepReview": "Deep review"
+      "deepReview": "Deep review",
+      "gating": "Checking if update needed…",
+      "gated": "Check complete",
+      "viewPreviously": "View previously.md →",
+      "previouslyTitle": "前情提要 · Previously.md"
     },
     "loadingTips": [
       "Your conversations are saved as time slices — 30 minutes of silence closes one and starts the next",

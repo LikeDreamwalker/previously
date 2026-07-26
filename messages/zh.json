@@ -112,7 +112,11 @@
       "scanned": "记忆扫描完成",
       "updatingPreviously": "前情提要更新中…",
       "previouslyUpdated": "前情提要已更新",
-      "deepReview": "深度回顾"
+      "deepReview": "深度回顾",
+      "gating": "正在判断是否需要更新…",
+      "gated": "判断完成",
+      "viewPreviously": "查看 previously.md →",
+      "previouslyTitle": "前情提要 · Previously.md"
     },
     "loadingTips": [
       "你的对话被切成时间片——静默 30 分钟自动收束，开启新的一片",
