@@ -40,28 +40,10 @@ export {
 
 export type {
   SliceMetadata,
-  BeliefUpdate,
 } from "./maintenance";
 export {
   applyMetadataUpdates,
-  applyBeliefUpdates,
 } from "./maintenance";
-
-export {
-  runMetadataUpdate,
-} from "./flash/metadata";
-export type {
-  MetadataUpdateInput,
-  MetadataUpdateOutput,
-} from "./flash/metadata";
-
-export {
-  runUpdatePreviously,
-} from "./flash/update-previously";
-export type {
-  UpdatePreviouslyInput,
-  UpdatePreviouslyOutput,
-} from "./flash/update-previously";
 
 export {
   runRecallSearch,

@@ -66,15 +66,16 @@ export async function startTurn(
   // negligible for a time slice's lifetime).
   const turnId = crypto.randomBytes(4).toString("base64url");
 
-  // Full turns, no truncation. The limit comes from user config so it can be
-  // tuned without a redeploy.
-  const modelMessages = await convertToModelMessages(args.messages);
-  const recentTurns = modelMessages
-    .slice(-Math.ceil(config.context.recentTurnsLimit * 1.2))
-    .map((m) => ({
-      role: m.role as string,
-      content: typeof m.content === "string" ? m.content : JSON.stringify(m.content),
-    }));
+  // Only send recent messages to the model; older context is retrieved on
+  // demand via recall. The 1.2× multiplier gives a small buffer beyond the
+  // configured limit so short back-and-forth exchanges stay intact.
+  const recentLimit = Math.ceil(config.context.recentTurnsLimit * 1.2);
+  const fullMessages = await convertToModelMessages(args.messages);
+  const modelMessages = fullMessages.slice(-recentLimit);
+  const recentTurns = modelMessages.map((m) => ({
+    role: m.role as string,
+    content: typeof m.content === "string" ? m.content : JSON.stringify(m.content),
+  }));
 
   const userMessages = args.messages.filter((m) => m.role === "user");
   const lastUserMessage = extractLastUserText(userMessages[userMessages.length - 1]);

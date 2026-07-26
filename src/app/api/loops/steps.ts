@@ -118,6 +118,7 @@ export async function initLoop(
       useGithub: USE_GITHUB,
       useDemo: USE_DEMO,
       sliceId: input.sliceOrigin ?? "",
+      recentTurns: [],
     },
   };
 }

@@ -32,8 +32,7 @@ import type {
 } from "@/lib/chat/turn-types";
 import {
   housekeeping,
-  metadataUpdate,
-  updatePreviously,
+  seedPreviously,
   finalizeTurn,
 } from "./steps";
 
@@ -78,10 +77,7 @@ function extractFinalText(messages: ModelMessage[]): string {
  */
 export function extractCognition(
   messages: ModelMessage[],
-  steps: Array<{
-    reasoning?: Array<{ type: string; text: string }>;
-    toolCalls?: Array<{ toolCallId: string; toolName: string; input: unknown }>;
-  }>,
+  steps: unknown,
 ): string {
   const lines: string[] = [];
 
@@ -104,21 +100,26 @@ export function extractCognition(
   }
 
   // Process each step: reasoning + tool calls with result status from messages.
-  for (const step of steps) {
+  const stepsArray = Array.isArray(steps) ? steps : [];
+  for (const step of stepsArray) {
+    const stepObj = step as Record<string, unknown>;
     // ── Reasoning (from steps — NOT available in messages) ──────────
-    if (step.reasoning && step.reasoning.length > 0) {
+    const reasoning = stepObj.reasoning as Array<{ type: string; text?: string; data?: unknown }> | undefined;
+    if (reasoning && reasoning.length > 0) {
       lines.push("\n### Thinking");
-      for (const r of step.reasoning) {
-        if (typeof r.text === "string" && r.text.trim()) {
-          lines.push(r.text);
+      for (const r of reasoning) {
+        const content: unknown = typeof r.text === "string" ? r.text : r.data;
+        if (typeof content === "string" && content.trim()) {
+          lines.push(content);
         }
       }
     }
 
     // ── Tool calls (from steps, enriched with result status from messages) ──
-    if (step.toolCalls && step.toolCalls.length > 0) {
+    const toolCalls = stepObj.toolCalls as Array<{ toolCallId: string; toolName: string; input: unknown }> | undefined;
+    if (toolCalls && toolCalls.length > 0) {
       lines.push("\n### Tools");
-      for (const tc of step.toolCalls) {
+      for (const tc of toolCalls) {
         const params = summarizeToolInput(tc.input);
         const result = toolResults.get(tc.toolCallId);
         const status = result
@@ -218,36 +219,37 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
   // ── Pre-turn steps ─────────────────────────────────────────────────────
 
   const { slice, closedSlice } = await housekeeping(input);
-  const meta = await metadataUpdate(input, slice);
-  const belief = await updatePreviously(input, meta.slice, closedSlice);
+  const previouslyContent = await seedPreviously(slice.slice_id, closedSlice?.slice_id);
 
-  // ── Assemble system prompt (lightweight — no Flash injection) ──────────
+  // ── Assemble system prompt ──────────────────────────────────────────────
 
-  const systemPrompt = `${belief.userProfile}
+  const sliceClosedNote = closedSlice
+    ? `\n\n**注意**：上一轮对话关闭了一个时间切片（${closedSlice.slice_id}）。如果你觉得这个切片中有值得长期记住的内容，可以调用 \`updatePreviously\` 工具做一次深度回顾。`
+    : "";
 
-## What I understand about you
+  const systemPrompt = `## 我对你的理解
 
-${belief.previouslyContent}
-This is my current understanding of who you are and how you work. If any of this is wrong or outdated, tell me and I'll update it.
+${previouslyContent}
 
-## Memory access rules
+以上是我目前对你的了解。如果有任何过时或错误的，告诉我，我会更新。${sliceClosedNote}
 
-When you need context from past conversations, follow this order:
+## 记忆访问规则
 
-1. **Recall first.** Call \`recall\` to search the episodic memory. The recall agent returns pointers (which slices, which turns, why relevant). Never call readSlice, readTimeline, readStrand, or listStrands before recall has returned results.
-2. **Deep-read if needed.** After recall returns, call \`readSlice\` to get content from specific slices. Use the \`range\` parameter to fetch only what you need:
-   - \`range: { type: "last", count: 3 }\` — get the last 3 turns of a slice
-   - \`range: { type: "turns", indices: [0, 5, 7] }\` — get specific turn numbers
-   - \`range: { type: "date", after: "2026-07-24T00:00:00Z" }\` — get turns after a date
-   - Omit \`range\` to get the full slice (use sparingly for large slices)
-3. **Explore more if needed.** Use \`readStrand\` or \`readTimeline\` only to follow up on leads from the recall results.
+当你需要从过去的对话中获取上下文时，按以下顺序操作：
 
-Think of recall as your search engine — you must search before you read. Reading slices blindly without recall is like opening random files without knowing what's inside.
+1. **先 recall。** 调用 \`recall\` 搜索情景记忆。回忆 agent 返回指针（哪些切片、哪些轮次、为什么相关）。在 recall 返回结果之前，不要调用 readSlice、readTimeline、readStrand 或 listStrands。
+2. **如需深入，再读取。** recall 返回后，调用 \`readSlice\` 获取特定切片的内容。使用 \`range\` 参数只获取你需要的内容：
+   - \`range: { type: "last", count: 3 }\` — 获取切片最后 3 轮
+   - \`range: { type: "turns", indices: [0, 5, 7] }\` — 获取特定轮次
+   - \`range: { type: "date", after: "2026-07-24T00:00:00Z" }\` — 获取某日期之后的轮次
+   - 省略 \`range\` 获取完整切片（谨慎用于大型切片）
+3. **进一步探索。** 使用 \`readStrand\` 或 \`readTimeline\` 仅用于跟进 recall 结果中的线索。
 
-**Think in time.** When recall returns results, prefer more recent slices — the user's current state is usually what matters most. When you cite past conversations, include a time anchor ("Last Tuesday you mentioned…" not just "You mentioned…") so the user knows you're placing it correctly on their timeline. What changed since last time is often more useful than what was said.
+**以时间思考。** 当 recall 返回结果时，优先选择更近的切片——用户当前的状态通常最重要。当你引用过去的对话时，加入时间锚点（"你上周二提到过……"而不是"你提到过……"），让用户知道你把时间线放对了。从上次之后发生了什么变化，往往比当时说了什么更有用。
 
-You can search the live web with the webSearch tool when you need current or external information beyond the user's memory and your knowledge. Weave what it finds into your prose with inline citations where relevant.
-You can start durable background loops with the startLoop tool. When the user asks for continuous or background work, or when you judge a task is large or long-running enough to work autonomously rather than answer inline, call startLoop with a clear, self-contained goal — it keeps working after this turn and records its progress to memory. Tell the user when you start one. Don't use it for anything you can answer right now.`;
+你可以用 \`webSearch\` 搜索实时网络以获取当前信息，并在相关时引用到回复中。
+你可以用 \`startLoop\` 启动持久的后台循环任务。当用户要求持续或后台工作，或者你判断任务足够大或足够长，可以在后台自主工作时调用。告诉用户你启动了。
+你可以用 \`updatePreviously\` 来更新我对你的理解。当注意到值得记住的事情、用户纠正你、或时间切片关闭时调用。**重要**：把它放在你回复的最后——先完整回应用户，再调用这个工具。每轮最多调用一次，把多个观察合并到一次调用里。调用完之后不要再继续输出，因为工具返回的是内部操作结果，不是给用户看的内容。`;
 
   // ── Pro agent ──────────────────────────────────────────────────────────
 
@@ -261,6 +263,8 @@ You can start durable background loops with the startLoop tool. When the user as
       useGithub: input.useGithub,
       useDemo: input.useDemo,
       sliceId: slice.slice_id,
+      closedSliceId: closedSlice?.slice_id,
+      recentTurns: input.recentTurns,
     }),
   });
 
@@ -288,7 +292,7 @@ You can start durable background loops with the startLoop tool. When the user as
 
   // ── Post-turn persistence ──────────────────────────────────────────────
 
-  await finalizeTurn(belief.slice, outcome, input.turnId);
+  await finalizeTurn(slice, outcome, input.turnId);
 
   if (streamError !== null) {
     throw streamError;

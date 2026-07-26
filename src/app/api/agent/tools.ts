@@ -26,6 +26,7 @@ import {
   recallExecute,
   startLoopExecute,
   loopReportExecute,
+  updatePreviouslyExecute,
   type ToolContext,
   type LoopToolContext,
 } from "./tool-executors";
@@ -38,6 +39,11 @@ const toolContextSchema = z.object({
   useGithub: z.boolean(),
   useDemo: z.boolean(),
   sliceId: z.string(),
+  closedSliceId: z.string().optional(),
+  recentTurns: z.array(z.object({
+    role: z.string(),
+    content: z.string(),
+  })),
 });
 
 const loopToolContextSchema = z.object({
@@ -236,6 +242,36 @@ export const chatTools = {
     contextSchema: toolContextSchema,
     execute: startLoopExecute,
   }),
+  updatePreviously: tool({
+    description:
+      "Ask the Previously Agent (your 'brain') to review and update your " +
+      "self-model (previously.md). Call this when you notice something worth " +
+      "remembering about the user, when the user corrects you, or when a " +
+      "time slice just closed (good time for a deep review). " +
+      "This runs synchronously but the updated model is available next turn. " +
+      "You do NOT need to call this every turn — only when you have a reason.",
+    inputSchema: z.object({
+      signal: z
+        .enum(["new_observation", "user_correction", "slice_closed", "self_reflection"])
+        .describe(
+          "Why you're updating: new_observation (noticed something about the user), " +
+          "user_correction (user said you were wrong), " +
+          "slice_closed (a time slice just closed — deep review), " +
+          "self_reflection (you think your strategy needs adjustment).",
+        ),
+      note: z
+        .string()
+        .optional()
+        .describe("One sentence describing what triggered this. E.g. '用户说我回答太啰嗦了'."),
+      priority: z
+        .enum(["normal", "high"])
+        .optional()
+        .default("normal")
+        .describe("high = user explicitly requested. normal = agent-driven observation."),
+    }),
+    contextSchema: toolContextSchema,
+    execute: updatePreviouslyExecute,
+  }),
 };
 
 // ─── Loop tool set ───────────────────────────────────────────────────────
@@ -273,6 +309,7 @@ export function buildChatToolsContext(ctx: ToolContext): Record<keyof typeof cha
     recall: ctx,
     webSearch: ctx,
     startLoop: ctx,
+    updatePreviously: ctx,
   };
 }
 

@@ -1,13 +1,15 @@
 /**
  * Episodic memory maintenance — pure functions for metadata and belief updates.
  *
- * Flash LLM calls have been extracted to dedicated modules:
- *   - src/lib/episodic/flash/metadata.ts   (slice metadata updates)
- *   - src/lib/episodic/flash/belief.ts     (previously.md belief updates)
- *   - src/lib/episodic/flash/recall.ts     (recall search mini-agent)
+ * Flash LLM calls live in dedicated modules:
+ *   - src/lib/episodic/flash/recall.ts           (recall search mini-agent)
+ *   - src/lib/episodic/flash/previously-agent.ts  (previously.md evolution)
  *
- * This module now contains only pure data types and pure transformation
+ * This module contains only pure data types and pure transformation
  * functions — no I/O, no LLM calls, no Node dependencies.
+ *
+ * NOTE: applyBeliefUpdates operates on the OLD v1 format (flat 3-section).
+ * New code should use previously-updater.ts (v2 long/short-term format).
  */
 
 // ─── Types ──────────────────────────────────────────────────────────────

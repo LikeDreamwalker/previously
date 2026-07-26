@@ -2,22 +2,20 @@
  * Chat turn step functions — full Node.js, retried automatically on failure.
  *
  * Kept in a SEPARATE module from the workflow so their Node-dependent imports
- * (gray-matter + fs, the episodic manager, DeepSeek Flash) never enter the
- * deterministic workflow sandbox. `turn-workflow.ts` imports these
- * `"use step"` functions by reference only; the loader compiles them into the
- * step bundle, not the workflow bundle.
+ * (gray-matter + fs, the episodic manager) never enter the deterministic
+ * workflow sandbox. `turn-workflow.ts` imports these `"use step"` functions
+ * by reference only; the loader compiles them into the step bundle, not the
+ * workflow bundle.
  *
  * Steps:
- *   1. housekeeping     — recover/close/create slice, append user turn, open UI stream
- *   2. metadataUpdate   — Flash reviews slice metadata (focus/summary/tags/tone)
- *   3. updatePreviously — Flash reviews user + agent cognition → previously.md
- *   4. finalizeTurn     — persist agent turn, close UI stream
+ *   1. housekeeping  — recover/close/create slice, append user turn, open UI stream
+ *   2. seedPreviously — copy previously.md forward to new slice (mechanical, no LLM)
+ *   3. finalizeTurn  — persist agent turn, close UI stream
  *
- * Chunk order for the UI: data-belief → reasoning/text/tool → done.
+ * Chunk order for the UI: start → start-step → data-phase(slicing) → finish-step → finish.
  */
 import { type UIMessageChunk } from "ai";
 import { getWritable } from "workflow";
-import { buildAgentIdentityPrompt, loadUserProfile } from "@/lib/identity";
 import {
   createSlice,
   closeSlice,
@@ -26,26 +24,15 @@ import {
   ensureIndexEntries,
   tryLoadTodaySlice,
   writeAgentTimeline,
-  readAgentTimeline,
-  readPreviously,
-  writePreviously,
   ensurePreviously,
+  readPreviously,
   generateGlobalTimeline,
   type TimeSlice,
 } from "@/lib/episodic";
 import { checkTimeSilence } from "@/lib/episodic/slicer";
-import {
-  applyMetadataUpdates,
-  applyBeliefUpdates,
-  type BeliefUpdate,
-} from "@/lib/episodic/maintenance";
-import { runMetadataUpdate } from "@/lib/episodic/flash/metadata";
-import { runUpdatePreviously } from "@/lib/episodic/flash/update-previously";
 import type {
   TurnInput,
   HousekeepingResult,
-  MetadataUpdateResult,
-  BeliefUpdateResult,
   TurnOutcome,
 } from "@/lib/chat/turn-types";
 
@@ -141,318 +128,26 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   return { slice, closedSlice };
 }
 
-// ─── Step 2: Metadata update (Flash) ───────────────────────────────────────
+// ─── Step 2: Seed previously.md (mechanical) ────────────────────────────────
 
 /**
- * Flash reviews the current slice metadata (focus, summary, decisions, open
- * loops, tags, emotional tone) against recent conversation and updates stale
- * fields. Pure maintenance — no recall, no beliefs, no intent.
- * Never throws — Flash is fallible, so failure yields unchanged slice.
+ * Pure file copy — no LLM. Copies the most recent previously.md forward to
+ * the new slice via ensurePreviously(). If a slice just closed and was deep-
+ * reviewed by the Previously Agent (called via updatePreviously tool), the
+ * enriched version is automatically picked up.
  */
-export async function metadataUpdate(
-  input: TurnInput,
-  slice: TimeSlice
-): Promise<MetadataUpdateResult> {
+export async function seedPreviously(
+  currentSliceId: string,
+  _closedSliceId?: string,
+): Promise<string> {
   "use step";
 
-  const mw0 = getWritable<UIMessageChunk>().getWriter();
-  await mw0.write({
-    type: "data-phase" as `data-${string}`,
-    id: "phase-metadata",
-    data: { phase: "scanning", running: true },
-  } as UIMessageChunk);
-  mw0.releaseLock();
-
-  const { recentTurns, lastUserMessage } = input;
-
-  try {
-    const result = await runMetadataUpdate({
-      slice: {
-        slice_id: slice.slice_id,
-        focus: slice.focus || "",
-        summary: slice.summary || "",
-        open_loops: slice.open_loops || [],
-        decisions: slice.decisions || [],
-        tags: slice.tags || [],
-        emotional_tone: slice.emotional_tone || "neutral",
-      },
-      recentTurns,
-      newMessage: lastUserMessage,
-    });
-
-    console.log(
-      `[Metadata] updated=${result.needs_metadata_update} reasoning=${result.reasoning.slice(0, 80)}`
-    );
-
-    if (result.needs_metadata_update && result.metadata_updates) {
-      const meta = {
-        slice_id: slice.slice_id,
-        focus: slice.focus || "",
-        summary: slice.summary || "",
-        open_loops: slice.open_loops || [],
-        decisions: slice.decisions || [],
-        tags: slice.tags || [],
-        emotional_tone: slice.emotional_tone || "neutral",
-      };
-      applyMetadataUpdates(meta, result.metadata_updates);
-      slice.focus = meta.focus;
-      slice.summary = meta.summary;
-      slice.open_loops = meta.open_loops;
-      slice.decisions = meta.decisions;
-      slice.tags = meta.tags;
-      slice.emotional_tone = meta.emotional_tone as typeof slice.emotional_tone;
-    }
-
-    // Emit phase completion with result data for expandable UI.
-    const metaWriter = getWritable<UIMessageChunk>().getWriter();
-    await metaWriter.write({
-      type: "data-phase" as `data-${string}`,
-      id: "phase-metadata",
-      data: {
-        phase: "scanning",
-        running: false,
-        summaries: result.needs_metadata_update
-          ? [`元数据已更新：${result.reasoning}`]
-          : [],
-      },
-    } as UIMessageChunk);
-    metaWriter.releaseLock();
-
-    return { slice, metadataUpdated: result.needs_metadata_update, reasoning: result.reasoning };
-  } catch (err) {
-    console.warn(
-      "[Metadata] Flash call failed, continuing without update:",
-      err instanceof Error ? err.message : err
-    );
-
-    const metaWriter = getWritable<UIMessageChunk>().getWriter();
-    await metaWriter.write({
-      type: "data-phase" as `data-${string}`,
-      id: "phase-metadata",
-      data: {
-        phase: "scanning",
-        running: false,
-        summaries: [],
-      },
-    } as UIMessageChunk);
-    metaWriter.releaseLock();
-
-    return { slice, metadataUpdated: false, reasoning: "Flash unavailable" };
-  }
+  const content = await ensurePreviously(currentSliceId);
+  console.log(`[Previously] Seeded previously.md for ${currentSliceId}`);
+  return content;
 }
 
-// ─── Step 3: Update previously.md (Pro) ────────────────────────────────────
-
-/**
- * Flash reviews BOTH the user conversation AND the agent's own cognition in
- * one call, producing mutations across all three sections of previously.md:
- *
- *   1. User identity    — who the user is (from conversation)
- *   2. User patterns    — how the user works (from conversation)
- *   3. Agent strategies — how to work with this user (from agent cognition)
- *
- * Mode is determined by whether a slice just closed:
- *   normal — every turn, reviews last cognition entry
- *   deep   — on slice close, reviews full closed slice's agent.md
- *
- * Also loads the user profile for system prompt assembly.
- * Never throws — on failure, returns unchanged content and empty updates.
- */
-export async function updatePreviously(
-  input: TurnInput,
-  slice: TimeSlice,
-  closedSlice: TimeSlice | undefined,
-): Promise<BeliefUpdateResult> {
-  "use step";
-
-  const bw0 = getWritable<UIMessageChunk>().getWriter();
-  await bw0.write({
-    type: "data-phase" as `data-${string}`,
-    id: "phase-belief",
-    data: { phase: "updatingPreviously", running: true },
-  } as UIMessageChunk);
-  bw0.releaseLock();
-
-  const isDeep = closedSlice !== undefined;
-  const { recentTurns, lastUserMessage } = input;
-
-  const userProfile = await loadUserProfile();
-  let allBeliefUpdates: BeliefUpdate[] = [];
-  let allReasoning = "";
-
-  // ── Phase 1: Deep review (slice just closed) ──────────────────────────
-  // Enrich the CLOSING slice's previously.md before it gets copied forward.
-  // This way the closed slice carries its own strategies, and the new slice
-  // inherits them through ensurePreviously.
-  if (isDeep && closedSlice) {
-    let closedAgentCognition = "";
-    let closedPreviously = "";
-
-    try {
-      closedAgentCognition = await readAgentTimeline(closedSlice.slice_id);
-    } catch { /* no agent.md */ }
-    try {
-      closedPreviously = await readPreviously(closedSlice.slice_id);
-    } catch { /* no previously.md */ }
-
-    try {
-      const deepResult = await runUpdatePreviously({
-        recentTurns,
-        newMessage: lastUserMessage,
-        previouslyContent: closedPreviously,
-        sliceId: closedSlice.slice_id,
-        lastTurnId: input.turnId,
-        agentCognition: closedAgentCognition,
-        isDeep: true,
-      });
-
-      if (deepResult.belief_updates.length > 0) {
-        const enriched = applyBeliefUpdates(
-          closedPreviously,
-          deepResult.belief_updates,
-          closedSlice.slice_id,
-        );
-        await writePreviously(closedSlice.slice_id, enriched);
-
-        console.log(
-          `[Previously] deep review of ${closedSlice.slice_id}: ` +
-          `${deepResult.belief_updates.length} mutations ` +
-          `sections=${deepResult.belief_updates.map(u => u.section).filter((v, i, a) => a.indexOf(v) === i).join(", ")}`
-        );
-
-        // Collect deep review updates for the UI chunk.
-        allBeliefUpdates.push(...deepResult.belief_updates);
-        allReasoning = deepResult.reasoning;
-      }
-    } catch (err) {
-      console.warn(
-        "[Previously] Deep review failed:",
-        err instanceof Error ? err.message : err,
-      );
-    }
-  }
-
-  // ── Phase 2: Seed the new slice's previously.md ───────────────────────
-  // Now that the closing slice's previously.md is enriched, copy it forward.
-  // ensurePreviously scans backward and copies from the most recent slice
-  // (which is the one we just enriched above).
-  await ensurePreviously(slice.slice_id);
-
-  // ── Phase 3: Normal review (current slice, every turn) ────────────────
-  let previouslyContent = "";
-  try {
-    previouslyContent = await readPreviously(slice.slice_id);
-  } catch { /* use empty */ }
-
-  let agentCognition = "";
-  try {
-    agentCognition = await readAgentTimeline(slice.slice_id);
-  } catch { /* no agent.md yet */ }
-
-  try {
-    const normalResult = await runUpdatePreviously({
-      recentTurns,
-      newMessage: lastUserMessage,
-      previouslyContent,
-      sliceId: slice.slice_id,
-      lastTurnId: input.turnId,
-      agentCognition,
-      isDeep: false,
-    });
-
-    if (normalResult.belief_updates.length > 0) {
-      console.log(
-        `[Previously] normal review: ${normalResult.belief_updates.length} mutations ` +
-        `sections=${normalResult.belief_updates.map(u => u.section).filter((v, i, a) => a.indexOf(v) === i).join(", ")}`
-      );
-
-      const updated = applyBeliefUpdates(
-        previouslyContent,
-        normalResult.belief_updates,
-        slice.slice_id,
-      );
-      await writePreviously(slice.slice_id, updated);
-      previouslyContent = updated;
-
-      allBeliefUpdates.push(...normalResult.belief_updates);
-      if (!allReasoning) allReasoning = normalResult.reasoning;
-    }
-  } catch (err) {
-    console.warn(
-      "[Previously] Normal review failed:",
-      err instanceof Error ? err.message : err,
-    );
-  }
-
-  // ── Emit UI chunk ─────────────────────────────────────────────────────
-  if (allBeliefUpdates.length > 0) {
-    try {
-      const summaries = allBeliefUpdates.map((u) => {
-        switch (u.action) {
-          case "observe":
-            return u.section === "Agent strategies"
-              ? `+ 优化了工作方式：${u.belief ?? u.belief_key ?? ""}`
-              : `+ 注意到：${u.belief ?? u.belief_key ?? "新印象"}`;
-          case "reinforce":
-            return u.section === "Agent strategies"
-              ? `↑ 策略确认：${u.belief_key ?? ""}`
-              : `↑ 加深了印象：${u.belief_key ?? ""}`;
-          case "contradict":
-            return `↓ 调整了判断：${u.belief_key ?? ""}${u.note ? ` — ${u.note}` : ""}`;
-          case "discard":
-            return `✕ 移除了过时的内容：${u.belief_key ?? u.reason ?? ""}`;
-          default:
-            return "";
-        }
-      }).filter(Boolean);
-
-      const writer = getWritable<UIMessageChunk>().getWriter();
-      // Phase completion carries summaries so the UI can expand to show details.
-      await writer.write({
-        type: "data-phase" as `data-${string}`,
-        id: "phase-belief",
-        data: {
-          phase: "updatingPreviously",
-          running: false,
-          mode: isDeep ? "deep" : "normal",
-          summaries,
-          previouslyContent: previouslyContent.slice(0, 5000),
-        },
-      } as UIMessageChunk);
-      writer.releaseLock();
-    } catch (err) {
-      console.warn("[Previously] UI chunk failed:", err instanceof Error ? err.message : err);
-    }
-  } else {
-    // Always emit a phase indicator so the UI shows progress even when
-    // there are no belief changes this turn.
-    try {
-      const pw = getWritable<UIMessageChunk>().getWriter();
-      await pw.write({
-        type: "data-phase" as `data-${string}`,
-        id: "phase-belief",
-        data: {
-          phase: "updatingPreviously",
-          running: false,
-          summaries: [],
-        },
-      } as UIMessageChunk);
-      pw.releaseLock();
-    } catch (err) {
-      // non-critical — progress indicator only
-    }
-  }
-
-  return {
-    slice,
-    previouslyContent,
-    beliefUpdates: allBeliefUpdates,
-    userProfile: buildAgentIdentityPrompt(userProfile),
-    reasoning: allReasoning,
-  };
-}
-
-// ─── Step 4: Finalize turn ───────────────────────────────────────────────
+// ─── Step 3: Finalize turn ───────────────────────────────────────────────
 
 /**
  * Persist the agent turn to the episodic slice (the old streamText onFinish),

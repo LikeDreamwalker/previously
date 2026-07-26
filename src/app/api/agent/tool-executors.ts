@@ -1,5 +1,5 @@
 /**
- * Tool executors for the shared WorkflowAgent — standalone "use step" functions.
+ * Tool executors for the shared WorkflowAgent �?standalone "use step" functions.
  *
  * Each executor is an independent durable step: automatically retried on
  * failure, persisted, and visible in the workflow dashboard. Context (repo,
@@ -7,7 +7,7 @@
  * `toolsContext` mechanism rather than JavaScript closures, so it stays
  * serializable across workflow/step boundaries.
  *
- * Used by BOTH the chat turn workflow and the background loop workflow — the
+ * Used by BOTH the chat turn workflow and the background loop workflow �?the
  * tool definitions that bind these executors live in ./tools.ts.
  */
 
@@ -33,6 +33,9 @@ import { readLoopRun, serializeLoop, writeLoopFile } from "@/lib/loops/store";
 import { isAIConfigured, canWrite, DEPLOY_GUIDE_URL } from "@/lib/capabilities";
 import type { LoopRun, LoopStep } from "@/lib/loops/types";
 import { runRecallSearch, type RecallHit } from "@/lib/episodic/flash/recall";
+import { runPreviouslyAgent, type PreviouslySignal, type PreviouslyMutation } from "@/lib/episodic/flash/previously-agent";
+import { applyPreviouslyAgentOutput } from "@/lib/episodic/previously-updater";
+import { readPreviously, writePreviously, readAgentTimeline } from "@/lib/episodic";
 
 // ─── Shared tool contexts ────────────────────────────────────────────────
 
@@ -45,16 +48,20 @@ export interface ToolContext {
   repo: string;
   /** GitHub repo owner (or "local" when running without GITHUB_TOKEN). */
   owner: string;
-  /** Whether GitHub token is configured. Off → local filesystem. */
+  /** Whether GitHub token is configured. Off �?local filesystem. */
   useGithub: boolean;
   /** Whether demo mode is active (remote benchmark data, read-only). */
   useDemo: boolean;
   /** The current time-slice id (for startLoop to record the link). */
   sliceId: string;
+  /** If a slice was just closed this turn, its slice id (for deep review). */
+  closedSliceId?: string;
+  /** Recent conversation turns (last exchange + current user msg). */
+  recentTurns: Array<{ role: string; content: string }>;
 }
 
 /**
- * Context the loop's checkpoint tool receives — the loop's own identity, so
+ * Context the loop's checkpoint tool receives �?the loop's own identity, so
  * loopReportExecute can do the read-append-write on the loop record file.
  */
 export interface LoopToolContext {
@@ -198,7 +205,7 @@ function reassembleSlice(frontmatter: string, turns: ParsedTurn[]): string {
   return parts.join("\n");
 }
 
-// ── readSlice — read a time slice's core conversation ─────────────────
+// ── readSlice �?read a time slice's core conversation ─────────────────
 
 export async function readSliceExecute(
   { sliceId, range }: {
@@ -237,7 +244,7 @@ export async function readSliceExecute(
   }
 }
 
-// ── listSlices — browse slice directories ─────────────────────────────
+// ── listSlices �?browse slice directories ─────────────────────────────
 
 export async function listSlicesExecute(
   { year, month }: { year?: number; month?: number },
@@ -262,7 +269,7 @@ export async function listSlicesExecute(
   }
 }
 
-// ── readTimeline — read monthly index ──────────────────────────────────
+// ── readTimeline �?read monthly index ──────────────────────────────────
 
 export async function readTimelineExecute(
   { year, month }: { year: number; month: number },
@@ -283,7 +290,7 @@ export async function readTimelineExecute(
   }
 }
 
-// ── readStrand — find slices by strand (tag) ───────────────────────────
+// ── readStrand �?find slices by strand (tag) ───────────────────────────
 
 export async function readStrandExecute(
   { strand }: { strand: string },
@@ -307,7 +314,7 @@ export async function readStrandExecute(
   }
 }
 
-// ── listStrands — list all known strands ───────────────────────────────
+// ── listStrands �?list all known strands ───────────────────────────────
 
 export async function listStrandsExecute(
   _input: Record<string, never>,
@@ -328,7 +335,7 @@ export async function listStrandsExecute(
   }
 }
 
-// ── readAgentTimeline — read the agent's cognition for a slice ──────────
+// ── readAgentTimeline �?read the agent's cognition for a slice ──────────
 
 export async function readAgentTimelineExecute(
   { sliceId }: { sliceId: string },
@@ -352,7 +359,7 @@ export async function readAgentTimelineExecute(
   }
 }
 
-// ── readPreviously — read the 前情提要 for a slice ─────────────────────
+// ── readPreviously �?read the 前情提要 for a slice ─────────────────────
 
 export async function readPreviouslyExecute(
   { sliceId }: { sliceId?: string },
@@ -380,9 +387,9 @@ export async function readPreviouslyExecute(
 // ─── Chat-only executors ─────────────────────────────────────────────────
 
 /**
- * webSearch — delegates to the Flash search adapter (see lib/search/). The
+ * webSearch �?delegates to the Flash search adapter (see lib/search/). The
  * context is accepted for tool-set uniformity but unused: search needs no
- * repo identity. A missing API key is a deterministic config problem →
+ * repo identity. A missing API key is a deterministic config problem �?
  * returned as data; transient search failures throw and get the step retries.
  */
 export async function webSearchExecute(
@@ -397,14 +404,14 @@ export async function webSearchExecute(
   return await searchViaFlash(query);
 }
 
-// ── recall — semantic search across past conversation slices ─────────
+// ── recall �?semantic search across past conversation slices ─────────
 
 /**
- * Recall search tool — Flash acts as a semantic search engine over the
+ * Recall search tool �?Flash acts as a semantic search engine over the
  * episodic memory. Flash explores the global timeline, traces strands,
  * and deep-reads candidate slices, then returns pointers (which slices,
  * which turns, why relevant). The executor reads the RAW slice content
- * and returns it to Pro — Flash never produces summaries.
+ * and returns it to Pro �?Flash never produces summaries.
  */
 export async function recallExecute(
   { query }: { query: string },
@@ -425,7 +432,7 @@ export async function recallExecute(
     useDemo: ctx.useDemo,
   });
 
-  // Flash returns pointers only — the executor no longer reads raw content.
+  // Flash returns pointers only �?the executor no longer reads raw content.
   // Pro should call readSlice (optionally with range) to fetch content from
   // slices it actually wants to use, keeping context usage minimal.
   return {
@@ -435,6 +442,105 @@ export async function recallExecute(
   };
 }
 
+/**
+ * updatePreviously �?signal the Previously Agent to review and update the
+ * agent's self-model (previously.md). The core agent calls this when it notices
+ * something worth remembering, or when the user corrects it, or when a slice
+ * just closed.
+ *
+ * The Previously Agent (Flash) runs synchronously within this step but the
+ * core agent does not see the result �?the updated previously.md is available
+ * next turn. The tool returns an acknowledgment with a changes summary.
+ */
+export async function updatePreviouslyExecute(
+  { signal, note, priority }: {
+    signal: PreviouslySignal;
+    note?: string;
+    priority?: "normal" | "high";
+  },
+  { context: ctx }: ExecuteOpts<ToolContext>,
+): Promise<{
+  acknowledged: boolean;
+  changes?: { added: number; reinforced: number; demoted: number; removed: number; superseded: number };
+  mutations?: PreviouslyMutation[];
+  error?: string;
+}> {
+  "use step";
+
+  try {
+    // Pre-load data the Previously Agent always needs (shallow-edit baseline).
+    let previouslyContent = "";
+    try { previouslyContent = await readPreviously(ctx.sliceId); } catch { /* use empty */ }
+    let agentCognition = "";
+    try { agentCognition = await readAgentTimeline(ctx.sliceId); } catch { /* no agent.md yet */ }
+
+    // Run Previously Agent �?it decides whether to do shallow edit or deep explore.
+    const result = await runPreviouslyAgent({
+      signal,
+      note: note ?? "",
+      currentSliceId: ctx.sliceId,
+      closedSliceId: ctx.closedSliceId,
+      previouslyContent,
+      agentCognition,
+      recentTurns: ctx.recentTurns,
+      readSliceFn: async (sliceId: string, range?) => {
+        // Reuse the same read logic as readSliceExecute.
+        const parsed = parseSliceId(sliceId);
+        if (!parsed) return `ERROR: Invalid slice ID. Expected YYYY-MM-DD-HHMM.`;
+        const path = `memory/episodic/slices/${parsed.y}/${parsed.m}/${parsed.d}/${parsed.hm}/timeline/core.md`;
+        try {
+          let raw: string;
+          if (ctx.useDemo) raw = await readFileDemo(path);
+          else if (ctx.useGithub) raw = await readFile(path, ctx.repo, ctx.owner);
+          else raw = await readFileLocal(path);
+          if (range) {
+            const { frontmatter, turns } = parseTurns(raw);
+            const filtered = applyRange(turns, range);
+            if (filtered.length === 0) return `${frontmatter}\n\n_(No turns matched.)_`;
+            return reassembleSlice(frontmatter, filtered);
+          }
+          return raw;
+        } catch { return `(slice not found: ${sliceId})`; }
+      },
+      readAgentTimelineFn: async (sid: string) => {
+        try { return await readAgentTimeline(sid); } catch { return `(not found: ${sid})`; }
+      },
+      readPreviouslyFn: async (sid: string) => {
+        try { return await readPreviously(sid); } catch { return `(not found: ${sid})`; }
+      },
+    });
+
+    // Log reasoning for developers �?NOT returned to core agent.
+    if (result.reasoning) {
+      console.log(`[Previously] reasoning: ${result.reasoning}`);
+    }
+
+    if (result.mutations.length === 0) {
+      return {
+        acknowledged: true,
+        changes: { added: 0, reinforced: 0, demoted: 0, removed: 0, superseded: 0 },
+        mutations: [],
+      };
+    }
+
+    // Apply mutations to the pre-loaded content (re-read in case agent mutated via tools).
+    // Actually the agent doesn't mutate via tools �?it only reads. Use the pre-loaded content.
+    const applied = applyPreviouslyAgentOutput(previouslyContent, result.mutations, ctx.sliceId);
+    await writePreviously(ctx.sliceId, applied.content);
+
+    console.log(
+      `[Previously] ${signal}: ${applied.changes.added} added, ` +
+      `${applied.changes.reinforced} reinforced, ${applied.changes.demoted} demoted, ` +
+      `${applied.changes.removed} removed.`,
+    );
+
+    return { acknowledged: true, changes: applied.changes, mutations: result.mutations };
+  } catch (err) {
+    console.warn("[Previously] updatePreviouslyExecute failed:", err instanceof Error ? err.message : err);
+    return { acknowledged: true, error: "Previously Agent unavailable �?will retry next turn." };
+  }
+}
+
 export async function startLoopExecute(
   { goal, tags }: { goal: string; tags?: string[] },
   { context: ctx }: ExecuteOpts<ToolContext>,
@@ -442,7 +548,7 @@ export async function startLoopExecute(
   "use step";
 
   // Demo mode: loops require a connected GitHub repo for write access.
-  // The rejection is model-facing — the model reads it and explains the
+  // The rejection is model-facing �?the model reads it and explains the
   // deployment requirement to the user naturally in the conversation.
   if (!canWrite()) {
     return {
@@ -462,7 +568,7 @@ export async function startLoopExecute(
       sliceId: ctx.sliceId,
     });
     // NOTE: the slice.loops / slice.tags back-reference is written by the chat
-    // workflow's finalizeTurn step (which owns the slice by value) — not here.
+    // workflow's finalizeTurn step (which owns the slice by value) �?not here.
     return {
       ok: true,
       loopId: started.loopId,
@@ -480,7 +586,7 @@ export async function startLoopExecute(
 // ─── Loop-only executor: the checkpoint tool ─────────────────────────────
 
 /**
- * loopReport — the loop's checkpoint. Each call appends one LoopStep to the
+ * loopReport �?the loop's checkpoint. Each call appends one LoopStep to the
  * loop's markdown record (read-append-write; the file is the accumulator, so
  * progress survives any crash/retry) and emits a `data-loop` progress chunk to
  * the run's writable for live watchers. Replaces the old per-iteration
@@ -517,7 +623,7 @@ export async function loopReportExecute(
   };
   await writeLoopFile(ctx.filePath, serializeLoop(run));
 
-  // Live progress chunk — best-effort: the memory-truth write above already
+  // Live progress chunk �?best-effort: the memory-truth write above already
   // committed, so a stream failure must never fail the checkpoint.
   try {
     const writable = getWritable<UIMessageChunk>();

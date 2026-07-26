@@ -15,27 +15,10 @@ const episodic = vi.hoisted(() => ({
   }),
   saveSliceSnapshot: vi.fn(async () => {}),
   ensureIndexEntries: vi.fn(async () => {}),
-  generateGlobalTimeline: vi.fn(async () => "mock timeline"),
   readPreviously: vi.fn(async () => ""),
-  writePreviously: vi.fn(async () => {}),
-  ensurePreviously: vi.fn(async () => ""),
   writeAgentTimeline: vi.fn(async () => ({ path: "", created: false })),
-  readAgentTimeline: vi.fn(async () => ""),
-}));
-
-const maintenance = vi.hoisted(() => ({
-  applyMetadataUpdates: vi.fn((meta: Record<string, unknown>, updates: Record<string, unknown>) => {
-    Object.assign(meta, updates);
-  }),
-  applyBeliefUpdates: vi.fn((content: string) => content),
-}));
-
-const flashMetadata = vi.hoisted(() => ({
-  runMetadataUpdate: vi.fn(),
-}));
-
-const flashPreviously = vi.hoisted(() => ({
-  runUpdatePreviously: vi.fn(),
+  ensurePreviously: vi.fn(async (sliceId: string) => `# Previously On\n\n_Active slice: ${sliceId} | Updated: ..._\n`),
+  generateGlobalTimeline: vi.fn(async () => "mock timeline"),
 }));
 
 let timeSilent = false;
@@ -44,9 +27,6 @@ vi.mock("@/lib/episodic", () => episodic);
 vi.mock("@/lib/episodic/slicer", () => ({
   checkTimeSilence: () => timeSilent,
 }));
-vi.mock("@/lib/episodic/maintenance", () => maintenance);
-vi.mock("@/lib/episodic/flash/metadata", () => flashMetadata);
-vi.mock("@/lib/episodic/flash/update-previously", () => flashPreviously);
 
 // The run's writable: collects everything written for assertions.
 const workflowMock = vi.hoisted(() => {
@@ -65,12 +45,8 @@ const workflowMock = vi.hoisted(() => {
 });
 
 vi.mock("workflow", () => ({ getWritable: workflowMock.getWritable }));
-vi.mock("@/lib/identity", () => ({
-  buildAgentIdentityPrompt: () => "identity prompt",
-  loadUserProfile: async () => ({ name: "Test" }),
-}));
 
-import { housekeeping, metadataUpdate, updatePreviously, finalizeTurn } from "@/app/api/chat/steps";
+import { housekeeping, seedPreviously, finalizeTurn } from "@/app/api/chat/steps";
 
 function makeSlice(overrides: Partial<TimeSlice> = {}): TimeSlice {
   return {
@@ -184,57 +160,18 @@ describe("housekeeping step", () => {
   });
 });
 
-describe("metadataUpdate step", () => {
-  it("applies Flash metadata updates onto the slice and returns it by value", async () => {
-    const slice = makeSlice();
-    flashMetadata.runMetadataUpdate.mockResolvedValue({
-      needs_metadata_update: true,
-      metadata_updates: { focus: "rust borrow checker", tags: ["rust"] },
-      reasoning: "matched",
-    });
+describe("seedPreviously step", () => {
+  it("copies previously.md forward via ensurePreviously", async () => {
+    const result = await seedPreviously("2026-07-26-1226", undefined);
 
-    const result = await metadataUpdate(makeInput("rust question"), slice);
-
-    expect(result.slice.focus).toBe("rust borrow checker");
-    expect(result.slice.tags).toContain("rust");
-    expect(result.metadataUpdated).toBe(true);
+    expect(episodic.ensurePreviously).toHaveBeenCalledWith("2026-07-26-1226");
+    expect(result).toContain("# Previously On");
   });
 
-  it("degrades gracefully when Flash throws — slice untouched", async () => {
-    const slice = makeSlice({ focus: "unchanged" });
-    flashMetadata.runMetadataUpdate.mockRejectedValue(new Error("flash down"));
+  it("accepts optional closed slice id without effect on the copy", async () => {
+    const result = await seedPreviously("2026-07-26-1226", "2026-07-26-0823");
 
-    const result = await metadataUpdate(makeInput("anything"), slice);
-
-    expect(result.metadataUpdated).toBe(false);
-    expect(result.slice.focus).toBe("unchanged");
-  });
-});
-
-describe("updatePreviously step", () => {
-  it("updates previously.md with observed beliefs", async () => {
-    const slice = makeSlice();
-    flashPreviously.runUpdatePreviously.mockResolvedValue({
-      belief_updates: [{ action: "observe", section: "User identity", belief: "测试用户", evidence_turn: "test-id" }],
-      reasoning: "observed",
-      isDeep: false,
-    });
-    episodic.readPreviously.mockResolvedValue("## User identity\n\n## User patterns\n\n## Agent strategies\n");
-
-    const result = await updatePreviously(makeInput("我叫测试"), slice, undefined);
-
-    expect(result.beliefUpdates).toHaveLength(1);
-    expect(episodic.writePreviously).toHaveBeenCalled();
-  });
-
-  it("degrades gracefully when Flash throws — empty updates", async () => {
-    const slice = makeSlice();
-    flashPreviously.runUpdatePreviously.mockRejectedValue(new Error("flash down"));
-    episodic.readPreviously.mockResolvedValue("");
-
-    const result = await updatePreviously(makeInput("anything"), slice, undefined);
-
-    expect(result.beliefUpdates).toEqual([]);
-    expect(result.previouslyContent).toBe("");
+    expect(episodic.ensurePreviously).toHaveBeenCalledWith("2026-07-26-1226");
+    expect(result).toContain("# Previously On");
   });
 });

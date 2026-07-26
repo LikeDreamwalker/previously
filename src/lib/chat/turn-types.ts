@@ -14,7 +14,6 @@
  */
 import type { ModelMessage } from "ai";
 import type { TimeSlice } from "@/lib/episodic";
-import type { BeliefUpdate } from "@/lib/episodic/maintenance";
 import type { UserConfig } from "@/lib/config/types";
 
 /**
@@ -62,28 +61,6 @@ export interface HousekeepingResult {
   slice: TimeSlice;
   /** The slice that was just closed, if housekeeping closed one. */
   closedSlice?: TimeSlice;
-}
-
-/**
- * Result of the metadataUpdate step — the slice with any metadata updates applied.
- */
-export interface MetadataUpdateResult {
-  slice: TimeSlice;
-  metadataUpdated: boolean;
-  reasoning: string;
-}
-
-/**
- * Result of the beliefUpdate step — the slice, updated previously.md content,
- * and any belief mutations observed this turn.
- */
-export interface BeliefUpdateResult {
-  slice: TimeSlice;
-  previouslyContent: string;
-  beliefUpdates: BeliefUpdate[];
-  /** User profile string for system prompt assembly (loaded by this step). */
-  userProfile: string;
-  reasoning: string;
 }
 
 /** A background loop the agent started during this turn (for slice writeback). */
