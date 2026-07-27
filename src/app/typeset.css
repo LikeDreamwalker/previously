@@ -247,13 +247,6 @@
   --typeset-flow: 1em;
 }
 
-/* Docs — roomier for standalone reading. */
-.typeset-docs {
-  --typeset-size: 15px;
-  --typeset-leading: 1.75;
-  --typeset-flow: 1.5em;
-}
-
 /* ── Responsive scroll wrapper ──────────────────────────────────────── */
 
 .typeset-scroll {

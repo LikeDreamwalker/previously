@@ -2,116 +2,102 @@
 
 ## Overview
 
-The chat rendering system is a client-side component tree that pipes Vercel AI SDK `UIMessage` parts (text, reasoning, tool-invocations, data-flash) through a three-phase visual pipeline — recall context, reasoning, then final response — with tool calls rendered inline via a shared expandable card pattern (`ToolLayout`). The top-level container (`ChatPage`) uses `useChat` with `@ai-sdk/workflow`'s `WorkflowChatTransport` — every turn runs inside a durable Vercel Workflow run and is resumable after a dropped connection (same-session auto-reconnect, plus same-browser post-reload resume via a localStorage run id) — `MessageScroller` for virtualized auto-scroll, and bubbles with Markdown for text output. The scroller holds three stacked regions: a server-rendered hero, the memory timeline, and the live chat messages.
+The chat rendering system is a client-side component tree that pipes Vercel AI SDK `UIMessage` parts (text, reasoning, tool-invocations, data-phase, data-evolution) through a unified stream pipeline — recall context, reasoning, tool calls, and final response — all rendered inline inside each assistant message bubble via `AnimatePresence`. The top-level container (`ChatPage`) uses `useChat` with `@ai-sdk/workflow`'s `WorkflowChatTransport` — every turn runs inside a durable Vercel Workflow run and is resumable after a dropped connection.
+
+The timeline is a horizontally-scrollable date strip (sticky below AppHeader). Switching between "now" (live chat) and past slices (historical view) swaps the content area without unmounting the timeline.
 
 ## Component Tree
 
 ```
 ChatPage (chat-page.tsx)  ← "use client", top-level useChat container
-  MessageScrollerProvider
-    MessageScroller
-      MessageScrollerViewport
-        MessageScrollerContent
-          MessageScrollerItem (hero-section)
-            HeroSection  ← passed as children from [locale]/page.tsx (server component)
-          MessageScrollerItem (memory-section)
-            MemorySection
-              TimelinePanel (past memory slices, grouped by date)
-                DateGroupHeader / SliceTimeMarker  (animated date + HH:MM markers)
-                TimeSliceRow (per slice)
-          ChatSection (chat-section.tsx)
-            MessageScrollerItem (per message)
-              ChatMessage
-                RecallPhase (data-flash parts, via ToolLayout)
-                ThinkingSteps (reasoning parts, via ToolLayout)
-                Bubble > BubbleContent
-                  [ToolRenderer dispatched]  ← inline per tool-* part
-                    ToolLayout (shared expandable card)
-                      ├ MemoryToolRenderer  (readSlice / readAgentTimeline /
-                      │                      readPreviously / readTimeline /
-                      │                      readStrand)
-                      ├ ListFilesRenderer   (listSlices / listStrands)
-                      ├ WebSearchRenderer   (webSearch)
-                      ├ LoopToolRenderer    (startLoop)
-                      └ DefaultRenderer     (unknown tools)
-                  MarkdownRenderer  ← text parts
-                    CodeBlock (fenced code with copy)
-                  Streaming cursor (pulse span)
-                MessageFooter
-                  MessageActions (copy + regenerate)  ← only when onRegenerate provided
-            MessageScrollerItem (thinking-indicator)  ← spinner + "Thinking..." when LLM is thinking before first part
-            MessageScrollerItem (error-banner)  ← error.message when useChat surfaces an error
-      MessageScrollerButton
-  ChatInput (sticky bottom, textarea + image attachments + stop btn)
+├── [Hero Section] (children from [locale]/page.tsx — server component)
+├── HorizontalTimeline (sticky below AppHeader, horizontally scrollable date dots)
+├── Content area (min-h-screen fill)
+│   ├── [Live — "now" selected]
+│   │   ├── NowPlaceholder (when no messages and not loading — animated gap + "现在")
+│   │   └── ChatSection (chat-section.tsx)
+│   │       ├── ChatMessage (per message)
+│   │       │   ├── EvolutionIndicator  ← per-bubble self-evolution status
+│   │       │   ├── ThinkingSteps  ← reasoning parts (Brain icon, streaming subtitle)
+│   │       │   ├── PhaseIndicator  ← data-phase parts (slicing, etc.)
+│   │       │   ├── ToolRenderer  ← dispatches tool-* parts to per-tool renderers
+│   │       │   │   ├── RecallToolRenderer   (recall)
+│   │       │   │   ├── MemoryToolRenderer   (readSlice / readPreviously / readTimeline / readStrand / readAgentTimeline)
+│   │       │   │   ├── ListFilesRenderer    (listSlices / listStrands)
+│   │       │   │   ├── WebSearchRenderer    (webSearch)
+│   │       │   │   ├── LoopToolRenderer     (startLoop)
+│   │       │   │   └── DefaultRenderer      (unknown tools)
+│   │       │   └── MarkdownRenderer  ← text parts (react-markdown + GFM + highlight)
+│   │       ├── LoadingTip placeholder (before first assistant message arrives)
+│   │       └── Error banner
+│   │       └── LoopWatcher (side-effects only, renders null)
+│   └── [Historical — past slice selected]
+│       └── HistoricalChatView
+│           ├── Previously On bar (Brain icon + click-to-expand dialog)
+│           ├── HistoryTurn list (user/assistant bubbles with timestamps)
+│           │   └── CognitionPopover (per-turn "Thoughts" dialog)
+│           └── Open Loops / Decisions footer
+├── [Fixed bottom bar]
+│   └── ChatInput (textarea + image attachments + submit/stop/demo)
 ```
 
 ## Message Part Flow
 
 1. `useChat` (in `ChatPage`) receives a `UIMessage` with typed `parts[]`; `ChatSection` maps them to `ChatMessage`.
-2. `ChatMessage` classifies each part in `useMemo`:
-   - `data-flash` → **recallParts** (phase 1: RecallPhase via ToolLayout with History icon)
-   - `reasoning` → **reasoningText** (phase 2: ThinkingSteps via ToolLayout with Brain icon)
-   - `text` / `tool-*` → **inlineParts** (phase 3: rendered in stream order inside a Bubble)
-3. Inline text → `MarkdownRenderer` (react-markdown + GFM + highlight). Inline tool-* → `ToolRenderer`.
-4. A streaming cursor `<span>` pulses at the end of inline content while `isStreaming` is true.
-5. `MessageActions` (copy/regenerate) render in `MessageFooter` — currently gated on an `onRegenerate` prop that `ChatSection` does not thread, so the footer is not mounted yet.
+2. `ChatMessage.buildStream()` classifies each part in a single pass:
+   - `reasoning` → merged consecutively into one `ThinkingSteps` block (streaming mode with typewriter subtitle)
+   - `tool-*` → merged by `toolCallId` into a single `ToolRenderer` card (folds input-streaming → input-available → output-available)
+   - `data-phase` → merged by phase name (emits `{running: true}` at start, `{running: false}` at end). Rendered as `PhaseIndicator` (static mode, Activity icon)
+   - `text` → buffered and flushed into `MarkdownRenderer` blocks
+3. Items render in natural stream order inside `AnimatePresence` for enter/exit animations.
+4. `EvolutionIndicator` renders at the top of the latest assistant bubble (Brain icon, PhaseIndicator wrapper) — shows self-evolution status per turn.
+5. A `LoadingTip` pulses at the bottom while streaming.
+6. `MessageActions` (copy/regenerate) render in `MessageFooter` — gated on `onRegenerate` prop.
 
 ## File Map
 
 | File | Description |
 |------|-------------|
-| `chat-page.tsx` | Top-level `"use client"` container: `useChat` hook, `WorkflowChatTransport` wiring (durable-run resume — persists the `x-workflow-run-id` to localStorage, `resume` on mount; model/thinking/timezone/loadedSliceIds body via `prepareSendMessagesRequest`), MessageScroller shell, hero/memory/chat regions, sticky ChatInput |
-| `chat-section.tsx` | Renders the message list (`ChatMessage` per message), the pre-first-part thinking indicator, and the error banner |
-| `memory-section.tsx` | Passthrough wrapper forwarding props to `TimelinePanel` (past-memory region of the scroller) |
-| `hero-section.tsx` | Server component: "Previously on {name}" landing block; name comes from previously.md via `getUserName()` |
-| `hero-text.tsx` | `HeroText`: animated "Previously on {name}" hero built on `TextGenerateEffect`; rendered by `hero-section.tsx` |
-| `chat-message.tsx` | Per-message renderer: unified stream — classifies parts into recall/reasoning/text/tool/belief, wraps in Bubble |
-| `chat-input.tsx` | Textarea with image attachments (paste/drag-drop/file picker), auto-resize, submit/stop buttons |
+| `chat-page.tsx` | Top-level `"use client"` container: `useChat` hook, `WorkflowChatTransport` wiring, evolution SSE streaming, timeline state, hero/messages/timeline regions, sticky `ChatInput` |
+| `chat-section.tsx` | Renders the message list (`ChatMessage` per message), the pre-first-part loading placeholder, and the error banner |
+| `chat-message.tsx` | Per-message renderer: unified stream pipeline (`buildStream`) — classifies parts into reasoning/text/tool/phase, wraps in `AnimatePresence` |
+| `chat-input.tsx` | Textarea with image attachments (paste/drag-drop/file picker), auto-resize, submit/stop buttons, demo trigger |
+| `phase-indicator.tsx` | Reusable expandable header bar: two modes — `streaming` (typewriter subtitle, elapsed timer) and `static` (manual expand, chevron). Used by ThinkingSteps, EvolutionIndicator, RecallToolRenderer, and data-phase items |
+| `evolution-indicator.tsx` | Self-evolution status bar per bubble: running/error/complete states, mutation list expansion. Built on PhaseIndicator |
+| `thinking.tsx` | Reasoning display: Brain icon, streaming subtitle, elapsed timer, expandable Markdown. Uses PhaseIndicator in streaming mode |
+| `tool-renderer.tsx` | Central dispatch hub: maps `toolName` to specific renderers, extracts `ToolRenderState` from raw SDK state |
+| `tool-layout.tsx` | Shared expandable tool card: status icon (spinner/dot/error/interrupted), name, summary, meta, CSS grid-animated details panel |
+| `tool-renderers/recall.tsx` | Recall tool: History icon, query summary, hit count + confidence, expandable hits list with pointers |
+| `tool-renderers/memory-tool.tsx` | Memory read tools (readSlice, readPreviously, readTimeline, readStrand, readAgentTimeline): Search icon, path label, formatted output |
+| `tool-renderers/list-files.tsx` | List tools (listSlices, listStrands): folder/file icons, item count |
+| `tool-renderers/web-search.tsx` | WebSearch tool: Globe icon, query summary, Markdown answer + source links |
+| `tool-renderers/loop.tsx` | StartLoop tool: Repeat icon, goal summary, loopId/filePath details |
+| `tool-renderers/default.tsx` | Fallback for unknown tools: Wrench icon, JSON-snippet summary |
+| `historical-chat-view.tsx` | Past slice content: Previously On bar (dialog), turn list with timestamps, CognitionPopover per turn, open loops/decisions footer |
+| `horizontal-timeline.tsx` | Horizontally scrollable date/time dot strip with "load more" pagination, selected/highlighted states |
+| `time-display.tsx` | Date/time formatting: `sameDay()` check, `TimeDisplay` with date/time modes |
+| `cognition-popover.tsx` | Per-turn agent thoughts dialog: Brain icon trigger, lazy-loaded Markdown content |
+| `loading-tip.tsx` | Loading indicator cycling through i18n tips with fade transitions |
+| `loop-watcher.tsx` | Side-effect component: watches for completed `startLoop` calls, subscribes to streams (renders null) |
 | `markdown.tsx` | Markdown renderer: react-markdown with remark-gfm, rehype-highlight, custom components for code/table/link/list/blockquote |
 | `code-block.tsx` | Fenced code block: header bar with language label + copy button, scrollable code area |
 | `message-actions.tsx` | Copy-to-clipboard and Regenerate buttons, shown on hover via group-hover opacity |
 | `file-name-pill.tsx` | File path badge with code-vs-text icon detection, optional error styling |
-| `tool-renderer.tsx` | Dispatcher: extracts render state, maps toolNames to specific renderers, re-exports ToolLayout |
-| `tool-layout.tsx` | Shared expandable card: status icon (spinner/dot/error/interrupted), name, summary, meta, expandable content area with CSS grid row animation |
-| `thinking.tsx` | Phase 2 reasoning: Brain icon, elapsed timer, markdown-rendered thought content inside ToolLayout |
-| `recall-phase.tsx` | Phase 1 context recall: History icon, tags/recall-hits/reasoning inside ToolLayout |
-| `timeline-panel.tsx` | Past memory slices grouped by date with "load more" pagination, calls useTimeline hook, feeds `loadedSliceIds` back to the chat transport |
-| `loaded-ids-context.tsx` | `LoadedIdsProvider` / `useLoadedIds`: shared set of loaded slice IDs snapshotted into the chat transport body (no-op fallback outside `ChatPage`) |
-| `date-group-header.tsx` | `DateGroupHeader` (locale-aware animated year/month/day header) + `SliceTimeMarker` (animated HH:MM), both built on `NumberTicker` |
-| `time-slice-row.tsx` | Individual memory slice: lazy-loads content, shows last exchange by default, expandable to full conversation, open loops/decisions as pills |
 | `theme-toggle.tsx` | `ThemeToggle`: toolbar button cycling light → dark → system |
 | `locale-toggle.tsx` | `LocaleToggle`: toolbar button swapping UI language (en ⇄ zh) via the URL locale |
-| `tool-renderers/list-files.tsx` | ListFiles tool: path + item count summary, expanded view shows file/dir list with icons |
-| `tool-renderers/memory-tool.tsx` | Memory tools (readSlice / readAgentTimeline / readPreviously / readTimeline / readStrand): Search icon, path/index label summary, output preview with smart formatting for slices |
-| `tool-renderers/web-search.tsx` | WebSearch tool: Globe icon, query summary, Markdown answer + source links in expanded view |
-| `tool-renderers/loop.tsx` | StartLoop tool: Repeat icon, goal summary, loopId/filePath details or error display |
-| `tool-renderers/default.tsx` | Fallback for unknown tools: Wrench icon, JSON-snippet summary, no expandable content |
 
-## Tool Renderers
+## Shared Primitives
 
-`ToolRenderer` (tool-renderer.tsx) is the dispatch hub. It calls `extractRenderState()` from `@/lib/chat/tool-state` to normalize the raw SDK state string into a `ToolRenderState` object. Each tool maps to a dedicated renderer, all sharing `ToolLayout`:
-
-- **MemoryToolRenderer** — used for read tools (readSlice, readAgentTimeline, readPreviously, readTimeline, readStrand). Shows human-friendly Chinese labels ("正在查看时间片…" / "已查看时间片") + path/index label. Expanded view shows tool name + output, smart-formatted for slices.
-- **ListFilesRenderer** — used for list/browse tools (listSlices, listStrands). Shows item count. Expanded view lists entries with folder/file icons.
-- **WebSearchRenderer** — used for webSearch. Shows query as summary. Expanded view shows markdown-rendered answer + clickable source links.
-- **LoopToolRenderer** — used for startLoop. Shows truncated goal as summary. Expanded view shows loopId/filePath or error display.
-- **DefaultRenderer** — fallback for unknown tools. Shows friendly-cased tool name + first 40 chars of JSON input. No expandable content.
-
-Every renderer passes `state` to `ToolLayout`, which handles: running spinner, error (red), interrupted (yellow), denied (red), and expand/collapse with a CSS `grid-template-rows` transition on the details panel.
-
-**Human-friendly display names** (defined in tool-renderer.tsx): Flash recall uses "回忆" (Chinese). All tools use "查看"/"查找" patterns. Completed states switch to "已...". See `toolLabel()` in tool-renderer.tsx for the full mapping.
+- **PhaseIndicator** (`phase-indicator.tsx`): Universal expandable header bar with two modes. Used by ThinkingSteps, EvolutionIndicator, RecallToolRenderer, and data-phase items. Both modes share the same render structure: icon + label + optional summary/meta + CSS-grid-animated expandable card.
+- **ToolLayout** (`tool-layout.tsx`): Universal expandable tool card handling five states (running, completed, error, interrupted, denied). Every tool renderer delegates to it.
 
 ## Design Decisions
 
-- **Three-phase rendering** (recall → think → respond) mirrors the agent's internal execution order. Each phase gets its own `ToolLayout`-based component for visual consistency, but they are rendered at the `ChatMessage` level (outside the Bubble) so they aren't treated as inline content.
-- **ChatPage owns the scroller, ChatSection owns the messages**: the top-level `useChat` state lives in `ChatPage`, which lays out three scroller regions (hero, memory, chat). `ChatSection` is a pure child that maps `messages` to `ChatMessage` and renders the thinking/error banners.
-- **Tool calls inline in stream order** rather than grouped at the end, matching the AI SDK's natural streaming sequence. Tools and text interleave as they arrive.
-- **ToolLayout as the universal tool card** handles five states (running, completed, error, interrupted, denied) and expand/collapse with pure CSS grid animation — no JS height measurement. Every tool renderer delegates to it.
-- **Bubble component from `@/components/ui/bubble`** wraps all inline parts (text + tool calls) so tool renderings visually sit inside the message bubble, not outside it.
-- **RecallPhase / ThinkingSteps reuse ToolLayout** instead of duplicating the expandable card pattern. They pass static `COMPLETED_STATE` / `STREAMING_STATE` objects since these aren't real tool calls.
-- **Auto-scroll via MessageScroller** (custom in `@/components/ui/message-scroller`): scrolls to the last user message anchor, not the latest assistant token, so the viewport stays stable during streaming.
-- **MarkdownRenderer is not `prose`-only**: it has custom per-element styles (tables with borders, links as blue with underline, code blocks with background, etc.) instead of relying solely on Tailwind typography prose classes.
-- **TimelinePanel sits above messages** (in the memory-section region) rather than inside the message list, showing past context as a scrollable date-grouped index. It uses `useTimeline` for pagination and feeds `loadedSliceIds` back to the chat transport.
+- **Unified stream in AnimatePresence**: All inline parts (reasoning, tool, phase, text) render inside a single `AnimatePresence` block within the assistant bubble. Items animate in/out naturally as they arrive. `buildStream()` merges consecutive items of the same type (reasoning deltas, tool parts by callId) to prevent unnecessary remounts.
+- **EvolutionIndicator per bubble**: Self-evolution status is per-turn, not global. It renders at the top of the latest assistant bubble using the same `PhaseIndicator` component as thinking/recall/phase indicators, maintaining visual consistency.
+- **PhaseIndicator as the universal indicator**: Instead of duplicating expandable card patterns, thinking, evolution, recall, and data-phase items all use PhaseIndicator (not ToolLayout which is for tool calls). This avoids the confusion between indicators and tools.
+- **ChatPage owns the orchestration, ChatSection owns the message list, ChatMessage owns the rendering**: Three-layer separation keeps concerns isolated.
+- **Timeline as sticky strip**: Horizontally scrollable date dots (newest on the right) snap below the AppHeader. Switching between "now" and past slices swaps the content area via `selectedSliceId` state.
+- **NowPlaceholder fills the void**: When no messages exist and the user hasn't sent anything, an animated "现在" placeholder with a computed time gap from the last slice fills the content area.
 - **ChatInput owns its images** via `useImageAttachments` hook: paste, drag-drop, and file picker all funnel into the same state. Images are previewed as thumbnails with remove buttons.
-</content>
-</invoke>
+- **MarkdownRenderer is not `prose`-only**: it has custom per-element styles (tables with borders, links as blue with underline, code blocks with background, etc.) instead of relying solely on Tailwind typography prose classes.

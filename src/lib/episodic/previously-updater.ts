@@ -84,13 +84,16 @@ export function applyPreviouslyAgentOutput(
     superseded: 0,
   };
 
-  // Sanitize mutations: fill missing evidence
+  // Sanitize mutations: fill missing evidence (creates copies to avoid mutating caller's data)
   const currentSlicePath = currentSliceId.replace(/-/g, "/");
-  for (const m of mutations) {
-    if (!m.evidence_slice || m.evidence_slice === "undefined") {
-      m.evidence_slice = currentSlicePath;
-    }
-  }
+  const sanitized = mutations.map((m) =>
+    !m.evidence_slice || m.evidence_slice === "undefined"
+      ? { ...m, evidence_slice: currentSlicePath }
+      : m,
+  );
+
+  // Use sanitized copies throughout
+  mutations = sanitized;
 
   // Separate mutations by type for ordered processing
   const expires = mutations.filter((m) => m.action === "expire");

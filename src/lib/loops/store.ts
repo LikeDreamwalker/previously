@@ -4,8 +4,7 @@
  *
  * Mirrors the episodic subsystem's local-fs-vs-GitHub switch (gated on
  * GITHUB_TOKEN, see src/lib/episodic/manager.ts) so it behaves identically in
- * local dev (writes to disk) and production (writes to the repo). The guards
- * mirror the pure predicates in src/lib/loop/engine.ts.
+ * local dev (writes to disk) and production (writes to the repo).
  */
 import matter from "gray-matter";
 import { writeFile as writeFileGitHub } from "@/lib/tools/writeFile";

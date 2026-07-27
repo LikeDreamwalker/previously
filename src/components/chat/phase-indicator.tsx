@@ -7,7 +7,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import type { ToolRenderState } from "@/lib/chat/tool-state";
 import { Loader2, ChevronDown } from "lucide-react";
 
-export interface PhaseIndicatorProps {
+interface PhaseIndicatorProps {
   /** "streaming" = thinking (typewriter + auto-fade). "static" = recall (manual expand). */
   mode: "streaming" | "static";
   icon: ReactNode;
@@ -127,6 +127,7 @@ export function PhaseIndicator({
         clearInterval(intervalRef.current);
         intervalRef.current = null;
       }
+      startTimeRef.current = null;
     };
   }, [mode, isRunning]);
 

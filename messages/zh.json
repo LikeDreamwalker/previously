@@ -49,12 +49,6 @@
       "stopTooltip": "停止生成",
       "sendTooltip": "发送消息"
     },
-    "thinking": {
-      "indicator": "思考中…",
-      "streaming": "思考中…",
-      "completed": "已思考",
-      "elapsed": "{count, plural, other {# 秒}}"
-    },
     "actions": {
       "copy": "复制",
       "copied": "已复制",
@@ -62,14 +56,6 @@
       "copiedTooltip": "已复制",
       "regenerate": "重新生成",
       "regenerateTooltip": "重新生成回复"
-    },
-    "recall": {
-      "streaming": "正在回忆…",
-      "completed": "前情提要",
-      "group": {
-        "timeline": "查看了 {count} 个时间片",
-        "browse": "查找了 {count} 条线索"
-      }
     },
     "tool": {
       "denied": "已拒绝",
@@ -124,6 +110,36 @@
       "fallbackLanguage": "代码",
       "copyTooltip": "复制代码",
       "copiedTooltip": "已复制"
+    },
+    "evolution": {
+      "reading": "正在读取记忆...",
+      "reviewing": "正在审查对话模式...",
+      "evolving": "自进化中…",
+      "failed": "自进化失败: {error}",
+      "noChanges": "已检查，无需更新",
+      "evolved": "已进化：{summary}",
+      "noChangesMeta": "—",
+      "action_observe": "新增",
+      "action_reinforce": "强化",
+      "action_contradict": "矛盾",
+      "action_discard": "丢弃",
+      "action_expire": "过期",
+      "action_promote": "升级",
+      "action_demote": "降级",
+      "tier_long": "长期",
+      "tier_short": "短期",
+      "subsection_identity": "用户身份",
+      "subsection_patterns": "用户模式",
+      "subsection_strategies": "策略",
+      "subsection_context": "当前上下文",
+      "added": "+{count} 新增",
+      "reinforced": "↑{count} 强化",
+      "demoted": "↓{count} 降级",
+      "removed": "✕{count} 删除",
+      "superseded": "↻{count} 取代",
+      "previouslyOn": "前情提要",
+      "clickToView": "点击查看",
+      "thoughts": "思考"
     },
     "phase": {
       "thinking": "正在思考…",

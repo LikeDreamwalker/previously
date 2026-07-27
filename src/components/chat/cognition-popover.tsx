@@ -2,6 +2,7 @@
 
 import { useState, useCallback } from "react";
 import { Brain } from "lucide-react";
+import { useTranslations } from "next-intl";
 import {
   Dialog,
   DialogTrigger,
@@ -17,13 +18,15 @@ import { getTurnCognition } from "@/lib/episodic/actions";
 interface CognitionPopoverProps {
   sliceId: string;
   turnId: string;
-  /** Trigger label shown in the bubble header row. Defaults to "思考". */
+  /** Trigger label shown in the bubble header row. Defaults to i18n "thoughts". */
   label?: string;
 }
 
 // ─── Component ──────────────────────────────────────────────────────────
 
-export function CognitionPopover({ sliceId, turnId, label = "思考" }: CognitionPopoverProps) {
+export function CognitionPopover({ sliceId, turnId, label }: CognitionPopoverProps) {
+  const t = useTranslations("chat.evolution");
+  const displayLabel = label ?? t("thoughts");
   const [content, setContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
@@ -55,7 +58,7 @@ export function CognitionPopover({ sliceId, turnId, label = "思考" }: Cognitio
         className="cursor-pointer hover:text-foreground transition-colors"
         aria-label="View agent cognition"
       >
-        {label}
+        {displayLabel}
       </DialogTrigger>
       <DialogContent className="sm:max-w-lg max-h-[80vh] overflow-y-auto">
         <DialogHeader>

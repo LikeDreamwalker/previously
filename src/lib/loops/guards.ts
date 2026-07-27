@@ -1,7 +1,6 @@
 /**
  * Pure loop guards — no imports beyond types, so they are safe to call from the
- * deterministic workflow body (which forbids Node.js modules). Mirrors the pure
- * predicates in src/lib/loop/engine.ts.
+ * deterministic workflow body (which forbids Node.js modules).
  */
 import type { LoopStep } from "./types";
 

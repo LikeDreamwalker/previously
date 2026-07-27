@@ -2,6 +2,7 @@
 
 import { useMemo } from "react";
 import { Brain, Loader2 } from "lucide-react";
+import { useTranslations } from "next-intl";
 import type { SliceContent } from "@/lib/episodic/actions";
 import { Message, MessageContent } from "@/components/ui/message";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
@@ -76,6 +77,7 @@ export function HistoricalChatView({
   content,
   loading,
 }: HistoricalChatViewProps) {
+  const t = useTranslations("chat.evolution");
   const turns = useMemo(() => content?.turns ?? [], [content]);
 
   // ── First-ever load — no content at all ────────────────────────────────
@@ -118,10 +120,10 @@ export function HistoricalChatView({
                   <Brain className="h-3.5 w-3.5" />
                 </span>
                 <span className="min-w-0 truncate text-sm font-semibold text-foreground/90">
-                  前情提要
+                  {t("previouslyOn")}
                 </span>
                 <span className="shrink-0 text-xs text-muted-foreground">
-                  点击查看
+                  {t("clickToView")}
                 </span>
               </div>
             </DialogTrigger>
@@ -145,7 +147,7 @@ export function HistoricalChatView({
                 <Brain className="h-3.5 w-3.5" />
               </span>
               <span className="min-w-0 truncate text-sm font-semibold text-foreground/90">
-                前情提要
+                {t("previouslyOn")}
               </span>
             </div>
           </div>

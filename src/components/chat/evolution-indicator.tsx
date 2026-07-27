@@ -1,6 +1,7 @@
 "use client";
 
 import { Brain } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { PhaseIndicator } from "./phase-indicator";
 import type { ToolRenderState } from "@/lib/chat/tool-state";
 import type { PreviouslyMutation } from "@/lib/episodic/flash/previously-agent";
@@ -22,7 +23,7 @@ export interface EvolutionState {
   error?: string;
 }
 
-// ─── Color constants (mirrors update-previously.tsx) ─────────────────────────
+// ─── Color constants ────────────────────────────────────────────────────
 
 const ACTION_COLORS: Record<PreviouslyMutation["action"], string> = {
   observe: "bg-green-500/10 text-green-600 dark:text-green-400 border-green-500/20",
@@ -32,28 +33,6 @@ const ACTION_COLORS: Record<PreviouslyMutation["action"], string> = {
   expire: "bg-red-500/10 text-red-600 dark:text-red-400 border-red-500/20",
   promote: "bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-500/20",
   demote: "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20",
-};
-
-const ACTION_LABELS: Record<PreviouslyMutation["action"], string> = {
-  observe: "新增",
-  reinforce: "强化",
-  contradict: "矛盾",
-  discard: "丢弃",
-  expire: "过期",
-  promote: "升级",
-  demote: "降级",
-};
-
-const TIER_LABELS: Record<PreviouslyMutation["tier"], string> = {
-  long: "长期",
-  short: "短期",
-};
-
-const SUBSECTION_LABELS: Record<PreviouslyMutation["subsection"], string> = {
-  identity: "用户身份",
-  patterns: "用户模式",
-  strategies: "策略",
-  context: "当前上下文",
 };
 
 // ─── Component ──────────────────────────────────────────────────────────────
@@ -90,6 +69,8 @@ const ERROR_STATE: ToolRenderState = {
 };
 
 export function EvolutionIndicator({ state }: EvolutionIndicatorProps) {
+  const t = useTranslations("chat.evolution");
+
   if (!state || (!state.running && !state.changes && !state.error)) {
     return null;
   }
@@ -99,16 +80,16 @@ export function EvolutionIndicator({ state }: EvolutionIndicatorProps) {
   if (state.running) {
     const subtitle =
       state.step === "reading"
-        ? "正在读取记忆..."
+        ? t("reading")
         : state.step === "reviewing"
-          ? "正在审查对话模式..."
+          ? t("reviewing")
           : undefined;
 
     return (
       <PhaseIndicator
         mode="static"
         icon={<Brain className="h-3.5 w-3.5" />}
-        label="自进化中…"
+        label={t("evolving")}
         summary={subtitle}
         state={RUNNING_STATE}
       />
@@ -122,7 +103,7 @@ export function EvolutionIndicator({ state }: EvolutionIndicatorProps) {
       <PhaseIndicator
         mode="static"
         icon={<Brain className="h-3.5 w-3.5" />}
-        label={`自进化失败: ${state.error}`}
+        label={t("failed", { error: state.error })}
         state={ERROR_STATE}
       />
     );
@@ -144,8 +125,8 @@ export function EvolutionIndicator({ state }: EvolutionIndicatorProps) {
       <PhaseIndicator
         mode="static"
         icon={<Brain className="h-3.5 w-3.5" />}
-        label="已检查，无需更新"
-        meta="—"
+        label={t("noChanges")}
+        meta={t("noChangesMeta")}
         state={COMPLETED_STATE}
       />
     );
@@ -154,11 +135,11 @@ export function EvolutionIndicator({ state }: EvolutionIndicatorProps) {
   // ── Complete, has changes ────────────────────────────────────────────────
 
   const summary = [
-    state.changes!.added > 0 && `+${state.changes!.added} 新增`,
-    state.changes!.reinforced > 0 && `↑${state.changes!.reinforced} 强化`,
-    state.changes!.demoted > 0 && `↓${state.changes!.demoted} 降级`,
-    state.changes!.removed > 0 && `✕${state.changes!.removed} 删除`,
-    state.changes!.superseded > 0 && `↻${state.changes!.superseded} 取代`,
+    state.changes!.added > 0 && t("added", { count: state.changes!.added }),
+    state.changes!.reinforced > 0 && t("reinforced", { count: state.changes!.reinforced }),
+    state.changes!.demoted > 0 && t("demoted", { count: state.changes!.demoted }),
+    state.changes!.removed > 0 && t("removed", { count: state.changes!.removed }),
+    state.changes!.superseded > 0 && t("superseded", { count: state.changes!.superseded }),
   ]
     .filter(Boolean)
     .join(" · ");
@@ -170,13 +151,13 @@ export function EvolutionIndicator({ state }: EvolutionIndicatorProps) {
           key={i}
           className={`rounded border px-2 py-1.5 ${ACTION_COLORS[m.action]}`}
         >
-          <span className="font-semibold">{ACTION_LABELS[m.action]}</span>
+          <span className="font-semibold">{t(`action_${m.action}`)}</span>
           <span className="mx-1.5">—</span>
           <span className="break-all">
             {m.belief || m.belief_key || "(no text)"}
           </span>
           <span className="ml-2 opacity-60">
-            {TIER_LABELS[m.tier]} · {SUBSECTION_LABELS[m.subsection]}
+            {t(`tier_${m.tier}`)} · {t(`subsection_${m.subsection}`)}
           </span>
           {m.note && (
             <span className="ml-2 opacity-50 italic">— {m.note}</span>
@@ -190,7 +171,7 @@ export function EvolutionIndicator({ state }: EvolutionIndicatorProps) {
     <PhaseIndicator
       mode="static"
       icon={<Brain className="h-3.5 w-3.5" />}
-      label={`已进化：${summary}`}
+      label={t("evolved", { summary })}
       state={COMPLETED_STATE}
       expandedContent={expandedContent}
     />

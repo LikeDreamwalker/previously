@@ -261,8 +261,15 @@ async function attemptCall(
 
   const outputCall = result.toolCalls?.find((tc) => tc.toolName === "previouslyOutput");
   if (outputCall?.input) {
-    const inp = outputCall.input as { mutations: PreviouslyMutation[]; reasoning: string };
-    return { mutations: inp.mutations ?? [], reasoning: inp.reasoning ?? "" };
+    const parsed = outputSchema.safeParse(outputCall.input);
+    if (parsed.success) {
+      return parsed.data;
+    }
+    console.warn(
+      "[PreviouslyAgent] Output schema validation failed:",
+      parsed.error.issues,
+    );
+    return { mutations: [], reasoning: "Schema validation failed" };
   }
 
   if (result.text?.trim()) {

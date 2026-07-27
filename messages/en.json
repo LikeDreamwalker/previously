@@ -49,12 +49,6 @@
       "stopTooltip": "Stop generation",
       "sendTooltip": "Send message"
     },
-    "thinking": {
-      "indicator": "Thinking...",
-      "streaming": "Thinking...",
-      "completed": "Thought",
-      "elapsed": "{count, plural, one {# second} other {# seconds}}"
-    },
     "actions": {
       "copy": "Copy",
       "copied": "Copied",
@@ -62,14 +56,6 @@
       "copiedTooltip": "Copied!",
       "regenerate": "Regenerate",
       "regenerateTooltip": "Regenerate response"
-    },
-    "recall": {
-      "streaming": "Previously on you…",
-      "completed": "Previously on you",
-      "group": {
-        "timeline": "Viewed {count} slices",
-        "browse": "Found {count} more"
-      }
     },
     "tool": {
       "denied": "Denied",
@@ -124,6 +110,36 @@
       "fallbackLanguage": "code",
       "copyTooltip": "Copy code",
       "copiedTooltip": "Copied!"
+    },
+    "evolution": {
+      "reading": "Reading memory...",
+      "reviewing": "Reviewing conversation patterns...",
+      "evolving": "Self-evolving…",
+      "failed": "Evolution failed: {error}",
+      "noChanges": "Checked, no updates needed",
+      "evolved": "Evolved: {summary}",
+      "noChangesMeta": "—",
+      "action_observe": "New",
+      "action_reinforce": "Reinforce",
+      "action_contradict": "Contradict",
+      "action_discard": "Discard",
+      "action_expire": "Expire",
+      "action_promote": "Promote",
+      "action_demote": "Demote",
+      "tier_long": "Long-term",
+      "tier_short": "Short-term",
+      "subsection_identity": "User Identity",
+      "subsection_patterns": "User Patterns",
+      "subsection_strategies": "Strategies",
+      "subsection_context": "Current Context",
+      "added": "+{count} added",
+      "reinforced": "↑{count} reinforced",
+      "demoted": "↓{count} demoted",
+      "removed": "✕{count} removed",
+      "superseded": "↻{count} superseded",
+      "previouslyOn": "Previously On",
+      "clickToView": "Click to view",
+      "thoughts": "Thoughts"
     },
     "phase": {
       "thinking": "Thinking…",

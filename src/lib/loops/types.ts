@@ -6,9 +6,8 @@
  * `memory/loops/YYYY/MM/DD/<loopId>.md` after every step, so the human — and
  * the agent's own future recall — can see what happened while they were away.
  *
- * Mirrors the shape of the (dead-code) file-driven loop engine in
- * `src/lib/loop/engine.ts`, but persistence and resumption are owned by the
- * Workflow runtime, not by re-reading a task file across HTTP requests.
+ * Persistence and resumption are owned by the Workflow runtime, not by
+ * re-reading a task file across HTTP requests.
  */
 
 export type LoopStatus =

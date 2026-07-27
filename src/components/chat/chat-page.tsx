@@ -36,7 +36,7 @@ export function ChatPage({ children }: ChatPageProps) {
   return <Inner>{children}</Inner>;
 }
 
-// ─── Gap calculator (from original TimelinePanel) ────────────────────────
+// ─── Gap calculator ──────────────────────────────────────────────────
 
 type GapInfo =
   | { count: number; unitKey: string }
@@ -264,6 +264,20 @@ function Inner({ children }: { children: React.ReactNode }) {
     return messages;
   }, [messages, demoMessages]);
 
+  // Pre-compute the last assistant message ID so isEvolutionTarget doesn't
+  // copy and reverse the entire messages array on every render per message.
+  const lastAssistantId = useMemo(() => {
+    for (let i = allMessages.length - 1; i >= 0; i--) {
+      if (allMessages[i].role === "assistant") return allMessages[i].id;
+    }
+    return null;
+  }, [allMessages]);
+
+  const isEvolutionTarget = useCallback(
+    (id: string) => lastAssistantId === id,
+    [lastAssistantId],
+  );
+
   // Abort in-flight evolution on unmount
   useEffect(() => {
     return () => {
@@ -381,13 +395,7 @@ function Inner({ children }: { children: React.ReactNode }) {
                 error={error}
                 lastUserMessageAt={lastUserMessageAt}
                 evolutionState={evolutionState}
-                isEvolutionTarget={(id) => {
-                  // Only the latest assistant message carries the evolution indicator
-                  const lastAsst = [...allMessages]
-                    .reverse()
-                    .find((m) => m.role === "assistant");
-                  return lastAsst?.id === id;
-                }}
+                isEvolutionTarget={isEvolutionTarget}
               />
               <LoopWatcher messages={messages} />
             </div>
