@@ -319,9 +319,9 @@ export function parseSlice(raw: string): TimeSlice {
     open_loops,
     decisions,
     tags,
-    related_slices: frontmatter.related_slices ?? [],
-    loops: frontmatter.loops ?? [],
-    emotional_tone: frontmatter.emotional_tone,
+    related_slices: normalizeStringArray(frontmatter.related_slices),
+    loops: normalizeStringArray(frontmatter.loops),
+    emotional_tone: frontmatter.emotional_tone as SliceFrontmatter["emotional_tone"],
     turns,
     estimatedTokens,
     closedBy:
