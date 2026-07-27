@@ -151,7 +151,6 @@ export function PhaseIndicator({
   // ── Derived display values ────────────────────────────────────────────
 
   const isStreamingText = mode === "streaming" && isRunning && text.length > 0;
-  const showTypewriter = mode === "streaming" && text && typewriterVisible;
 
   return (
     <motion.div
@@ -229,9 +228,9 @@ export function PhaseIndicator({
         )}
       </div>
 
-      {/* Subtitle line (streaming mode) — single line, horizontal scroll */}
+      {/* Subtitle area (streaming mode) — single container to avoid flicker */}
       <AnimatePresence>
-        {showTypewriter && (
+        {mode === "streaming" && typewriterVisible && (isRunning || text) && (
           <motion.div
             initial={{ opacity: 0, height: 0 }}
             animate={{ opacity: 1, height: "auto" }}
@@ -240,33 +239,30 @@ export function PhaseIndicator({
             className="overflow-hidden"
           >
             <div className="mt-1.5 pl-6.5">
-              <motion.div
-                key={lineKey}
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={{ duration: 0.15 }}
-                ref={scrollRef}
-                className="overflow-x-auto whitespace-nowrap"
-                style={{ scrollbarWidth: "none" }}
-              >
-                <span className="text-xs font-mono text-muted-foreground">
-                  {currentLine}
-                  {isStreamingText && (
-                    <span className="ml-0.5 inline-block h-3 w-px animate-pulse bg-brand/60 align-middle" />
-                  )}
-                </span>
-              </motion.div>
+              {text ? (
+                <motion.div
+                  key={lineKey}
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  transition={{ duration: 0.15 }}
+                  ref={scrollRef}
+                  className="overflow-x-auto whitespace-nowrap"
+                  style={{ scrollbarWidth: "none" }}
+                >
+                  <span className="text-xs font-mono text-muted-foreground">
+                    {currentLine}
+                    {isStreamingText && (
+                      <span className="ml-0.5 inline-block h-3 w-px animate-pulse bg-brand/60 align-middle" />
+                    )}
+                  </span>
+                </motion.div>
+              ) : (
+                <span className="inline-block h-3 w-32 animate-pulse rounded bg-brand/10" />
+              )}
             </div>
           </motion.div>
         )}
       </AnimatePresence>
-
-      {/* Loading skeleton (streaming, no text yet) */}
-      {mode === "streaming" && isRunning && !text && (
-        <div className="mt-1.5 pl-6.5">
-          <span className="inline-block h-3 w-32 animate-pulse rounded bg-brand/10" />
-        </div>
-      )}
 
       {/* Expanded Card */}
       {hasExpandedDetails && (

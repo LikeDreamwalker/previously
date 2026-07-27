@@ -81,7 +81,7 @@ const outputSchema = z.object({
         action: z
           .enum(["observe", "reinforce", "contradict", "discard", "expire", "promote", "demote"])
           .describe("What to do with this belief."),
-        tier: z.enum(["long", "short"]).describe("long = 长期记忆, short = 短期记忆."),
+        tier: z.enum(["long", "short"]).describe("long = long-term memory, short = short-term memory."),
         subsection: z
           .enum(["identity", "patterns", "strategies", "context"])
           .describe("Which subsection. For short-term, always 'context'."),
@@ -109,10 +109,10 @@ function buildPrompt(input: PreviouslyAgentInput): string {
   const { signal, note, currentSliceId, closedSliceId, previouslyContent, agentCognition, recentTurns } = input;
 
   const signalLabels: Record<PreviouslySignal, string> = {
-    new_observation: "新观察 — core agent noticed new information about the user",
-    user_correction: "用户纠正 — user said something in previously.md is wrong",
-    slice_closed: "切片关闭 — a time slice just closed, good moment for deep review",
-    self_reflection: "自我反思 — core agent thinks its strategy needs adjustment",
+    new_observation: "new_observation — core agent noticed new information about the user",
+    user_correction: "user_correction — user said something in previously.md is wrong",
+    slice_closed: "slice_closed — a time slice just closed, good moment for deep review",
+    self_reflection: "self_reflection — core agent thinks its strategy needs adjustment",
   };
 
   const deepNote = closedSliceId

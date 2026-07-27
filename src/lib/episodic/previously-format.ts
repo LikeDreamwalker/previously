@@ -54,9 +54,6 @@ export const SUBSECTION_PATTERNS = "### User patterns";
 export const SUBSECTION_STRATEGIES = "### Agent strategies";
 export const SUBSECTION_CONTEXT = "### Current context";
 
-const COMMENT_LONG_TERM = "<!-- 不衰减。仅用户纠正或 contradict 时修改。 -->";
-const COMMENT_SHORT_TERM =
-  "<!-- 默认 7 天过期。每次审查重新评估 relevance。 -->";
 
 // Old section headers for migration.
 const OLD_IDENTITY = "## User identity";
@@ -119,7 +116,6 @@ export function serializePreviously(doc: PreviouslyDocument): string {
 
   // Long-term memory
   lines.push(SECTION_LONG_TERM);
-  lines.push(COMMENT_LONG_TERM);
   lines.push("");
 
   lines.push(SUBSECTION_IDENTITY);
@@ -160,7 +156,6 @@ export function serializePreviously(doc: PreviouslyDocument): string {
 
   // Short-term memory
   lines.push(SECTION_SHORT_TERM);
-  lines.push(COMMENT_SHORT_TERM);
   lines.push("");
 
   lines.push(SUBSECTION_CONTEXT);

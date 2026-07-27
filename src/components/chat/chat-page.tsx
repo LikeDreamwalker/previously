@@ -350,8 +350,8 @@ function Inner({ children }: { children: React.ReactNode }) {
         {children}
       </section>
 
-      {/* ── Screen 2: Timeline + Content — at least full viewport ──────── */}
-      <div className="min-h-screen">
+      {/* ── Screen 2: Timeline + Content ───────────────────────────────── */}
+      <div>
         {/* ── Sticky timeline — snaps below AppHeader (fixed h-12) ────────── */}
         <div className="sticky top-12 z-10 bg-background/90 backdrop-blur-md">
           <HorizontalTimeline
@@ -365,7 +365,7 @@ function Inner({ children }: { children: React.ReactNode }) {
         </div>
 
         {/* ── Chat content — natural document flow ────────────────────────── */}
-        <div className="pb-24">
+        <div className="min-h-[calc(100vh-12rem)] pb-24">
         {showingLive ? (
           allMessages.length === 0 && !isLoading ? (
             <div className="flex items-center justify-center min-h-[calc(100vh-13rem)]">
