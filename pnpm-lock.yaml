@@ -32,6 +32,9 @@ importers:
       ai:
         specifier: ^7.0.22
         version: 7.0.22(zod@4.4.3)
+      ajv:
+        specifier: ^8.20.0
+        version: 8.20.0
       class-variance-authority:
         specifier: ^0.7.1
         version: 0.7.1
