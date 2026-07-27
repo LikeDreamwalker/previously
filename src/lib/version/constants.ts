@@ -1,5 +1,5 @@
 /** Current app version — bump on every release. Single source of truth. */
-export const APP_VERSION = "0.4.0";
+export const APP_VERSION = "0.5.0";
 
 export const GITHUB_RELEASES_API =
   "https://api.github.com/repos/previously-lab/agent/releases/latest";
