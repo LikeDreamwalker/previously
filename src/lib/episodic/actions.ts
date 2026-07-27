@@ -1,5 +1,6 @@
 "use server";
 
+import { setDemoPersona } from "@/lib/demo/demo-fs";
 import { readSliceIndex, readSliceBody, parseSlice, sliceIdToFilePath, readPreviously, readAgentTimeline } from "./manager";
 import type { Turn } from "./types";
 
@@ -60,7 +61,8 @@ async function scanMonthsBack(
   return { entries, exhausted };
 }
 
-export async function getEpisodicState(): Promise<EpisodicState & { hasMore: boolean }> {
+export async function getEpisodicState(persona?: string): Promise<EpisodicState & { hasMore: boolean }> {
+  if (persona) setDemoPersona(persona);
   const PAGE_SIZE = 3;
 
   const now = new Date();
@@ -115,8 +117,10 @@ export interface SlicePage {
 
 export async function getMoreSlices(
   before: string,
-  limit: number = 10
+  limit: number = 10,
+  persona?: string,
 ): Promise<SlicePage> {
+  if (persona) setDemoPersona(persona);
   // Walk back through monthly indexes (batched + concurrent) until we fill a
   // page or run out of history — up to 48 months so load-more can page across
   // month/year boundaries.
@@ -162,8 +166,10 @@ export interface SliceContent {
 }
 
 export async function getSliceContent(
-  sliceId: string
+  sliceId: string,
+  persona?: string,
 ): Promise<SliceContent | null> {
+  if (persona) setDemoPersona(persona);
   try {
     const path = sliceIdToFilePath(sliceId);
     const raw = await readSliceBody(path);

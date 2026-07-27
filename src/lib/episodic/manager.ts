@@ -271,8 +271,24 @@ export function serializeSlice(slice: TimeSlice): string {
 }
 
 /**
+/**
  * Parse a Markdown string (with YAML frontmatter) back into a TimeSlice.
  */
+
+/** Coerce a value that should be a string — YAML unquoted values with ": "
+ *  can be parsed as objects by gray-matter. */
+function normalizeString(v: unknown): string {
+  if (typeof v === "string") return v;
+  if (v && typeof v === "object") return Object.keys(v)[0] ?? "";
+  return "";
+}
+
+/** Coerce an array where every entry should be a string. */
+function normalizeStringArray(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  return v.map((e) => (typeof e === "string" ? e : normalizeString(e)));
+}
+
 export function parseSlice(raw: string): TimeSlice {
   const { data, content } = matter(raw);
 
@@ -284,20 +300,28 @@ export function parseSlice(raw: string): TimeSlice {
   // Estimate tokens: rough 1 token per 4 characters
   const estimatedTokens = Math.ceil(raw.length / 4);
 
+  // Normalize open_loops / decisions — YAML unquoted values containing ": "
+  // (e.g. "Draft guide on the model: retention chain") are parsed as
+  // key-value objects by gray-matter instead of strings. Coerce every
+  // entry to a string so React rendering never receives an object.
+  const open_loops = normalizeStringArray(frontmatter.open_loops);
+  const decisions = normalizeStringArray(frontmatter.decisions);
+  const tags = normalizeStringArray(frontmatter.tags);
+
   return {
     slice_id: frontmatter.slice_id ?? "",
-    focus: frontmatter.focus ?? "",
+    focus: normalizeString(frontmatter.focus) ?? "",
     status: frontmatter.status ?? "active",
     start: frontmatter.start ?? "",
     end: frontmatter.end,
     timezone: frontmatter.timezone ?? "UTC",
-    summary: frontmatter.summary ?? "",
-    open_loops: frontmatter.open_loops ?? [],
-    decisions: frontmatter.decisions ?? [],
-    tags: frontmatter.tags ?? [],
-    related_slices: frontmatter.related_slices ?? [],
-    loops: frontmatter.loops ?? [],
-    emotional_tone: frontmatter.emotional_tone,
+    summary: normalizeString(frontmatter.summary) ?? "",
+    open_loops,
+    decisions,
+    tags,
+    related_slices: normalizeStringArray(frontmatter.related_slices),
+    loops: normalizeStringArray(frontmatter.loops),
+    emotional_tone: frontmatter.emotional_tone as SliceFrontmatter["emotional_tone"],
     turns,
     estimatedTokens,
     closedBy:

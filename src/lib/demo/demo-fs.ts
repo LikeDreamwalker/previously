@@ -23,8 +23,10 @@ const IS_REMOTE = !!BENCHMARK_BASE;
 // Local fallback: look for benchmark-data as a sibling of the project root
 const LOCAL_DATA_DIR = join(process.cwd(), "..", "benchmark-data");
 
+const DEFAULT_PERSONA = "personal_14";
+
 /** Currently selected persona id — set by the page from URL searchParams. */
-let currentPersona = "personal_14";
+let currentPersona = DEFAULT_PERSONA;
 
 export function setDemoPersona(personaId: string) {
   currentPersona = personaId;
@@ -37,9 +39,9 @@ export function getDemoPersona(): string {
 // ─── Path helpers ────────────────────────────────────────────────────────
 
 /** Strip `memory/` prefix, prepend persona dir. */
-function resolveRelative(path: string): string {
+function resolveRelative(path: string, persona: string): string {
   const relative = path.replace(/^memory\//, "");
-  return `${currentPersona}/${relative}`;
+  return `${persona}/${relative}`;
 }
 
 // ─── Manifest ────────────────────────────────────────────────────────────
@@ -85,8 +87,17 @@ async function fetchManifest(): Promise<Manifest> {
 
 // ─── File API ────────────────────────────────────────────────────────────
 
-export async function readFileDemo(path: string): Promise<string> {
-  const rel = resolveRelative(path);
+/**
+ * Read a file from the demo dataset. Uses `currentPersona` (set by
+ * setDemoPersona during SSR) as the default, but callers can override
+ * via the `persona` parameter (e.g. server actions receiving the persona
+ * from the client via searchParams).
+ */
+export async function readFileDemo(
+  path: string,
+  persona?: string,
+): Promise<string> {
+  const rel = resolveRelative(path, persona ?? currentPersona);
 
   if (IS_REMOTE) {
     const res = await fetch(`${BENCHMARK_BASE}/${rel}`);
@@ -104,16 +115,19 @@ export async function readFileDemo(path: string): Promise<string> {
 }
 
 export async function listFilesDemo(
-  path: string
+  path: string,
+  persona?: string,
 ): Promise<Array<{ name: string; type: "file" | "dir"; path: string }>> {
+  const pId = persona ?? currentPersona;
+
   if (IS_REMOTE) {
     const manifest = await fetchManifest();
-    const persona = manifest.personas[currentPersona];
-    if (!persona?.tree) throw new Error(`Persona "${currentPersona}" not found in manifest`);
+    const personaEntry = manifest.personas[pId];
+    if (!personaEntry?.tree) throw new Error(`Persona "${pId}" not found in manifest`);
 
     const relative = path.replace(/^memory\//, "").replace(/\/$/, "");
     const segments = relative.split("/").filter(Boolean);
-    let node: unknown = persona.tree;
+    let node: unknown = personaEntry.tree;
     for (const seg of segments) {
       if (node && typeof node === "object" && seg in (node as Record<string, unknown>)) {
         node = (node as Record<string, unknown>)[seg];
@@ -137,7 +151,7 @@ export async function listFilesDemo(
   }
 
   // Local disk
-  const rel = resolveRelative(path);
+  const rel = resolveRelative(path, pId);
   const fullPath = join(LOCAL_DATA_DIR, rel);
   if (!existsSync(fullPath)) return [];
   const stat = statSync(fullPath);
