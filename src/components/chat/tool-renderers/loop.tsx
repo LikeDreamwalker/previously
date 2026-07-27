@@ -41,11 +41,11 @@ export function LoopToolRenderer({ input, output, state }: LoopToolRendererProps
   const errorText = typeof output?.error === "string" ? output.error : null;
 
   const expandedContent = failed && errorText ? (
-    <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-md border border-red-500/20 bg-red-500/5 px-3 py-2 font-mono text-xs leading-relaxed text-red-400">
+    <pre className="whitespace-pre-wrap break-all font-mono text-xs leading-relaxed text-red-400">
       {errorText}
     </pre>
   ) : loopId || filePath ? (
-    <div className="space-y-2 rounded-md border border-border bg-muted/50 p-3 font-mono text-xs leading-relaxed text-muted-foreground">
+    <div className="space-y-2 font-mono text-xs leading-relaxed text-muted-foreground">
       {filePath && (
         <div className="flex items-baseline gap-2">
           <span className="shrink-0 text-muted-foreground/70">

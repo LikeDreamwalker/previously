@@ -7,21 +7,24 @@
  * `"use step"` executor from ./tool-executors — so every tool call is an
  * individually durable, auto-retried workflow step.
  *
- * Import-graph discipline: this module stays pure JS (zod + `tool()` +
- * executor references). All Node I/O lives inside the executors' step bodies,
- * which the workflow compiler bundles separately.
+ * Tools are conceptual, not filesystem-oriented. The agent sees slices,
+ * strands, timelines, and agent timelines — never file paths. Each tool
+ * constructs its own path internally and only accesses its specific concept.
  */
 
 import { tool } from "ai";
 import { z } from "zod";
 import {
-  readMemoryExecute,
-  listMemoryExecute,
-  readIndexExecute,
-  writeMemoryExecute,
-  updateUserProfileExecute,
+  readSliceExecute,
+  listSlicesExecute,
+  readTimelineExecute,
+  readStrandExecute,
+  listStrandsExecute,
+  readAgentTimelineExecute,
+  readPreviouslyExecute,
   webSearchExecute,
-  // startLoopExecute, // re-enable with the startLoop tool below
+  recallExecute,
+  startLoopExecute,
   loopReportExecute,
   type ToolContext,
   type LoopToolContext,
@@ -35,6 +38,10 @@ const toolContextSchema = z.object({
   useGithub: z.boolean(),
   useDemo: z.boolean(),
   sliceId: z.string(),
+  recentTurns: z.array(z.object({
+    role: z.string(),
+    content: z.string(),
+  })),
 });
 
 const loopToolContextSchema = z.object({
@@ -50,69 +57,161 @@ const loopToolContextSchema = z.object({
   maxIterations: z.number(),
 });
 
-// ─── Memory tools (shared by chat + loop) ────────────────────────────────
+// ─── Concept tools (shared by chat + loop) ──────────────────────────────
 
-export const memoryTools = {
-  readMemory: tool({
+export const conceptTools = {
+  readSlice: tool({
     description:
-      "Read a file from memory (time slices or semantic nodes). Only memory/ paths are accessible.",
+      "Read a time slice's conversation record (core timeline). " +
+      "Use this when you need to see the full detail of a specific time slice " +
+      "that Flash surfaced in its recall summary. " +
+      "Use the optional `range` parameter to fetch only specific turns instead " +
+      "of the entire slice — saves context.",
     inputSchema: z.object({
-      path: z
+      sliceId: z
         .string()
-        .describe("Path within memory/, e.g. 'memory/episodic/slices/2026/07/01.md'"),
+        .describe("Slice ID in YYYY-MM-DD-HHMM format, e.g. '2026-07-24-1500'."),
+      range: z
+        .object({
+          type: z
+            .enum(["turns", "last", "date"])
+            .describe(
+              "turns = specific turn indices. last = most recent N turns. " +
+              "date = turns after a given timestamp.",
+            ),
+          indices: z
+            .array(z.number())
+            .optional()
+            .describe("Turn indices (0-based). Only for type 'turns'."),
+          count: z
+            .number()
+            .optional()
+            .describe("Number of recent turns. Only for type 'last'."),
+          after: z
+            .string()
+            .optional()
+            .describe("ISO 8601 timestamp. Only for type 'date'."),
+        })
+        .optional()
+        .describe(
+          "Optional range filter. When omitted, returns the full slice content.",
+        ),
     }),
     contextSchema: toolContextSchema,
-    execute: readMemoryExecute,
+    execute: readSliceExecute,
   }),
-  listMemory: tool({
+  listSlices: tool({
     description:
-      "List directories under memory/ to explore available time slices.",
+      "Browse time slice directories to see what slices exist. " +
+      "Use this to explore available time slices for a given year and month.",
     inputSchema: z.object({
-      path: z
-        .string()
-        .describe("Directory path within memory/, e.g. 'memory/episodic/slices/2026/'"),
+      year: z
+        .number()
+        .int()
+        .min(2000)
+        .max(2100)
+        .optional()
+        .describe("Year. Defaults to the current year."),
+      month: z
+        .number()
+        .min(1)
+        .max(12)
+        .optional()
+        .describe("Month (1-12). Defaults to the current month."),
     }),
     contextSchema: toolContextSchema,
-    execute: listMemoryExecute,
+    execute: listSlicesExecute,
   }),
-  readIndex: tool({
+  readTimeline: tool({
     description:
-      "Read a monthly _index.json to browse time slices in a given month.",
+      "Read a monthly timeline index — lists every slice in that month " +
+      "with its focus, summary, and tags. Use this to get a high-level " +
+      "overview before deciding which slices to read in full.",
     inputSchema: z.object({
       year: z.number().int().min(2000).max(2100),
       month: z.number().min(1).max(12),
     }),
     contextSchema: toolContextSchema,
-    execute: readIndexExecute,
+    execute: readTimelineExecute,
   }),
-  writeMemory: tool({
+  readStrand: tool({
     description:
-      "Create or update a memory file (notes or semantic nodes under memory/) when the user asks you to remember or record something. Cannot touch episodic slices/indexes or the user profile — use updateUserProfile for the profile.",
+      "Follow a strand (线索) — a keyword tag that threads through multiple " +
+      "time slices. Returns all slice paths carrying that tag. " +
+      "Use this to trace a topic across time.",
     inputSchema: z.object({
-      path: z.string().describe("Path under memory/, e.g. 'memory/nodes/<id>.md'"),
-      content: z.string().describe("Full file content to write"),
-      reason: z
+      strand: z
         .string()
-        .describe("Short note explaining the write (used as the commit message)"),
+        .describe("The strand (tag) to follow, e.g. 'rust', 'loop-testing'."),
     }),
     contextSchema: toolContextSchema,
-    execute: writeMemoryExecute,
+    execute: readStrandExecute,
+  }),
+  listStrands: tool({
+    description:
+      "List all known strands (线索) — every keyword tag that has been " +
+      "woven through time slices. Use this to discover what topics exist.",
+    inputSchema: z.object({}),
+    contextSchema: toolContextSchema,
+    execute: listStrandsExecute,
+  }),
+  readAgentTimeline: tool({
+    description:
+      "Read your own cognitive record (Agent timeline) for a slice — " +
+      "what you were thinking, which tools you called, and why. " +
+      "Use this for self-reflection: to understand your past reasoning.",
+    inputSchema: z.object({
+      sliceId: z
+        .string()
+        .describe("Slice ID in YYYY-MM-DD-HHMM format."),
+    }),
+    contextSchema: toolContextSchema,
+    execute: readAgentTimelineExecute,
+  }),
+  readPreviously: tool({
+    description:
+      "Read the 前情提要 (previously.md) for a specific slice — the agent's " +
+      "impressions and understanding of the user at that moment in time. " +
+      "The current slice's 前情提要 is already in your context; use this " +
+      "only to read historical versions for comparison.",
+    inputSchema: z.object({
+      sliceId: z
+        .string()
+        .optional()
+        .describe(
+          "Slice ID in YYYY-MM-DD-HHMM format. Defaults to the current slice.",
+        ),
+    }),
+    contextSchema: toolContextSchema,
+    execute: readPreviouslyExecute,
   }),
 };
 
 // ─── Chat tool set ───────────────────────────────────────────────────────
-// startLoop is deliberately NOT bound in this release: the loop engine works,
-// but its UX is not ready to ship — progress lives in an ephemeral floating
-// watcher (should be durable, in-conversation) and the no-repo/demo story
-// (read-only memory) can't demonstrate it at all. The loop workflow, /api/loops
-// door, and startLoopExecute all stay in the codebase; re-enable by binding
-// the tool here + restoring the system-prompt paragraph in chat/steps.ts.
 
 export const chatTools = {
-  ...memoryTools,
+  ...conceptTools,
+  recall: tool({
+    description:
+      "Search past conversation slices for context relevant to the current " +
+      "query. Use this when you need to recall what was discussed in previous " +
+      "sessions, or when the user references something you need to look up in " +
+      "their history. Returns raw conversation content from matching slices — " +
+      "no summaries, just the original conversations.",
+    inputSchema: z.object({
+      query: z
+        .string()
+        .describe("What to search for in past conversations. Be specific about the topic, person, project, or question you need context on."),
+    }),
+    contextSchema: toolContextSchema,
+    execute: recallExecute,
+  }),
   webSearch: tool({
     description:
-      "Search the live web for current or external information — news, releases, prices, docs, anything time-sensitive or beyond the user's memory files. Returns a concise cited answer plus source links. Do not use it for things already in memory or that you reliably know.",
+      "Search the live web for current or external information — news, " +
+      "releases, prices, docs, anything time-sensitive or beyond the user's " +
+      "memory. Returns a concise cited answer plus source links. " +
+      "Do not use it for things already in memory or that you reliably know.",
     inputSchema: z.object({
       query: z
         .string()
@@ -121,52 +220,38 @@ export const chatTools = {
     contextSchema: toolContextSchema,
     execute: webSearchExecute,
   }),
-  updateUserProfile: tool({
+  startLoop: tool({
     description:
-      "Update the user's profile (memory/user/profile.md) when they tell you who they are or ask you to remember something about them. Patch individual fields; omitted fields are left unchanged.",
+      "Start a durable background loop that works a goal over multiple steps " +
+      "on its own and records its progress to memory/loops. Use this when the " +
+      "user explicitly asks to run something in the background or continuously, " +
+      "OR when you judge a task is large or long-running enough that it is " +
+      "better worked autonomously than answered inline. Tell the user you have " +
+      "started one.",
     inputSchema: z.object({
-      name: z.string().optional(),
-      pronouns: z.string().optional(),
-      timezone: z.string().optional(),
-      locale: z.string().optional(),
-      addressAs: z
+      goal: z
         .string()
+        .describe("A clear, self-contained statement of what the loop should accomplish."),
+      tags: z
+        .array(z.string())
         .optional()
-        .describe("What to call the user (frontmatter address_as)"),
-      body: z.string().optional().describe("Free-form 'about you' markdown"),
-      reason: z
-        .string()
-        .describe("Why this change is being made (used as the commit message)"),
+        .describe("Keyword tags for later recall, e.g. topic names."),
     }),
     contextSchema: toolContextSchema,
-    execute: updateUserProfileExecute,
+    execute: startLoopExecute,
   }),
-  // startLoop: tool({
-  //   description:
-  //     "Start a durable background loop that works a goal over multiple steps on its own and records its progress to memory/loops. Use this when the user explicitly asks to run something in the background or continuously, OR when you judge a task is large or long-running enough that it is better worked autonomously than answered inline right now. The loop keeps running after this turn finishes; tell the user you have started it and that results will be waiting when they return. Do NOT use it for anything you can simply answer now.",
-  //   inputSchema: z.object({
-  //     goal: z
-  //       .string()
-  //       .describe("A clear, self-contained statement of what the loop should accomplish."),
-  //     tags: z
-  //       .array(z.string())
-  //       .optional()
-  //       .describe("Keyword tags for later recall, e.g. topic names."),
-  //   }),
-  //   contextSchema: toolContextSchema,
-  //   execute: startLoopExecute,
-  // }),
 };
 
 // ─── Loop tool set ───────────────────────────────────────────────────────
-// No startLoop (a loop must not spawn loops) and no updateUserProfile (an
-// autonomous loop has no business editing the user's profile).
 
 export const loopTools = {
-  ...memoryTools,
+  ...conceptTools,
   loopReport: tool({
     description:
-      "Report one completed increment of work toward the goal. Call this exactly once after each meaningful step: what you did (action), what came out of it (result), and whether the goal is now fully accomplished (done). Set done=true only when the goal is genuinely complete — do not pad with busywork.",
+      "Report one completed increment of work toward the goal. Call this " +
+      "exactly once after each meaningful step: what you did (action), what " +
+      "came out of it (result), and whether the goal is now fully accomplished " +
+      "(done). Set done=true only when the goal is genuinely complete.",
     inputSchema: z.object({
       action: z.string().describe("What you did this step, in one line."),
       result: z.string().describe("The outcome or reasoning produced this step."),
@@ -182,26 +267,32 @@ export const loopTools = {
 /** Same serializable chat context, fanned out to every chat tool by name. */
 export function buildChatToolsContext(ctx: ToolContext): Record<keyof typeof chatTools, ToolContext> {
   return {
-    readMemory: ctx,
-    listMemory: ctx,
-    readIndex: ctx,
-    writeMemory: ctx,
+    readSlice: ctx,
+    listSlices: ctx,
+    readTimeline: ctx,
+    readStrand: ctx,
+    listStrands: ctx,
+    readAgentTimeline: ctx,
+    readPreviously: ctx,
+    recall: ctx,
     webSearch: ctx,
-    updateUserProfile: ctx,
-    // startLoop: ctx, // re-enable with the startLoop tool above
+    startLoop: ctx,
   };
 }
 
-/** Memory tools share the chat-shaped context; loopReport gets the loop identity. */
+/** Concept tools share the chat-shaped context; loopReport gets the loop identity. */
 export function buildLoopToolsContext(
   memoryCtx: ToolContext,
   loopCtx: LoopToolContext,
-): Record<keyof typeof memoryTools, ToolContext> & { loopReport: LoopToolContext } {
+): Record<keyof typeof conceptTools, ToolContext> & { loopReport: LoopToolContext } {
   return {
-    readMemory: memoryCtx,
-    listMemory: memoryCtx,
-    readIndex: memoryCtx,
-    writeMemory: memoryCtx,
+    readSlice: memoryCtx,
+    listSlices: memoryCtx,
+    readTimeline: memoryCtx,
+    readStrand: memoryCtx,
+    listStrands: memoryCtx,
+    readAgentTimeline: memoryCtx,
+    readPreviously: memoryCtx,
     loopReport: loopCtx,
   };
 }

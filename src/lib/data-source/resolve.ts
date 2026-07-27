@@ -1,53 +1,42 @@
 /**
  * Data-source resolution — decides where memory reads & writes land.
  *
- * Three backends, chosen automatically:
+ * Controlled by the STORAGE environment variable:
  *
- *   "local"   NODE_ENV === "development"          → local disk
- *   "github"  GITHUB_TOKEN is set (production)     → GitHub API (octokit)
- *   "demo"    neither of the above                  → remote benchmark data
+ *   STORAGE=local   → local filesystem (dev, full read/write)
+ *   STORAGE=github  → GitHub API via Octokit (production, full read/write)
+ *   STORAGE=demo    → remote benchmark data (read-only, persona-based)
  *
- * The "demo" source is ALWAYS read-only. The "local" and "github" sources
- * support full read/write.
+ * When STORAGE is NOT set, auto-detection:
  *
- * A user preference stored in config.json (`datasource: "demo" | "own"`)
- * can override the default only when the underlying capability exists
- * (e.g. you can't choose "own" without GITHUB_TOKEN).
+ *   GITHUB_TOKEN present  → "github"
+ *   NODE_ENV=development  → "local"
+ *   otherwise             → "demo"
+ *
+ * The rest of the codebase imports from here or from capabilities.ts
+ * (which delegates here). No other module reads process.env for data-source
+ * decisions — this is the single source of truth.
  */
 
 export type DataSource = "local" | "github" | "demo";
 
-/** The best available source given current environment. */
-export function resolveDataSource(): DataSource {
-  // GitHub token present → user's own memory repo (production path)
-  if (process.env.GITHUB_TOKEN) return "github";
-  // No token → demo data (remote benchmark, or local benchmark-data directory)
-  return "demo";
-}
-
 /**
- * The effective source after considering user preference.
+ * The effective data source for this deployment.
  *
- * A user can only select "own" when a GitHub token is actually configured;
- * otherwise the preference is silently ignored and the best available
- * source is used.
+ * Explicit STORAGE env var takes priority. When unset, auto-detection
+ * derives the source from GITHUB_TOKEN / NODE_ENV presence.
  */
-export function resolveEffectiveSource(
-  preference?: string
-): DataSource {
-  const available = resolveDataSource();
+export function resolveDataSource(): DataSource {
+  // Explicit override — highest priority
+  const explicit = process.env.STORAGE;
+  if (explicit === "local" || explicit === "github" || explicit === "demo") {
+    return explicit;
+  }
 
-  // Dev always local — preference ignored
-  if (available === "local") return "local";
-
-  // User wants their own data AND can access it
-  if (preference === "own" && available === "github") return "github";
-
-  // User explicitly wants demo, or demo is the only option
-  if (preference === "demo" || available === "demo") return "demo";
-
-  // Fallback to whatever is available
-  return available;
+  // Auto-detection
+  if (process.env.GITHUB_TOKEN) return "github";
+  if (process.env.NODE_ENV === "development") return "local";
+  return "demo";
 }
 
 /** Shortcut: are we currently in demo mode? */
@@ -55,7 +44,7 @@ export function isDemo(source?: DataSource): boolean {
   return (source ?? resolveDataSource()) === "demo";
 }
 
-/** Shortcut: can we write? */
+/** Shortcut: can we write? Demo is read-only. */
 export function isWritable(source?: DataSource): boolean {
   const s = source ?? resolveDataSource();
   return s === "local" || s === "github";

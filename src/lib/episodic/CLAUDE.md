@@ -50,7 +50,7 @@ All defined in `types.ts` unless noted.
 | `TimeSlice` | `slice_id`, `focus`, `status` (active/closed), `start`/`end`, `turns: Turn[]`, `estimatedTokens`, `closedBy: SlicingSignal` |
 | `Turn` | `timestamp` (ISO 8601), `role` ("user"/"agent"), `content` |
 | `SliceFrontmatter` | The YAML representation of a slice: adds `summary`, `open_loops`, `decisions`, `tags`, `related_slices`, `emotional_tone` |
-| `SlicingSignal` | `"time_silence" \| "user_explicit" \| "flash_high_confidence" \| "capacity"` |
+| `SlicingSignal` | `"time_silence" \| "user_explicit" \| "capacity"` |
 | `SliceIndexEntry` | Slim version stored in `_index.json`: `id`, `focus`, `summary`, `tags`, `status`, `start`, `open_loops`, `decisions` |
 | `MaintenanceOutput` (maintenance.ts) | `intent`, `confidence`, `suggested_topics`, `recall_hits[]`, `needs_metadata_update`, `metadata_updates`, `reasoning` |
 | `SliceSummary` (actions.ts) | Truncated view for UI: `slice_id`, `focus`, `summary`, `start`, `status`, `open_loops`, `decisions` |
@@ -63,9 +63,14 @@ memory/episodic/
     YYYY/
       MM/
         DD/
-          HHMM.md              -- time slice body (YAML frontmatter + turns as ## Turn N)
-        _index.json            -- monthly index of all slices in this month
-  strands.json                 -- the strand index: strand (keyword) -> slice paths
+          HHMM/
+            timeline/
+              core.md           -- time slice body (YAML frontmatter + turns)
+              agent.md          -- agent cognition log (mechanical extraction)
+            previously.md       -- belief system snapshot (Flash/Pro evolution)
+        _index.json             -- monthly index of all slices in this month
+  strands.json                  -- the strand index: strand (keyword) -> slice paths
+  next-previously.md            -- Pro's latest reflection, picked up by next slice
 ```
 
 **Strands.** A slice carries `tags` (keywords). A **strand** is a keyword woven
@@ -79,12 +84,13 @@ integration) is a future milestone.
 ## Design Decisions
 
 - **Flash as a conditioned reflex**: Intent, recall scanning, and metadata maintenance are combined into one LLM call per request layer to keep latency low. Flash is expected to be fallible; Pro does deeper work when Flash returns nothing.
-- **Time-only slicing in M8**: Capacity checks and Flash-based continuity analysis were removed as premature optimization. The sole slicing trigger is 30 minutes of inactivity. The `SlicingSignal` type still defines `flash_high_confidence` and `capacity` variants, but they are never emitted.
+- **Time-only slicing in M8**: Capacity checks and Flash-based continuity analysis were removed as premature optimization. The primary slicing trigger is 30 minutes of inactivity (`"time_silence"`). Turn count cap may also force-close a slice (`"capacity"`).
 - **In-memory active slice with periodic snapshots**: The slice is held in a module-level variable. It is snapshotted to disk periodically (every N turns, `beforeunload`) but not on every turn -- avoids excessive GitHub API writes. `tryLoadTodaySlice()` recovers state on refresh.
 - **Gray-matter serialization**: Slices use `---` YAML frontmatter + markdown body, parsed via `gray-matter`. Turn headers follow the convention `## Turn N -- ISO_TIMESTAMP (role)`.
 - **Dual storage backend**: Local filesystem (dev) vs. GitHub API (production) selected at import time via a `USE_GITHUB` flag. The `fsReadFile`/`fsWriteFile`/`fsListFiles` wrappers in `manager.ts` delegate transparently.
 - **DEMO_MODE extends scan range**: `actions.ts` checks `DEMO_MODE=true` to scan up to 48 months back instead of 1-2, supporting pre-seeded demo personas.
 
-## Dead Code, Stubs, and TODOs
+## Known Limitations
 
-- **`SlicingSignal` values `"flash_high_confidence"` and `"capacity"`** are never emitted -- `slicer.ts` only triggers on `"time_silence"`. `parseSlice()` in `manager.ts` hardcodes `closedBy: "user_explicit"` for any slice parsed from disk with `status: "closed"`, ignoring the actual signal that closed it.
+- **`parseSlice()` hardcodes `closedBy: "user_explicit"`** for any slice parsed from disk with `status: "closed"`, ignoring the actual signal that closed it. The signal is lost on serialization — only relevant for historical slices.
+- **Strand recall** is not yet wired into the agent's recall path. Strands are built at slice-close but only consumed via `readStrand` / `listStrands` tools, not yet integrated into Flash's automatic recall scan.

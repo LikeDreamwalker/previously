@@ -9,7 +9,7 @@ import { DemoBadge } from "@/components/layout/demo-badge";
 
 export function AppHeader({ isDemo = false }: { isDemo?: boolean }) {
   return (
-    <header className="fixed top-0 inset-x-0 z-50 flex items-center justify-between h-12 px-4 sm:px-6 border-b border-border/80 bg-background/90 backdrop-blur-md">
+    <header className="fixed top-0 inset-x-0 z-50 flex items-center justify-between h-12 px-4 sm:px-6 bg-background/90 backdrop-blur-md">
       <Link
         href="/"
         className="text-sm font-semibold tracking-tight hover:text-foreground/80 transition-colors"

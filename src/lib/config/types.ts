@@ -23,6 +23,8 @@ export interface ModelConfig {
   provider: string;
   /** Whether reasoning/thinking is enabled for the Pro tier. */
   thinking: boolean;
+  /** Thinking depth: "low" | "medium" | "high". Controls reasoning token spend. */
+  reasoningEffort: "low" | "medium" | "high";
 }
 
 export interface UserConfig {

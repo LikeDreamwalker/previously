@@ -12,11 +12,14 @@
  * expose `run.runId` (the reconnect handle) in a response header.
  */
 import { start } from "workflow/api";
+import crypto from "crypto";
 import { convertToModelMessages, type UIMessage } from "ai";
 import { turnWorkflow } from "./turn-workflow";
 import type { TurnInput } from "@/lib/chat/turn-types";
 import { loadUserConfig } from "@/lib/config/loader";
 import { resolveModelId } from "@/lib/models/registry";
+import { getRepoConfig } from "@/lib/capabilities";
+import { resolveDataSource } from "@/lib/data-source/resolve";
 
 export interface StartTurnArgs {
   /** Raw UI messages from the client. */
@@ -25,14 +28,10 @@ export interface StartTurnArgs {
   model?: string;
   /** Optional thinking override; only `false` disables the config default. */
   thinking?: boolean;
+  /** Optional reasoning effort override. */
+  effort?: "low" | "medium" | "high";
   /** Client-reported timezone, used when minting a new slice. */
   timezone?: string;
-}
-
-function getRepoConfig(): { owner: string; repo: string } {
-  const owner = process.env.GITHUB_REPO_OWNER ?? "local";
-  const repo = process.env.GITHUB_REPO_NAME ?? "local";
-  return { owner, repo };
 }
 
 /** Extract the latest user message text from raw UI messages. */
@@ -56,18 +55,27 @@ export async function startTurn(
   // resolveModelId: the client's stored model preference may predate V4.
   const model = resolveModelId(args.model || config.model.provider);
   const thinking = args.thinking !== false && config.model.thinking;
+  const reasoningEffort = args.effort ?? config.model.reasoningEffort;
   const clientTimezone = args.timezone ?? "UTC";
   const { owner, repo } = getRepoConfig();
+  const dataSource = resolveDataSource();
 
-  // Full turns, no truncation. The limit comes from user config so it can be
-  // tuned without a redeploy.
-  const modelMessages = await convertToModelMessages(args.messages);
-  const recentTurns = modelMessages
-    .slice(-Math.ceil(config.context.recentTurnsLimit * 1.2))
-    .map((m) => ({
-      role: m.role as string,
-      content: typeof m.content === "string" ? m.content : JSON.stringify(m.content),
-    }));
+  // Generate turn identity early — shared by user turn, agent turn, and
+  // agent.md cognition record. 4 random bytes → 6-char base64url, unique
+  // within a slice (and collision probability across 2^32 ≈ 4.3B values is
+  // negligible for a time slice's lifetime).
+  const turnId = crypto.randomBytes(4).toString("base64url");
+
+  // Only send recent messages to the model; older context is retrieved on
+  // demand via recall. The 1.2× multiplier gives a small buffer beyond the
+  // configured limit so short back-and-forth exchanges stay intact.
+  const recentLimit = Math.ceil(config.context.recentTurnsLimit * 1.2);
+  const fullMessages = await convertToModelMessages(args.messages);
+  const modelMessages = fullMessages.slice(-recentLimit);
+  const recentTurns = modelMessages.map((m) => ({
+    role: m.role as string,
+    content: typeof m.content === "string" ? m.content : JSON.stringify(m.content),
+  }));
 
   const userMessages = args.messages.filter((m) => m.role === "user");
   const lastUserMessage = extractLastUserText(userMessages[userMessages.length - 1]);
@@ -78,11 +86,15 @@ export async function startTurn(
     lastUserMessage,
     model,
     thinking,
+    reasoningEffort,
     clientTimezone,
     config,
     owner,
     repo,
+    useGithub: dataSource === "github",
+    useDemo: dataSource === "demo",
     startedAtIso: new Date().toISOString(),
+    turnId,
   };
 
   return start(turnWorkflow, [input]);

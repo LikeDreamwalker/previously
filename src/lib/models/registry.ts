@@ -29,18 +29,8 @@ export const DEFAULT_MODELS: ModelConfig[] = [
   },
 ];
 
-/**
- * Legacy DeepSeek ids retired on 2026-07-24 (they now error upstream). Stored
- * user configs and browser-local settings may still hold them — map onto the
- * V4 successors: chat → Flash, reasoner → Pro (our thinking tier).
- */
-const LEGACY_MODEL_IDS: Record<string, string> = {
-  "deepseek-chat": "deepseek-v4-flash",
-  "deepseek-reasoner": "deepseek-v4-pro",
-};
-
 export function resolveModelId(id: string): string {
-  return LEGACY_MODEL_IDS[id] ?? id;
+  return id;
 }
 
 export function getModel(id: string): ModelConfig | undefined {

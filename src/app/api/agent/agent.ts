@@ -35,6 +35,7 @@ export type LoopAgent = WorkflowAgent<LoopToolSet>;
 export function createChatAgent(opts: {
   modelId: string;
   thinking: boolean;
+  reasoningEffort: "low" | "medium" | "high";
   toolsContext: ReturnType<typeof buildChatToolsContext>;
 }): ChatAgent {
   return new WorkflowAgent({
@@ -47,7 +48,7 @@ export function createChatAgent(opts: {
       ? {
           deepseek: {
             thinking: { type: "enabled" as const },
-            reasoningEffort: "medium" as const,
+            reasoningEffort: opts.reasoningEffort,
           },
         }
       : {
@@ -75,7 +76,7 @@ export function createLoopAgent(opts: {
     },
     instructions: `You are an autonomous agent working a goal step by step, on your own, while the human is away.
 
-Use the memory tools to actually DO the work: read any context you need with readMemory/listMemory. When the goal is to produce an artifact, WRITE it to a file under memory/ using writeMemory — do not just paste the artifact into your report. If a read reports that a file does not exist, do not read it again — write it first, or move on. Never reference a file you have not yet written.
+Use your concept tools to read context: open specific slices with readSlice, browse with listSlices / readTimeline, follow topics with readStrand / listStrands. Work from what you find — do not re-read files that don't exist.
 
 After each meaningful increment of work, call the loopReport tool exactly once to record the action you took, the result, and whether the goal is done. Set done=true only when the goal is genuinely complete — do not pad with busywork. Stop working once you have reported done=true.`,
     tools: loopTools,

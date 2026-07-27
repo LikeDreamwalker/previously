@@ -1,0 +1,23 @@
+@
+refactor: introduce PhaseIndicator — unify thinking/recall/belief containers
+
+Replace three divergent rendering paths (ThinkingSteps+ToolLayout,
+RecallToolRenderer+StreamingPreview, belief ToolLayout) with a single
+PhaseIndicator component supporting two modes:
+
+- streaming: typewriter → auto-fade → click-to-expand (thinking)
+- static:    manual expand/collapse (recall, belief)
+
+All other tools remain on ToolLayout with pure manual toggle.
+
+Collateral cleanup:
+- Remove dead getWritable() streaming code from recall/webSearch executors
+  (step writable is isolated from the client-facing workflow stream)
+- Remove StreamingPreview component (absorbed into PhaseIndicator)
+- Remove progressText plumbing from tool-renderer, chat-message, web-search
+- Update mock-stream to match new architecture
+- Tidy i18n phase keys
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+@
+

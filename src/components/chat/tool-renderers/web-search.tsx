@@ -7,29 +7,47 @@ import { ToolLayout } from "../tool-layout";
 import { MarkdownRenderer } from "../markdown";
 
 interface WebSearchRendererProps {
-  displayName: string;
+  toolName: string;
   input?: unknown;
   output?: unknown;
   state: ToolRenderState;
 }
 
+function resolveName(
+  input: Record<string, unknown> | undefined,
+  output: { answer?: string; sources?: Array<{ title?: string; url?: string }>; error?: string } | undefined,
+  running: boolean,
+  t: ReturnType<typeof useTranslations>,
+): string {
+  const query =
+    typeof input?.query === "string" ? input.query : "";
+  const sourceCount = Array.isArray(output?.sources) ? output.sources.length : 0;
+
+  if (running) {
+    return query
+      ? t("webSearchRunning", { query })
+      : t("webSearchRunning", { query: "…" });
+  }
+  return query
+    ? t("webSearchDone", { query, count: sourceCount })
+    : t("webSearchDone", { query: "…", count: sourceCount });
+}
+
 /**
  * webSearch tool: Globe icon, the query as the collapsed summary, and the
- * cited answer + source links in the expanded view. Sources render as real
- * anchors so the user can verify what Flash found.
+ * cited answer + source links in the expanded view.
  */
 export function WebSearchRenderer({
-  displayName,
+  toolName: _toolName,
   input,
   output,
   state,
 }: WebSearchRendererProps) {
   const t = useTranslations("chat.tool");
 
+  const inp = input as Record<string, unknown> | undefined;
   const query =
-    typeof (input as { query?: unknown } | undefined)?.query === "string"
-      ? ((input as { query: string }).query)
-      : null;
+    typeof inp?.query === "string" ? inp.query : null;
 
   const out = output as
     | { answer?: string; sources?: Array<{ title?: string; url?: string }>; error?: string }
@@ -38,8 +56,10 @@ export function WebSearchRenderer({
     ? out.sources.filter((s): s is { title: string; url: string } => typeof s?.url === "string")
     : [];
 
+  const displayName = resolveName(inp, out, state.running, t);
+
   const summary = query ? (
-    <span className="text-muted-foreground text-xs truncate max-w-xs">{query}</span>
+    <span className="max-w-xs truncate text-xs text-muted-foreground">{query}</span>
   ) : null;
 
   const meta =
@@ -47,11 +67,9 @@ export function WebSearchRenderer({
 
   const expandedContent = out ? (
     out.error ? (
-      <p className="text-xs text-destructive">{out.error}</p>
+      <p className="text-destructive">{out.error}</p>
     ) : (
-      // One scrollable container: the answer and its sources belong together —
-      // sources are part of the search result, so they scroll with it.
-      <div className="max-h-80 overflow-auto rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground leading-relaxed space-y-2">
+      <div className="space-y-2">
         {out.answer ? <MarkdownRenderer content={out.answer} /> : null}
         {sources.length > 0 ? (
           <ul
@@ -63,12 +81,12 @@ export function WebSearchRenderer({
           >
             {sources.map((s, i) => (
               <li key={i} className="flex items-start gap-2 text-xs">
-                <span className="text-muted-foreground shrink-0">[{i + 1}]</span>
+                <span className="shrink-0 text-muted-foreground">[{i + 1}]</span>
                 <a
                   href={s.url}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-blue-600 dark:text-blue-400 underline underline-offset-2 truncate"
+                  className="truncate text-brand underline underline-offset-2"
                 >
                   {s.title || s.url}
                 </a>

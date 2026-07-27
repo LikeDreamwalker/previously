@@ -63,8 +63,10 @@ export function useTimeline(initialData?: Partial<TimelineState> | null) {
     }
   }, [loadingMore, hasMore, slices]);
 
-  // Loading state: true if we haven't received any slices yet
-  const loading = baseSlices.length === 0 && extraSlices.length === 0;
+  // Loading state: true only when no initial data has been provided yet
+  // (e.g. during SSR before the server action completes). When initialData
+  // is present but empty, the timeline is genuinely empty — not loading.
+  const loading = initialData == null;
 
   return {
     active,

@@ -30,16 +30,11 @@ import { readLoopRun, serializeLoop, writeLoopFile } from "@/lib/loops/store";
 import type { ToolContext } from "@/app/api/agent/tool-executors";
 
 import { resolveDataSource } from "@/lib/data-source/resolve";
+import { getRepoConfig } from "@/lib/capabilities";
 
 const DATA_SOURCE = resolveDataSource();
 const USE_GITHUB = DATA_SOURCE === "github";
 const USE_DEMO = DATA_SOURCE === "demo";
-
-function getRepoConfig(): { owner: string; repo: string } {
-  const owner = process.env.GITHUB_REPO_OWNER ?? "local";
-  const repo = process.env.GITHUB_REPO_NAME ?? "local";
-  return { owner, repo };
-}
 
 /** Serialize the run state and write it to the loop's markdown file. */
 async function writeRecord(
@@ -112,6 +107,14 @@ export async function initLoop(
 ): Promise<{ toolContext: ToolContext }> {
   "use step";
 
+  // Demo mode: loops require a writable GitHub repo. startLoopExecute already
+  // rejects at the agent-tool level; this guard catches direct API invocation.
+  if (USE_DEMO) {
+    throw new Error(
+      "Loops are not available in demo mode. Deploy your own instance to unlock background loops."
+    );
+  }
+
   await writeRecord(input, [], "running", "");
   await writeProgressChunk(input, [], "running", false);
 
@@ -123,6 +126,7 @@ export async function initLoop(
       useGithub: USE_GITHUB,
       useDemo: USE_DEMO,
       sliceId: input.sliceOrigin ?? "",
+      recentTurns: [],
     },
   };
 }

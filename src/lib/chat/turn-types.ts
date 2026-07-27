@@ -14,9 +14,7 @@
  */
 import type { ModelMessage } from "ai";
 import type { TimeSlice } from "@/lib/episodic";
-import type { MaintenanceOutput } from "@/lib/episodic/maintenance";
 import type { UserConfig } from "@/lib/config/types";
-import type { ToolContext } from "@/app/api/agent/tool-executors";
 
 /**
  * Everything a turn needs, built once in `start-turn.ts` (the only place real
@@ -34,6 +32,8 @@ export interface TurnInput {
   model: string;
   /** Whether DeepSeek thinking is enabled for this turn. */
   thinking: boolean;
+  /** Reasoning effort level for this turn. */
+  reasoningEffort: "low" | "medium" | "high";
   /** Client-reported timezone, used when minting a new slice. */
   clientTimezone: string;
   /** User config snapshot (loaded once in the route layer). */
@@ -42,35 +42,23 @@ export interface TurnInput {
   owner: string;
   /** GitHub repo name (or "local" without a token). */
   repo: string;
+  /** Whether GitHub token is configured (resolved in start-turn). */
+  useGithub: boolean;
+  /** Whether demo mode is active (resolved in start-turn). */
+  useDemo: boolean;
   /** ISO 8601 turn start, stamped in the route layer. */
   startedAtIso: string;
+  /**
+   * Unique turn identifier — one per round of conversation (user message +
+   * agent response + agent cognitive process). 6-char base64url, generated in
+   * start-turn.ts. Cross-references core.md and agent.md.
+   */
+  turnId: string;
 }
 
 /** Result of the housekeeping step — the recovered/created slice by value. */
 export interface HousekeepingResult {
   slice: TimeSlice;
-}
-
-/**
- * Result of the Flash step — the slice with any metadata updates applied, the
- * Flash output (or null on failure), and how long Flash took.
- */
-export interface FlashRecallResult {
-  slice: TimeSlice;
-  flashOutput: MaintenanceOutput | null;
-  flashMs: number;
-}
-
-/**
- * Result of the prepareGenerate step — everything the workflow needs to call
- * `agent.stream()`: the assembled system prompt and the serializable tool
- * context (built inside the step, where process.env is readable).
- */
-export interface PrepareGenerateResult {
-  systemPrompt: string;
-  intent: string;
-  confidence: number;
-  toolContext: ToolContext;
 }
 
 /** A background loop the agent started during this turn (for slice writeback). */
@@ -90,4 +78,9 @@ export interface TurnOutcome {
   finishReason: string;
   /** Loops started via the startLoop tool during this turn. */
   startedLoops: StartedLoopRef[];
+  /**
+   * Mechanically extracted cognition data for agent.md — reasoning traces
+   * and tool calls with success/failure status. Written by finalizeTurn.
+   */
+  cognition: string;
 }

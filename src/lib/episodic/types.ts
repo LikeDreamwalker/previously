@@ -5,7 +5,6 @@ export type SliceStatus = "active" | "closed";
 export type SlicingSignal =
   | "time_silence"
   | "user_explicit"
-  | "flash_high_confidence"
   | "capacity";
 
 /** Emotional tone of a time slice, maintained by Flash */
@@ -25,6 +24,11 @@ export interface Turn {
   role: "user" | "agent";
   /** The message content (plain text or markdown) */
   content: string;
+  /**
+   * Shared by the user and agent turn in the same round.
+   * 6-char base64url, e.g. "a3fk2w". Absent on legacy slices parsed from disk.
+   */
+  turnId?: string;
 }
 
 // ─── Frontmatter ─────────────────────────────────────────────────────

@@ -76,14 +76,12 @@ export function getAllowedPaths(): readonly string[] {
  * System-managed paths that agent WRITE tools must not touch, even though they
  * live inside the whitelist and remain readable. These files have a strict
  * schema/contract the app maintains (episodic slices + indexes) or feed the
- * system prompt (the user profile — updated only via the dedicated
- * updateUserProfile tool, never a generic write).
+ * system prompt through previously.md evolution, never a generic write).
  */
 const PROTECTED_WRITE_PATTERNS: RegExp[] = [
   /^memory\/episodic\//, // system-owned slices + indexes
   /(^|\/)_index\.json$/, // any monthly/day index
   /(^|\/)strands\.json$/, // the strand (keyword→slice) index
-  /^memory\/user\/profile\.md$/, // profile: dedicated tool only
 ];
 
 /**

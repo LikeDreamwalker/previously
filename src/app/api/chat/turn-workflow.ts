@@ -30,10 +30,10 @@ import type {
   TurnOutcome,
   StartedLoopRef,
 } from "@/lib/chat/turn-types";
+import { DEPLOY_GUIDE_URL } from "@/lib/capabilities";
 import {
   housekeeping,
-  flashRecall,
-  prepareGenerate,
+  seedPreviously,
   finalizeTurn,
 } from "./steps";
 
@@ -60,6 +60,94 @@ function extractFinalText(messages: ModelMessage[]): string {
     return "";
   }
   return "";
+}
+
+/**
+ * Mechanically extract the agent's cognitive process from its message history
+ * AND step results.
+ *
+ * IMPORTANT: In the WorkflowAgent, `result.messages` does NOT contain reasoning
+ * parts — the agent strips them when building `conversationPrompt` (see
+ * stream-text-iterator.ts:399-415). Reasoning is preserved only in
+ * `result.steps[].reasoning`. Tool-call→result statuses are resolved from
+ * tool-role messages in `result.messages`.
+ *
+ * This function merges both sources:
+ *   - Reasoning + tool calls → from steps
+ *   - Tool results (ok/error) → from messages
+ */
+export function extractCognition(
+  messages: ModelMessage[],
+  steps: unknown,
+): string {
+  const lines: string[] = [];
+
+  // Collect tool-call→result pairs by matching toolCallId across messages.
+  const toolResults = new Map<string, { ok: boolean; error?: string }>();
+
+  for (const m of messages) {
+    if (m.role !== "tool") continue;
+    const parts = Array.isArray(m.content) ? m.content : [];
+    for (const part of parts) {
+      const p = part as { type?: string; toolCallId?: string; toolName?: string; output?: unknown; isError?: boolean };
+      if (p.type !== "tool-result" || typeof p.toolCallId !== "string") continue;
+      const isError = p.isError === true;
+      const outputStr = typeof p.output === "string" ? p.output : "";
+      toolResults.set(p.toolCallId, {
+        ok: !isError,
+        error: isError ? (outputStr.slice(0, 200) || "unknown error") : undefined,
+      });
+    }
+  }
+
+  // Process each step: reasoning + tool calls with result status from messages.
+  const stepsArray = Array.isArray(steps) ? steps : [];
+  for (const step of stepsArray) {
+    const stepObj = step as Record<string, unknown>;
+    // ── Reasoning (from steps — NOT available in messages) ──────────
+    const reasoning = stepObj.reasoning as Array<{ type: string; text?: string; data?: unknown }> | undefined;
+    if (reasoning && reasoning.length > 0) {
+      lines.push("\n### Thinking");
+      for (const r of reasoning) {
+        const content: unknown = typeof r.text === "string" ? r.text : r.data;
+        if (typeof content === "string" && content.trim()) {
+          lines.push(content);
+        }
+      }
+    }
+
+    // ── Tool calls (from steps, enriched with result status from messages) ──
+    const toolCalls = stepObj.toolCalls as Array<{ toolCallId: string; toolName: string; input: unknown }> | undefined;
+    if (toolCalls && toolCalls.length > 0) {
+      lines.push("\n### Tools");
+      for (const tc of toolCalls) {
+        const params = summarizeToolInput(tc.input);
+        const result = toolResults.get(tc.toolCallId);
+        const status = result
+          ? result.ok
+            ? "ok"
+            : `error: ${result.error}`
+          : "?";
+        lines.push(`- \`${tc.toolName}\`(${params}) → ${status}`);
+      }
+    }
+  }
+
+  return lines.join("\n") + "\n";
+}
+
+/** Compact single-line representation of tool parameters. */
+function summarizeToolInput(input: unknown): string {
+  if (input === null || input === undefined) return "";
+  if (typeof input !== "object") return String(input);
+  const obj = input as Record<string, unknown>;
+  const entries = Object.entries(obj)
+    .filter(([, v]) => v !== undefined)
+    .slice(0, 5); // cap at 5 params to keep each line scannable
+  if (entries.length === 0) return "";
+  return entries
+    .map(([k, v]) => `${k}: ${typeof v === "string" ? `"${v.slice(0, 80)}${v.length > 80 ? "…" : ""}"` : JSON.stringify(v)}`)
+    .join(", ");
 }
 
 /**
@@ -129,14 +217,66 @@ function extractStartedLoops(messages: ModelMessage[]): StartedLoopRef[] {
 export async function turnWorkflow(input: TurnInput): Promise<void> {
   "use workflow";
 
+  // ── Pre-turn steps ─────────────────────────────────────────────────────
+
   const { slice } = await housekeeping(input);
-  const flash = await flashRecall(input, slice);
-  const prep = await prepareGenerate(input, flash.slice, flash.flashOutput);
+  const previouslyContent = await seedPreviously(slice.slice_id);
+
+  // ── Assemble system prompt ──────────────────────────────────────────────
+
+  const demoNotice = input.useDemo
+    ? `## 当前模式：Demo（只读演示）
+
+你正在演示模式下运行。你可以浏览示例数据、回忆过去的对话、搜索实时网络——但**所有写入操作都不会真正持久化**。没有连接 GitHub 仓库，你看到的是一个预置的示例记忆库。
+
+当用户想让你保存任何信息、创建记忆、或启动后台任务时，你应该自然地告诉他们：
+- 当前是演示模式，数据无法保存
+- 他们需要部署自己的实例来解锁完整的读写和后台循环能力
+
+部署指南：${DEPLOY_GUIDE_URL}
+
+用户在演示模式下探索是完全正常的——帮助他们了解这个产品能做什么，以及部署后能获得什么。
+
+`
+    : "";
+
+  const systemPrompt = `${demoNotice}## 我对你的理解
+
+${previouslyContent}
+
+以上是我目前对你的了解。如果有任何过时或错误的，告诉我，我会更新。
+
+## 记忆访问规则
+
+当你需要从过去的对话中获取上下文时，按以下顺序操作：
+
+1. **先 recall。** 调用 \`recall\` 搜索情景记忆。回忆 agent 返回指针（哪些切片、哪些轮次、为什么相关）。在 recall 返回结果之前，不要调用 readSlice、readTimeline、readStrand 或 listStrands。
+2. **如需深入，再读取。** recall 返回后，调用 \`readSlice\` 获取特定切片的内容。使用 \`range\` 参数只获取你需要的内容：
+   - \`range: { type: "last", count: 3 }\` — 获取切片最后 3 轮
+   - \`range: { type: "turns", indices: [0, 5, 7] }\` — 获取特定轮次
+   - \`range: { type: "date", after: "2026-07-24T00:00:00Z" }\` — 获取某日期之后的轮次
+   - 省略 \`range\` 获取完整切片（谨慎用于大型切片）
+3. **进一步探索。** 使用 \`readStrand\` 或 \`readTimeline\` 仅用于跟进 recall 结果中的线索。
+
+**以时间思考。** 当 recall 返回结果时，优先选择更近的切片——用户当前的状态通常最重要。当你引用过去的对话时，加入时间锚点（"你上周二提到过……"而不是"你提到过……"），让用户知道你把时间线放对了。从上次之后发生了什么变化，往往比当时说了什么更有用。
+
+你可以用 \`webSearch\` 搜索实时网络以获取当前信息，并在相关时引用到回复中。
+你可以用 \`startLoop\` 启动持久的后台循环任务。当用户要求持续或后台工作，或者你判断任务足够大或足够长，可以在后台自主工作时调用。告诉用户你启动了。`;
+
+  // ── Pro agent ──────────────────────────────────────────────────────────
 
   const agent = createChatAgent({
     modelId: input.model,
     thinking: input.thinking,
-    toolsContext: buildChatToolsContext(prep.toolContext),
+    reasoningEffort: input.reasoningEffort,
+    toolsContext: buildChatToolsContext({
+      repo: input.repo,
+      owner: input.owner,
+      useGithub: input.useGithub,
+      useDemo: input.useDemo,
+      sliceId: slice.slice_id,
+      recentTurns: input.recentTurns,
+    }),
   });
 
   let outcome: TurnOutcome;
@@ -144,33 +284,26 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
   try {
     const result = await agent.stream({
       messages: input.modelMessages,
-      system: prep.systemPrompt,
+      system: systemPrompt,
       writable: getWritable<ModelCallStreamPart>(),
       stopWhen: isStepCount(20),
-      // finalizeTurn owns the stream tail (finish-step / finish / close).
       sendFinish: false,
       preventClose: true,
-      // NOTE(reasoning timer): the old streamText onChunk server-side
-      // "Thought · Ns" measurement has no WorkflowAgent equivalent — stream
-      // options are serialized across the workflow→step boundary, so function
-      // hooks (experimental_transform) never reach the model-call step. The
-      // timer now comes from the client-side fallback that already exists in
-      // thinking.tsx (`elapsed`); data-reasoning chunks from old runs still
-      // render.
     });
     outcome = {
       text: extractFinalText(result.messages),
       finishReason: result.finishReason,
       startedLoops: extractStartedLoops(result.messages),
+      cognition: extractCognition(result.messages, result.steps),
     };
   } catch (err) {
     streamError = err;
-    outcome = { text: "", finishReason: "error", startedLoops: [] };
+    outcome = { text: "", finishReason: "error", startedLoops: [], cognition: "" };
   }
 
-  // Always finalize: the slice snapshot stays honest and the client's stream
-  // is closed even when the agent errored mid-turn.
-  await finalizeTurn(flash.slice, outcome);
+  // ── Post-turn persistence ──────────────────────────────────────────────
+
+  await finalizeTurn(slice, outcome, input.turnId);
 
   if (streamError !== null) {
     throw streamError;

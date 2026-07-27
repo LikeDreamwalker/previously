@@ -28,7 +28,8 @@ Every chat turn itself runs inside a durable Vercel Workflow run (`src/app/api/c
 - `pnpm build` — Production build with Turbopack
 - `pnpm start` — Start production server
 - `pnpm lint` — Run ESLint
-- `pnpm test` — Run vitest
+- `pnpm test` — Run vitest (unit + integration)
+- `npx playwright test` — Run Playwright E2E tests
 
 ## Architecture
 
@@ -93,7 +94,8 @@ Three-phase message rendering (M8). See `src/components/chat/CLAUDE.md` for full
 
 | Module | Path | Purpose |
 |--------|------|---------|
-| Loop Engine | `src/lib/loop/` | File-driven multi-step agent execution with checkpointing |
+| Capabilities | `src/lib/capabilities.ts` | Global app-mode checks: isAIConfigured, isDemo, canWrite, getRepoConfig |
+| Loop Engine | `src/lib/loops/` | Durable background task execution with Vercel Workflow |
 | GitHub Tools | `src/lib/tools/` | readFile/writeFile/listFiles via Octokit |
 | Path Whitelist | `src/lib/whitelist/` | Security boundary: memory/tasks/sessions only |
 | Memory System | `src/lib/memory/` | Markdown nodes with YAML frontmatter + scoring |
@@ -136,11 +138,55 @@ Tool calls use friendly outer labels (`Recalling in detail...`, `Recalling more.
 | `doc/dev.md` | Dev commands, references, and development log |
 | `doc/progress.md` | Current task status and history |
 
-## Current Phase (M8)
+## Testing
 
-**Goal**: Flash overhaul — unified Flash call (intent + recall + maintenance in one round-trip), per-round metadata maintenance, time-only slicing, recall layering (Flash scans summaries, Pro deep-reads files), timeline episodic context, memory tool rendering.
+### Three-layer testing strategy
 
-Reference: `doc/design/M8-flash-overhaul.md`
+| Layer | Tool | Target | Location |
+|-------|------|--------|----------|
+| **Unit + Integration** | Vitest (`node` env) | Pure functions, tool logic, serialization, guards | `tests/lib/` matching `src/lib/` structure, or co-located `__tests__/` |
+| **Component E2E** | Playwright | Individual UI modules — render states, interactions | `tests/e2e/` |
+| **Flow E2E** | Playwright | Connected user journeys across multiple modules | `tests/e2e/` |
+
+### Test file conventions
+
+- **Vitest**: `tests/<path>/<name>.test.ts` mirroring `src/<path>/<name>.ts`, or `src/<path>/__tests__/<name>.test.ts` for co-located tests. Both patterns exist; match the surrounding convention.
+- **Playwright**: `tests/e2e/<name>.spec.ts`. Desktop (1280×720 Chrome) and mobile (iPhone 13) projects.
+- Use `vi.mock()` with inline factories for module-level mocks. Use `vi.hoisted()` when mock values are referenced in both the factory and assertions.
+- Use `vi.stubEnv()` or direct `process.env` manipulation for env-dependent modules (the project currently uses both; prefer `vi.stubEnv()` for new tests).
+- Use `vi.useFakeTimers()` / `vi.setSystemTime()` for time-dependent tests.
+
+### Testing requirements (mandatory)
+
+1. **New features and modules must have accompanying tests.** Every new module, tool executor, guard, or pure function ships with a corresponding test file. The exit criteria is that `pnpm test` passes with zero failures.
+2. **Changes to existing code must not break existing tests.** Unless the change is explicitly a functional or architectural pivot (which must be stated up front), the existing test suite must stay green. Run `pnpm test` before committing any change to existing code.
+3. **If a change requires modifying existing tests to pass, explain why.** Modifying test assertions to match new behavior is sometimes correct — but it means the contract changed. Flag this to the user before doing it, with a clear rationale for why the old behavior is being dropped.
+
+### What to test
+
+- **New pure functions**: mandatory. If a function has no I/O and no side effects, it must have deterministic unit tests.
+- **New tool executors / guards**: mandatory. Every rejection path and edge case must be covered.
+- **Bug fixes**: must include a regression test.
+- **UI components with conditional rendering** (loading/empty/error/success): should cover each state.
+- **E2E**: at minimum, the core demo-user journey (open → chat → timeline → settings).
+
+### Capabilities module
+
+`src/lib/capabilities.ts` is the single source of truth for app-mode checks. All engineering-side code (tool executors, server components, API routes) should import from here instead of reading `process.env` directly. The AI model layer does NOT import capabilities — it learns about limitations through tool-executor rejections.
+
+```
+DEEPSEEK_API_KEY set?
+├─ NO  → App non-functional. Show setup guidance.
+└─ YES → GITHUB_TOKEN set?
+          ├─ NO  → Demo mode: can chat, CANNOT write, CANNOT loop.
+          └─ YES → Production: full read/write, loops available.
+```
+
+## Current Phase (v0.5)
+
+**Goal**: Re-enable background loop capability with a global capabilities module. The `startLoop` agent tool is now bound for all users; in demo mode the executor returns a model-facing rejection so the model explains the deployment requirement naturally.
+
+Branch: `feat/v0.5-loop-reenable`
 
 ## Constraints
 

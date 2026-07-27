@@ -4,24 +4,14 @@
  *
  * Mirrors the episodic subsystem's local-fs-vs-GitHub switch (gated on
  * GITHUB_TOKEN, see src/lib/episodic/manager.ts) so it behaves identically in
- * local dev (writes to disk) and production (writes to the repo). The guards
- * mirror the pure predicates in src/lib/loop/engine.ts.
+ * local dev (writes to disk) and production (writes to the repo).
  */
 import matter from "gray-matter";
 import { writeFile as writeFileGitHub } from "@/lib/tools/writeFile";
 import { readFile as readFileGitHub } from "@/lib/tools/readFile";
 import { readFileLocal, writeFileLocal } from "@/lib/tools/local-fs";
+import { canWrite, getRepoConfig } from "@/lib/capabilities";
 import type { LoopRun, LoopStatus, LoopStep } from "./types";
-
-// ─── Storage backend switch (mirrors src/lib/episodic/manager.ts) ──────────
-
-const USE_GITHUB = !!process.env.GITHUB_TOKEN;
-
-function getRepoConfig(): { owner: string; repo: string } {
-  const owner = process.env.GITHUB_REPO_OWNER ?? "local";
-  const repo = process.env.GITHUB_REPO_NAME ?? "local";
-  return { owner, repo };
-}
 
 /**
  * Write/update the loop record file. Idempotent: writeFile resolves the
@@ -32,7 +22,7 @@ export async function writeLoopFile(
   path: string,
   content: string
 ): Promise<void> {
-  if (USE_GITHUB) {
+  if (canWrite()) {
     const { owner, repo } = getRepoConfig();
     await writeFileGitHub(path, content, repo, owner, `Update loop ${path}`);
     return;
@@ -49,7 +39,7 @@ export async function writeLoopFile(
 export async function readLoopRun(path: string): Promise<LoopRun | null> {
   let raw: string;
   try {
-    if (USE_GITHUB) {
+    if (canWrite()) {
       const { owner, repo } = getRepoConfig();
       raw = await readFileGitHub(path, repo, owner);
     } else {

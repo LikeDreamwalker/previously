@@ -2,28 +2,23 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import type { TimeSlice } from "@/lib/episodic";
 import type { TurnInput } from "@/lib/chat/turn-types";
 
-// ── Mock the step dependencies so housekeeping/flashRecall run their real
-// control flow against fakes. The "use step" directive is a build-time
-// transform vitest doesn't apply, so here they're just async functions we can
-// call directly and assert the by-value slice contract on. ──────────────────
+// ── Mock the step dependencies ──────────────────────────────────────────
 
 const episodic = vi.hoisted(() => ({
   tryLoadTodaySlice: vi.fn(),
-  createSlice: vi.fn(),
+  createSlice: vi.fn((msg: string, tz: string) =>
+    makeSlice({ turns: [{ timestamp: "t", role: "user", content: msg }] })
+  ),
   closeSlice: vi.fn(),
   appendTurn: vi.fn((slice: TimeSlice, turn: unknown) => {
     slice.turns.push(turn as TimeSlice["turns"][number]);
   }),
   saveSliceSnapshot: vi.fn(async () => {}),
   ensureIndexEntries: vi.fn(async () => {}),
-}));
-
-const maintenance = vi.hoisted(() => ({
-  runUnifiedFlash: vi.fn(),
-  readRecentSummaries: vi.fn(async () => []),
-  applyMetadataUpdates: vi.fn((meta: Record<string, unknown>, updates: Record<string, unknown>) => {
-    Object.assign(meta, updates);
-  }),
+  readPreviously: vi.fn(async () => ""),
+  writeAgentTimeline: vi.fn(async () => ({ path: "", created: false })),
+  ensurePreviously: vi.fn(async (sliceId: string) => `# Previously On\n\n_Active slice: ${sliceId} | Updated: ..._\n`),
+  generateGlobalTimeline: vi.fn(async () => "mock timeline"),
 }));
 
 let timeSilent = false;
@@ -32,11 +27,8 @@ vi.mock("@/lib/episodic", () => episodic);
 vi.mock("@/lib/episodic/slicer", () => ({
   checkTimeSilence: () => timeSilent,
 }));
-vi.mock("@/lib/episodic/maintenance", () => maintenance);
 
-// The run's writable: housekeeping writes the start/start-step lifecycle
-// chunks and flashRecall writes the data-flash recall card, so the mock
-// collects everything written for assertions.
+// The run's writable: collects everything written for assertions.
 const workflowMock = vi.hoisted(() => {
   const written: Array<Record<string, unknown>> = [];
   return {
@@ -53,16 +45,8 @@ const workflowMock = vi.hoisted(() => {
 });
 
 vi.mock("workflow", () => ({ getWritable: workflowMock.getWritable }));
-vi.mock("@/lib/router", () => ({ classifyIntentKeywords: () => ({ intent: "chat", source: "keyword" }) }));
-vi.mock("@/lib/memory/manager", () => ({ listNodes: () => [] }));
-vi.mock("@/lib/memory/scorer", () => ({ rankNodes: () => [] }));
-vi.mock("@/lib/context/assembler", () => ({ assembleContext: () => ({ prompt: "" }) }));
-vi.mock("@/lib/identity", () => ({
-  buildAgentIdentityPrompt: () => "",
-  loadUserProfile: async () => ({}),
-}));
 
-import { housekeeping, flashRecall } from "@/app/api/chat/steps";
+import { housekeeping, seedPreviously, finalizeTurn } from "@/app/api/chat/steps";
 
 function makeSlice(overrides: Partial<TimeSlice> = {}): TimeSlice {
   return {
@@ -79,6 +63,7 @@ function makeSlice(overrides: Partial<TimeSlice> = {}): TimeSlice {
     loops: [],
     turns: [],
     estimatedTokens: 0,
+    emotional_tone: "neutral",
     ...overrides,
   };
 }
@@ -90,15 +75,19 @@ function makeInput(lastUserMessage: string): TurnInput {
     lastUserMessage,
     model: "deepseek-v4-flash",
     thinking: true,
+    reasoningEffort: "medium" as const,
     clientTimezone: "UTC",
     config: {
       slicing: { maxTurnsPerSlice: 40, timeSilenceMinutes: 30 },
       context: { recentTurnsLimit: 20, tokenBudget: 12000 },
-      model: { provider: "deepseek-v4-flash", thinking: true },
+      model: { provider: "deepseek-v4-flash", thinking: true, reasoningEffort: "medium" as const },
     },
     owner: "local",
     repo: "local",
+    useGithub: false,
+    useDemo: false,
     startedAtIso: "2026-07-14T10:00:00.000Z",
+    turnId: "test-id",
   };
 }
 
@@ -111,22 +100,15 @@ beforeEach(() => {
 describe("housekeeping step", () => {
   it("creates a fresh slice when none is on disk and returns it by value", async () => {
     episodic.tryLoadTodaySlice.mockResolvedValue(null);
-    episodic.createSlice.mockImplementation((msg: string) =>
-      makeSlice({ turns: [{ timestamp: "t", role: "user", content: msg }] })
-    );
-
     const { slice } = await housekeeping(makeInput("hello world"));
 
-    expect(episodic.createSlice).toHaveBeenCalledWith("hello world", "UTC");
+    expect(episodic.createSlice).toHaveBeenCalledWith("hello world", "UTC", "test-id");
     expect(slice.turns).toHaveLength(1);
     expect(slice.turns[0].content).toBe("hello world");
-    // Durably snapshotted before returning (was fire-and-forget in the old route).
     expect(episodic.saveSliceSnapshot).toHaveBeenCalledWith(slice);
     expect(episodic.ensureIndexEntries).toHaveBeenCalledWith(slice);
     expect(episodic.appendTurn).not.toHaveBeenCalled();
-    // Opens the UI stream: lifecycle chunks live in the durable run stream so
-    // the POST and reconnect paths replay identical chunk sequences.
-    expect(workflowMock.written.map((c) => c.type)).toEqual(["start", "start-step"]);
+    expect(workflowMock.written.map((c) => c.type)).toEqual(["data-phase", "start", "start-step", "data-phase"]);
   });
 
   it("restores an active slice and appends the new user turn", async () => {
@@ -178,41 +160,18 @@ describe("housekeeping step", () => {
   });
 });
 
-describe("flashRecall step", () => {
-  it("applies Flash metadata updates onto the slice and returns it by value", async () => {
-    const slice = makeSlice();
-    maintenance.runUnifiedFlash.mockResolvedValue({
-      intent: "coding",
-      confidence: 0.8,
-      suggested_topics: ["rust"],
-      recall_hits: [{ slice_id: "2026-07-01-1200", relevance: 0.9, reason: "prior rust talk" }],
-      needs_metadata_update: true,
-      metadata_updates: { focus: "rust borrow checker", tags: ["rust"] },
-      reasoning: "matched",
-    });
+describe("seedPreviously step", () => {
+  it("copies previously.md forward via ensurePreviously", async () => {
+    const result = await seedPreviously("2026-07-26-1226", undefined);
 
-    const result = await flashRecall(makeInput("rust question"), slice);
-
-    expect(result.slice.focus).toBe("rust borrow checker");
-    expect(result.slice.tags).toContain("rust");
-    expect(result.flashOutput?.intent).toBe("coding");
-    expect(typeof result.flashMs).toBe("number");
-    // The recall card is written into the run stream ahead of the agent.
-    const flashChunk = workflowMock.written.find((c) => c.type === "data-flash");
-    expect(flashChunk).toBeDefined();
-    expect((flashChunk?.data as { recall_hits: unknown[] }).recall_hits).toHaveLength(1);
+    expect(episodic.ensurePreviously).toHaveBeenCalledWith("2026-07-26-1226");
+    expect(result).toContain("# Previously On");
   });
 
-  it("degrades gracefully when Flash throws — null output, slice untouched", async () => {
-    const slice = makeSlice({ focus: "unchanged" });
-    maintenance.runUnifiedFlash.mockRejectedValue(new Error("flash down"));
+  it("accepts optional closed slice id without effect on the copy", async () => {
+    const result = await seedPreviously("2026-07-26-1226", "2026-07-26-0823");
 
-    const result = await flashRecall(makeInput("anything"), slice);
-
-    expect(result.flashOutput).toBeNull();
-    expect(result.slice.focus).toBe("unchanged");
-    expect(typeof result.flashMs).toBe("number");
-    // No Flash output → no recall card chunk.
-    expect(workflowMock.written.find((c) => c.type === "data-flash")).toBeUndefined();
+    expect(episodic.ensurePreviously).toHaveBeenCalledWith("2026-07-26-1226");
+    expect(result).toContain("# Previously On");
   });
 });

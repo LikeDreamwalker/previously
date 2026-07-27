@@ -1,6 +1,7 @@
 "use server";
 
 import { getOctokit } from "@/lib/github/client";
+import { getRepoConfig } from "@/lib/capabilities";
 import {
   UPSTREAM_REPO_OWNER,
   UPSTREAM_REPO_NAME,
@@ -61,10 +62,9 @@ function isTokenScopeError(error: unknown): boolean {
  */
 export async function syncFromUpstream(): Promise<SyncResult> {
   // ── 1. Validate environment ──
-  const owner = process.env.GITHUB_REPO_OWNER;
-  const repo = process.env.GITHUB_REPO_NAME;
+  const { owner, repo } = getRepoConfig();
 
-  if (!owner || !repo) {
+  if (owner === "local" || repo === "local") {
     return {
       ok: false,
       error:

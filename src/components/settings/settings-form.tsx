@@ -3,36 +3,23 @@
 import { useState, useEffect } from "react";
 import { useTranslations } from "next-intl";
 import { Button } from "@/components/ui/button";
-import { saveUserProfile } from "@/lib/identity/actions";
 import { saveUserConfig } from "@/lib/config/actions";
 import { checkForUpdate, type UpdateInfo } from "@/lib/version/actions";
 import { syncFromUpstream, type SyncResult } from "@/lib/version/sync";
 import { APP_VERSION } from "@/lib/version/constants";
-import type { UserProfile } from "@/lib/identity";
 import type { UserConfig } from "@/lib/config/types";
 
 export function SettingsForm({
-  initialProfile,
   initialConfig,
   dataSource = "local",
   canWrite = true,
 }: {
-  initialProfile: UserProfile;
   initialConfig: UserConfig;
   dataSource?: string;
   canWrite?: boolean;
 }) {
   const t = useTranslations("settings");
   const isDemo = dataSource === "demo";
-
-  // ── Profile (server-backed: memory/user/profile.md) ──
-  const [name, setName] = useState(initialProfile.name ?? "");
-  const [pronouns, setPronouns] = useState(initialProfile.pronouns ?? "");
-  const [timezone, setTimezone] = useState(initialProfile.timezone ?? "");
-  const [addressAs, setAddressAs] = useState(initialProfile.addressAs ?? "");
-  const [about, setAbout] = useState(initialProfile.body ?? "");
-  const [saving, setSaving] = useState(false);
-  const [savedMsg, setSavedMsg] = useState("");
 
   // ── Config (server-backed: memory/user/config.json) ──
   const [maxTurnsPerSlice, setMaxTurnsPerSlice] = useState(initialConfig.slicing.maxTurnsPerSlice);
@@ -44,22 +31,13 @@ export function SettingsForm({
   const [configSaving, setConfigSaving] = useState(false);
   const [configSavedMsg, setConfigSavedMsg] = useState("");
 
-  const handleProfileSave = async () => {
-    setSaving(true);
-    setSavedMsg("");
-    const res = await saveUserProfile({ name, pronouns, timezone, addressAs, body: about });
-    setSaving(false);
-    setSavedMsg(res.ok ? t("profile.saved") : t("profile.saveFailed"));
-    if (res.ok) setTimeout(() => setSavedMsg(""), 2500);
-  };
-
   const handleConfigSave = async () => {
     setConfigSaving(true);
     setConfigSavedMsg("");
     const res = await saveUserConfig({
       slicing: { maxTurnsPerSlice, timeSilenceMinutes },
       context: { recentTurnsLimit, tokenBudget },
-      model: { provider: modelProvider, thinking: modelThinking },
+      model: { provider: modelProvider, thinking: modelThinking, reasoningEffort: "medium" as const },
     });
     setConfigSaving(false);
     setConfigSavedMsg(res.ok ? t("config.saved") : t("config.saveFailed"));
@@ -88,42 +66,6 @@ export function SettingsForm({
           </a>
         </section>
       )}
-
-      {/* Profile */}
-      <section className="rounded-lg border border-border p-4">
-        <h3 className="text-sm font-medium mb-1">{t("profile.heading")}</h3>
-        <p className="text-xs text-muted-foreground mb-4">{t("profile.desc")}</p>
-        <div className="space-y-3">
-          <label className="block space-y-1">
-            <span className="text-xs text-muted-foreground">{t("profile.name")}</span>
-            <input value={name} onChange={(e) => setName(e.target.value)} placeholder={t("profile.namePlaceholder")} className={inputClass} />
-          </label>
-          <div className="grid grid-cols-2 gap-3">
-            <label className="block space-y-1">
-              <span className="text-xs text-muted-foreground">{t("profile.pronouns")}</span>
-              <input value={pronouns} onChange={(e) => setPronouns(e.target.value)} placeholder={t("profile.pronounsPlaceholder")} className={inputClass} />
-            </label>
-            <label className="block space-y-1">
-              <span className="text-xs text-muted-foreground">{t("profile.addressAs")}</span>
-              <input value={addressAs} onChange={(e) => setAddressAs(e.target.value)} placeholder={t("profile.addressAsPlaceholder")} className={inputClass} />
-            </label>
-          </div>
-          <label className="block space-y-1">
-            <span className="text-xs text-muted-foreground">{t("profile.timezone")}</span>
-            <input value={timezone} onChange={(e) => setTimezone(e.target.value)} placeholder={t("profile.timezonePlaceholder")} className={inputClass} />
-          </label>
-          <label className="block space-y-1">
-            <span className="text-xs text-muted-foreground">{t("profile.about")}</span>
-            <textarea value={about} onChange={(e) => setAbout(e.target.value)} placeholder={t("profile.aboutPlaceholder")} rows={4} className={`${inputClass} resize-y`} />
-          </label>
-          <div className="flex items-center gap-3">
-            <Button onClick={handleProfileSave} disabled={saving || !canWrite} title={!canWrite ? "Unavailable in demo mode" : undefined}>
-              {saving ? t("profile.saving") : t("profile.save")}
-            </Button>
-            {savedMsg && <span className="text-xs text-muted-foreground">{savedMsg}</span>}
-          </div>
-        </div>
-      </section>
 
       {/* Config — tunable agent behaviour (memory/user/config.json) */}
       <section className="rounded-lg border border-border p-4">

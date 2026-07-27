@@ -7,6 +7,7 @@ import { readFile } from "@/lib/tools/readFile";
 import { readFileLocal } from "@/lib/tools/local-fs";
 import { readFileDemo } from "@/lib/demo/demo-fs";
 import { resolveDataSource } from "@/lib/data-source/resolve";
+import { getRepoConfig } from "@/lib/capabilities";
 import { mergeConfig, DEFAULTS } from "./defaults";
 import type { UserConfig } from "./types";
 
@@ -18,8 +19,7 @@ async function readRaw(): Promise<string | null> {
   try {
     if (SOURCE === "demo") return await readFileDemo(CONFIG_PATH);
     if (SOURCE === "github") {
-      const owner = process.env.GITHUB_REPO_OWNER ?? "local";
-      const repo = process.env.GITHUB_REPO_NAME ?? "local";
+      const { owner, repo } = getRepoConfig();
       return await readFile(CONFIG_PATH, repo, owner);
     }
     return await readFileLocal(CONFIG_PATH);

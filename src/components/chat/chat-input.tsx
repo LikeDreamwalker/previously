@@ -1,21 +1,53 @@
 "use client";
 
-import { useState, useRef, type FormEvent, type ChangeEvent } from "react";
+import { useState, useRef, useCallback, useEffect, type FormEvent, type ChangeEvent } from "react";
 import { useTranslations } from "next-intl";
-import { ArrowUp, Square, Paperclip, X, Settings } from "lucide-react";
+import { ArrowUp, Square, Paperclip, X, Settings, FlaskConical, Zap } from "lucide-react";
 import { useImageAttachments } from "@/hooks/use-image-attachments";
 import { Link } from "@/i18n/navigation";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+
+const EFFORT_KEY = "PREVIOUSLY_EFFORT";
+const EFFORT_LEVELS = ["low", "medium", "high"] as const;
+type EffortLevel = (typeof EFFORT_LEVELS)[number];
+
+function getStoredEffort(): EffortLevel {
+  if (typeof window === "undefined") return "medium";
+  const stored = localStorage.getItem(EFFORT_KEY);
+  return stored && (EFFORT_LEVELS as readonly string[]).includes(stored)
+    ? (stored as EffortLevel)
+    : "medium";
+}
+
+const EFFORT_LABELS: Record<EffortLevel, string> = {
+  low: "Low",
+  medium: "Med",
+  high: "High",
+};
 
 interface ChatInputProps {
   onSubmit: (message: string) => void;
   isLoading: boolean;
   onStop?: () => void;
+  onDemo?: () => void;
+  demoRunning?: boolean;
 }
 
-export function ChatInput({ onSubmit, isLoading, onStop }: ChatInputProps) {
+export function ChatInput({
+  onSubmit,
+  isLoading,
+  onStop,
+  onDemo,
+  demoRunning = false,
+}: ChatInputProps) {
   const t = useTranslations("chat.input");
   const [value, setValue] = useState("");
+  const [effort, setEffort] = useState<EffortLevel>("medium");
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    setEffort(getStoredEffort());
+    setMounted(true);
+  }, []);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragOver, setIsDragOver] = useState(false);
@@ -87,6 +119,13 @@ export function ChatInput({ onSubmit, isLoading, onStop }: ChatInputProps) {
     handleDrop(e);
   };
 
+  const cycleEffort = useCallback(() => {
+    const idx = EFFORT_LEVELS.indexOf(effort);
+    const next = EFFORT_LEVELS[(idx + 1) % EFFORT_LEVELS.length];
+    setEffort(next);
+    localStorage.setItem(EFFORT_KEY, next);
+  }, [effort]);
+
   const hasContent = value.trim().length > 0 || images.length > 0;
 
   return (
@@ -127,7 +166,7 @@ export function ChatInput({ onSubmit, isLoading, onStop }: ChatInputProps) {
           onChange={handleChange}
           onKeyDown={handleKeyDown}
           placeholder={t("placeholder")}
-          disabled={isLoading}
+          disabled={isLoading || demoRunning}
           rows={1}
           className="w-full resize-none overflow-y-auto bg-transparent text-foreground placeholder:text-muted-foreground focus:outline-none text-sm"
           style={{ minHeight: "24px", maxHeight: "72px" }}
@@ -162,6 +201,53 @@ export function ChatInput({ onSubmit, isLoading, onStop }: ChatInputProps) {
             accept="image/*"
           />
 
+          {/* Mock demo — visual showcase of all render capabilities */}
+          {onDemo && (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <button
+                    type="button"
+                    onClick={onDemo}
+                    disabled={demoRunning || isLoading}
+                    className={`h-7 w-7 rounded-full transition-colors flex items-center justify-center ${
+                      demoRunning
+                        ? "bg-primary/10 text-primary"
+                        : "text-muted-foreground hover:text-amber-500 hover:bg-amber-500/10"
+                    } disabled:opacity-30`}
+                  >
+                    <FlaskConical className="h-3.5 w-3.5" />
+                  </button>
+                }
+              />
+              <TooltipContent side="top">
+                {demoRunning ? "Demo running…" : "Render demo"}
+              </TooltipContent>
+            </Tooltip>
+          )}
+
+          {/* Thinking intensity */}
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <button
+                  type="button"
+                  onClick={cycleEffort}
+                  disabled={isLoading || demoRunning}
+                  className="h-7 rounded-full text-muted-foreground hover:text-foreground hover:bg-muted-foreground/10 transition-colors flex items-center justify-center gap-1 px-2 disabled:opacity-30"
+                >
+                  <Zap className="h-3 w-3" />
+                  <span className="text-[10px] font-medium leading-none">
+                    {mounted ? EFFORT_LABELS[effort] : "Med"}
+                  </span>
+                </button>
+              }
+            />
+            <TooltipContent side="top">
+              Thinking: {effort} — click to cycle
+            </TooltipContent>
+          </Tooltip>
+
           {/* Settings */}
           <Tooltip>
             <TooltipTrigger
@@ -194,7 +280,11 @@ export function ChatInput({ onSubmit, isLoading, onStop }: ChatInputProps) {
               type="submit"
               onClick={(e) => handleSubmit(e as unknown as FormEvent)}
               disabled={!hasContent}
-              className="h-8 w-8 rounded-full bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-30 flex items-center justify-center transition-colors"
+              className={`h-8 w-8 rounded-full flex items-center justify-center transition-colors disabled:opacity-30 ${
+                hasContent
+                  ? "bg-[#0066ff] text-white hover:bg-[#0066ff]/90"
+                  : "bg-primary text-primary-foreground"
+              }`}
               title={t("sendTooltip")}
             >
               <ArrowUp className="h-4 w-4" />

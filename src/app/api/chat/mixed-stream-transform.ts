@@ -1,7 +1,7 @@
 /**
  * Universal stream transform that handles both ModelCallStreamPart (from
- * WorkflowAgent) and UIMessageChunk (from streamText / our custom data chunks)
- * in a single readable stream.
+ * WorkflowAgent) and UIMessageChunk (from our custom data chunks) in a
+ * single readable stream.
  *
  * The built-in `createModelCallToUIChunkTransform()` from @ai-sdk/workflow
  * drops unknown chunk types in its default case. This version is universal:
@@ -19,39 +19,25 @@ import type { UIMessageChunk } from "ai";
  * Chunks OUR code writes into the run stream — the only chunks allowed to
  * pass through unchanged:
  * - lifecycle (`start` / `start-step` / `finish-step` / `finish`) written by
- *   the workflow steps, plus `finish-step` / `start-step` step-boundary
- *   markers written by WorkflowAgent itself — all already UI-shaped
- * - `data-flash` / `data-loop` / `data-reasoning` (legacy, from old runs)
+ *   the workflow steps, plus step-boundary markers written by WorkflowAgent
+ * - `data-loop` / `data-belief` / `data-phase` — our custom data chunks
  *
- * Everything else must go through `toUIMessageChunk()`. Type strings alone
- * are NOT proof a chunk is UI-shaped: raw model parts SHARE type strings
- * with UI chunks but use different fields — `text-delta` / `reasoning-delta`
- * carry `text` (UI chunks carry `delta`), `tool-input-start` carries `id`
- * (UI chunks carry `toolCallId`). Passing those through unchanged breaks
- * client-side UIMessageChunk validation.
+ * Everything else must go through `toUIMessageChunk()`. The `finish` type is
+ * ambiguous (ours vs. raw model finish part), so it's discriminated by shape.
  */
 const OUR_CHUNK_TYPES = new Set([
   "start",
   "start-step",
   "finish-step",
-  "data-flash",
-  "data-reasoning",
   "data-loop",
+  "data-belief",
+  "data-phase",
+  "data-evolution",
 ]);
 
-/**
- * `finish` is ambiguous: ours is exactly `{ type: "finish" }`; a raw model
- * finish part (if one ever flows through) carries `finishReason` / `usage`.
- * Legacy `text-delta` / `reasoning-delta` chunks from pre-WorkflowAgent runs
- * (streamText era) used the UI `delta` field, while raw model parts use
- * `text` — discriminate by shape so old-run replays keep rendering.
- */
 function isOurs(c: Record<string, unknown>, chunkType: string): boolean {
   if (OUR_CHUNK_TYPES.has(chunkType)) return true;
   if (chunkType === "finish") return !("finishReason" in c);
-  if (chunkType === "text-delta" || chunkType === "reasoning-delta") {
-    return typeof c.delta === "string";
-  }
   return false;
 }
 
@@ -77,7 +63,7 @@ export function createMixedStreamTransform(): TransformStream<
       const c = chunk as Record<string, unknown>;
       const chunkType = typeof c?.type === "string" ? c.type : undefined;
 
-      // One of ours (or a legacy UI chunk from an old run) — pass through.
+      // One of ours — pass through.
       if (chunkType && isOurs(c, chunkType)) {
         controller.enqueue(chunk as UIMessageChunk);
         return;

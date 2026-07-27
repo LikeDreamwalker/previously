@@ -2,61 +2,67 @@
 
 import type { UIMessage } from "ai";
 import { ChatMessage } from "./chat-message";
-import { RecallPhase } from "./recall-phase";
-import { MessageScrollerItem } from "@/components/ui/message-scroller";
+import { LoadingTip } from "./loading-tip";
+import { Message, MessageContent } from "@/components/ui/message";
+import type { EvolutionState } from "./evolution-indicator";
 
 interface ChatSectionProps {
   messages: UIMessage[];
   isStreaming: boolean;
-  showThinking: boolean;
+  isLoading: boolean;
   error: Error | undefined;
   lastUserMessageAt: string | null;
+  evolutionState: EvolutionState | null;
+  isEvolutionTarget: (messageId: string) => boolean;
 }
 
 export function ChatSection({
   messages,
   isStreaming,
-  showThinking,
+  isLoading,
   error,
   lastUserMessageAt,
+  evolutionState,
+  isEvolutionTarget,
 }: ChatSectionProps) {
   const lastMessage = messages[messages.length - 1];
+  const hasAssistant = messages.some((m) => m.role === "assistant");
+  const showPlaceholder = isLoading && !hasAssistant;
 
   return (
     <>
       {messages.map((message) => (
-        <MessageScrollerItem
+        <ChatMessage
           key={message.id}
-          messageId={message.id}
-          scrollAnchor={message.role === "user"}
-        >
-          <ChatMessage
-            message={message}
-            isStreaming={message.id === lastMessage?.id && isStreaming}
-            startedAt={
-              message.id === lastMessage?.id
-                ? (lastUserMessageAt ?? undefined)
-                : undefined
-            }
-          />
-        </MessageScrollerItem>
+          message={message}
+          isStreaming={message.id === lastMessage?.id && isStreaming}
+          startedAt={
+            message.id === lastMessage?.id
+              ? (lastUserMessageAt ?? undefined)
+              : undefined
+          }
+          evolutionState={
+            isEvolutionTarget(message.id) ? evolutionState : null
+          }
+        />
       ))}
 
-      {/* Pre-stream wait: show "recalling…" so activity is visible from send */}
-      {showThinking && (
-        <MessageScrollerItem messageId="recalling-indicator">
-          <div className="py-1">
-            <RecallPhase text="" isStreaming />
-          </div>
-        </MessageScrollerItem>
+      {/* Placeholder bubble — shown during the brief "submitted" window
+          before the first assistant message arrives. */}
+      {showPlaceholder && (
+        <div className="py-1">
+          <Message align="start" className="gap-1">
+            <MessageContent className="min-w-0">
+              <LoadingTip />
+            </MessageContent>
+          </Message>
+        </div>
       )}
 
       {error && (
-        <MessageScrollerItem messageId="error-banner">
-          <div className="mx-4 my-2 rounded-md border border-destructive/20 bg-destructive/10 px-4 py-2 text-sm text-destructive">
-            {error.message}
-          </div>
-        </MessageScrollerItem>
+        <div className="mx-4 my-2 rounded-md border border-destructive/20 bg-destructive/10 px-4 py-2 text-sm text-destructive">
+          {error.message}
+        </div>
       )}
     </>
   );

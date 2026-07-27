@@ -8,3 +8,4 @@ allowBuilds:
 minimumReleaseAgeExclude:
   - '@ai-sdk/deepseek@3.0.10'
   - '@ai-sdk/provider-utils@5.0.10'
+patchedDependencies: {}

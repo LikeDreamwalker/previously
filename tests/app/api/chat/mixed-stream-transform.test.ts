@@ -41,13 +41,13 @@ describe("createMixedStreamTransform", () => {
 
   it("converts raw tool-input-start parts (id → toolCallId)", async () => {
     const out = await through([
-      { type: "tool-input-start", id: "call_1", toolName: "readMemory" },
+      { type: "tool-input-start", id: "call_1", toolName: "readSlice" },
     ]);
     expect(out).toEqual([
       {
         type: "tool-input-start",
         toolCallId: "call_1",
-        toolName: "readMemory",
+        toolName: "readSlice",
       },
     ]);
   });
@@ -57,7 +57,7 @@ describe("createMixedStreamTransform", () => {
       {
         type: "tool-result",
         toolCallId: "call_1",
-        toolName: "readMemory",
+        toolName: "readSlice",
         input: { path: "memory/x.md" },
         output: "contents",
       },
@@ -75,18 +75,10 @@ describe("createMixedStreamTransform", () => {
     const chunks = [
       { type: "start" },
       { type: "start-step" },
-      { type: "data-flash", data: { matched: [] } },
       { type: "data-loop", data: { loopId: "l1", done: false } },
+      { type: "data-belief", data: { summaries: ["+ 注意到…"] } },
       { type: "finish-step" },
       { type: "finish" },
-    ];
-    expect(await through(chunks)).toEqual(chunks);
-  });
-
-  it("passes legacy UI-shaped delta chunks (old-run replays) through", async () => {
-    const chunks = [
-      { type: "text-delta", id: "1", delta: "legacy" },
-      { type: "reasoning-delta", id: "r", delta: "legacy thought" },
     ];
     expect(await through(chunks)).toEqual(chunks);
   });

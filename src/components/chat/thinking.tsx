@@ -1,10 +1,9 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { useTranslations } from "next-intl";
 import { Brain } from "lucide-react";
+import { useTranslations } from "next-intl";
 import type { ToolRenderState } from "@/lib/chat/tool-state";
-import { ToolLayout } from "./tool-layout";
+import { PhaseIndicator } from "./phase-indicator";
 import { MarkdownRenderer } from "./markdown";
 
 interface ThinkingBlockProps {
@@ -17,6 +16,7 @@ interface ThinkingBlockProps {
 
 const COMPLETED_STATE: ToolRenderState = {
   running: false,
+  inputStreaming: false,
   interrupted: false,
   denied: false,
   approvalRequested: false,
@@ -25,6 +25,7 @@ const COMPLETED_STATE: ToolRenderState = {
 
 const STREAMING_STATE: ToolRenderState = {
   running: true,
+  inputStreaming: false,
   interrupted: false,
   denied: false,
   approvalRequested: false,
@@ -32,61 +33,29 @@ const STREAMING_STATE: ToolRenderState = {
 };
 
 export function ThinkingSteps({ text, isStreaming = false, durationMs }: ThinkingBlockProps) {
-  const t = useTranslations("chat.thinking");
-  const [elapsed, setElapsed] = useState(0);
-  const startTimeRef = useRef<number | null>(null);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  useEffect(() => {
-    if (!isStreaming) {
-      if (startTimeRef.current !== null) {
-        setElapsed(Math.floor((Date.now() - startTimeRef.current) / 1000));
-      }
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-        intervalRef.current = null;
-      }
-      return () => {
-        if (intervalRef.current) clearInterval(intervalRef.current);
-      };
-    }
-
-    if (startTimeRef.current === null) {
-      startTimeRef.current = Date.now();
-    }
-
-    intervalRef.current = setInterval(() => {
-      setElapsed(
-        Math.floor((Date.now() - (startTimeRef.current ?? Date.now())) / 1000),
-      );
-    }, 1000);
-
-    return () => {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-        intervalRef.current = null;
-      }
-    };
-  }, [isStreaming]);
+  const t = useTranslations("chat.phase");
 
   const hasContent = text.trim().length > 0;
-  const name = isStreaming ? t("streaming") : t("completed");
   const seconds =
-    durationMs != null ? Math.max(1, Math.round(durationMs / 1000)) : elapsed;
-  const summary = !isStreaming && seconds > 0 ? `${seconds}s` : "";
+    durationMs != null ? Math.max(1, Math.round(durationMs / 1000)) : null;
+
+  const label = isStreaming
+    ? t("thinking")
+    : seconds != null
+      ? t("thoughtFor", { count: seconds })
+      : t("thinkingDone");
 
   const expandedContent = hasContent ? (
-    <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground leading-relaxed">
-      <MarkdownRenderer content={text} />
-    </div>
+    <MarkdownRenderer content={text} />
   ) : undefined;
 
   return (
-    <ToolLayout
-      name={name}
+    <PhaseIndicator
+      mode="streaming"
       icon={<Brain className="h-3.5 w-3.5" />}
-      summary={summary}
+      label={label}
       state={isStreaming ? STREAMING_STATE : COMPLETED_STATE}
+      streamingText={isStreaming ? text : undefined}
       expandedContent={expandedContent}
     />
   );

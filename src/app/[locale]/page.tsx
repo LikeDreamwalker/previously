@@ -4,8 +4,6 @@ import { setDemoPersona } from "@/lib/demo/demo-fs";
 import { resolveDataSource } from "@/lib/data-source/resolve";
 import { ChatPage } from "@/components/chat/chat-page";
 import { HeroSection } from "@/components/chat/hero-section";
-import { TimelineSection } from "@/components/chat/timeline-section";
-import { TimelineSkeleton } from "@/components/chat/timeline-skeleton";
 
 type SearchParams = Promise<{ persona?: string }>;
 
@@ -37,9 +35,6 @@ export default async function HomePage({
           </div>
         </Suspense>
       </div>
-      <Suspense fallback={<TimelineSkeleton />}>
-        <TimelineSection personaId={persona} />
-      </Suspense>
     </ChatPage>
   );
 }

@@ -9,15 +9,16 @@ import { resolveModelId } from "@/lib/models/registry";
 export const DEFAULTS: UserConfig = {
   slicing: {
     maxTurnsPerSlice: 20,
-    timeSilenceMinutes: 30,
+    timeSilenceMinutes: 15,
   },
   context: {
     recentTurnsLimit: 20,
     tokenBudget: 12000,
   },
   model: {
-    provider: "deepseek-v4-flash",
+    provider: "deepseek-v4-pro",
     thinking: true,
+    reasoningEffort: "medium" as const,
   },
   onboarded: false,
   datasource: "demo",

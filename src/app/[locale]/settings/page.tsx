@@ -1,6 +1,5 @@
 import { getTranslations, setRequestLocale } from "next-intl/server";
 import { SettingsForm } from "@/components/settings/settings-form";
-import { loadUserProfile } from "@/lib/identity";
 import { loadUserConfig } from "@/lib/config/loader";
 import { resolveDataSource, isWritable } from "@/lib/data-source/resolve";
 
@@ -12,7 +11,6 @@ export default async function SettingsPage({
   const { locale } = await params;
   setRequestLocale(locale);
   const t = await getTranslations("settings");
-  const profile = await loadUserProfile();
   const config = await loadUserConfig();
   const source = resolveDataSource();
   const canWrite = isWritable(source);
@@ -24,7 +22,6 @@ export default async function SettingsPage({
         {t("pageSubtitle")}
       </p>
       <SettingsForm
-        initialProfile={profile}
         initialConfig={config}
         dataSource={source}
         canWrite={canWrite}
