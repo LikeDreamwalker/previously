@@ -392,8 +392,16 @@ export async function startLoopExecute(
 export async function loopReportExecute(
   { action, result, done }: { action: string; result: string; done: boolean },
   { context: ctx }: ExecuteOpts<LoopToolContext>,
-): Promise<{ recorded: true; step: number; done: boolean }> {
+): Promise<{ recorded: true; step: number; done: boolean } | { error: string }> {
   "use step";
+
+  // Demo mode safety net — startLoopExecute already blocks loops in demo,
+  // but a loop agent started through another path should fail cleanly.
+  if (!canWrite()) {
+    return {
+      error: "Loop progress cannot be recorded in demo mode. The loop should not have started.",
+    };
+  }
 
   const existing = await readLoopRun(ctx.filePath);
   const priorSteps: LoopStep[] = existing?.steps ?? [];

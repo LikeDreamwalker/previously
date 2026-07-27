@@ -107,6 +107,14 @@ export async function initLoop(
 ): Promise<{ toolContext: ToolContext }> {
   "use step";
 
+  // Demo mode: loops require a writable GitHub repo. startLoopExecute already
+  // rejects at the agent-tool level; this guard catches direct API invocation.
+  if (USE_DEMO) {
+    throw new Error(
+      "Loops are not available in demo mode. Deploy your own instance to unlock background loops."
+    );
+  }
+
   await writeRecord(input, [], "running", "");
   await writeProgressChunk(input, [], "running", false);
 

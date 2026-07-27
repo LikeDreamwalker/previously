@@ -8,7 +8,7 @@
 import { revalidatePath } from "next/cache";
 import { writeFile } from "@/lib/tools/writeFile";
 import { writeFileLocal } from "@/lib/tools/local-fs";
-import { canWrite, getRepoConfig } from "@/lib/capabilities";
+import { canWrite, getRepoConfig, isDemo } from "@/lib/capabilities";
 import { mergeConfig, DEFAULTS } from "./defaults";
 import { loadUserConfig } from "./loader";
 import type { UserConfig } from "./types";
@@ -17,8 +17,13 @@ const CONFIG_PATH = "memory/user/config.json";
 
 export async function saveUserConfig(
   overrides: Partial<UserConfig>,
-): Promise<{ ok: boolean }> {
+): Promise<{ ok: boolean; error?: string }> {
   try {
+    // Demo mode: config writes are not persisted.
+    if (isDemo()) {
+      return { ok: false, error: "Config changes are not saved in demo mode. Deploy your own instance to customize settings." };
+    }
+
     const current = await loadUserConfig();
     const merged = mergeConfig({
       slicing: { ...current.slicing, ...overrides.slicing },

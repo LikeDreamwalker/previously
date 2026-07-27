@@ -110,6 +110,29 @@ export async function finalizeEvolution(
 ): Promise<void> {
   "use step";
 
+  // Demo mode: evolution is skipped — the route layer never starts this
+  // workflow, but we guard defensively in case of direct invocation.
+  if (input.useDemo) {
+    const writer = getWritable<UIMessageChunk>().getWriter();
+    await writer.write({
+      type: "data-evolution" as `data-${string}`,
+      id: "evolution-result",
+      data: {
+        running: false,
+        changes: { added: 0, reinforced: 0, demoted: 0, removed: 0, superseded: 0 },
+        hasChanges: false,
+        skipped: true,
+        reason: "demo",
+      },
+    } as UIMessageChunk);
+    await writer.write({ type: "finish-step" } as UIMessageChunk);
+    await writer.write({ type: "finish" } as UIMessageChunk);
+    writer.releaseLock();
+    const writable = getWritable<UIMessageChunk>();
+    await writable.close();
+    return;
+  }
+
   const { sliceId, previouslyContent, agentCognition, recentTurns } = context;
 
   // Emit reviewing phase

@@ -30,6 +30,7 @@ import type {
   TurnOutcome,
   StartedLoopRef,
 } from "@/lib/chat/turn-types";
+import { DEPLOY_GUIDE_URL } from "@/lib/capabilities";
 import {
   housekeeping,
   seedPreviously,
@@ -223,7 +224,23 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
 
   // ── Assemble system prompt ──────────────────────────────────────────────
 
-  const systemPrompt = `## 我对你的理解
+  const demoNotice = input.useDemo
+    ? `## 当前模式：Demo（只读演示）
+
+你正在演示模式下运行。你可以浏览示例数据、回忆过去的对话、搜索实时网络——但**所有写入操作都不会真正持久化**。没有连接 GitHub 仓库，你看到的是一个预置的示例记忆库。
+
+当用户想让你保存任何信息、创建记忆、或启动后台任务时，你应该自然地告诉他们：
+- 当前是演示模式，数据无法保存
+- 他们需要部署自己的实例来解锁完整的读写和后台循环能力
+
+部署指南：${DEPLOY_GUIDE_URL}
+
+用户在演示模式下探索是完全正常的——帮助他们了解这个产品能做什么，以及部署后能获得什么。
+
+`
+    : "";
+
+  const systemPrompt = `${demoNotice}## 我对你的理解
 
 ${previouslyContent}
 

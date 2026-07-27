@@ -9,6 +9,7 @@
  * writes its live progress to memory/loops/<date>/<loopId>.md.
  */
 import { startLoop } from "./start-loop";
+import { isDemo, DEPLOY_GUIDE_URL } from "@/lib/capabilities";
 
 interface StartLoopBody {
   goal?: unknown;
@@ -30,6 +31,18 @@ export async function POST(request: Request): Promise<Response> {
     return Response.json(
       { error: "`goal` (non-empty string) is required" },
       { status: 400 }
+    );
+  }
+
+  // Demo mode: loops require a writable GitHub repo.
+  if (isDemo()) {
+    return Response.json(
+      {
+        error: "Background loops are not available in demo mode.",
+        hint: "Deploy your own instance to unlock background loops.",
+        guide: DEPLOY_GUIDE_URL,
+      },
+      { status: 403 }
     );
   }
 
