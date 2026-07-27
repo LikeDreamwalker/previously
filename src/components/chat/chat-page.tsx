@@ -117,10 +117,17 @@ function Inner({ children }: { children: React.ReactNode }) {
   const [historicalContent, setHistoricalContent] = useState<SliceContent | null>(null);
   const [historicalLoading, setHistoricalLoading] = useState(false);
 
+  // Persona picked from URL — server actions need it because they can't
+  // access searchParams on the server side. Defaults to "personal_14".
+  const persona = useMemo(() => {
+    if (typeof window === "undefined") return "personal_14";
+    return new URLSearchParams(window.location.search).get("persona") || "personal_14";
+  }, []);
+
   // Load initial timeline data on mount
   useEffect(() => {
     let cancelled = false;
-    getEpisodicState()
+    getEpisodicState(persona)
       .then((data) => {
         if (cancelled) return;
         setTimelineSlices(data.recent);
@@ -131,7 +138,7 @@ function Inner({ children }: { children: React.ReactNode }) {
         if (!cancelled) setTimelineReady(true);
       });
     return () => { cancelled = true; };
-  }, []);
+  }, [persona]);
 
   // Load more slices
   const handleLoadMore = useCallback(async () => {
@@ -141,7 +148,7 @@ function Inner({ children }: { children: React.ReactNode }) {
 
     setTimelineLoadingMore(true);
     try {
-      const data = await getMoreSlices(oldest.start, 10);
+      const data = await getMoreSlices(oldest.start, 10, persona);
       setTimelineSlices((prev) => [...prev, ...data.slices]);
       setTimelineHasMore(data.hasMore);
     } catch {
@@ -149,7 +156,7 @@ function Inner({ children }: { children: React.ReactNode }) {
     } finally {
       setTimelineLoadingMore(false);
     }
-  }, [timelineLoadingMore, timelineHasMore, timelineSlices]);
+  }, [timelineLoadingMore, timelineHasMore, timelineSlices, persona]);
 
   // Handle slice selection — keeps old content visible during fetch
   const handleSelectSlice = useCallback(
@@ -172,7 +179,7 @@ function Inner({ children }: { children: React.ReactNode }) {
       // Don't clear previous content — keep it visible while loading
       setHistoricalLoading(true);
       try {
-        const content = await getSliceContent(sliceId);
+        const content = await getSliceContent(sliceId, persona);
         setHistoricalContent(content);
         if (content) {
           setCache(sliceId, content, null);
@@ -183,7 +190,7 @@ function Inner({ children }: { children: React.ReactNode }) {
         setHistoricalLoading(false);
       }
     },
-    [],
+    [persona],
   );
 
   // ── Mock demo state ─────────────────────────────────────────────────

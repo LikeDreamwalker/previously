@@ -16,7 +16,6 @@
 
 import { existsSync, readFileSync, readdirSync, statSync } from "fs";
 import { join } from "path";
-import { cookies } from "next/headers";
 
 const BENCHMARK_BASE = process.env.BENCHMARK_BASE_URL ?? "";
 const IS_REMOTE = !!BENCHMARK_BASE;
@@ -25,60 +24,23 @@ const IS_REMOTE = !!BENCHMARK_BASE;
 const LOCAL_DATA_DIR = join(process.cwd(), "..", "benchmark-data");
 
 const DEFAULT_PERSONA = "personal_14";
-const PERSONA_COOKIE = "demo-persona";
 
-/**
- * Resolve the current persona from a cookie.
- *
- * In serverless deployments, module-level state does NOT survive across
- * requests. The page SSR sets a cookie (page.tsx); server actions and API
- * routes read it back here so persona always matches what the user picked.
- *
- * Falls back to the default when called outside a request context (build
- * time) or when the cookie is absent (first visit, no persona selected).
- */
-async function getCurrentPersona(): Promise<string> {
-  try {
-    const store = await cookies();
-    const value = store.get(PERSONA_COOKIE)?.value;
-    if (value && /^personal_\d{2}$/.test(value)) {
-      return value;
-    }
-  } catch {
-    // cookies() throws outside of a request context (build, CLI, etc.)
-  }
-  return DEFAULT_PERSONA;
-}
+/** Currently selected persona id — set by the page from URL searchParams. */
+let currentPersona = DEFAULT_PERSONA;
 
 export function setDemoPersona(personaId: string) {
-  // Set cookie for subsequent requests (server actions, API routes).
-  // Only effective when called from a Server Component or Route Handler.
-  // The `await cookies()` is fire-and-forget here since we can't block
-  // in a synchronous export — but the cookie is also set by the page SSR.
-  const p = cookies().then((store) => {
-    store.set(PERSONA_COOKIE, personaId, {
-      path: "/",
-      maxAge: 60 * 60 * 24, // 1 day
-      sameSite: "lax",
-    });
-  }).catch(() => { /* not a request context */ });
-  // Prevent unhandled rejection warning
-  p.catch(() => {});
+  currentPersona = personaId;
 }
 
 export function getDemoPersona(): string {
-  // Synchronous best-effort: for SSR rendering this is fine (cookie was
-  // just set by setDemoPersona in the same request). Server actions should
-  // use getCurrentPersona() directly for async cookie access.
-  return DEFAULT_PERSONA;
+  return currentPersona;
 }
 
 // ─── Path helpers ────────────────────────────────────────────────────────
 
 /** Strip `memory/` prefix, prepend persona dir. */
-async function resolveRelative(path: string): Promise<string> {
+function resolveRelative(path: string, persona: string): string {
   const relative = path.replace(/^memory\//, "");
-  const persona = await getCurrentPersona();
   return `${persona}/${relative}`;
 }
 
@@ -125,8 +87,17 @@ async function fetchManifest(): Promise<Manifest> {
 
 // ─── File API ────────────────────────────────────────────────────────────
 
-export async function readFileDemo(path: string): Promise<string> {
-  const rel = await resolveRelative(path);
+/**
+ * Read a file from the demo dataset. Uses `currentPersona` (set by
+ * setDemoPersona during SSR) as the default, but callers can override
+ * via the `persona` parameter (e.g. server actions receiving the persona
+ * from the client via searchParams).
+ */
+export async function readFileDemo(
+  path: string,
+  persona?: string,
+): Promise<string> {
+  const rel = resolveRelative(path, persona ?? currentPersona);
 
   if (IS_REMOTE) {
     const res = await fetch(`${BENCHMARK_BASE}/${rel}`);
@@ -144,17 +115,19 @@ export async function readFileDemo(path: string): Promise<string> {
 }
 
 export async function listFilesDemo(
-  path: string
+  path: string,
+  persona?: string,
 ): Promise<Array<{ name: string; type: "file" | "dir"; path: string }>> {
+  const pId = persona ?? currentPersona;
+
   if (IS_REMOTE) {
-    const pId = await getCurrentPersona();
     const manifest = await fetchManifest();
-    const persona = manifest.personas[pId];
-    if (!persona?.tree) throw new Error(`Persona "${pId}" not found in manifest`);
+    const personaEntry = manifest.personas[pId];
+    if (!personaEntry?.tree) throw new Error(`Persona "${pId}" not found in manifest`);
 
     const relative = path.replace(/^memory\//, "").replace(/\/$/, "");
     const segments = relative.split("/").filter(Boolean);
-    let node: unknown = persona.tree;
+    let node: unknown = personaEntry.tree;
     for (const seg of segments) {
       if (node && typeof node === "object" && seg in (node as Record<string, unknown>)) {
         node = (node as Record<string, unknown>)[seg];
@@ -178,7 +151,7 @@ export async function listFilesDemo(
   }
 
   // Local disk
-  const rel = await resolveRelative(path);
+  const rel = resolveRelative(path, pId);
   const fullPath = join(LOCAL_DATA_DIR, rel);
   if (!existsSync(fullPath)) return [];
   const stat = statSync(fullPath);
