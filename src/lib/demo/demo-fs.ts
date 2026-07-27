@@ -16,6 +16,7 @@
 
 import { existsSync, readFileSync, readdirSync, statSync } from "fs";
 import { join } from "path";
+import { cookies } from "next/headers";
 
 const BENCHMARK_BASE = process.env.BENCHMARK_BASE_URL ?? "";
 const IS_REMOTE = !!BENCHMARK_BASE;
@@ -23,23 +24,62 @@ const IS_REMOTE = !!BENCHMARK_BASE;
 // Local fallback: look for benchmark-data as a sibling of the project root
 const LOCAL_DATA_DIR = join(process.cwd(), "..", "benchmark-data");
 
-/** Currently selected persona id — set by the page from URL searchParams. */
-let currentPersona = "personal_14";
+const DEFAULT_PERSONA = "personal_14";
+const PERSONA_COOKIE = "demo-persona";
+
+/**
+ * Resolve the current persona from a cookie.
+ *
+ * In serverless deployments, module-level state does NOT survive across
+ * requests. The page SSR sets a cookie (page.tsx); server actions and API
+ * routes read it back here so persona always matches what the user picked.
+ *
+ * Falls back to the default when called outside a request context (build
+ * time) or when the cookie is absent (first visit, no persona selected).
+ */
+async function getCurrentPersona(): Promise<string> {
+  try {
+    const store = await cookies();
+    const value = store.get(PERSONA_COOKIE)?.value;
+    if (value && /^personal_\d{2}$/.test(value)) {
+      return value;
+    }
+  } catch {
+    // cookies() throws outside of a request context (build, CLI, etc.)
+  }
+  return DEFAULT_PERSONA;
+}
 
 export function setDemoPersona(personaId: string) {
-  currentPersona = personaId;
+  // Set cookie for subsequent requests (server actions, API routes).
+  // Only effective when called from a Server Component or Route Handler.
+  // The `await cookies()` is fire-and-forget here since we can't block
+  // in a synchronous export — but the cookie is also set by the page SSR.
+  const p = cookies().then((store) => {
+    store.set(PERSONA_COOKIE, personaId, {
+      path: "/",
+      maxAge: 60 * 60 * 24, // 1 day
+      sameSite: "lax",
+    });
+  }).catch(() => { /* not a request context */ });
+  // Prevent unhandled rejection warning
+  p.catch(() => {});
 }
 
 export function getDemoPersona(): string {
-  return currentPersona;
+  // Synchronous best-effort: for SSR rendering this is fine (cookie was
+  // just set by setDemoPersona in the same request). Server actions should
+  // use getCurrentPersona() directly for async cookie access.
+  return DEFAULT_PERSONA;
 }
 
 // ─── Path helpers ────────────────────────────────────────────────────────
 
 /** Strip `memory/` prefix, prepend persona dir. */
-function resolveRelative(path: string): string {
+async function resolveRelative(path: string): Promise<string> {
   const relative = path.replace(/^memory\//, "");
-  return `${currentPersona}/${relative}`;
+  const persona = await getCurrentPersona();
+  return `${persona}/${relative}`;
 }
 
 // ─── Manifest ────────────────────────────────────────────────────────────
@@ -86,7 +126,7 @@ async function fetchManifest(): Promise<Manifest> {
 // ─── File API ────────────────────────────────────────────────────────────
 
 export async function readFileDemo(path: string): Promise<string> {
-  const rel = resolveRelative(path);
+  const rel = await resolveRelative(path);
 
   if (IS_REMOTE) {
     const res = await fetch(`${BENCHMARK_BASE}/${rel}`);
@@ -107,9 +147,10 @@ export async function listFilesDemo(
   path: string
 ): Promise<Array<{ name: string; type: "file" | "dir"; path: string }>> {
   if (IS_REMOTE) {
+    const pId = await getCurrentPersona();
     const manifest = await fetchManifest();
-    const persona = manifest.personas[currentPersona];
-    if (!persona?.tree) throw new Error(`Persona "${currentPersona}" not found in manifest`);
+    const persona = manifest.personas[pId];
+    if (!persona?.tree) throw new Error(`Persona "${pId}" not found in manifest`);
 
     const relative = path.replace(/^memory\//, "").replace(/\/$/, "");
     const segments = relative.split("/").filter(Boolean);
@@ -137,7 +178,7 @@ export async function listFilesDemo(
   }
 
   // Local disk
-  const rel = resolveRelative(path);
+  const rel = await resolveRelative(path);
   const fullPath = join(LOCAL_DATA_DIR, rel);
   if (!existsSync(fullPath)) return [];
   const stat = statSync(fullPath);

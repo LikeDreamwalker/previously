@@ -17,13 +17,15 @@ export function parseSliceId(sliceId: string): { y: string; m: string; d: string
 /** Parsed turn from a core.md slice file. */
 export interface ParsedTurn {
   index: number;
-  header: string;   // "## Turn N -- ISO_TIMESTAMP (role)"
+  header: string;   // "## Turn {id} — TIMESTAMP (role)"
   content: string;   // turn body text
   timestamp: string; // ISO 8601
 }
 
-/** Regex for turn headers: "## Turn N -- ISO_TIMESTAMP (role)". */
-export const TURN_HEADER_RE = /^## Turn (\d+) -- (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[^)]*)\s*\((\w+)\)/;
+/** Regex for turn headers: "## Turn {id} — TIMESTAMP (role)".
+ *  Matches both legacy numeric IDs ("1", "2") and new base64url IDs ("a3fk2w").
+ *  Separator is em-dash (U+2014), consistent with manager.ts serializeSlice. */
+export const TURN_HEADER_RE = /^## Turn (\S+) — (\S+) \((\w+)\)/;
 
 /**
  * Parse core.md content into frontmatter + array of parsed turns.
