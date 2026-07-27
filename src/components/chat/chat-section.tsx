@@ -4,6 +4,7 @@ import type { UIMessage } from "ai";
 import { ChatMessage } from "./chat-message";
 import { LoadingTip } from "./loading-tip";
 import { Message, MessageContent } from "@/components/ui/message";
+import type { EvolutionState } from "./evolution-indicator";
 
 interface ChatSectionProps {
   messages: UIMessage[];
@@ -11,6 +12,8 @@ interface ChatSectionProps {
   isLoading: boolean;
   error: Error | undefined;
   lastUserMessageAt: string | null;
+  evolutionState: EvolutionState | null;
+  isEvolutionTarget: (messageId: string) => boolean;
 }
 
 export function ChatSection({
@@ -19,6 +22,8 @@ export function ChatSection({
   isLoading,
   error,
   lastUserMessageAt,
+  evolutionState,
+  isEvolutionTarget,
 }: ChatSectionProps) {
   const lastMessage = messages[messages.length - 1];
   const hasAssistant = messages.some((m) => m.role === "assistant");
@@ -35,6 +40,9 @@ export function ChatSection({
             message.id === lastMessage?.id
               ? (lastUserMessageAt ?? undefined)
               : undefined
+          }
+          evolutionState={
+            isEvolutionTarget(message.id) ? evolutionState : null
           }
         />
       ))}

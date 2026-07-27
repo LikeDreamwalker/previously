@@ -57,16 +57,28 @@ export function PhaseIndicator({
     return lastNewline >= 0 ? text.slice(lastNewline + 1) : text;
   }, [text]);
 
+  // Track newline count for line-transition animation.
+  // We key on newline count rather than currentLine content so the line only
+  // remounts (and fades in) when a newline actually starts a new line — not on
+  // every incremental character update during streaming.
+  const newlineCount = useMemo(() => {
+    let count = 0;
+    for (let i = 0; i < text.length; i++) {
+      if (text[i] === "\n") count++;
+    }
+    return count;
+  }, [text]);
+
   // Track newline transitions for fade animation
   const [lineKey, setLineKey] = useState(0);
-  const prevLineRef = useRef(currentLine);
+  const prevNewlineCountRef = useRef(newlineCount);
   useEffect(() => {
     if (mode !== "streaming") return;
-    if (currentLine !== prevLineRef.current) {
+    if (newlineCount !== prevNewlineCountRef.current) {
       setLineKey((k) => k + 1);
-      prevLineRef.current = currentLine;
+      prevNewlineCountRef.current = newlineCount;
     }
-  }, [mode, currentLine]);
+  }, [mode, newlineCount]);
 
   // Auto-scroll to end as text streams in
   useEffect(() => {

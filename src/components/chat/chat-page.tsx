@@ -9,7 +9,6 @@ import { ChatSection } from "./chat-section";
 import { LoopWatcher } from "./loop-watcher";
 import { buildMockSteps } from "@/lib/chat/mock-stream";
 import type { EvolutionState } from "./evolution-indicator";
-import { EvolutionIndicator } from "./evolution-indicator";
 import { HorizontalTimeline } from "./horizontal-timeline";
 import { HistoricalChatView } from "./historical-chat-view";
 import {
@@ -374,13 +373,21 @@ function Inner({ children }: { children: React.ReactNode }) {
               />
             </div>
           ) : (
-            <div className="mx-auto max-w-5xl xl:max-w-7xl px-4 sm:px-6 lg:px-8">
+            <div className="mx-auto max-w-5xl xl:max-w-7xl px-4 sm:px-6 lg:px-8 min-h-[calc(100vh-13rem)]">
               <ChatSection
                 messages={allMessages}
                 isStreaming={isStreaming}
                 isLoading={isLoading}
                 error={error}
                 lastUserMessageAt={lastUserMessageAt}
+                evolutionState={evolutionState}
+                isEvolutionTarget={(id) => {
+                  // Only the latest assistant message carries the evolution indicator
+                  const lastAsst = [...allMessages]
+                    .reverse()
+                    .find((m) => m.role === "assistant");
+                  return lastAsst?.id === id;
+                }}
               />
               <LoopWatcher messages={messages} />
             </div>
@@ -396,7 +403,6 @@ function Inner({ children }: { children: React.ReactNode }) {
 
       {/* ── Fixed bottom bar ────────────────────────────────────────────── */}
       <div className="fixed bottom-0 inset-x-0 z-10">
-        <EvolutionIndicator state={showingLive ? evolutionState : null} />
         <div className="pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom,0.5rem))]">
           <div className="mx-auto w-full md:max-w-2xl px-4 sm:px-6 lg:px-8">
             <ChatInput
