@@ -1,7 +1,11 @@
 "use server";
 
+import { Octokit } from "octokit";
 import { getOctokit } from "@/lib/github/client";
 import { getRepoConfig } from "@/lib/capabilities";
+
+/** Unauthenticated client for reading from the upstream public repo. */
+const upstreamOctokit = new Octokit();
 import {
   UPSTREAM_REPO_OWNER,
   UPSTREAM_REPO_NAME,
@@ -36,7 +40,21 @@ interface TreeEntry {
 
 function isRateLimitError(error: unknown): boolean {
   const status = (error as { status?: number }).status;
-  return status === 403 || status === 429;
+  // 429 always means rate limit. 403 can mean rate limit OR permission denied —
+  // check the message to distinguish.
+  if (status === 429) return true;
+  if (status === 403) {
+    const msg = (error as { message?: string }).message ?? "";
+    return /rate limit|secondary rate limit/i.test(msg);
+  }
+  return false;
+}
+
+function isPermissionError(error: unknown): boolean {
+  const status = (error as { status?: number }).status;
+  // 403 without a rate-limit message is a permission / token-scope issue.
+  if (status === 403 && !isRateLimitError(error)) return true;
+  return false;
 }
 
 function isTokenScopeError(error: unknown): boolean {
@@ -86,7 +104,7 @@ export async function syncFromUpstream(): Promise<SyncResult> {
   // ── 2. Get upstream HEAD ──
   let upstreamSha: string;
   try {
-    const ref = await octokit.rest.git.getRef({
+    const ref = await upstreamOctokit.rest.git.getRef({
       owner: UPSTREAM_REPO_OWNER,
       repo: UPSTREAM_REPO_NAME,
       ref: UPSTREAM_REPO_REF,
@@ -96,7 +114,7 @@ export async function syncFromUpstream(): Promise<SyncResult> {
     if (isRateLimitError(e)) {
       return {
         ok: false,
-        error: "GitHub API rate limit reached. Please wait and try again.",
+        error: "GitHub API rate limit reached (unauthenticated — 60 req/hr). Please wait an hour or configure a GITHUB_TOKEN in your environment to raise the limit to 5,000/hr.",
       };
     }
     return {
@@ -108,7 +126,7 @@ export async function syncFromUpstream(): Promise<SyncResult> {
   // ── 3. Get upstream tree (recursive) ──
   let upstreamTree: TreeEntry[];
   try {
-    const tree = await octokit.rest.git.getTree({
+    const tree = await upstreamOctokit.rest.git.getTree({
       owner: UPSTREAM_REPO_OWNER,
       repo: UPSTREAM_REPO_NAME,
       tree_sha: upstreamSha,
@@ -230,7 +248,7 @@ export async function syncFromUpstream(): Promise<SyncResult> {
   for (const entry of syncEntries) {
     try {
       // Get blob content from upstream
-      const upstreamBlob = await octokit.rest.git.getBlob({
+      const upstreamBlob = await upstreamOctokit.rest.git.getBlob({
         owner: UPSTREAM_REPO_OWNER,
         repo: UPSTREAM_REPO_NAME,
         file_sha: entry.sha,
