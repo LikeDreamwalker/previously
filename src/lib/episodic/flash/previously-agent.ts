@@ -39,6 +39,8 @@ export interface PreviouslyAgentInput {
   agentCognition: string;
   /** What triggered this update (last exchange + current user msg). */
   recentTurns: Array<{ role: string; content: string }>;
+  /** Tags on the current slice — helps contextualize the conversation. */
+  currentSliceTags?: string[];
 
   // ── Tool implementations (callbacks provided by the executor) ──────
 
@@ -106,7 +108,7 @@ const outputSchema = z.object({
 // ─── Prompt ────────────────────────────────────────────────────────────
 
 function buildPrompt(input: PreviouslyAgentInput): string {
-  const { signal, note, currentSliceId, closedSliceId, previouslyContent, agentCognition, recentTurns } = input;
+  const { signal, note, currentSliceId, closedSliceId, previouslyContent, agentCognition, recentTurns, currentSliceTags } = input;
 
   const signalLabels: Record<PreviouslySignal, string> = {
     new_observation: "new_observation — core agent noticed new information about the user",
@@ -119,13 +121,17 @@ function buildPrompt(input: PreviouslyAgentInput): string {
     ? `\n**DEEP MODE**: slice \`${closedSliceId}\` just closed. Consider reading its conversation and agent.md for patterns worth promoting or demoting.`
     : "";
 
+  const tagsNote = currentSliceTags && currentSliceTags.length > 0
+    ? `\n**Current slice tags**: ${currentSliceTags.join(", ")}`
+    : "";
+
   return `You are the Previously Agent — the "brain" that maintains the agent's self-model
 (previously.md). You do NOT talk to users. You work autonomously.
 
 ## Signal
 
 ${signalLabels[signal]}
-Note from core agent: "${note}"
+Note from core agent: "${note}"${tagsNote}
 Current slice: \`${currentSliceId}\`${deepNote}
 
 ## Iron Rules (铁律 — must follow EXACTLY)
@@ -155,30 +161,34 @@ R13. Max: identity ≤ 20, patterns ≤ 8, strategies ≤ 15, context ≤ 10.
 
 ## Previously.md (current — the document you mutate)
 
-${previouslyContent.slice(0, 8000) || "(empty template — this is a new slice. Feel free to start from scratch.)"}
+${previouslyContent || "(empty template — this is a new slice. Feel free to start from scratch.)"}
 
 ## Agent Cognition (current slice)
 
-${agentCognition.slice(0, 5000) || "(no cognition yet — this is the first turn in this slice)"}
+${agentCognition || "(no cognition yet — this is the first turn in this slice)"}
 
 ## Recent Conversation
 
 ${recentTurns.length > 0
-  ? recentTurns.slice(-6).map((t) => `${t.role}: ${t.content.slice(0, 600)}`).join("\n\n")
+  ? recentTurns.map((t) => `**${t.role}**: ${t.content}`).join("\n\n")
   : "(No recent conversation provided.)"}
 
 ## Your Process
 
-You have pre-loaded data above. Use it for a FIRST PASS:
+**FIRST — QUICK SCAN (do NOT call any tools yet):**
 
-1. Check if the signal + recent conversation + cognition warrant any changes.
-2. Scan the previously.md for expired short-term items, stale beliefs, contradictions.
+1. Scan the recent conversation. Is there any genuinely new information about the user?
+2. Scan previously.md. Are there expired short-term items? Stale long-term beliefs?
+3. Scan agent cognition. Any reasoning errors worth correcting?
 
 **Decision point:**
 
-- **Nothing to change** → call \`previouslyOutput({ mutations: [], reasoning: "..." })\` immediately.
-- **Can decide from pre-loaded data** → call \`previouslyOutput\` with your mutations.
-- **Need more evidence** → use the tools below first, then call \`previouslyOutput\`.
+- **Nothing to change** → call \`previouslyOutput({ mutations: [], reasoning: "..." })\` IMMEDIATELY.
+  Do NOT call any tools. This is the most common and fastest path.
+- **Shallow edit possible** → call \`previouslyOutput\` with your mutations from pre-loaded data.
+- **Need more evidence** → use the tools below to read specific slices, then call \`previouslyOutput\`.
+
+**Semantic merging:** When the same concept appears in different languages (e.g., "self-evolution" and "自我进化"), treat them as ONE belief — reinforce the existing one, do NOT create duplicates.
 
 ## Your Tools
 

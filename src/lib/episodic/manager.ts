@@ -21,6 +21,7 @@ import type {
   StrandIndex,
 } from "./types";
 import { fsReadFile, fsWriteFile, fsListFiles } from "./io-helpers";
+import { newPreviouslyTemplate } from "./previously-format";
 
 // ─── Environment detection ───────────────────────────────────────────────
 
@@ -270,7 +271,6 @@ export function serializeSlice(slice: TimeSlice): string {
   return matter.stringify(body, cleanFm);
 }
 
-/**
 /**
  * Parse a Markdown string (with YAML frontmatter) back into a TimeSlice.
  */
@@ -831,13 +831,13 @@ export async function ensurePreviously(sliceId: string): Promise<string> {
   const existing = await readPreviously(sliceId);
   if (existing.trim()) return existing;
 
-  // Find the most recent previously.md from past slices, apply decay,
-  // and use it as the starting point for this new slice.
+  // Find the most recent previously.md from past slices and copy it
+  // forward as-is. Decay is handled by the evolution workflow.
   const source = await findMostRecentPreviously();
 
   const content = source
-    ? applyPreviouslyDecay(source, sliceId)
-    : emptyPreviouslyTemplate(sliceId);
+    ? source
+    : newPreviouslyTemplate(sliceId);
 
   await writePreviously(sliceId, content);
   return content;

@@ -107,6 +107,7 @@ function Inner({ children }: { children: React.ReactNode }) {
   const [lastUserMessageAt, setLastUserMessageAt] = useState<string | null>(null);
   const [evolutionState, setEvolutionState] = useState<EvolutionState | null>(null);
   const evolutionAbortRef = useRef<AbortController | null>(null);
+  const evolutionRunningRef = useRef(false);
 
   // ── Timeline state ──────────────────────────────────────────────────────
   const [timelineSlices, setTimelineSlices] = useState<SliceSummary[]>([]);
@@ -288,7 +289,7 @@ function Inner({ children }: { children: React.ReactNode }) {
   // Abort in-flight evolution on unmount
   useEffect(() => {
     return () => {
-      evolutionAbortRef.current?.abort();
+      if (evolutionRunningRef.current) return;
     };
   }, []);
 
@@ -305,9 +306,10 @@ function Inner({ children }: { children: React.ReactNode }) {
   };
 
   const fireEvolution = useCallback(async () => {
-    evolutionAbortRef.current?.abort();
+    if (evolutionRunningRef.current) return;
     const controller = new AbortController();
     evolutionAbortRef.current = controller;
+    evolutionRunningRef.current = true;
 
     setEvolutionState({ running: true, step: "reading" });
 
@@ -358,6 +360,8 @@ function Inner({ children }: { children: React.ReactNode }) {
         running: false,
         error: err instanceof Error ? err.message : "Evolution request failed",
       });
+    } finally {
+      evolutionRunningRef.current = false;
     }
   }, []);
 

@@ -40,6 +40,8 @@ export interface RecallSearchInput {
   repo: string;
   useGithub: boolean;
   useDemo: boolean;
+  /** Available strands (keyword tag → slice paths). Flash auto-traces matching ones. */
+  strandsContext?: Record<string, string[]>;
 }
 
 // ─── Global timeline path ──────────────────────────────────────────────
@@ -203,15 +205,21 @@ const MAX_STEPS = 20;
 export async function runRecallSearch(
   input: RecallSearchInput,
 ): Promise<RecallSearchOutput> {
-  const { query, currentSliceId } = input;
+  const { query, currentSliceId, strandsContext } = input;
+
+  const strandsHint = strandsContext && Object.keys(strandsContext).length > 0
+    ? `
+Available strands (keyword tags threaded across slices): ${Object.keys(strandsContext).join(", ")}
+IMPORTANT: After reading the global timeline, check which strands match your query. Use readStrand to trace matching strands — they give you a direct path to relevant slices.`
+    : "";
 
   const userPrompt = `Search query: "${query}"
 
-Current slice: ${currentSliceId}
+Current slice: ${currentSliceId}${strandsHint}
 
 Follow this process:
 1. START — call readGlobalTimeline to see all available past conversations.
-2. EXPLORE — if you find promising slices, use readStrand or readSlice to investigate.
+2. EXPLORE — trace any matching strands with readStrand, then deep-read promising slices with readSlice.
 3. REPORT — call recallReport with your findings.
 
 IMPORTANT: You MUST end by calling recallReport. Even if nothing matches, call it with an empty hits array.`;

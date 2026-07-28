@@ -33,9 +33,27 @@ import type {
 import { DEPLOY_GUIDE_URL } from "@/lib/capabilities";
 import {
   housekeeping,
-  seedPreviously,
   finalizeTurn,
 } from "./steps";
+
+// ─── Static prompt fragments (cache-friendly: never change between turns) ─
+
+const MEMORY_RULES = `## Memory access rules
+
+When you need context from past conversations, follow this order:
+
+1. **Recall first.** Call \`recall\` to search episodic memory. The recall agent returns pointers (which slices, which turns, why relevant). Do NOT call readSlice, readTimeline, readStrand, or listStrands until recall returns results.
+2. **Read deeper if needed.** After recall returns, call \`readSlice\` to fetch content from specific slices. Use \`range\` to fetch only what you need:
+   - \`range: { type: "last", count: 3 }\` — last 3 turns
+   - \`range: { type: "turns", indices: [0, 5, 7] }\` — specific turns
+   - \`range: { type: "date", after: "2026-07-24T00:00:00Z" }\` — turns after a date
+   - Omit \`range\` for the full slice (use sparingly on large slices)
+3. **Follow up.** Use \`readStrand\` or \`readTimeline\` only to follow leads from recall results.
+
+**Think in time.** When recall returns results, prefer more recent slices — the user's current state is usually what matters most. When referencing past conversations, anchor in time ("You mentioned last Tuesday…" not "You mentioned…") so the user knows you placed the timeline correctly. What changed since then is often more useful than what was said.
+
+Use \`webSearch\` for live web information when relevant.
+Use \`startLoop\` to launch durable background loops for ongoing or long-running tasks. Tell the user when you start one.`;
 
 // ─── Pure helpers (serializable data in, serializable data out) ──────────
 
@@ -219,49 +237,38 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
 
   // ── Pre-turn steps ─────────────────────────────────────────────────────
 
-  const { slice } = await housekeeping(input);
-  const previouslyContent = await seedPreviously(slice.slice_id);
+  const { slice, previouslyContent, strandsMenu } = await housekeeping(input);
 
   // ── Assemble system prompt ──────────────────────────────────────────────
 
-  const demoNotice = input.useDemo
-    ? `## 当前模式：Demo（只读演示）
+  // Static rules first (never change → highest cache hit rate),
+  // then previously (rarely changes), then strands menu (short, may change),
+  // finally demo notice only when applicable.
+  const systemPrompt = `${MEMORY_RULES}
 
-你正在演示模式下运行。你可以浏览示例数据、回忆过去的对话、搜索实时网络——但**所有写入操作都不会真正持久化**。没有连接 GitHub 仓库，你看到的是一个预置的示例记忆库。
-
-当用户想让你保存任何信息、创建记忆、或启动后台任务时，你应该自然地告诉他们：
-- 当前是演示模式，数据无法保存
-- 他们需要部署自己的实例来解锁完整的读写和后台循环能力
-
-部署指南：${DEPLOY_GUIDE_URL}
-
-用户在演示模式下探索是完全正常的——帮助他们了解这个产品能做什么，以及部署后能获得什么。
-
-`
-    : "";
-
-  const systemPrompt = `${demoNotice}## 我对你的理解
+## What I know about you
 
 ${previouslyContent}
 
-以上是我目前对你的了解。如果有任何过时或错误的，告诉我，我会更新。
+The above is my current understanding of you. Tell me if anything is outdated or wrong and I'll update it.
+${strandsMenu ? `
+## Memory topics
 
-## 记忆访问规则
+${strandsMenu}
+When the user mentions these topics, use recall to search for related memories.
+` : ""}${input.useDemo ? `
+## Demo mode (read-only)
 
-当你需要从过去的对话中获取上下文时，按以下顺序操作：
+You are running in demo mode. You can browse sample data, recall past conversations, and search the live web — but **writes are not persisted**. No GitHub repo is connected; you are seeing pre-seeded sample memories.
 
-1. **先 recall。** 调用 \`recall\` 搜索情景记忆。回忆 agent 返回指针（哪些切片、哪些轮次、为什么相关）。在 recall 返回结果之前，不要调用 readSlice、readTimeline、readStrand 或 listStrands。
-2. **如需深入，再读取。** recall 返回后，调用 \`readSlice\` 获取特定切片的内容。使用 \`range\` 参数只获取你需要的内容：
-   - \`range: { type: "last", count: 3 }\` — 获取切片最后 3 轮
-   - \`range: { type: "turns", indices: [0, 5, 7] }\` — 获取特定轮次
-   - \`range: { type: "date", after: "2026-07-24T00:00:00Z" }\` — 获取某日期之后的轮次
-   - 省略 \`range\` 获取完整切片（谨慎用于大型切片）
-3. **进一步探索。** 使用 \`readStrand\` 或 \`readTimeline\` 仅用于跟进 recall 结果中的线索。
+When the user asks to save anything, create memories, or start background tasks, tell them naturally:
+- This is demo mode and data cannot be saved
+- They need to deploy their own instance to unlock full read/write and background loop capabilities
 
-**以时间思考。** 当 recall 返回结果时，优先选择更近的切片——用户当前的状态通常最重要。当你引用过去的对话时，加入时间锚点（"你上周二提到过……"而不是"你提到过……"），让用户知道你把时间线放对了。从上次之后发生了什么变化，往往比当时说了什么更有用。
+Deployment guide: ${DEPLOY_GUIDE_URL}
 
-你可以用 \`webSearch\` 搜索实时网络以获取当前信息，并在相关时引用到回复中。
-你可以用 \`startLoop\` 启动持久的后台循环任务。当用户要求持续或后台工作，或者你判断任务足够大或足够长，可以在后台自主工作时调用。告诉用户你启动了。`;
+It's perfectly normal for users to explore in demo mode — help them understand what this product can do and what they'll get after deploying.
+` : ""}`;
 
   // ── Pro agent ──────────────────────────────────────────────────────────
 

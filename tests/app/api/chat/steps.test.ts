@@ -19,6 +19,7 @@ const episodic = vi.hoisted(() => ({
   writeAgentTimeline: vi.fn(async () => ({ path: "", created: false })),
   ensurePreviously: vi.fn(async (sliceId: string) => `# Previously On\n\n_Active slice: ${sliceId} | Updated: ..._\n`),
   generateGlobalTimeline: vi.fn(async () => "mock timeline"),
+  readStrands: vi.fn(async () => ({})),
 }));
 
 let timeSilent = false;
@@ -26,6 +27,19 @@ let timeSilent = false;
 vi.mock("@/lib/episodic", () => episodic);
 vi.mock("@/lib/episodic/slicer", () => ({
   checkTimeSilence: () => timeSilent,
+}));
+
+// Mock AI SDK for Flash tag extraction in housekeeping
+vi.mock("ai", async () => {
+  const actual = await vi.importActual("ai");
+  return {
+    ...actual,
+    generateText: vi.fn(async () => ({ toolCalls: [] })),
+  };
+});
+
+vi.mock("@ai-sdk/deepseek", () => ({
+  deepseek: vi.fn((id: string) => ({ modelId: id })),
 }));
 
 // The run's writable: collects everything written for assertions.
@@ -46,7 +60,7 @@ const workflowMock = vi.hoisted(() => {
 
 vi.mock("workflow", () => ({ getWritable: workflowMock.getWritable }));
 
-import { housekeeping, seedPreviously, finalizeTurn } from "@/app/api/chat/steps";
+import { housekeeping, finalizeTurn } from "@/app/api/chat/steps";
 
 function makeSlice(overrides: Partial<TimeSlice> = {}): TimeSlice {
   return {
@@ -68,7 +82,7 @@ function makeSlice(overrides: Partial<TimeSlice> = {}): TimeSlice {
   };
 }
 
-function makeInput(lastUserMessage: string): TurnInput {
+function makeInput(lastUserMessage: string, overrides: Partial<TurnInput> = {}): TurnInput {
   return {
     modelMessages: [],
     recentTurns: [],
@@ -88,6 +102,7 @@ function makeInput(lastUserMessage: string): TurnInput {
     useDemo: false,
     startedAtIso: "2026-07-14T10:00:00.000Z",
     turnId: "test-id",
+    ...overrides,
   };
 }
 
@@ -120,7 +135,13 @@ describe("housekeeping step", () => {
     });
     episodic.tryLoadTodaySlice.mockResolvedValue(disk);
 
-    const { slice } = await housekeeping(makeInput("follow up"));
+    // Include assistant messages so context continuity check passes
+    const input = makeInput("follow up", {
+      modelMessages: [
+        { role: "assistant", content: "reply" },
+      ] as unknown as TurnInput["modelMessages"],
+    });
+    const { slice } = await housekeeping(input);
 
     expect(episodic.createSlice).not.toHaveBeenCalled();
     expect(episodic.closeSlice).not.toHaveBeenCalled();
@@ -158,20 +179,37 @@ describe("housekeeping step", () => {
     expect(episodic.closeSlice).toHaveBeenCalledWith(disk, "capacity");
     expect(slice.slice_id).toBe("2026-07-14-1100");
   });
-});
 
-describe("seedPreviously step", () => {
-  it("copies previously.md forward via ensurePreviously", async () => {
-    const result = await seedPreviously("2026-07-26-1226", undefined);
+  it("closes on context_lost when client has no assistant messages but slice has agent turns", async () => {
+    const disk = makeSlice({
+      turns: [
+        { timestamp: "t0", role: "user", content: "earlier" },
+        { timestamp: "t1", role: "agent", content: "reply" },
+        { timestamp: "t2", role: "user", content: "another" },
+        { timestamp: "t3", role: "agent", content: "reply2" },
+      ],
+    });
+    episodic.tryLoadTodaySlice.mockResolvedValue(disk);
+    episodic.createSlice.mockImplementation((msg: string) =>
+      makeSlice({ slice_id: "2026-07-14-1200", turns: [{ timestamp: "t", role: "user", content: msg }] })
+    );
 
-    expect(episodic.ensurePreviously).toHaveBeenCalledWith("2026-07-26-1226");
-    expect(result).toContain("# Previously On");
+    // modelMessages has only the current user message, no assistant messages
+    const input = makeInput("new from different device");
+    const { slice } = await housekeeping(input);
+
+    expect(episodic.closeSlice).toHaveBeenCalledWith(disk, "context_lost");
+    expect(slice.slice_id).toBe("2026-07-14-1200");
   });
 
-  it("accepts optional closed slice id without effect on the copy", async () => {
-    const result = await seedPreviously("2026-07-26-1226", "2026-07-26-0823");
+  it("returns previouslyContent and strandsMenu along with slice", async () => {
+    episodic.tryLoadTodaySlice.mockResolvedValue(null);
 
-    expect(episodic.ensurePreviously).toHaveBeenCalledWith("2026-07-26-1226");
-    expect(result).toContain("# Previously On");
+    const result = await housekeeping(makeInput("hello world"));
+
+    expect(result.previouslyContent).toBeDefined();
+    expect(typeof result.previouslyContent).toBe("string");
+    expect(result.strandsMenu).toBeDefined();
+    expect(typeof result.strandsMenu).toBe("string");
   });
 });

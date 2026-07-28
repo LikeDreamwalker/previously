@@ -33,6 +33,7 @@ import { readLoopRun, serializeLoop, writeLoopFile } from "@/lib/loops/store";
 import { isAIConfigured, canWrite, DEPLOY_GUIDE_URL } from "@/lib/capabilities";
 import type { LoopRun, LoopStep } from "@/lib/loops/types";
 import { runRecallSearch, type RecallHit } from "@/lib/episodic/flash/recall";
+import { readStrands } from "@/lib/episodic";
 import {
   parseSliceId,
   parseTurns,
@@ -276,7 +277,7 @@ export async function readPreviouslyExecute(
   } catch (e) {
     const msg = domainError(e);
     if (msg === null) throw e;
-    return `ERROR: ${msg}. 前情提要 not available for this slice.`;
+    return `ERROR: ${msg}. previously.md not available for this slice.`;
   }
 }
 
@@ -319,11 +320,14 @@ export async function recallExecute(
 }> {
   "use step";
 
+  const strands = await readStrands();
+
   const searchResult = await runRecallSearch({
     query,
     currentSliceId: ctx.sliceId,
     owner: ctx.owner,
     repo: ctx.repo,
+    strandsContext: strands,
     useGithub: ctx.useGithub,
     useDemo: ctx.useDemo,
   });

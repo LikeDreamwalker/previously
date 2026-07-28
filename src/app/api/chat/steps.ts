@@ -8,13 +8,16 @@
  * workflow bundle.
  *
  * Steps:
- *   1. housekeeping  — recover/close/create slice, append user turn, open UI stream
- *   2. seedPreviously — copy previously.md forward to new slice (mechanical, no LLM)
- *   3. finalizeTurn  — persist agent turn, close UI stream
+ *   1. housekeeping  — recover/close/create slice, context continuity check,
+ *      Flash tag extraction, ensure previously.md, strands menu, open UI stream
+ *   2. finalizeTurn  — persist agent turn, close UI stream
  *
  * Chunk order for the UI: start → start-step → data-phase(slicing) → finish-step → finish.
  */
-import { type UIMessageChunk } from "ai";
+import { type UIMessageChunk, type ModelMessage } from "ai";
+import { generateText, tool } from "ai";
+import { deepseek } from "@ai-sdk/deepseek";
+import { z } from "zod";
 import { getWritable } from "workflow";
 import {
   createSlice,
@@ -25,7 +28,7 @@ import {
   tryLoadTodaySlice,
   writeAgentTimeline,
   ensurePreviously,
-  readPreviously,
+  readStrands,
   generateGlobalTimeline,
   type TimeSlice,
 } from "@/lib/episodic";
@@ -36,6 +39,104 @@ import type {
   TurnOutcome,
 } from "@/lib/chat/turn-types";
 
+
+// ─── Private helpers ──────────────────────────────────────────────────────
+
+/**
+ * Detect when the client has lost conversational context (page refresh,
+ * device switch). Compares assistant messages in the client's message
+ * history against agent turns in the recovered slice.
+ */
+function checkContextLost(modelMessages: ModelMessage[], slice: TimeSlice): boolean {
+  const assistantCount = modelMessages.filter(
+    (m) => m.role === "assistant"
+  ).length;
+  const agentTurnCount = slice.turns.filter(
+    (t) => t.role === "agent"
+  ).length;
+
+  // Client has 0 assistant messages but slice has agent turns → context lost
+  if (assistantCount === 0 && agentTurnCount >= 1) return true;
+  // Client barely remembers (1 assistant) but slice has many turns → context lost
+  if (assistantCount <= 1 && agentTurnCount >= 3) return true;
+
+  return false;
+}
+
+/**
+ * Call Flash (thinking disabled) to extract keyword tags from a user message.
+ * Existing strand names are provided to encourage reuse and semantic merging.
+ * Returns 0-5 lowercase tags. Never throws — returns [] on any failure.
+ */
+async function extractFlashTags(
+  userMessage: string,
+  existingTagNames: string[],
+): Promise<string[]> {
+  const tagsList = existingTagNames.length > 0
+    ? `Existing tags (reuse when semantically equivalent): ${existingTagNames.join(", ")}`
+    : "No existing tags yet.";
+
+  const prompt = `Extract 0-5 keyword tags from this user message.
+
+${tagsList}
+
+Rules:
+- Lowercase, 1-3 words per tag
+- Same concept in any language → REUSE the existing tag (e.g. if user says "Rust" in a Chinese context, reuse "rust")
+- Only substantive topic tags (not greetings or filler)
+- Return empty array if nothing worth tagging
+
+User: ${userMessage.slice(0, 500)}`;
+
+  try {
+    const result = await generateText({
+      model: deepseek("deepseek-v4-flash"),
+      prompt,
+      temperature: 0.1,
+      tools: {
+        tagOutput: tool({
+          description: "Report extracted tags.",
+          inputSchema: z.object({
+            tags: z.array(z.string()).max(5).describe("0-5 keyword tags."),
+          }),
+        }),
+      },
+      toolChoice: "required",
+      providerOptions: { deepseek: { thinking: { type: "disabled" as const } } },
+    });
+
+    const tc = result.toolCalls?.[0];
+    if (tc?.toolName === "tagOutput") {
+      const input = tc.input as { tags?: string[] };
+      return (input.tags ?? []).slice(0, 5);
+    }
+    return [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Read strands.json and format a compact menu for the system prompt.
+ * Tags only, sorted by most recently active slice, max 20.
+ * Returns empty string if no strands exist.
+ */
+async function buildStrandsMenu(): Promise<string> {
+  const strands = await readStrands();
+  const entries = Object.entries(strands);
+
+  if (entries.length === 0) return "";
+
+  // Sort by most recent slice associated with each strand
+  entries.sort((a, b) => {
+    const aMax = a[1].reduce((max, p) => (p > max ? p : max), "");
+    const bMax = b[1].reduce((max, p) => (p > max ? p : max), "");
+    return bMax.localeCompare(aMax);
+  });
+
+  const tagNames = entries.slice(0, 20).map(([name]) => name);
+  return `Known topics: ${tagNames.join(", ")}`;
+}
 
 // ─── Step 1: Housekeeping ────────────────────────────────────────────────
 
@@ -48,7 +149,7 @@ import type {
 export async function housekeeping(input: TurnInput): Promise<HousekeepingResult> {
   "use step";
 
-  // Phase start — show spinner in UI
+  // ── Phase: UI spinner ──────────────────────────────────────────────────
   const phaseWriter0 = getWritable<UIMessageChunk>().getWriter();
   await phaseWriter0.write({
     type: "data-phase" as `data-${string}`,
@@ -57,13 +158,13 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   } as UIMessageChunk);
   phaseWriter0.releaseLock();
 
-  const { config, clientTimezone, lastUserMessage } = input;
+  const { config, clientTimezone, lastUserMessage, modelMessages } = input;
   const silenceMs = config.slicing.timeSilenceMinutes * 60 * 1000;
 
   let slice: TimeSlice;
-  let closedSlice: TimeSlice | undefined;
   const diskSlice = await tryLoadTodaySlice();
 
+  // ── 1. Slice lifecycle + context continuity ──────────────────────────
   if (diskSlice && diskSlice.status === "active") {
     const lastTurn = diskSlice.turns[diskSlice.turns.length - 1];
     const lastActivity = lastTurn
@@ -72,16 +173,18 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
 
     if (checkTimeSilence(lastActivity, silenceMs)) {
       await closeSlice(diskSlice, "time_silence");
-      console.log(`[Episodic] Recovered & closed stale slice: ${diskSlice.slice_id}`);
+      console.log(`[Episodic] Closed stale slice: ${diskSlice.slice_id}`);
       await generateGlobalTimeline();
-      closedSlice = diskSlice;
       slice = createSlice(lastUserMessage, clientTimezone, input.turnId);
     } else if (diskSlice.turns.length >= config.slicing.maxTurnsPerSlice) {
-      // Force-close on turn count (safety net for marathon sessions).
       await closeSlice(diskSlice, "capacity");
       console.log(`[Episodic] Closed at turn cap: ${diskSlice.slice_id} (${diskSlice.turns.length} turns)`);
       await generateGlobalTimeline();
-      closedSlice = diskSlice;
+      slice = createSlice(lastUserMessage, clientTimezone, input.turnId);
+    } else if (checkContextLost(modelMessages, diskSlice)) {
+      await closeSlice(diskSlice, "context_lost");
+      console.log(`[Episodic] Closed (context lost): ${diskSlice.slice_id} (client has ${modelMessages.filter(m => m.role === "assistant").length} assistant msgs, slice has ${diskSlice.turns.filter(t => t.role === "agent").length} agent turns)`);
+      await generateGlobalTimeline();
       slice = createSlice(lastUserMessage, clientTimezone, input.turnId);
     } else {
       slice = diskSlice;
@@ -92,7 +195,7 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
     console.log(`[Episodic] Created new slice: ${slice.slice_id}`);
   }
 
-  // Append the user message (skip if createSlice already seeded it as turn 1).
+  // ── 2. Append user turn ───────────────────────────────────────────────
   const isNewSlice =
     slice.turns.length === 1 && slice.turns[0].content === lastUserMessage;
   if (!isNewSlice) {
@@ -104,17 +207,37 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
     });
   }
 
-  // Durable snapshot BEFORE streaming (was fire-and-forget in the inline route):
-  // guarantees the user turn is on GitHub, and that the next turn's
-  // tryLoadTodaySlice sees it even if the agent never finishes.
+  // ── 3. Flash tag extraction ──────────────────────────────────────────
+  try {
+    const strands = await readStrands();
+    const existingTagNames = Object.keys(strands);
+    const newTags = await extractFlashTags(lastUserMessage, existingTagNames);
+
+    if (newTags.length > 0) {
+      for (const tag of newTags) {
+        if (!slice.tags.includes(tag)) {
+          slice.tags.push(tag);
+        }
+      }
+      console.log(`[FlashTags] Extracted: ${newTags.join(", ")}`);
+    }
+  } catch (err) {
+    console.warn("[FlashTags] Extraction failed:", err instanceof Error ? err.message : err);
+  }
+
+  // ── 4. Ensure previously.md (pure copy forward, no decay) ────────────
+  const previouslyContent = await ensurePreviously(slice.slice_id);
+  console.log(`[Previously] Seeded previously.md for ${slice.slice_id}`);
+
+  // ── 5. Durable snapshot + index/strand maintenance ───────────────────
   await saveSliceSnapshot(slice);
   await ensureIndexEntries(slice);
   await generateGlobalTimeline();
 
-  // Open the UI message stream. Lifecycle chunks are written INTO the durable
-  // run stream (not injected by the route transform) so the POST path and the
-  // reconnect path replay identical chunk sequences — WorkflowChatTransport
-  // resumes by chunk index, which must line up across both.
+  // ── 6. Build strands menu ────────────────────────────────────────────
+  const strandsMenu = await buildStrandsMenu();
+
+  // ── 7. Open UI stream ────────────────────────────────────────────────
   const writer = getWritable<UIMessageChunk>().getWriter();
   await writer.write({ type: "start" } as UIMessageChunk);
   await writer.write({ type: "start-step" } as UIMessageChunk);
@@ -125,29 +248,10 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   } as UIMessageChunk);
   writer.releaseLock();
 
-  return { slice };
+  return { slice, previouslyContent, strandsMenu };
 }
 
-// ─── Step 2: Seed previously.md (mechanical) ────────────────────────────────
-
-/**
- * Pure file copy — no LLM. Copies the most recent previously.md forward to
- * the new slice via ensurePreviously(). If a slice just closed and was deep-
- * reviewed by the evolution workflow, the
- * enriched version is automatically picked up.
- */
-export async function seedPreviously(
-  currentSliceId: string,
-  _closedSliceId?: string,
-): Promise<string> {
-  "use step";
-
-  const content = await ensurePreviously(currentSliceId);
-  console.log(`[Previously] Seeded previously.md for ${currentSliceId}`);
-  return content;
-}
-
-// ─── Step 3: Finalize turn ───────────────────────────────────────────────
+// ─── Step 2: Finalize turn ───────────────────────────────────────────────
 
 /**
  * Persist the agent turn to the episodic slice (the old streamText onFinish),

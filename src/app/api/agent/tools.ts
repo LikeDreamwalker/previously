@@ -136,7 +136,7 @@ export const conceptTools = {
   }),
   readStrand: tool({
     description:
-      "Follow a strand (线索) — a keyword tag that threads through multiple " +
+      "Follow a strand — a keyword tag that threads through multiple " +
       "time slices. Returns all slice paths carrying that tag. " +
       "Use this to trace a topic across time.",
     inputSchema: z.object({
@@ -149,7 +149,7 @@ export const conceptTools = {
   }),
   listStrands: tool({
     description:
-      "List all known strands (线索) — every keyword tag that has been " +
+      "List all known strands — every keyword tag that has been " +
       "woven through time slices. Use this to discover what topics exist.",
     inputSchema: z.object({}),
     contextSchema: toolContextSchema,
@@ -170,9 +170,9 @@ export const conceptTools = {
   }),
   readPreviously: tool({
     description:
-      "Read the 前情提要 (previously.md) for a specific slice — the agent's " +
+      "Read the previously.md (previously.md) for a specific slice — the agent's " +
       "impressions and understanding of the user at that moment in time. " +
-      "The current slice's 前情提要 is already in your context; use this " +
+      "The current slice's previously.md is already in your context; use this " +
       "only to read historical versions for comparison.",
     inputSchema: z.object({
       sliceId: z
