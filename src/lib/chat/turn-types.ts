@@ -56,9 +56,13 @@ export interface TurnInput {
   turnId: string;
 }
 
-/** Result of the housekeeping step — the recovered/created slice by value. */
+/** Result of the housekeeping step — slice + prepared context for the agent. */
 export interface HousekeepingResult {
   slice: TimeSlice;
+  /** Content of previously.md for the current slice. */
+  previouslyContent: string;
+  /** Formatted strands menu string (empty if no strands exist). */
+  strandsMenu: string;
 }
 
 /** A background loop the agent started during this turn (for slice writeback). */

@@ -37,13 +37,9 @@ export {
 } from "./manager";
 // NOTE: sliceIdToLegacyFilePath was removed in v0.5 — old flat-file format
 //       support dropped. Use sliceIdToTimelineDir / sliceIdToFilePath instead.
-
-export type {
-  SliceMetadata,
-} from "./maintenance";
-export {
-  applyMetadataUpdates,
-} from "./maintenance";
+//
+// NOTE: maintenance.ts v1 types (SliceMetadata, applyMetadataUpdates) were
+//       removed in v0.5.1. Use previously-updater.ts (v2) instead.
 
 export {
   runRecallSearch,

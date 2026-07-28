@@ -31,7 +31,10 @@ export interface EvolutionContext {
   sliceId: string;
   previouslyContent: string;
   agentCognition: string;
+  /** Last 3 turns (incremental): last user, last agent, current user. Full content. */
   recentTurns: Array<{ role: string; content: string }>;
+  /** Tags on the current slice. */
+  currentSliceTags: string[];
 }
 
 // ─── Step 1: Read evolution context ────────────────────────────────────────
@@ -59,16 +62,18 @@ export async function readEvolutionContext(input: {
   let previouslyContent = "";
   let agentCognition = "";
   let recentTurns: Array<{ role: string; content: string }> = [];
+  let currentSliceTags: string[] = [];
 
   try {
     const slice = await tryLoadTodaySlice();
     if (slice) {
       sliceId = slice.slice_id;
-      // Read previously.md and agent.md for this slice
+      currentSliceTags = slice.tags ?? [];
+      // Read previously.md and agent.md — FULL content, no truncation
       try { previouslyContent = await readPreviously(sliceId); } catch { /* empty */ }
       try { agentCognition = await readAgentTimeline(sliceId); } catch { /* empty */ }
 
-      // Extract recent turns from core.md
+      // Extract recent turns — last 3 only (incremental), FULL content no truncation
       try {
         const corePath = sliceIdToFilePath(sliceId);
         let raw: string;
@@ -77,11 +82,12 @@ export async function readEvolutionContext(input: {
         else raw = await readFileLocal(corePath);
 
         const { turns } = parseTurns(raw);
-        recentTurns = turns.slice(-6).map((t) => ({
+        recentTurns = turns.slice(-3).map((t) => ({
           role: t.header.includes("(user)") ? "user" : "agent",
-          content: t.content.slice(0, 600),
+          content: t.content,
         }));
       } catch { /* no core.md yet */ }
+
     } else {
       // No active slice — try most recent previously.md from any slice
       try {
@@ -92,9 +98,9 @@ export async function readEvolutionContext(input: {
     }
   } catch { /* slice discovery failed, use empty context */ }
 
-  console.log(`[Evolution] Context loaded for slice ${sliceId}: previously=${previouslyContent.length} chars, cognition=${agentCognition.length} chars, turns=${recentTurns.length}`);
+  console.log(`[Evolution] Context loaded for slice ${sliceId}: previously=${previouslyContent.length} chars, cognition=${agentCognition.length} chars, turns=${recentTurns.length}, tags=[${currentSliceTags.join(",")}]`);
 
-  return { sliceId, previouslyContent, agentCognition, recentTurns };
+  return { sliceId, previouslyContent, agentCognition, recentTurns, currentSliceTags };
 }
 
 // ─── Step 2: Run Previously Agent, apply mutations, close stream ───────────
@@ -133,7 +139,8 @@ export async function finalizeEvolution(
     return;
   }
 
-  const { sliceId, previouslyContent, agentCognition, recentTurns } = context;
+  const { sliceId, previouslyContent, agentCognition, recentTurns,
+          currentSliceTags } = context;
 
   // Emit reviewing phase
   const writer0 = getWritable<UIMessageChunk>().getWriter();
@@ -157,6 +164,7 @@ export async function finalizeEvolution(
       previouslyContent,
       agentCognition,
       recentTurns,
+      currentSliceTags,
       readSliceFn: async (sid: string, range?) => {
         const parsed = parseSliceId(sid);
         if (!parsed) return `ERROR: Invalid slice ID.`;
