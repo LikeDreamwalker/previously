@@ -15,6 +15,9 @@ export function getOctokit(): Octokit {
     }
     octokitInstance = new Octokit({
       auth: token,
+      request: {
+        timeout: 30_000, // 30s per-request cap — prevents hanging API calls
+      },
     });
   }
   return octokitInstance;

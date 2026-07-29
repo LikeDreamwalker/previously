@@ -5,6 +5,8 @@ import type { TurnInput } from "@/lib/chat/turn-types";
 // ── Mock the step dependencies ──────────────────────────────────────────
 
 const episodic = vi.hoisted(() => ({
+  startBatch: vi.fn(() => {}),
+  flushBatch: vi.fn(async (_msg: string) => {}),
   tryLoadTodaySlice: vi.fn(),
   createSlice: vi.fn((msg: string, tz: string) =>
     makeSlice({ turns: [{ timestamp: "t", role: "user", content: msg }] })
