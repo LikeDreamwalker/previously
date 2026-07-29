@@ -30,6 +30,8 @@ import {
   ensurePreviously,
   readStrands,
   generateGlobalTimeline,
+  startBatch,
+  flushBatch,
   type TimeSlice,
 } from "@/lib/episodic";
 import { checkTimeSilence } from "@/lib/episodic/slicer";
@@ -161,6 +163,9 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   const { config, clientTimezone, lastUserMessage, modelMessages } = input;
   const silenceMs = config.slicing.timeSilenceMinutes * 60 * 1000;
 
+  // ── Begin batch: all writes below go into ONE git commit ──────────────
+  startBatch();
+
   let slice: TimeSlice;
   const diskSlice = await tryLoadTodaySlice();
 
@@ -234,6 +239,10 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   await ensureIndexEntries(slice);
   await generateGlobalTimeline();
 
+  // Commit all queued writes as one commit before building the menu
+  // (which reads strands.json) and opening the UI stream.
+  await flushBatch(`Turn ${input.turnId} — housekeeping`);
+
   // ── 6. Build strands menu ────────────────────────────────────────────
   const strandsMenu = await buildStrandsMenu();
 
@@ -269,6 +278,9 @@ export async function finalizeTurn(
   turnId: string,
 ): Promise<void> {
   "use step";
+
+  // ── Begin batch: all writes below go into ONE git commit ──────────────
+  startBatch();
 
   // 1. Episodic persistence (the old onFinish branches).
   if (outcome.finishReason === "stop") {
@@ -324,6 +336,9 @@ export async function finalizeTurn(
     const header = `## Cognition ${turnId} — ${new Date().toISOString()}\n`;
     await writeAgentTimeline(slice.slice_id, header + outcome.cognition);
   }
+
+  // Commit all queued writes as one commit before closing the stream.
+  await flushBatch(`Turn ${turnId} — agent response`);
 
   // 3. Close the UI stream.
   const writable = getWritable<UIMessageChunk>();

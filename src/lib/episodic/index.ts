@@ -61,6 +61,11 @@ export type {
 } from "./flash/global-timeline";
 
 export {
+  startBatch,
+  flushBatch,
+} from "./io-helpers";
+
+export {
   DEFAULT_TIME_SILENCE_MS,
   DEFAULT_MAX_TURNS_PER_SLICE,
   checkTimeSilence,
