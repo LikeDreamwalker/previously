@@ -5,7 +5,11 @@ import { getOctokit } from "@/lib/github/client";
 import { getRepoConfig } from "@/lib/capabilities";
 
 /** Unauthenticated client for reading from the upstream public repo. */
-const upstreamOctokit = new Octokit();
+const upstreamOctokit = new Octokit({
+  request: {
+    timeout: 15_000, // 15s per-request cap — public API calls complete in <2s normally
+  },
+});
 import {
   UPSTREAM_REPO_OWNER,
   UPSTREAM_REPO_NAME,
@@ -161,6 +165,7 @@ export async function syncFromUpstream(): Promise<SyncResult> {
   try {
     const res = await fetch(GITHUB_RELEASES_API, {
       headers: { Accept: "application/vnd.github+json" },
+      signal: AbortSignal.timeout(10_000),
     });
     if (res.ok) {
       const data = (await res.json()) as { tag_name?: string };
