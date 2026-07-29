@@ -272,10 +272,23 @@ It's perfectly normal for users to explore in demo mode — help them understand
 
   // ── Pro agent ──────────────────────────────────────────────────────────
 
+  /**
+   * Safety cap on tokens per LLM call. Each `doStreamStep` inside the
+   * WorkflowAgent is a single Vercel Workflow step with a 5‑minute hard
+   * limit. 8000 tokens keeps even a slow thinking-model generation under
+   * that ceiling. When the model hits this cap mid-response, the
+   * continuation loop below feeds its output back so it can pick up
+   * where it left off — the user sees a single continuous stream.
+   */
+  const MAX_OUTPUT_TOKENS = 8_000;
+  /** Hard cap on continuations to guard against infinite loops. */
+  const MAX_CONTINUATIONS = 5;
+
   const agent = createChatAgent({
     modelId: input.model,
     thinking: input.thinking,
     reasoningEffort: input.reasoningEffort,
+    maxOutputTokens: MAX_OUTPUT_TOKENS,
     toolsContext: buildChatToolsContext({
       repo: input.repo,
       owner: input.owner,
@@ -289,19 +302,54 @@ It's perfectly normal for users to explore in demo mode — help them understand
   let outcome: TurnOutcome;
   let streamError: unknown = null;
   try {
-    const result = await agent.stream({
-      messages: input.modelMessages,
-      system: systemPrompt,
-      writable: getWritable<ModelCallStreamPart>(),
-      stopWhen: isStepCount(20),
-      sendFinish: false,
-      preventClose: true,
-    });
+    let allText = "";
+    let allCognition = "";
+    let finalFinishReason = "stop";
+    let finalMessages: ModelMessage[] = [];
+    let finalSteps: unknown[] = [];
+    let currentMessages = input.modelMessages;
+    let currentSystem: string | undefined = systemPrompt;
+    let continuations = 0;
+
+    while (true) {
+      const result = await agent.stream({
+        messages: currentMessages,
+        ...(currentSystem ? { system: currentSystem } : {}),
+        writable: getWritable<ModelCallStreamPart>(),
+        stopWhen: isStepCount(20),
+        sendFinish: false,
+        preventClose: true,
+      });
+
+      allText += extractFinalText(result.messages);
+      allCognition += extractCognition(result.messages, result.steps);
+      finalMessages = result.messages;
+      finalSteps = result.steps;
+      finalFinishReason = result.finishReason;
+
+      // Only loop when the model hit the token cap before it was done.
+      if (result.finishReason !== "length") break;
+      if (++continuations >= MAX_CONTINUATIONS) break;
+
+      // Feed the model's output back with a continuation nudge. Strip the
+      // old system message (it's embedded at index 0) and pass the system
+      // prompt fresh so `standardizePrompt` doesn't see a duplicate.
+      currentMessages = [
+        ...result.messages.filter((m) => m.role !== "system"),
+        {
+          role: "user" as const,
+          content:
+            "You were cut off mid-response. Continue exactly where you left off — do not repeat anything you already said.",
+        },
+      ];
+      currentSystem = systemPrompt;
+    }
+
     outcome = {
-      text: extractFinalText(result.messages),
-      finishReason: result.finishReason,
-      startedLoops: extractStartedLoops(result.messages),
-      cognition: extractCognition(result.messages, result.steps),
+      text: allText,
+      finishReason: finalFinishReason,
+      startedLoops: extractStartedLoops(finalMessages),
+      cognition: allCognition,
     };
   } catch (err) {
     streamError = err;

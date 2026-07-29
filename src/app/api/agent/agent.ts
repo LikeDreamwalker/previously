@@ -37,9 +37,12 @@ export function createChatAgent(opts: {
   thinking: boolean;
   reasoningEffort: "low" | "medium" | "high";
   toolsContext: ReturnType<typeof buildChatToolsContext>;
+  /** Safety cap to keep single LLM step under Vercel's 5‑minute limit. */
+  maxOutputTokens?: number;
 }): ChatAgent {
   return new WorkflowAgent({
     model: deepseek(opts.modelId),
+    maxOutputTokens: opts.maxOutputTokens,
     instructions:
       "You are the user's personal agent with layered episodic memory. Answer from the provided context; use the memory tools to recall details when needed.",
     tools: chatTools,
