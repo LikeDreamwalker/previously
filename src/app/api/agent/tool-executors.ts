@@ -34,6 +34,8 @@ import { isAIConfigured, canWrite, DEPLOY_GUIDE_URL } from "@/lib/capabilities";
 import type { LoopRun, LoopStep } from "@/lib/loops/types";
 import { runRecallSearch, type RecallHit } from "@/lib/episodic/flash/recall";
 import { readStrands } from "@/lib/episodic";
+import { resolveWorkerModel } from "@/lib/models/worker";
+import type { ModelConfig } from "@/lib/models/registry";
 import {
   parseSliceId,
   parseTurns,
@@ -61,6 +63,11 @@ export interface ToolContext {
   sliceId: string;
   /** Recent conversation turns (last exchange + current user msg). */
   recentTurns: Array<{ role: string; content: string }>;
+  /**
+   * Resolved worker model for cheap internal calls (recall search, loops).
+   * Set on the chat tool set; loops resolve it separately via their input.
+   */
+  workerModel?: ModelConfig;
 }
 
 /**
@@ -304,12 +311,12 @@ export async function webSearchExecute(
 // ── recall �?semantic search across past conversation slices ─────────
 
 /**
- * Recall search tool �?Flash acts as a semantic search engine over the
+ * Recall search tool — Flash acts as a semantic search engine over the
  * episodic memory. Flash explores the global timeline, traces strands,
  * and deep-reads candidate slices, then returns pointers (which slices,
- * which turns, why relevant). The executor reads the RAW slice content
- * and returns it to Pro �?Flash never produces summaries.
- */
+ * which turns, why relevant). The executor passes those pointers straight
+ * back to Pro, which then calls readSlice for any content it wants. Flash
+ * never produces summaries. */
 export async function recallExecute(
   { query }: { query: string },
   { context: ctx }: ExecuteOpts<ToolContext>,
@@ -330,6 +337,7 @@ export async function recallExecute(
     strandsContext: strands,
     useGithub: ctx.useGithub,
     useDemo: ctx.useDemo,
+    model: ctx.workerModel ?? (await resolveWorkerModel()),
   });
 
   // Flash returns pointers only �?the executor no longer reads raw content.
@@ -367,6 +375,7 @@ export async function startLoopExecute(
       goal,
       tags: tags ?? [],
       sliceId: ctx.sliceId,
+      workerModel: ctx.workerModel ?? (await resolveWorkerModel()),
     });
     // NOTE: the slice.loops / slice.tags back-reference is written by the chat
     // workflow's finalizeTurn step (which owns the slice by value) �?not here.
@@ -382,6 +391,24 @@ export async function startLoopExecute(
       error: e instanceof Error ? e.message : "failed to start loop",
     };
   }
+}
+
+// ─── continueOutput — the "not done yet" signal for long answers ──────────
+
+/**
+ * continueOutput — a no-op that simply opens another agent step.
+ *
+ * The model calls it mid-response when an answer is long: the tool result
+ * triggers the next LLM step, which sees the partial text (kept in context)
+ * and keeps writing. Its only job is the side effect of a step boundary — it
+ * reads and writes nothing.
+ */
+export async function continueOutputExecute(
+  _input: Record<string, never>,
+  _opts: ExecuteOpts<ToolContext>,
+): Promise<{ continued: true }> {
+  "use step";
+  return { continued: true };
 }
 
 // ─── Loop-only executor: the checkpoint tool ─────────────────────────────

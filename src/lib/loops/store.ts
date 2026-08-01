@@ -10,7 +10,8 @@ import matter from "gray-matter";
 import { writeFile as writeFileGitHub } from "@/lib/tools/writeFile";
 import { readFile as readFileGitHub } from "@/lib/tools/readFile";
 import { readFileLocal, writeFileLocal } from "@/lib/tools/local-fs";
-import { canWrite, getRepoConfig } from "@/lib/capabilities";
+import { getRepoConfig } from "@/lib/capabilities";
+import { resolveDataSource } from "@/lib/data-source/resolve";
 import type { LoopRun, LoopStatus, LoopStep } from "./types";
 
 /**
@@ -22,7 +23,7 @@ export async function writeLoopFile(
   path: string,
   content: string
 ): Promise<void> {
-  if (canWrite()) {
+  if (resolveDataSource() === "github") {
     const { owner, repo } = getRepoConfig();
     await writeFileGitHub(path, content, repo, owner, `Update loop ${path}`);
     return;
@@ -39,7 +40,7 @@ export async function writeLoopFile(
 export async function readLoopRun(path: string): Promise<LoopRun | null> {
   let raw: string;
   try {
-    if (canWrite()) {
+    if (resolveDataSource() === "github") {
       const { owner, repo } = getRepoConfig();
       raw = await readFileGitHub(path, repo, owner);
     } else {

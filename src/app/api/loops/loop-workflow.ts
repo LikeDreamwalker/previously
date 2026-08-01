@@ -110,6 +110,7 @@ export async function loopWorkflow(input: LoopInput): Promise<LoopResult> {
 
   const { toolContext } = await initLoop(input);
   const agent = createLoopAgent({
+    model: input.workerModel,
     toolsContext: buildLoopToolsContext(toolContext, {
       repo: toolContext.repo,
       owner: toolContext.owner,

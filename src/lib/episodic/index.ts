@@ -51,6 +51,16 @@ export type {
 } from "./flash/recall";
 
 export {
+  analyzeTurn,
+} from "./flash/turn-analyzer";
+export type {
+  TurnAnalysis,
+  SemanticHint,
+  ClosedMarking,
+  AnalyzeTurnInput,
+} from "./flash/turn-analyzer";
+
+export {
   generateGlobalTimeline,
   updateGlobalTimeline,
   formatEntry,

@@ -13,12 +13,15 @@ export const DEFAULTS: UserConfig = {
   },
   context: {
     recentTurnsLimit: 20,
-    tokenBudget: 12000,
   },
   model: {
     provider: "deepseek-v4-pro",
     thinking: true,
     reasoningEffort: "medium" as const,
+  },
+  worker: {
+    mode: "auto" as const,
+    provider: "",
   },
   onboarded: false,
   datasource: "demo",
@@ -32,10 +35,16 @@ export const DEFAULTS: UserConfig = {
 export function mergeConfig(overrides: Partial<UserConfig>): UserConfig {
   const model = { ...DEFAULTS.model, ...overrides.model };
   model.provider = resolveModelId(model.provider);
+  const worker = {
+    ...DEFAULTS.worker,
+    ...(overrides.worker ?? {}),
+  };
+  if (worker.provider) worker.provider = resolveModelId(worker.provider);
   return {
     slicing: { ...DEFAULTS.slicing, ...overrides.slicing },
     context: { ...DEFAULTS.context, ...overrides.context },
     model,
+    worker,
     onboarded: overrides.onboarded ?? DEFAULTS.onboarded,
     datasource: overrides.datasource ?? DEFAULTS.datasource,
   };

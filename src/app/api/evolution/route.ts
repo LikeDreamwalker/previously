@@ -12,6 +12,7 @@ import { createUIMessageStreamResponse } from "ai";
 import { evolutionWorkflow } from "./evolution-workflow";
 import { getRepoConfig } from "@/lib/capabilities";
 import { resolveDataSource, isDemo } from "@/lib/data-source/resolve";
+import { resolveWorkerModel } from "@/lib/models/worker";
 import { createMixedStreamTransform } from "@/app/api/chat/mixed-stream-transform";
 
 export async function POST(): Promise<Response> {
@@ -38,12 +39,14 @@ export async function POST(): Promise<Response> {
     });
   }
 
+  const workerModel = await resolveWorkerModel();
   const run = await start(evolutionWorkflow, [
     {
       repo,
       owner,
       useGithub,
       useDemo,
+      workerModel,
     },
   ]);
 

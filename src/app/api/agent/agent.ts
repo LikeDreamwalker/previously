@@ -12,10 +12,20 @@
  */
 
 import { WorkflowAgent } from "@ai-sdk/workflow";
-import { deepseek } from "@ai-sdk/deepseek";
 import { createModel } from "@/lib/models/provider";
 import type { ModelConfig } from "@/lib/models/registry";
 import type { ProviderSdk } from "@/lib/models/providers";
+import { SOUL_MD } from "@/lib/identity/agent-prompt.generated";
+
+/**
+ * Strip the YAML frontmatter (---…---) off a bundled identity markdown string.
+ * Kept inline (no gray-matter) so this module stays workflow-sandbox-pure:
+ * only the compiled string constants cross this boundary.
+ */
+function stripFrontmatter(md: string): string {
+  const match = md.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/);
+  return match ? md.slice(match[0].length).trim() : md.trim();
+}
 import {
   chatTools,
   loopTools,
@@ -126,16 +136,27 @@ export function createChatAgent(opts: {
  */
 export function createLoopAgent(opts: {
   toolsContext: ReturnType<typeof buildLoopToolsContext>;
+  /** The resolved worker model for the loop brain (see src/lib/models/worker.ts). */
+  model: ModelConfig;
 }): LoopAgent {
+  // The loop worker shares the agent's constitution (SOUL only — DIRECTIVES
+  // mention the chat-only `recall` tool, so loops get identity + voice without
+  // tool instructions they can't follow). The goal arrives as the call-time
+  // prompt; these instructions carry the standing working discipline.
+  const soulBody = stripFrontmatter(SOUL_MD);
   return new WorkflowAgent({
-    model: deepseek("deepseek-v4-flash"),
+    model: createModel(opts.model),
     temperature: 0.4,
     // V4 models default to thinking ENABLED — the loop worker matches the old
     // deepseek-chat behavior (non-thinking); its power is iteration, not depth.
     providerOptions: {
       deepseek: { thinking: { type: "disabled" as const } },
     },
-    instructions: `You are an autonomous agent working a goal step by step, on your own, while the human is away.
+    instructions: `${soulBody}
+
+---
+
+You are now working as an autonomous background agent on a goal the user set, on your own, while the human is away.
 
 Use your concept tools to read context: open specific slices with readSlice, browse with listSlices / readTimeline, follow topics with readStrand / listStrands. Work from what you find — do not re-read files that don't exist.
 

@@ -24,8 +24,11 @@ function str(value: unknown): string | undefined {
 /**
  * Parse the "User identity" section from a previously.md body.
  * Extracts structured fields from Chinese-format identity beliefs.
+ *
+ * Exported so the housekeeping step can derive the "who you're assisting"
+ * profile from the already-loaded previously content (pure parse, no I/O).
  */
-function parseIdentityFromPreviously(previouslyContent: string): UserProfile | null {
+export function parseIdentityFromPreviously(previouslyContent: string): UserProfile | null {
   // Find the User identity section
   const identityMatch = previouslyContent.match(
     /## User identity[^\n]*\n([\s\S]*?)(?=\n## |\n*$)/,

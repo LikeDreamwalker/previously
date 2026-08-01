@@ -10,12 +10,15 @@
  */
 
 import { readEvolutionContext, finalizeEvolution } from "./steps";
+import type { ModelConfig } from "@/lib/models/registry";
 
 export interface EvolutionInput {
   repo: string;
   owner: string;
   useGithub: boolean;
   useDemo: boolean;
+  /** Resolved worker model for the belief review (see src/lib/models/worker.ts). */
+  workerModel: ModelConfig;
 }
 
 export async function evolutionWorkflow(input: EvolutionInput): Promise<void> {

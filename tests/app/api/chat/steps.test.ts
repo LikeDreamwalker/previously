@@ -22,6 +22,10 @@ const episodic = vi.hoisted(() => ({
   ensurePreviously: vi.fn(async (sliceId: string) => `# Previously On\n\n_Active slice: ${sliceId} | Updated: ..._\n`),
   generateGlobalTimeline: vi.fn(async () => "mock timeline"),
   readStrands: vi.fn(async () => ({})),
+  analyzeTurn: vi.fn(async () => ({
+    messageTags: [],
+    semanticHint: { strands: [], reason: "" },
+  })),
 }));
 
 let timeSilent = false;
@@ -101,13 +105,25 @@ function makeInput(lastUserMessage: string, overrides: Partial<TurnInput> = {}):
       defaultThinking: false,
       defaultEffort: "low",
     },
+    workerModel: {
+      id: "deepseek-v4-flash",
+      name: "DeepSeek V4 Flash",
+      provider: "deepseek",
+      providerName: "DeepSeek",
+      sdk: "deepseek",
+      envKey: "DEEPSEEK_API_KEY",
+      capabilities: { thinking: true, vision: false, maxTokens: 393216 },
+      defaultThinking: false,
+      defaultEffort: "low",
+    },
     thinking: true,
     reasoningEffort: "medium" as const,
     clientTimezone: "UTC",
     config: {
       slicing: { maxTurnsPerSlice: 40, timeSilenceMinutes: 30 },
-      context: { recentTurnsLimit: 20, tokenBudget: 12000 },
+      context: { recentTurnsLimit: 20 },
       model: { provider: "deepseek-v4-flash", thinking: true, reasoningEffort: "medium" as const },
+      worker: { mode: "auto" as const, provider: "" },
     },
     owner: "local",
     repo: "local",

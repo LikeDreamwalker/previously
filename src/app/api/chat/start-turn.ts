@@ -24,6 +24,7 @@ import {
   type ModelConfig,
 } from "@/lib/models/registry";
 import { resolveAvailableModels } from "@/lib/models/catalog";
+import { resolveWorkerModel } from "@/lib/models/worker";
 import { getRepoConfig } from "@/lib/capabilities";
 import { resolveDataSource } from "@/lib/data-source/resolve";
 
@@ -89,6 +90,9 @@ export async function startTurn(
   // default when the id is unknown/unavailable.
   const requested = args.model || config.model.provider;
   const { model, modelConfig } = await resolveModelConfig(requested);
+  // The worker tier for housekeeping-class calls (tag extraction, marking,
+  // recall, loops) — derived from the main model, see src/lib/models/worker.ts.
+  const workerModel = await resolveWorkerModel(modelConfig);
   // The client's explicit thinking value wins when sent (it always reflects
   // what the selector shows / the model's default); the config value is only
   // a fallback for clients that don't send one. This keeps the client's UI in
@@ -130,6 +134,7 @@ export async function startTurn(
     lastUserMessage,
     model,
     modelConfig,
+    workerModel,
     thinking,
     reasoningEffort,
     clientTimezone,

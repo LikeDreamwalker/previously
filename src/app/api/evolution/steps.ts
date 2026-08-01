@@ -111,6 +111,7 @@ export async function finalizeEvolution(
     owner: string;
     useGithub: boolean;
     useDemo: boolean;
+    workerModel: import("@/lib/models/registry").ModelConfig;
   },
   context: EvolutionContext,
 ): Promise<void> {
@@ -160,6 +161,7 @@ export async function finalizeEvolution(
     const result = await runPreviouslyAgent({
       signal: "new_observation",
       note: "Auto-review of latest conversation.",
+      model: input.workerModel,
       currentSliceId: sliceId,
       previouslyContent,
       agentCognition,

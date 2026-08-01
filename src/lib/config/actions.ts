@@ -8,15 +8,29 @@
 import { revalidatePath } from "next/cache";
 import { writeFile } from "@/lib/tools/writeFile";
 import { writeFileLocal } from "@/lib/tools/local-fs";
-import { canWrite, getRepoConfig, isDemo } from "@/lib/capabilities";
+import { getRepoConfig, isDemo } from "@/lib/capabilities";
+import { resolveDataSource } from "@/lib/data-source/resolve";
 import { mergeConfig, DEFAULTS } from "./defaults";
 import { loadUserConfig } from "./loader";
-import type { UserConfig } from "./types";
+import type { UserConfig, ModelConfig, WorkerConfig } from "./types";
 
 const CONFIG_PATH = "memory/user/config.json";
 
+/** Partial overrides — the nested model/worker objects are partial too. */
+export type UserConfigOverrides = Partial<
+  Omit<UserConfig, "model" | "worker">
+> & {
+  model?: Partial<ModelConfig>;
+  worker?: Partial<WorkerConfig>;
+};
+
+/** Client-safe view of the current config (model ids, limits — no secrets). */
+export async function getUserConfig(): Promise<UserConfig> {
+  return loadUserConfig();
+}
+
 export async function saveUserConfig(
-  overrides: Partial<UserConfig>,
+  overrides: UserConfigOverrides,
 ): Promise<{ ok: boolean; error?: string }> {
   try {
     // Demo mode: config writes are not persisted.
@@ -29,11 +43,15 @@ export async function saveUserConfig(
       slicing: { ...current.slicing, ...overrides.slicing },
       context: { ...current.context, ...overrides.context },
       model: { ...current.model, ...overrides.model },
+      worker: { ...current.worker, ...overrides.worker },
     });
 
     const json = JSON.stringify(merged, null, 2);
 
-    if (canWrite()) {
+    // Branch on the data SOURCE, not on canWrite() — canWrite() is true for
+    // both local and github, which used to send local writes down the GitHub
+    // path and silently fail. Local dev writes to disk; GitHub mode commits.
+    if (resolveDataSource() === "github") {
       const { owner, repo } = getRepoConfig();
       await writeFile(CONFIG_PATH, json, repo, owner);
     } else {

@@ -37,6 +37,12 @@ export interface TurnInput {
    * are not in the curated registry). Resolved in start-turn.
    */
   modelConfig: ModelConfig;
+  /**
+   * The resolved WORKER model — the cheap/auxiliary tier used by housekeeping
+   * (tag extraction, slice marking, semantic hint), recall, and loops. See
+   * src/lib/models/worker.ts. Resolved in start-turn alongside modelConfig.
+   */
+  workerModel: ModelConfig;
   /** Whether DeepSeek thinking is enabled for this turn. */
   thinking: boolean;
   /** Reasoning effort level for this turn. */
@@ -70,6 +76,17 @@ export interface HousekeepingResult {
   previouslyContent: string;
   /** Formatted strands menu string (empty if no strands exist). */
   strandsMenu: string;
+  /**
+   * Engineering-computed "brief" for this turn (time, continuity, strand links).
+   * Injected at the very top of the system prompt. See src/lib/turn-priming.ts.
+   */
+  turnPriming: string;
+  /**
+   * The agent's constitution: SOUL + "who you're assisting" + DIRECTIVES
+   * (memory access rules included), derived from previously.md's identity
+   * section. Injected into the system prompt. See src/lib/identity.
+   */
+  identityPrompt: string;
 }
 
 /** A background loop the agent started during this turn (for slice writeback). */

@@ -12,7 +12,9 @@
  */
 import { start } from "workflow/api";
 import { loopWorkflow } from "./loop-workflow";
+import { resolveWorkerModel } from "@/lib/models/worker";
 import type { LoopInput } from "@/lib/loops/types";
+import type { ModelConfig } from "@/lib/models/registry";
 
 const DEFAULT_MAX_ITERATIONS = 6;
 const MAX_ALLOWED_ITERATIONS = 20;
@@ -26,6 +28,8 @@ export interface StartLoopArgs {
   sliceId?: string | null;
   /** Optional override for the iteration cap (clamped to a hard ceiling). */
   maxIterations?: number;
+  /** Resolved worker model; resolved from config when omitted. */
+  workerModel?: ModelConfig;
 }
 
 export interface StartedLoop {
@@ -61,6 +65,8 @@ export async function startLoop(args: StartLoopArgs): Promise<StartedLoop> {
   const dd = String(now.getUTCDate()).padStart(2, "0");
   const filePath = `memory/loops/${yyyy}/${mm}/${dd}/${loopId}.md`;
 
+  const workerModel = args.workerModel ?? (await resolveWorkerModel());
+
   const input: LoopInput = {
     loopId,
     filePath,
@@ -69,6 +75,7 @@ export async function startLoop(args: StartLoopArgs): Promise<StartedLoop> {
     sliceOrigin: args.sliceId ?? null,
     startedAt: now.toISOString(),
     maxIterations,
+    workerModel,
   };
 
   const run = await start(loopWorkflow, [input]);

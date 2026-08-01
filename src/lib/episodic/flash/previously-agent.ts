@@ -15,8 +15,10 @@
  */
 
 import { generateText, tool, isStepCount } from "ai";
-import { deepseek } from "@ai-sdk/deepseek";
 import { z } from "zod";
+import { createModel } from "@/lib/models/provider";
+import { workerProviderOptions } from "@/lib/models/worker";
+import type { ModelConfig } from "@/lib/models/registry";
 
 // ─── Types ──────────────────────────────────────────────────────────────
 
@@ -29,6 +31,8 @@ export type PreviouslySignal =
 export interface PreviouslyAgentInput {
   signal: PreviouslySignal;
   note: string;
+  /** The worker model to run the belief review on (resolved from config). */
+  model: ModelConfig;
   /** Slice the core agent is currently on. */
   currentSliceId: string;
   /** If a slice just closed, its id (triggers deeper exploration). */
@@ -208,7 +212,7 @@ async function attemptCall(
   input: PreviouslyAgentInput,
 ): Promise<{ mutations: PreviouslyMutation[]; reasoning: string }> {
   const result = await generateText({
-    model: deepseek("deepseek-v4-pro"),
+    model: createModel(input.model),
     prompt,
     temperature: 0.1,
     stopWhen: isStepCount(5),
@@ -266,7 +270,8 @@ async function attemptCall(
       }),
     },
     toolChoice: "auto",
-    // No thinking — Pro is fast enough without it for this structured task.
+    // No thinking — the worker runs this structured review task without reasoning.
+    providerOptions: workerProviderOptions(input.model.sdk),
   });
 
   const outputCall = result.toolCalls?.find((tc) => tc.toolName === "previouslyOutput");
