@@ -20,6 +20,12 @@ describe("capabilities", () => {
     delete process.env.DEEPSEEK_API_KEY;
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.OPENAI_API_KEY;
+    delete process.env.MOONSHOT_API_KEY;
+    delete process.env.DASHSCOPE_API_KEY;
+    delete process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+    delete process.env.MISTRAL_API_KEY;
+    delete process.env.XAI_API_KEY;
+    delete process.env.GROQ_API_KEY;
     delete process.env.GITHUB_TOKEN;
     delete process.env.GITHUB_REPO_OWNER;
     delete process.env.GITHUB_REPO_NAME;
@@ -65,6 +71,16 @@ describe("capabilities", () => {
       process.env.ANTHROPIC_API_KEY = "sk-ant-test";
       expect(isProviderConfigured("anthropic")).toBe(true);
       expect(isProviderConfigured("deepseek")).toBe(false);
+    });
+
+    it("recognizes OpenAI-compatible providers like Kimi and Qwen", () => {
+      process.env.MOONSHOT_API_KEY = "sk-moonshot";
+      expect(isProviderConfigured("moonshotai")).toBe(true);
+      expect(isProviderConfigured("deepseek")).toBe(false);
+
+      process.env.DASHSCOPE_API_KEY = "sk-dashscope";
+      expect(isProviderConfigured("alibaba")).toBe(true);
+      expect(isAIConfigured()).toBe(true);
     });
 
     it("returns false for an unknown provider", () => {

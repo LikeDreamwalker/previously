@@ -285,7 +285,7 @@ It's perfectly normal for users to explore in demo mode — help them understand
   const MAX_CONTINUATIONS = 5;
 
   const agent = createChatAgent({
-    modelId: input.model,
+    model: input.modelConfig,
     thinking: input.thinking,
     reasoningEffort: input.reasoningEffort,
     maxOutputTokens: MAX_OUTPUT_TOKENS,

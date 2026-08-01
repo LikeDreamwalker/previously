@@ -14,7 +14,8 @@
 import { WorkflowAgent } from "@ai-sdk/workflow";
 import { deepseek } from "@ai-sdk/deepseek";
 import { createModel } from "@/lib/models/provider";
-import { getModel } from "@/lib/models/registry";
+import type { ModelConfig } from "@/lib/models/registry";
+import type { ProviderSdk } from "@/lib/models/providers";
 import {
   chatTools,
   loopTools,
@@ -26,44 +27,58 @@ import {
 
 /**
  * Provider options accepted by WorkflowAgent's `providerOptions` prop
- * (Record<string, JSONObject>). Declared structurally here to avoid importing
- * the transitive @ai-sdk/provider type.
+ * (Record<string, JSONObject>). Declared structurally here (isomorphic to the
+ * @ai-sdk/provider JSONObject) to avoid importing the transitive package.
+ * Each provider's reasoning/thinking shape differs, so the value is a loose
+ * per-provider JSON object.
  */
-type ChatProviderOptions = Record<
-  string,
-  {
-    thinking: { type: "enabled" | "disabled" };
-    reasoningEffort?: "low" | "medium" | "high";
-  }
->;
+type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | JsonObject
+  | JsonValue[];
+interface JsonObject {
+  [key: string]: JsonValue;
+}
+type ChatProviderOptions = Record<string, JsonObject>;
 
 /**
- * Build the provider options for the chat agent's model. Thinking config
- * differs per provider: DeepSeek accepts a `reasoningEffort`, Anthropic uses
- * the thinking budget/adaptive shape. Falls back to DeepSeek defaults when the
- * model id is unknown.
+ * Build the provider options for the chat agent's model. Each SDK's reasoning
+ * shape differs:
+ *   - deepseek: `thinking.type` + `reasoningEffort`
+ *   - anthropic: `thinking.type` (enabled/disabled/adaptive)
+ *   - openai (and OpenAI-compatible: Kimi, Qwen, ...): `reasoningEffort`
+ * Unknown sdk falls back to the DeepSeek shape.
  */
 function buildProviderOptions(
-  provider: "deepseek" | "anthropic" | "openai" | undefined,
+  sdk: ProviderSdk | undefined,
   thinking: boolean,
   effort: "low" | "medium" | "high",
 ): ChatProviderOptions | undefined {
-  if (provider === "anthropic") {
-    return {
-      anthropic: {
-        thinking: { type: thinking ? "enabled" : "disabled" },
-      },
-    };
-  }
-  // DeepSeek (default) — V4 defaults to thinking ENABLED, so "off" is explicit.
-  return thinking
-    ? {
-        deepseek: {
-          thinking: { type: "enabled" },
-          reasoningEffort: effort,
+  switch (sdk) {
+    case "anthropic":
+      return {
+        anthropic: {
+          thinking: { type: thinking ? "enabled" : "disabled" },
         },
-      }
-    : { deepseek: { thinking: { type: "disabled" } } };
+      };
+    case "openai":
+      return {
+        openai: { reasoningEffort: thinking ? effort : "minimal" },
+      };
+    default:
+      // DeepSeek (default) — V4 defaults to thinking ENABLED, so "off" explicit.
+      return thinking
+        ? {
+            deepseek: {
+              thinking: { type: "enabled" },
+              reasoningEffort: effort,
+            },
+          }
+        : { deepseek: { thinking: { type: "disabled" } } };
+  }
 }
 
 export type ChatToolSet = typeof chatTools;
@@ -79,17 +94,15 @@ export type LoopAgent = WorkflowAgent<LoopToolSet>;
  * required here at construction (build it with `buildChatToolsContext`).
  */
 export function createChatAgent(opts: {
-  modelId: string;
+  /** Fully resolved model config — carries sdk/baseURL/envKey for routing. */
+  model: ModelConfig;
   thinking: boolean;
   reasoningEffort: "low" | "medium" | "high";
   toolsContext: ReturnType<typeof buildChatToolsContext>;
   /** Safety cap to keep single LLM step under Vercel's 5‑minute limit. */
   maxOutputTokens?: number;
 }): ChatAgent {
-  const modelConfig = getModel(opts.modelId);
-  const model = modelConfig
-    ? createModel(modelConfig)
-    : deepseek(opts.modelId); // Unknown id → DeepSeek fallback
+  const model = createModel(opts.model);
 
   return new WorkflowAgent({
     model,
@@ -99,7 +112,7 @@ export function createChatAgent(opts: {
     tools: chatTools,
     toolsContext: opts.toolsContext,
     providerOptions: buildProviderOptions(
-      modelConfig?.provider,
+      opts.model.sdk,
       opts.thinking,
       opts.reasoningEffort,
     ),

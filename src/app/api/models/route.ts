@@ -16,10 +16,19 @@ export async function GET(): Promise<Response> {
 
   return Response.json({
     models: models.map(
-      ({ id, name, provider, capabilities, defaultThinking, defaultEffort }) => ({
+      ({
         id,
         name,
         provider,
+        providerName,
+        capabilities,
+        defaultThinking,
+        defaultEffort,
+      }) => ({
+        id,
+        name,
+        provider,
+        providerName,
         supportsThinking: capabilities.thinking,
         supportsVision: capabilities.vision,
         maxTokens: capabilities.maxTokens,

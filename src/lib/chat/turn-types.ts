@@ -15,6 +15,7 @@
 import type { ModelMessage } from "ai";
 import type { TimeSlice } from "@/lib/episodic";
 import type { UserConfig } from "@/lib/config/types";
+import type { ModelConfig } from "@/lib/models/registry";
 
 /**
  * Everything a turn needs, built once in `start-turn.ts` (the only place real
@@ -30,6 +31,12 @@ export interface TurnInput {
   lastUserMessage: string;
   /** Resolved model id (body override → config default). */
   model: string;
+  /**
+   * The full resolved model config — carries sdk/baseURL/envKey so the agent
+   * can construct the right provider model for models.dev-derived ids (which
+   * are not in the curated registry). Resolved in start-turn.
+   */
+  modelConfig: ModelConfig;
   /** Whether DeepSeek thinking is enabled for this turn. */
   thinking: boolean;
   /** Reasoning effort level for this turn. */

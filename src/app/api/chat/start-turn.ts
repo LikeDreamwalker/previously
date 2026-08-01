@@ -18,10 +18,12 @@ import { turnWorkflow } from "./turn-workflow";
 import type { TurnInput } from "@/lib/chat/turn-types";
 import { loadUserConfig } from "@/lib/config/loader";
 import {
-  resolveModelId,
-  getAvailableModels,
+  getModel,
   getDefaultModelId,
+  ALL_MODELS,
+  type ModelConfig,
 } from "@/lib/models/registry";
+import { resolveAvailableModels } from "@/lib/models/catalog";
 import { getRepoConfig } from "@/lib/capabilities";
 import { resolveDataSource } from "@/lib/data-source/resolve";
 
@@ -52,27 +54,51 @@ function extractLastUserText(msg: UIMessage | undefined): string {
   return typeof content === "string" ? content : "";
 }
 
+/**
+ * Resolve a model id to its full config so the agent can route to the right
+ * provider. models.dev-derived ids (Kimi, Qwen, ...) are NOT in the curated
+ * registry, so they're looked up in the dynamic catalog. Unknown ids fall back
+ * to the deployment default.
+ *
+ * Note: legacy ids are NOT remapped here — the config file is already migrated
+ * by `mergeConfig`; a client-stored legacy id simply won't match and falls
+ * back to the default.
+ */
+async function resolveModelConfig(id: string): Promise<{
+  model: string;
+  modelConfig: ModelConfig;
+}> {
+  const curated = getModel(id);
+  if (curated) return { model: curated.id, modelConfig: curated };
+
+  const available = await resolveAvailableModels();
+  const found = available.find((m) => m.id === id);
+  if (found) return { model: found.id, modelConfig: found };
+
+  const fallbackId = getDefaultModelId();
+  const fallback = getModel(fallbackId) ?? available[0] ?? ALL_MODELS[0];
+  return { model: fallback.id, modelConfig: fallback };
+}
+
 export async function startTurn(
   args: StartTurnArgs
 ): Promise<Awaited<ReturnType<typeof start>>> {
   const config = await loadUserConfig();
-  // resolveModelId: the client's stored model preference may predate V4.
-  const requested = resolveModelId(args.model || config.model.provider);
-  // Guard: a stored preference may name a model whose provider key isn't set
-  // (e.g. default deepseek-v4-flash on a deployment that only has Anthropic).
-  // Fall back to the first genuinely-available model in that case.
-  const available = getAvailableModels();
-  const model =
-    requested && available.some((m) => m.id === requested)
-      ? requested
-      : getDefaultModelId();
-  const thinking = args.thinking !== false && config.model.thinking;
+  // Resolve the model id (client override → config default, already migrated
+  // by mergeConfig) to a full ModelConfig, falling back to the deployment
+  // default when the id is unknown/unavailable.
+  const requested = args.model || config.model.provider;
+  const { model, modelConfig } = await resolveModelConfig(requested);
+  // The client's explicit thinking value wins when sent (it always reflects
+  // what the selector shows / the model's default); the config value is only
+  // a fallback for clients that don't send one. This keeps the client's UI in
+  // sync with the actual call.
+  const thinking = args.thinking ?? config.model.thinking;
   const reasoningEffort = args.effort ?? config.model.reasoningEffort;
   // Log the resolved model so a switch is verifiable in the server log.
-  // `requested` = what the client sent; `model` = what actually runs (after
-  // the availability fallback).
+  // `requested` = what the client sent; `model` = what actually runs.
   console.log(
-    `[Turn] model=${model} (requested=${requested}) thinking=${thinking} effort=${reasoningEffort}`,
+    `[Turn] model=${model} (requested=${requested}) sdk=${modelConfig.sdk} thinking=${thinking} effort=${reasoningEffort}`,
   );
   const clientTimezone = args.timezone ?? "UTC";
   const { owner, repo } = getRepoConfig();
@@ -103,6 +129,7 @@ export async function startTurn(
     recentTurns,
     lastUserMessage,
     model,
+    modelConfig,
     thinking,
     reasoningEffort,
     clientTimezone,

@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useTranslations } from "next-intl";
-import { Check, Cpu } from "lucide-react";
+import { Check } from "lucide-react";
 import {
   Popover,
   PopoverContent,
@@ -14,6 +14,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Switch } from "@/components/ui/switch";
+import { ProviderIcon, stripProviderPrefix } from "./provider-icon";
 
 type EffortLevel = "low" | "medium" | "high";
 
@@ -26,6 +27,7 @@ interface AvailableModel {
   id: string;
   name: string;
   provider: string;
+  providerName: string;
   defaultThinking: boolean;
   defaultEffort: EffortLevel;
 }
@@ -66,7 +68,13 @@ export function ModelSelector({
   }, []);
 
   const current = models.find((m) => m.id === currentModelId);
-  const shortName = current?.name ?? (mounted ? currentModelId : "…");
+  // Trigger shows the compact name (brand prefix stripped — the logo already
+  // conveys the provider); the popover list keeps the full name.
+  const shortName = current
+    ? stripProviderPrefix(current.name, current.provider)
+    : mounted
+      ? currentModelId
+      : "…";
 
   const handleSelect = useCallback(
     (m: AvailableModel) => {
@@ -99,7 +107,10 @@ export function ModelSelector({
                   type="button"
                   className="h-7 rounded-full text-muted-foreground hover:text-foreground hover:bg-muted-foreground/10 transition-colors flex items-center justify-center gap-1 px-2"
                 >
-                  <Cpu className="h-3 w-3 shrink-0" />
+                  <ProviderIcon
+                    provider={current?.provider ?? ""}
+                    className="h-3 w-3 shrink-0"
+                  />
                   <span className="text-[10px] font-medium leading-none max-w-[72px] truncate">
                     {shortName}
                   </span>
@@ -119,7 +130,7 @@ export function ModelSelector({
         {[...groups.entries()].map(([provider, providerModels]) => (
           <div key={provider} className="mb-1">
             <div className="px-2 py-1 text-[10px] uppercase tracking-wide text-muted-foreground/60">
-              {t(`modelGroup.${provider}`)}
+              {providerModels[0]?.providerName ?? t(`modelGroup.${provider}`)}
             </div>
             {providerModels.map((m) => (
               <button
@@ -132,7 +143,13 @@ export function ModelSelector({
                     : "hover:bg-muted"
                 }`}
               >
-                <span className="truncate">{m.name}</span>
+                <span className="flex min-w-0 items-center gap-1.5">
+                  <ProviderIcon
+                    provider={m.provider}
+                    className="h-3.5 w-3.5 shrink-0"
+                  />
+                  <span className="truncate">{m.name}</span>
+                </span>
                 {m.id === currentModelId && <Check className="h-3 w-3 shrink-0" />}
               </button>
             ))}

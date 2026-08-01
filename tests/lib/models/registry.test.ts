@@ -3,6 +3,7 @@ import {
   ALL_MODELS,
   getAvailableModels,
   getModel,
+  getModelOverrides,
   resolveModelId,
   getDefaultModelId,
 } from "@/lib/models/registry";
@@ -29,12 +30,26 @@ describe("model registry", () => {
     expect(providers).toContain("anthropic");
   });
 
-  it("every model declares an envKey, a defaultThinking, and a defaultEffort", () => {
+  it("every model declares envKey, sdk, providerName, defaultThinking, defaultEffort", () => {
     for (const m of ALL_MODELS) {
       expect(m.envKey.length).toBeGreaterThan(0);
+      expect(["deepseek", "anthropic", "openai"]).toContain(m.sdk);
+      expect(m.providerName.length).toBeGreaterThan(0);
       expect(typeof m.defaultThinking).toBe("boolean");
       expect(["low", "medium", "high"]).toContain(m.defaultEffort);
     }
+  });
+
+  it("defaults thinking ON for every thinking-capable model", () => {
+    for (const m of ALL_MODELS) {
+      if (m.capabilities.thinking) {
+        expect(m.defaultThinking).toBe(true);
+      }
+    }
+  });
+
+  it("does not override thinking in curated overrides (derives from capability)", () => {
+    expect(getModelOverrides("deepseek-v4-flash")?.defaultThinking).toBeUndefined();
   });
 
   // ─── getAvailableModels (env-gated) ─────────────────────────────────

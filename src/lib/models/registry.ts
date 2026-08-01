@@ -1,18 +1,18 @@
 /**
- * Model registry — multi-provider model definitions with capabilities.
+ * Model registry — curated fallback + metadata overlay.
  *
- * This is the CURATED METADATA layer: display name, provider, capabilities,
- * and the env var that gates availability. Capabilities (thinking/vision/
- * maxTokens) cannot be discovered dynamically — every provider's list-models
- * API omits them — so this small table is the source of truth for what the
- * selector shows and how the agent calls each model.
+ * The PRIMARY catalog is models.dev (see ./catalog): it lists every provider's
+ * models with reasoning/context metadata, and each provider carries its own
+ * env var name and baseURL. This file holds the FALLBACK list used when
+ * models.dev is unreachable, plus curated overrides (defaultThinking /
+ * defaultEffort) applied on top of models.dev entries for known model ids.
  *
  * The Anthropic IDs below mirror the `AnthropicModelId` union shipped inside
  * `@ai-sdk/anthropic` (Anthropic has no list-models API endpoint; the SDK is
- * the curated reference). Upgrade the SDK and the new IDs appear in that union
- * to curate against. DeepSeek model IDs are additionally refreshed at runtime
- * from its OpenAI-compatible `/models` endpoint — see ./catalog.
+ * the curated reference). DeepSeek IDs are the API's own V4 names.
  */
+
+import type { ProviderSdk } from "./providers";
 
 export interface ModelCapabilities {
   thinking: boolean;
@@ -23,10 +23,17 @@ export interface ModelCapabilities {
 export interface ModelConfig {
   id: string;
   name: string;
-  provider: "deepseek" | "anthropic" | "openai";
-  capabilities: ModelCapabilities;
+  /** models.dev provider key, e.g. "deepseek", "anthropic", "moonshotai". */
+  provider: string;
+  /** Display name for the provider group in the selector. */
+  providerName: string;
+  /** Which AI SDK factory constructs the model (see providers.ts). */
+  sdk: ProviderSdk;
   /** Env var that must be set for this model to be available. */
   envKey: string;
+  /** Base URL for OpenAI-compatible providers; undefined for dedicated SDKs. */
+  baseURL?: string;
+  capabilities: ModelCapabilities;
   /** Default thinking state when the user selects this model. */
   defaultThinking: boolean;
   /** Default reasoning effort when the user selects this model. */
@@ -34,9 +41,10 @@ export interface ModelConfig {
 }
 
 /**
- * Full curated catalog. Client components may import this for types and the
- * static list (it is a plain array with no process.env access at module load),
- * but availability filtering happens server-side.
+ * Curated fallback catalog — used only when models.dev is unreachable. Client
+ * components may import this for types and the static list (a plain array with
+ * no process.env access at module load), but availability filtering is
+ * server-side.
  */
 export const ALL_MODELS: ModelConfig[] = [
   // ── DeepSeek ────────────────────────────────────────────────────────────
@@ -44,17 +52,21 @@ export const ALL_MODELS: ModelConfig[] = [
     id: "deepseek-v4-flash",
     name: "DeepSeek V4 Flash",
     provider: "deepseek",
-    capabilities: { thinking: true, vision: false, maxTokens: 393216 },
+    providerName: "DeepSeek",
+    sdk: "deepseek",
     envKey: "DEEPSEEK_API_KEY",
-    defaultThinking: false,
+    capabilities: { thinking: true, vision: false, maxTokens: 393216 },
+    defaultThinking: true,
     defaultEffort: "low",
   },
   {
     id: "deepseek-v4-pro",
     name: "DeepSeek V4 Pro",
     provider: "deepseek",
-    capabilities: { thinking: true, vision: false, maxTokens: 393216 },
+    providerName: "DeepSeek",
+    sdk: "deepseek",
     envKey: "DEEPSEEK_API_KEY",
+    capabilities: { thinking: true, vision: false, maxTokens: 393216 },
     defaultThinking: true,
     defaultEffort: "medium",
   },
@@ -63,17 +75,21 @@ export const ALL_MODELS: ModelConfig[] = [
     id: "claude-haiku-4-5",
     name: "Claude Haiku 4.5",
     provider: "anthropic",
-    capabilities: { thinking: true, vision: true, maxTokens: 200000 },
+    providerName: "Anthropic",
+    sdk: "anthropic",
     envKey: "ANTHROPIC_API_KEY",
-    defaultThinking: false,
+    capabilities: { thinking: true, vision: true, maxTokens: 200000 },
+    defaultThinking: true,
     defaultEffort: "low",
   },
   {
     id: "claude-sonnet-5",
     name: "Claude Sonnet 5",
     provider: "anthropic",
-    capabilities: { thinking: true, vision: true, maxTokens: 200000 },
+    providerName: "Anthropic",
+    sdk: "anthropic",
     envKey: "ANTHROPIC_API_KEY",
+    capabilities: { thinking: true, vision: true, maxTokens: 200000 },
     defaultThinking: true,
     defaultEffort: "medium",
   },
@@ -81,12 +97,36 @@ export const ALL_MODELS: ModelConfig[] = [
     id: "claude-opus-4-8",
     name: "Claude Opus 4.8",
     provider: "anthropic",
-    capabilities: { thinking: true, vision: true, maxTokens: 200000 },
+    providerName: "Anthropic",
+    sdk: "anthropic",
     envKey: "ANTHROPIC_API_KEY",
+    capabilities: { thinking: true, vision: true, maxTokens: 200000 },
     defaultThinking: true,
     defaultEffort: "high",
   },
 ];
+
+/**
+ * Curated metadata overrides keyed by model id, applied on top of models.dev
+ * entries. Thinking is NOT overridden here — it derives from the model's
+ * capability (models.dev `reasoning`), so every thinking-capable model defaults
+ * to thinking ON. These only pin the effort level where we want a specific
+ * value rather than the `reasoning ? "medium" : "low"` heuristic.
+ */
+const MODEL_OVERRIDES: Record<
+  string,
+  Partial<Pick<ModelConfig, "defaultThinking" | "defaultEffort">>
+> = {
+  "deepseek-v4-flash": { defaultEffort: "low" },
+  "deepseek-v4-pro": { defaultEffort: "medium" },
+};
+
+/** Curated override for a known model id, if any. */
+export function getModelOverrides(
+  id: string,
+): Partial<Pick<ModelConfig, "defaultThinking" | "defaultEffort">> | undefined {
+  return MODEL_OVERRIDES[id];
+}
 
 /** Server-side: curated models whose API key env var is set. */
 export function getAvailableModels(): ModelConfig[] {
