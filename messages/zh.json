@@ -55,7 +55,13 @@
         "anthropic": "Anthropic",
         "openai": "OpenAI"
       },
-      "thinkingLabel": "深度思考"
+      "thinkingLabel": "深度思考",
+      "advanced": "高级",
+      "workerLabel": "辅助模型",
+      "workerSameAsAgent": "和主 agent 保持一致",
+      "workerSameAsAgentDesc": "辅助模型负责轻量内部任务(回忆、标记、切片)。开启时跟随主模型同提供方的轻量模型。",
+      "workerModelLabel": "辅助模型",
+      "workerSave": "保存"
     },
     "actions": {
       "copy": "复制",
@@ -246,7 +252,6 @@
       "maxTurnsPerSlice": "每切片最大轮数",
       "timeSilenceMinutes": "静默超时（分钟）",
       "recentTurnsLimit": "上下文中的最近轮数",
-      "tokenBudget": "上下文 Token 预算",
       "save": "保存配置",
       "saving": "保存中...",
       "saved": "已保存 ✓",

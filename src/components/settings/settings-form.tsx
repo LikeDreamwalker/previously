@@ -25,7 +25,6 @@ export function SettingsForm({
   const [maxTurnsPerSlice, setMaxTurnsPerSlice] = useState(initialConfig.slicing.maxTurnsPerSlice);
   const [timeSilenceMinutes, setTimeSilenceMinutes] = useState(initialConfig.slicing.timeSilenceMinutes);
   const [recentTurnsLimit, setRecentTurnsLimit] = useState(initialConfig.context.recentTurnsLimit);
-  const [tokenBudget, setTokenBudget] = useState(initialConfig.context.tokenBudget);
   const [configSaving, setConfigSaving] = useState(false);
   const [configSavedMsg, setConfigSavedMsg] = useState("");
 
@@ -33,11 +32,11 @@ export function SettingsForm({
     setConfigSaving(true);
     setConfigSavedMsg("");
     // Model selection lives in the chat UI (model selector) and is persisted
-    // to localStorage — intentionally omitted here so the settings save never
-    // overwrites it. config.json keeps a deployment-level fallback default.
+    // to config.json — intentionally omitted here so the settings save never
+    // overwrites it.
     const res = await saveUserConfig({
       slicing: { maxTurnsPerSlice, timeSilenceMinutes },
-      context: { recentTurnsLimit, tokenBudget },
+      context: { recentTurnsLimit },
     });
     setConfigSaving(false);
     setConfigSavedMsg(res.ok ? t("config.saved") : t("config.saveFailed"));
@@ -86,10 +85,6 @@ export function SettingsForm({
             <label className="block space-y-1">
               <span className="text-xs text-muted-foreground">{t("config.recentTurnsLimit")}</span>
               <input type="number" min={3} max={60} value={recentTurnsLimit} onChange={(e) => setRecentTurnsLimit(Number(e.target.value))} className={numberInputClass} />
-            </label>
-            <label className="block space-y-1">
-              <span className="text-xs text-muted-foreground">{t("config.tokenBudget")}</span>
-              <input type="number" min={2000} max={64000} step={1000} value={tokenBudget} onChange={(e) => setTokenBudget(Number(e.target.value))} className={numberInputClass} />
             </label>
           </div>
           <div className="flex items-center gap-3">
