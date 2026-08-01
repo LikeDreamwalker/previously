@@ -47,7 +47,15 @@
       "attach": "Attach files",
       "settingsTooltip": "Settings",
       "stopTooltip": "Stop generation",
-      "sendTooltip": "Send message"
+      "sendTooltip": "Send message",
+      "modelTooltip": "Switch AI model",
+      "modelLabel": "Model",
+      "modelGroup": {
+        "deepseek": "DeepSeek",
+        "anthropic": "Anthropic",
+        "openai": "OpenAI"
+      },
+      "thinkingLabel": "Thinking"
     },
     "actions": {
       "copy": "Copy",
@@ -239,8 +247,6 @@
       "timeSilenceMinutes": "Silence timeout (min)",
       "recentTurnsLimit": "Recent turns in context",
       "tokenBudget": "Context token budget",
-      "modelProvider": "Model provider",
-      "thinking": "Thinking (reasoning)",
       "save": "Save config",
       "saving": "Saving...",
       "saved": "Saved ✓",

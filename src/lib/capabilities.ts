@@ -15,9 +15,32 @@ import { resolveDataSource, isWritable } from "@/lib/data-source/resolve";
 
 // ─── Core checks ──────────────────────────────────────────────────────────
 
-/** Can the app make AI calls? DeepSeek API key is configured. */
+/** Is a specific model provider's API key configured? */
+export function isProviderConfigured(provider: string): boolean {
+  switch (provider) {
+    case "deepseek":
+      return !!process.env.DEEPSEEK_API_KEY;
+    case "anthropic":
+      return !!process.env.ANTHROPIC_API_KEY;
+    case "openai":
+      return !!process.env.OPENAI_API_KEY;
+    default:
+      return false;
+  }
+}
+
+/** Provider names whose API key is configured, in a stable order. */
+export function getConfiguredProviders(): string[] {
+  const providers: string[] = [];
+  if (process.env.DEEPSEEK_API_KEY) providers.push("deepseek");
+  if (process.env.ANTHROPIC_API_KEY) providers.push("anthropic");
+  if (process.env.OPENAI_API_KEY) providers.push("openai");
+  return providers;
+}
+
+/** Can the app make AI calls? Any provider key is configured. */
 export function isAIConfigured(): boolean {
-  return !!process.env.DEEPSEEK_API_KEY;
+  return getConfiguredProviders().length > 0;
 }
 
 /**

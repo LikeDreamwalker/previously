@@ -29,7 +29,9 @@
  */
 import { registerSerializationClass } from "workflow/internal/class-serialization";
 import { deepseek } from "@ai-sdk/deepseek";
+import { createAnthropic } from "@ai-sdk/anthropic";
 import deepseekPkg from "@ai-sdk/deepseek/package.json";
+import anthropicPkg from "@ai-sdk/anthropic/package.json";
 
 // Global-registry symbol shared with @workflow/serde (Symbol.for — safe to
 // recreate here without importing the transitive package).
@@ -51,4 +53,19 @@ function DeepSeekChatLanguageModelHost(): void {}
 registerSerializationClass(
   `class//@ai-sdk/deepseek@${deepseekPkg.version}//DeepSeekChatLanguageModel`,
   DeepSeekChatLanguageModelHost
+);
+
+// Anthropic — same rebuild-through-factory pattern, keyed on the SDK's actual
+// class name (AnthropicLanguageModel). createAnthropic({}) restores the
+// complete config (baseURL, auth headers from ANTHROPIC_API_KEY, url/fetch)
+// from the step runtime's environment.
+function AnthropicLanguageModelHost(): void {}
+(
+  AnthropicLanguageModelHost as unknown as Record<symbol, unknown>
+)[WORKFLOW_DESERIALIZE] = (options: SerializedModelOptions) =>
+  createAnthropic({})(options.modelId);
+
+registerSerializationClass(
+  `class//@ai-sdk/anthropic@${anthropicPkg.version}//AnthropicLanguageModel`,
+  AnthropicLanguageModelHost
 );

@@ -17,7 +17,11 @@ import { convertToModelMessages, type UIMessage } from "ai";
 import { turnWorkflow } from "./turn-workflow";
 import type { TurnInput } from "@/lib/chat/turn-types";
 import { loadUserConfig } from "@/lib/config/loader";
-import { resolveModelId } from "@/lib/models/registry";
+import {
+  resolveModelId,
+  getAvailableModels,
+  getDefaultModelId,
+} from "@/lib/models/registry";
 import { getRepoConfig } from "@/lib/capabilities";
 import { resolveDataSource } from "@/lib/data-source/resolve";
 
@@ -53,9 +57,23 @@ export async function startTurn(
 ): Promise<Awaited<ReturnType<typeof start>>> {
   const config = await loadUserConfig();
   // resolveModelId: the client's stored model preference may predate V4.
-  const model = resolveModelId(args.model || config.model.provider);
+  const requested = resolveModelId(args.model || config.model.provider);
+  // Guard: a stored preference may name a model whose provider key isn't set
+  // (e.g. default deepseek-v4-flash on a deployment that only has Anthropic).
+  // Fall back to the first genuinely-available model in that case.
+  const available = getAvailableModels();
+  const model =
+    requested && available.some((m) => m.id === requested)
+      ? requested
+      : getDefaultModelId();
   const thinking = args.thinking !== false && config.model.thinking;
   const reasoningEffort = args.effort ?? config.model.reasoningEffort;
+  // Log the resolved model so a switch is verifiable in the server log.
+  // `requested` = what the client sent; `model` = what actually runs (after
+  // the availability fallback).
+  console.log(
+    `[Turn] model=${model} (requested=${requested}) thinking=${thinking} effort=${reasoningEffort}`,
+  );
   const clientTimezone = args.timezone ?? "UTC";
   const { owner, repo } = getRepoConfig();
   const dataSource = resolveDataSource();

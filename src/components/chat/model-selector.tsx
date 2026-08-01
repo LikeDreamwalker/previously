@@ -1,0 +1,155 @@
+"use client";
+
+import { useState, useEffect, useCallback } from "react";
+import { useTranslations } from "next-intl";
+import { Check, Cpu } from "lucide-react";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { Switch } from "@/components/ui/switch";
+
+type EffortLevel = "low" | "medium" | "high";
+
+export interface ModelDefaults {
+  thinking: boolean;
+  effort: EffortLevel;
+}
+
+interface AvailableModel {
+  id: string;
+  name: string;
+  provider: string;
+  defaultThinking: boolean;
+  defaultEffort: EffortLevel;
+}
+
+interface ModelSelectorProps {
+  /** Currently selected model id (from ChatPage state). */
+  currentModelId: string;
+  /** Thinking on/off — owned by ChatPage, toggled here. */
+  thinking: boolean;
+  onModelChange: (modelId: string, defaults: ModelDefaults) => void;
+  onThinkingChange: (thinking: boolean) => void;
+}
+
+/**
+ * Model selector for the chat toolbar. Fetches the server-side model catalog
+ * (/api/models — env-gated) and shows a grouped picker plus a thinking toggle.
+ * Hides entirely when there are 0 or 1 models to choose from.
+ *
+ * Selection is reported via callbacks only — ChatPage owns the state and the
+ * localStorage persistence (single source of truth for model/thinking/effort).
+ */
+export function ModelSelector({
+  currentModelId,
+  thinking,
+  onModelChange,
+  onThinkingChange,
+}: ModelSelectorProps) {
+  const t = useTranslations("chat.input");
+  const [models, setModels] = useState<AvailableModel[]>([]);
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+    fetch("/api/models")
+      .then((r) => r.json())
+      .then((data) => setModels(data.models ?? []))
+      .catch(() => setModels([]));
+  }, []);
+
+  const current = models.find((m) => m.id === currentModelId);
+  const shortName = current?.name ?? (mounted ? currentModelId : "…");
+
+  const handleSelect = useCallback(
+    (m: AvailableModel) => {
+      onModelChange(m.id, {
+        thinking: m.defaultThinking,
+        effort: m.defaultEffort,
+      });
+    },
+    [onModelChange],
+  );
+
+  if (models.length <= 1) return null;
+
+  // Group models by provider, preserving registry order.
+  const groups = new Map<string, AvailableModel[]>();
+  for (const m of models) {
+    const list = groups.get(m.provider) ?? [];
+    list.push(m);
+    groups.set(m.provider, list);
+  }
+
+  return (
+    <Popover>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <PopoverTrigger
+              render={
+                <button
+                  type="button"
+                  className="h-7 rounded-full text-muted-foreground hover:text-foreground hover:bg-muted-foreground/10 transition-colors flex items-center justify-center gap-1 px-2"
+                >
+                  <Cpu className="h-3 w-3 shrink-0" />
+                  <span className="text-[10px] font-medium leading-none max-w-[72px] truncate">
+                    {shortName}
+                  </span>
+                </button>
+              }
+            />
+          }
+        />
+        <TooltipContent side="top">{t("modelTooltip")}</TooltipContent>
+      </Tooltip>
+
+      <PopoverContent align="start" sideOffset={8} className="w-52 p-1.5">
+        <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
+          {t("modelLabel")}
+        </div>
+
+        {[...groups.entries()].map(([provider, providerModels]) => (
+          <div key={provider} className="mb-1">
+            <div className="px-2 py-1 text-[10px] uppercase tracking-wide text-muted-foreground/60">
+              {t(`modelGroup.${provider}`)}
+            </div>
+            {providerModels.map((m) => (
+              <button
+                key={m.id}
+                type="button"
+                onClick={() => handleSelect(m)}
+                className={`w-full text-left px-2 py-1.5 rounded text-xs flex items-center justify-between gap-2 ${
+                  m.id === currentModelId
+                    ? "bg-primary/10 text-primary"
+                    : "hover:bg-muted"
+                }`}
+              >
+                <span className="truncate">{m.name}</span>
+                {m.id === currentModelId && <Check className="h-3 w-3 shrink-0" />}
+              </button>
+            ))}
+          </div>
+        ))}
+
+        <div className="mt-1 flex items-center justify-between gap-2 border-t px-2 pt-2">
+          <span className="text-xs text-muted-foreground">
+            {t("thinkingLabel")}
+          </span>
+          <Switch
+            size="sm"
+            checked={thinking}
+            onCheckedChange={onThinkingChange}
+          />
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}

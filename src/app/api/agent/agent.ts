@@ -13,12 +13,58 @@
 
 import { WorkflowAgent } from "@ai-sdk/workflow";
 import { deepseek } from "@ai-sdk/deepseek";
+import { createModel } from "@/lib/models/provider";
+import { getModel } from "@/lib/models/registry";
 import {
   chatTools,
   loopTools,
   type buildChatToolsContext,
   type buildLoopToolsContext,
 } from "./tools";
+
+// ─── Provider-aware providerOptions ──────────────────────────────────────
+
+/**
+ * Provider options accepted by WorkflowAgent's `providerOptions` prop
+ * (Record<string, JSONObject>). Declared structurally here to avoid importing
+ * the transitive @ai-sdk/provider type.
+ */
+type ChatProviderOptions = Record<
+  string,
+  {
+    thinking: { type: "enabled" | "disabled" };
+    reasoningEffort?: "low" | "medium" | "high";
+  }
+>;
+
+/**
+ * Build the provider options for the chat agent's model. Thinking config
+ * differs per provider: DeepSeek accepts a `reasoningEffort`, Anthropic uses
+ * the thinking budget/adaptive shape. Falls back to DeepSeek defaults when the
+ * model id is unknown.
+ */
+function buildProviderOptions(
+  provider: "deepseek" | "anthropic" | "openai" | undefined,
+  thinking: boolean,
+  effort: "low" | "medium" | "high",
+): ChatProviderOptions | undefined {
+  if (provider === "anthropic") {
+    return {
+      anthropic: {
+        thinking: { type: thinking ? "enabled" : "disabled" },
+      },
+    };
+  }
+  // DeepSeek (default) — V4 defaults to thinking ENABLED, so "off" is explicit.
+  return thinking
+    ? {
+        deepseek: {
+          thinking: { type: "enabled" },
+          reasoningEffort: effort,
+        },
+      }
+    : { deepseek: { thinking: { type: "disabled" } } };
+}
 
 export type ChatToolSet = typeof chatTools;
 export type LoopToolSet = typeof loopTools;
@@ -40,24 +86,23 @@ export function createChatAgent(opts: {
   /** Safety cap to keep single LLM step under Vercel's 5‑minute limit. */
   maxOutputTokens?: number;
 }): ChatAgent {
+  const modelConfig = getModel(opts.modelId);
+  const model = modelConfig
+    ? createModel(modelConfig)
+    : deepseek(opts.modelId); // Unknown id → DeepSeek fallback
+
   return new WorkflowAgent({
-    model: deepseek(opts.modelId),
+    model,
     maxOutputTokens: opts.maxOutputTokens,
     instructions:
       "You are the user's personal agent with layered episodic memory. Answer from the provided context; use the memory tools to recall details when needed.",
     tools: chatTools,
     toolsContext: opts.toolsContext,
-    providerOptions: opts.thinking
-      ? {
-          deepseek: {
-            thinking: { type: "enabled" as const },
-            reasoningEffort: opts.reasoningEffort,
-          },
-        }
-      : {
-          // V4 models default to thinking ENABLED — "off" must be explicit.
-          deepseek: { thinking: { type: "disabled" as const } },
-        },
+    providerOptions: buildProviderOptions(
+      modelConfig?.provider,
+      opts.thinking,
+      opts.reasoningEffort,
+    ),
   });
 }
 

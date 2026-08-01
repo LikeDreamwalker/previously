@@ -47,7 +47,15 @@
       "attach": "附件",
       "settingsTooltip": "设置",
       "stopTooltip": "停止生成",
-      "sendTooltip": "发送消息"
+      "sendTooltip": "发送消息",
+      "modelTooltip": "切换 AI 模型",
+      "modelLabel": "模型",
+      "modelGroup": {
+        "deepseek": "DeepSeek",
+        "anthropic": "Anthropic",
+        "openai": "OpenAI"
+      },
+      "thinkingLabel": "深度思考"
     },
     "actions": {
       "copy": "复制",
@@ -239,8 +247,6 @@
       "timeSilenceMinutes": "静默超时（分钟）",
       "recentTurnsLimit": "上下文中的最近轮数",
       "tokenBudget": "上下文 Token 预算",
-      "modelProvider": "模型提供者",
-      "thinking": "推理思考",
       "save": "保存配置",
       "saving": "保存中...",
       "saved": "已保存 ✓",

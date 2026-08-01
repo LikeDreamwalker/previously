@@ -1,5 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { isAIConfigured, isDemo, canWrite, getRepoConfig, DEPLOY_GUIDE_URL } from "@/lib/capabilities";
+import {
+  isAIConfigured,
+  isDemo,
+  canWrite,
+  getRepoConfig,
+  getConfiguredProviders,
+  isProviderConfigured,
+  DEPLOY_GUIDE_URL,
+} from "@/lib/capabilities";
 
 const SAVED_ENV = { ...process.env };
 
@@ -10,6 +18,8 @@ describe("capabilities", () => {
     // process.env at call time (not import time), and direct
     // manipulation matches the existing project conventions.
     delete process.env.DEEPSEEK_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.OPENAI_API_KEY;
     delete process.env.GITHUB_TOKEN;
     delete process.env.GITHUB_REPO_OWNER;
     delete process.env.GITHUB_REPO_NAME;
@@ -34,6 +44,44 @@ describe("capabilities", () => {
     it("returns true when DEEPSEEK_API_KEY is set", () => {
       process.env.DEEPSEEK_API_KEY = "sk-abc123";
       expect(isAIConfigured()).toBe(true);
+    });
+
+    it("returns true when only ANTHROPIC_API_KEY is set", () => {
+      process.env.ANTHROPIC_API_KEY = "sk-ant-test";
+      expect(isAIConfigured()).toBe(true);
+    });
+  });
+
+  // ─── isProviderConfigured / getConfiguredProviders ─────────────────
+
+  describe("isProviderConfigured", () => {
+    it("returns false for every provider when no keys are set", () => {
+      expect(isProviderConfigured("deepseek")).toBe(false);
+      expect(isProviderConfigured("anthropic")).toBe(false);
+      expect(isProviderConfigured("openai")).toBe(false);
+    });
+
+    it("returns true only for the configured provider", () => {
+      process.env.ANTHROPIC_API_KEY = "sk-ant-test";
+      expect(isProviderConfigured("anthropic")).toBe(true);
+      expect(isProviderConfigured("deepseek")).toBe(false);
+    });
+
+    it("returns false for an unknown provider", () => {
+      process.env.DEEPSEEK_API_KEY = "sk-test";
+      expect(isProviderConfigured("unknown")).toBe(false);
+    });
+  });
+
+  describe("getConfiguredProviders", () => {
+    it("returns an empty list when no keys are set", () => {
+      expect(getConfiguredProviders()).toEqual([]);
+    });
+
+    it("lists providers in a stable order", () => {
+      process.env.ANTHROPIC_API_KEY = "sk-ant-test";
+      process.env.DEEPSEEK_API_KEY = "sk-test";
+      expect(getConfiguredProviders()).toEqual(["deepseek", "anthropic"]);
     });
   });
 

@@ -26,26 +26,24 @@ export function SettingsForm({
   const [timeSilenceMinutes, setTimeSilenceMinutes] = useState(initialConfig.slicing.timeSilenceMinutes);
   const [recentTurnsLimit, setRecentTurnsLimit] = useState(initialConfig.context.recentTurnsLimit);
   const [tokenBudget, setTokenBudget] = useState(initialConfig.context.tokenBudget);
-  const [modelProvider, setModelProvider] = useState(initialConfig.model.provider);
-  const [modelThinking, setModelThinking] = useState(initialConfig.model.thinking);
   const [configSaving, setConfigSaving] = useState(false);
   const [configSavedMsg, setConfigSavedMsg] = useState("");
 
   const handleConfigSave = async () => {
     setConfigSaving(true);
     setConfigSavedMsg("");
+    // Model selection lives in the chat UI (model selector) and is persisted
+    // to localStorage — intentionally omitted here so the settings save never
+    // overwrites it. config.json keeps a deployment-level fallback default.
     const res = await saveUserConfig({
       slicing: { maxTurnsPerSlice, timeSilenceMinutes },
       context: { recentTurnsLimit, tokenBudget },
-      model: { provider: modelProvider, thinking: modelThinking, reasoningEffort: "medium" as const },
     });
     setConfigSaving(false);
     setConfigSavedMsg(res.ok ? t("config.saved") : t("config.saveFailed"));
     if (res.ok) setTimeout(() => setConfigSavedMsg(""), 2500);
   };
 
-  const inputClass =
-    "w-full px-3 py-2 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring";
   const numberInputClass =
     "w-24 px-3 py-2 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring";
 
@@ -92,20 +90,6 @@ export function SettingsForm({
             <label className="block space-y-1">
               <span className="text-xs text-muted-foreground">{t("config.tokenBudget")}</span>
               <input type="number" min={2000} max={64000} step={1000} value={tokenBudget} onChange={(e) => setTokenBudget(Number(e.target.value))} className={numberInputClass} />
-            </label>
-          </div>
-          {/* Model */}
-          <div className="grid grid-cols-2 gap-3">
-            <label className="block space-y-1">
-              <span className="text-xs text-muted-foreground">{t("config.modelProvider")}</span>
-              <select value={modelProvider} onChange={(e) => setModelProvider(e.target.value)} className={inputClass}>
-                <option value="deepseek-v4-flash">deepseek-v4-flash</option>
-                <option value="deepseek-v4-pro">deepseek-v4-pro</option>
-              </select>
-            </label>
-            <label className="flex items-end gap-2 pb-2">
-              <input type="checkbox" checked={modelThinking} onChange={(e) => setModelThinking(e.target.checked)} className="h-4 w-4" />
-              <span className="text-xs text-muted-foreground">{t("config.thinking")}</span>
             </label>
           </div>
           <div className="flex items-center gap-3">

@@ -5,6 +5,7 @@ import { WorkflowChatTransport } from "@ai-sdk/workflow";
 import { useMemo, useState, useRef, useCallback, useEffect } from "react";
 import type { UIMessage } from "ai";
 import { ChatInput } from "./chat-input";
+import type { ModelDefaults } from "./model-selector";
 import { ChatSection } from "./chat-section";
 import { LoopWatcher } from "./loop-watcher";
 import { buildMockSteps } from "@/lib/chat/mock-stream";
@@ -98,11 +99,41 @@ function NowPlaceholder({ gapAnchor }: { gapAnchor: string | null }) {
 }
 
 function Inner({ children }: { children: React.ReactNode }) {
-  const [settings] = useState(() => ({
-    model: getClientSetting("PREVIOUSLY_MODEL", "deepseek-v4-flash"),
-    thinking: getClientSetting("PREVIOUSLY_THINKING", "true") !== "false",
-    effort: getClientSetting("PREVIOUSLY_EFFORT", "medium"),
-  }));
+  // ── Model / thinking / effort — reactive, persisted to localStorage ────
+  const [selectedModel, setSelectedModel] = useState(() =>
+    getClientSetting("PREVIOUSLY_MODEL", "deepseek-v4-flash"),
+  );
+  const [thinking, setThinking] = useState(
+    () => getClientSetting("PREVIOUSLY_THINKING", "true") !== "false",
+  );
+  const [effort, setEffort] = useState<"low" | "medium" | "high">(() => {
+    const stored = getClientSetting("PREVIOUSLY_EFFORT", "medium");
+    return stored === "low" || stored === "high" ? stored : "medium";
+  });
+
+  // Switching models applies that model's defaults (thinking + effort) so the
+  // agent is configured sensibly for the newly selected model.
+  const handleModelChange = useCallback(
+    (modelId: string, defaults: ModelDefaults) => {
+      setSelectedModel(modelId);
+      localStorage.setItem("PREVIOUSLY_MODEL", modelId);
+      setThinking(defaults.thinking);
+      localStorage.setItem("PREVIOUSLY_THINKING", String(defaults.thinking));
+      setEffort(defaults.effort);
+      localStorage.setItem("PREVIOUSLY_EFFORT", defaults.effort);
+    },
+    [],
+  );
+
+  const handleEffortChange = useCallback((next: "low" | "medium" | "high") => {
+    setEffort(next);
+    localStorage.setItem("PREVIOUSLY_EFFORT", next);
+  }, []);
+
+  const handleThinkingChange = useCallback((next: boolean) => {
+    setThinking(next);
+    localStorage.setItem("PREVIOUSLY_THINKING", String(next));
+  }, []);
 
   const [lastUserMessageAt, setLastUserMessageAt] = useState<string | null>(null);
   const [evolutionState, setEvolutionState] = useState<EvolutionState | null>(null);
@@ -250,7 +281,9 @@ function Inner({ children }: { children: React.ReactNode }) {
         credentials: config.credentials,
         body: {
           messages: config.messages,
-          ...settings,
+          model: selectedModel,
+          thinking,
+          effort,
           timezone:
             typeof Intl !== "undefined"
               ? Intl.DateTimeFormat().resolvedOptions().timeZone
@@ -430,6 +463,12 @@ function Inner({ children }: { children: React.ReactNode }) {
               onStop={demoStreaming ? stopDemo : stop}
               onDemo={runDemo}
               demoRunning={demoStreaming}
+              currentModelId={selectedModel}
+              currentEffort={effort}
+              thinking={thinking}
+              onModelChange={handleModelChange}
+              onEffortChange={handleEffortChange}
+              onThinkingChange={handleThinkingChange}
             />
           </div>
         </div>

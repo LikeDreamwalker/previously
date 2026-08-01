@@ -6,18 +6,10 @@ import { ArrowUp, Square, Paperclip, X, Settings, FlaskConical, Zap } from "luci
 import { useImageAttachments } from "@/hooks/use-image-attachments";
 import { Link } from "@/i18n/navigation";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { ModelSelector, type ModelDefaults } from "./model-selector";
 
-const EFFORT_KEY = "PREVIOUSLY_EFFORT";
 const EFFORT_LEVELS = ["low", "medium", "high"] as const;
 type EffortLevel = (typeof EFFORT_LEVELS)[number];
-
-function getStoredEffort(): EffortLevel {
-  if (typeof window === "undefined") return "medium";
-  const stored = localStorage.getItem(EFFORT_KEY);
-  return stored && (EFFORT_LEVELS as readonly string[]).includes(stored)
-    ? (stored as EffortLevel)
-    : "medium";
-}
 
 const EFFORT_LABELS: Record<EffortLevel, string> = {
   low: "Low",
@@ -31,6 +23,14 @@ interface ChatInputProps {
   onStop?: () => void;
   onDemo?: () => void;
   demoRunning?: boolean;
+  // Model + thinking/effort — owned by ChatPage so the request body and the
+  // toolbar stay in sync. ChatInput renders the controls, ChatPage persists.
+  currentModelId: string;
+  currentEffort: EffortLevel;
+  thinking: boolean;
+  onModelChange: (modelId: string, defaults: ModelDefaults) => void;
+  onEffortChange: (effort: EffortLevel) => void;
+  onThinkingChange: (thinking: boolean) => void;
 }
 
 export function ChatInput({
@@ -39,13 +39,17 @@ export function ChatInput({
   onStop,
   onDemo,
   demoRunning = false,
+  currentModelId,
+  currentEffort,
+  thinking,
+  onModelChange,
+  onEffortChange,
+  onThinkingChange,
 }: ChatInputProps) {
   const t = useTranslations("chat.input");
   const [value, setValue] = useState("");
-  const [effort, setEffort] = useState<EffortLevel>("medium");
   const [mounted, setMounted] = useState(false);
   useEffect(() => {
-    setEffort(getStoredEffort());
     setMounted(true);
   }, []);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -120,11 +124,10 @@ export function ChatInput({
   };
 
   const cycleEffort = useCallback(() => {
-    const idx = EFFORT_LEVELS.indexOf(effort);
+    const idx = EFFORT_LEVELS.indexOf(currentEffort);
     const next = EFFORT_LEVELS[(idx + 1) % EFFORT_LEVELS.length];
-    setEffort(next);
-    localStorage.setItem(EFFORT_KEY, next);
-  }, [effort]);
+    onEffortChange(next);
+  }, [currentEffort, onEffortChange]);
 
   const hasContent = value.trim().length > 0 || images.length > 0;
 
@@ -226,6 +229,14 @@ export function ChatInput({
             </Tooltip>
           )}
 
+          {/* Model selector — NEW */}
+          <ModelSelector
+            currentModelId={currentModelId}
+            thinking={thinking}
+            onModelChange={onModelChange}
+            onThinkingChange={onThinkingChange}
+          />
+
           {/* Thinking intensity */}
           <Tooltip>
             <TooltipTrigger
@@ -238,13 +249,13 @@ export function ChatInput({
                 >
                   <Zap className="h-3 w-3" />
                   <span className="text-[10px] font-medium leading-none">
-                    {mounted ? EFFORT_LABELS[effort] : "Med"}
+                    {mounted ? EFFORT_LABELS[currentEffort] : "Med"}
                   </span>
                 </button>
               }
             />
             <TooltipContent side="top">
-              Thinking: {effort} — click to cycle
+              Thinking: {currentEffort} — click to cycle
             </TooltipContent>
           </Tooltip>
 
