@@ -99,21 +99,31 @@ Three-phase message rendering (M8). See `src/components/chat/CLAUDE.md` for full
 | GitHub Tools | `src/lib/tools/` | readFile/writeFile/listFiles via Octokit |
 | Path Whitelist | `src/lib/whitelist/` | Security boundary: memory/tasks/sessions only |
 | Memory System | `src/lib/memory/` | Markdown nodes with YAML frontmatter + scoring |
-| Intent Router | `src/lib/router/` | Flash classifier + keyword hybrid intent routing |
-| Context Assembler | `src/lib/context/` | 6-layer context assembly with token budget |
-| Session Manager | `src/lib/session/` | In-memory session state with sliding window |
-| Archive Sync | `src/lib/archive/` | GitHub archive push with retry/backoff |
-| Model Registry | `src/lib/models/` | DeepSeek model routing + thinking toggle |
+| Context Assembler | `src/lib/context/` | 6-layer context assembly with token budget (legacy — superseded by the per-turn system prompt assembly in the chat workflow) |
+| Session Manager | `src/lib/session/` | In-memory session state with sliding window (legacy) |
+| Model Registry | `src/lib/models/` | models.dev-driven catalog, provider dispatch, worker model resolution |
+| Turn Priming | `src/lib/turn-priming.ts` | Per-turn engineering brief (time/timezone, continuity tier, strand links, intent) injected at the top of the system prompt |
+| Turn Analyzer | `src/lib/episodic/flash/turn-analyzer.ts` | The one worker-model call in housekeeping: message tags + semantic hint + intent + (on close) slice marking |
 
 ### Episodic Memory (M8 — Time-Slice System)
 
 The episodic memory subsystem (`src/lib/episodic/`, see `src/lib/episodic/CLAUDE.md`) is the L2 memory layer:
 
 - **Structure**: `memory/episodic/slices/YYYY/MM/DD/HHMM.md` — one file per time slice (a day is a directory), YAML frontmatter + conversation turns
-- **Flash/Pro split**: Flash (DeepSeek-chat) handles per-request recall scanning + metadata maintenance. Pro (main model) handles deep recall via `readMemory` tool.
-- **Slicing**: Pure time-driven — 30 minutes of inactivity closes the current slice. No capacity or topic-shift rules.
+- **Worker/main split**: The resolved WORKER model (`src/lib/models/worker.ts` — a cheap tier derived from the main model's provider, configurable in config.json) runs the housekeeping calls: recall scanning, and the unified turn analyze (message tags + semantic hint + intent + slice marking). The main model handles the user-facing reply.
+- **Close-time marking**: when a slice closes, the housekeeping analyze call produces its `focus` / `summary` / refined `tags` / `emotional_tone`, written into the frontmatter before the slice persists — so the global timeline and recall see real descriptions, not "(none)".
+- **Slicing**: time-driven — 30 minutes of inactivity closes the current slice, plus a turn-count capacity cap and context-loss detection.
 - **Strands** (semantic layer): a slice carries `tags` (keywords); a **strand** is a keyword woven through all the slices that carry it. `memory/episodic/strands.json` maps each strand → its slice paths ("the whole history of that thing" across time) — the thin, lossless semantic-memory index over the episodic slices. Built at slice-close via `updateStrands`; a richer first-class strand (rolling summary + recall integration) is a future milestone.
 - **DEMO_MODE**: `DEMO_MODE=true` redirects `memory/` reads to `memory/demo/personal_14/` (Caleb persona, 30+ slices). Writes go to real `memory/`.
+
+### Model Layer (multi-provider + worker tier)
+
+- **Catalog**: models.dev (`https://models.dev/api.json`) is the primary model catalog (`src/lib/models/catalog.ts`), gated by configured API-key env vars and reverse-filtered against each provider's live `/models` endpoint. Falls back to a curated list in `src/lib/models/registry.ts`.
+- **Dispatch**: `src/lib/models/provider.ts` routes by SDK — dedicated `@ai-sdk/deepseek` / `@ai-sdk/anthropic`, OpenAI-compatible catch-all (`@ai-sdk/openai`) for everything else (Kimi, Qwen, ...).
+- **Two tiers**:
+  - **Main model** — user-selected in the chat toolbar; persists to `memory/user/config.json` (cross-device, no localStorage).
+  - **Worker model** — the cheap internal tier (housekeeping analyze, recall search, belief evolution, loops). Resolved by `resolveWorkerModel()` (`src/lib/models/worker.ts`): manual pin → same-provider lightweight → the main model. Configured in the model selector's "Advanced" sheet (auto "keep consistent with the main agent", or a manual pick).
+- **Workflow model deserialization**: `register-model-classes.ts` registers deepseek, anthropic, and openai(-compatible) model hosts so models crossing the workflow→step boundary rebuild correctly.
 
 ### Chat Rendering
 
@@ -182,11 +192,11 @@ DEEPSEEK_API_KEY set?
           └─ YES → Production: full read/write, loops available.
 ```
 
-## Current Phase (v0.5)
+## Current Phase (v0.5.3)
 
-**Goal**: Re-enable background loop capability with a global capabilities module. The `startLoop` agent tool is now bound for all users; in demo mode the executor returns a model-facing rejection so the model explains the deployment requirement naturally.
+**Goal**: Model selection & the worker tier. Multi-provider chat model switching (models.dev catalog + provider dispatch), a configurable worker model for the housekeeping-class calls, and a per-turn priming/analyze pipeline (restored identity, time-aware brief, intent, slice marking) that makes recall and continuity first-class.
 
-Branch: `feat/v0.5-loop-reenable`
+Branch: `feature/v0.5.3-model-selection`
 
 ## Constraints
 

@@ -4,7 +4,7 @@
 
 The episodic memory subsystem records, indexes, and recalls conversation history as discrete **time slices** -- one per real conversation session (closed by context loss, 30 minutes of inactivity, or turn cap), stored as Markdown files with YAML frontmatter. A calendar day is a *directory* that may hold multiple slice files. It is the L2 memory layer in Previously On's three-tier memory architecture (L0/L1 bundled at build time, L2 fetched on-demand at runtime).
 
-Flash (deepseek-v4-flash) handles tag extraction and recall search. Pro (deepseek-v4-pro) handles belief evolution (previously.md) and user-facing chat. The core agent (Pro) only reads memory; writes to tags/strands happen mechanically in the housekeeping step.
+The resolved WORKER model (see `src/lib/models/worker.ts` — a cheap tier derived from the main model's provider, configurable in config.json) runs the internal calls: recall search, the unified turn analyze (tag extraction + semantic hint + intent + slice marking), and belief evolution. The main model handles user-facing chat. The core agent only reads memory; writes to tags/strands happen mechanically in the housekeeping step.
 
 File storage is abstracted behind a local-filesystem vs. GitHub API switch, gated on `GITHUB_TOKEN`. All paths are under `memory/episodic/`.
 
@@ -16,12 +16,13 @@ File storage is abstracted behind a local-filesystem vs. GitHub API switch, gate
 | `index.ts` | Barrel export -- re-exports from `manager.ts` and `slicer.ts` |
 | `manager.ts` | Core CRUD: in-memory active slice, path helpers, gray-matter serialization/parsing, turn append, snapshot saves, monthly index and tag index maintenance, previously.md I/O |
 | `slicer.ts` | Slicing decision engine — time silence (30 min) |
-| `maintenance.ts` | Deprecated v1 module — retained as a stub. Flash calls now live in `flash/recall.ts`, `flash/previously-agent.ts`, and the `extractFlashTags` helper in `steps.ts`. |
+| `maintenance.ts` | Deprecated v1 module — retained as a stub. Worker-model calls now live in `flash/recall.ts`, `flash/previously-agent.ts`, and `flash/turn-analyzer.ts`. |
 | `actions.ts` | Server actions (`"use server"`) for UI consumption: `getEpisodicState`, `getMoreSlices`, `getSliceContent`. Drives the episodic sidebar panel. |
 | `turn-parser.ts` | Pure functions to parse core.md into frontmatter + parsed turns, apply range filters, reassemble filtered slices |
-| `flash/recall.ts` | Flash recall mini-agent — searches past conversations and returns structured pointers |
+| `flash/recall.ts` | Worker-model recall mini-agent — searches past conversations and returns structured pointers |
+| `flash/turn-analyzer.ts` | The one housekeeping worker-model call: message tags + semantic hint + intent + (on close) slice marking |
 | `flash/global-timeline.ts` | Global timeline file aggregating all slice summaries |
-| `flash/previously-agent.ts` | Previously Agent (Pro model) — maintains the belief system (previously.md) |
+| `flash/previously-agent.ts` | Previously Agent (worker model) — maintains the belief system (previously.md) |
 | `previously-format.ts` | v2 long/short-term previously.md format definition, serialization, parsing, validation, v1-to-v2 migration |
 | `previously-updater.ts` | Pure functions to apply PreviouslyAgent mutations to previously.md (7 action types) |
 | `io-helpers.ts` | I/O wrappers delegating to demo-fs, GitHub API, or local FS |
@@ -35,11 +36,12 @@ File storage is abstracted behind a local-filesystem vs. GitHub API switch, gate
 3. **Close** — Triggered by: context loss (page refresh / device switch), 30-minute time silence, or turn count cap. `closeSlice()` sets `status: "closed"`, writes the MD file, updates `_index.json` and `strands.json`. The cycle repeats with a new slice.
 4. **Recover** — `tryLoadTodaySlice()` scans today's directory (`slices/YYYY/MM/DD/`) and re-hydrates the most recent slice still marked `active` on page refresh.
 
-### 2. Flash tag extraction (per turn, in housekeeping)
+### 2. Turn analyze (per turn, in housekeeping)
 
-1. `housekeeping` step calls Flash (thinking disabled) with the user message and existing strand names.
-2. Flash returns 0-5 keyword tags via structured tool output. Existing tags are preferred to encourage reuse across languages.
-3. Tags are written to `slice.tags` and woven into `strands.json` via `updateStrands()` during the snapshot save.
+1. `housekeeping` first decides the slice lifecycle (pure — continue / close / create), then calls `analyzeTurn` (worker model, thinking disabled) ONCE with the user message + existing strand names + (when closing) the closing slice's turns.
+2. The call returns: 0-5 message tags (reusing existing tags across languages), a semantic hint (which existing strands the message relates to), the user's intent, and — only when a slice is closing — its `focus` / `summary` / refined `tags` / `emotional_tone`.
+3. The close marking is applied to the closing slice BEFORE `closeSlice` persists it, so the timeline and monthly index carry real descriptions.
+4. Message tags are written to `slice.tags` and woven into `strands.json` via `updateStrands()` during the snapshot save.
 
 ### 3. Episodic state for the UI
 
