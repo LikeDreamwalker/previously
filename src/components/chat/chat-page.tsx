@@ -5,6 +5,7 @@ import { WorkflowChatTransport } from "@ai-sdk/workflow";
 import { useMemo, useState, useRef, useCallback, useEffect } from "react";
 import type { UIMessage } from "ai";
 import { ChatInput } from "./chat-input";
+import type { ModelDefaults } from "./model-selector";
 import { ChatSection } from "./chat-section";
 import { LoopWatcher } from "./loop-watcher";
 import { buildMockSteps } from "@/lib/chat/mock-stream";
@@ -21,12 +22,8 @@ import {
 import { getCached, setCache } from "@/lib/chat/slice-cache";
 import { NumberTicker } from "@/components/ui/number-ticker";
 import { TextGenerateEffect } from "@/components/ui/text-generate-effect";
+import { getUserConfig, saveUserConfig } from "@/lib/config/actions";
 import { useTranslations } from "next-intl";
-
-function getClientSetting(key: string, fallback: string): string {
-  if (typeof window === "undefined") return fallback;
-  return localStorage.getItem(key) ?? fallback;
-}
 
 interface ChatPageProps {
   children: React.ReactNode;
@@ -98,11 +95,51 @@ function NowPlaceholder({ gapAnchor }: { gapAnchor: string | null }) {
 }
 
 function Inner({ children }: { children: React.ReactNode }) {
-  const [settings] = useState(() => ({
-    model: getClientSetting("PREVIOUSLY_MODEL", "deepseek-v4-flash"),
-    thinking: getClientSetting("PREVIOUSLY_THINKING", "true") !== "false",
-    effort: getClientSetting("PREVIOUSLY_EFFORT", "medium"),
-  }));
+  // ── Model / thinking / effort — reactive, persisted to config.json ─────
+  // The single source of truth is memory/user/config.json (cross-device, no
+  // localStorage). Defaults here are just the pre-load placeholder; the mount
+  // effect reconciles from the saved config.
+  const [selectedModel, setSelectedModel] = useState("deepseek-v4-flash");
+  const [thinking, setThinking] = useState(true);
+  const [effort, setEffort] = useState<"low" | "medium" | "high">("medium");
+
+  useEffect(() => {
+    getUserConfig()
+      .then((cfg) => {
+        setSelectedModel(cfg.model.provider);
+        setThinking(cfg.model.thinking);
+        setEffort(cfg.model.reasoningEffort);
+      })
+      .catch(() => {});
+  }, []);
+
+  // Switching models applies that model's defaults (thinking + effort) so the
+  // agent is configured sensibly for the newly selected model.
+  const handleModelChange = useCallback(
+    (modelId: string, defaults: ModelDefaults) => {
+      setSelectedModel(modelId);
+      setThinking(defaults.thinking);
+      setEffort(defaults.effort);
+      void saveUserConfig({
+        model: {
+          provider: modelId,
+          thinking: defaults.thinking,
+          reasoningEffort: defaults.effort,
+        },
+      });
+    },
+    [],
+  );
+
+  const handleEffortChange = useCallback((next: "low" | "medium" | "high") => {
+    setEffort(next);
+    void saveUserConfig({ model: { reasoningEffort: next } });
+  }, []);
+
+  const handleThinkingChange = useCallback((next: boolean) => {
+    setThinking(next);
+    void saveUserConfig({ model: { thinking: next } });
+  }, []);
 
   const [lastUserMessageAt, setLastUserMessageAt] = useState<string | null>(null);
   const [evolutionState, setEvolutionState] = useState<EvolutionState | null>(null);
@@ -250,7 +287,9 @@ function Inner({ children }: { children: React.ReactNode }) {
         credentials: config.credentials,
         body: {
           messages: config.messages,
-          ...settings,
+          model: selectedModel,
+          thinking,
+          effort,
           timezone:
             typeof Intl !== "undefined"
               ? Intl.DateTimeFormat().resolvedOptions().timeZone
@@ -394,7 +433,7 @@ function Inner({ children }: { children: React.ReactNode }) {
           allMessages.length === 0 && !isLoading ? (
             <div className="flex items-center justify-center min-h-[calc(100vh-13rem)]">
               <NowPlaceholder
-                gapAnchor={timelineSlices[timelineSlices.length - 1]?.start ?? null}
+                gapAnchor={timelineSlices[0]?.start ?? null}
               />
             </div>
           ) : (
@@ -430,6 +469,12 @@ function Inner({ children }: { children: React.ReactNode }) {
               onStop={demoStreaming ? stopDemo : stop}
               onDemo={runDemo}
               demoRunning={demoStreaming}
+              currentModelId={selectedModel}
+              currentEffort={effort}
+              thinking={thinking}
+              onModelChange={handleModelChange}
+              onEffortChange={handleEffortChange}
+              onThinkingChange={handleThinkingChange}
             />
           </div>
         </div>

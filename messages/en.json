@@ -47,7 +47,21 @@
       "attach": "Attach files",
       "settingsTooltip": "Settings",
       "stopTooltip": "Stop generation",
-      "sendTooltip": "Send message"
+      "sendTooltip": "Send message",
+      "modelTooltip": "Switch AI model",
+      "modelLabel": "Model",
+      "modelGroup": {
+        "deepseek": "DeepSeek",
+        "anthropic": "Anthropic",
+        "openai": "OpenAI"
+      },
+      "thinkingLabel": "Thinking",
+      "advanced": "Advanced",
+      "workerLabel": "Worker model",
+      "workerSameAsAgent": "Keep consistent with the main agent",
+      "workerSameAsAgentDesc": "The worker runs cheap internal tasks (recall, tagging, slice marking). On, it follows a lightweight model from your main provider.",
+      "workerModelLabel": "Worker model",
+      "workerSave": "Save"
     },
     "actions": {
       "copy": "Copy",
@@ -238,9 +252,6 @@
       "maxTurnsPerSlice": "Max turns per slice",
       "timeSilenceMinutes": "Silence timeout (min)",
       "recentTurnsLimit": "Recent turns in context",
-      "tokenBudget": "Context token budget",
-      "modelProvider": "Model provider",
-      "thinking": "Thinking (reasoning)",
       "save": "Save config",
       "saving": "Saving...",
       "saved": "Saved ✓",

@@ -15,9 +15,6 @@
  * Chunk order for the UI: start → start-step → data-phase(slicing) → finish-step → finish.
  */
 import { type UIMessageChunk, type ModelMessage } from "ai";
-import { generateText, tool } from "ai";
-import { deepseek } from "@ai-sdk/deepseek";
-import { z } from "zod";
 import { getWritable } from "workflow";
 import {
   createSlice,
@@ -32,9 +29,22 @@ import {
   generateGlobalTimeline,
   startBatch,
   flushBatch,
+  analyzeTurn,
   type TimeSlice,
+  type StrandIndex,
+  type SlicingSignal,
 } from "@/lib/episodic";
 import { checkTimeSilence } from "@/lib/episodic/slicer";
+import { fsReadFile } from "@/lib/episodic/io-helpers";
+import {
+  buildAgentIdentityPrompt,
+  parseIdentityFromPreviously,
+} from "@/lib/identity";
+import {
+  classifyContinuity,
+  buildTurnPriming,
+  type PrevSliceRef,
+} from "@/lib/turn-priming";
 import type {
   TurnInput,
   HousekeepingResult,
@@ -66,65 +76,11 @@ function checkContextLost(modelMessages: ModelMessage[], slice: TimeSlice): bool
 }
 
 /**
- * Call Flash (thinking disabled) to extract keyword tags from a user message.
- * Existing strand names are provided to encourage reuse and semantic merging.
- * Returns 0-5 lowercase tags. Never throws — returns [] on any failure.
- */
-async function extractFlashTags(
-  userMessage: string,
-  existingTagNames: string[],
-): Promise<string[]> {
-  const tagsList = existingTagNames.length > 0
-    ? `Existing tags (reuse when semantically equivalent): ${existingTagNames.join(", ")}`
-    : "No existing tags yet.";
-
-  const prompt = `Extract 0-5 keyword tags from this user message.
-
-${tagsList}
-
-Rules:
-- Lowercase, 1-3 words per tag
-- Same concept in any language → REUSE the existing tag (e.g. if user says "Rust" in a Chinese context, reuse "rust")
-- Only substantive topic tags (not greetings or filler)
-- Return empty array if nothing worth tagging
-
-User: ${userMessage.slice(0, 500)}`;
-
-  try {
-    const result = await generateText({
-      model: deepseek("deepseek-v4-flash"),
-      prompt,
-      temperature: 0.1,
-      tools: {
-        tagOutput: tool({
-          description: "Report extracted tags.",
-          inputSchema: z.object({
-            tags: z.array(z.string()).max(5).describe("0-5 keyword tags."),
-          }),
-        }),
-      },
-      toolChoice: "required",
-      providerOptions: { deepseek: { thinking: { type: "disabled" as const } } },
-    });
-
-    const tc = result.toolCalls?.[0];
-    if (tc?.toolName === "tagOutput") {
-      const input = tc.input as { tags?: string[] };
-      return (input.tags ?? []).slice(0, 5);
-    }
-    return [];
-  } catch {
-    return [];
-  }
-}
-
-/**
- * Read strands.json and format a compact menu for the system prompt.
- * Tags only, sorted by most recently active slice, max 20.
+ * Format a compact menu from an already-loaded strand index for the system
+ * prompt. Tags only, sorted by most recently active slice, max 20.
  * Returns empty string if no strands exist.
  */
-async function buildStrandsMenu(): Promise<string> {
-  const strands = await readStrands();
+function buildStrandsMenu(strands: StrandIndex): string {
   const entries = Object.entries(strands);
 
   if (entries.length === 0) return "";
@@ -138,6 +94,27 @@ async function buildStrandsMenu(): Promise<string> {
 
   const tagNames = entries.slice(0, 20).map(([name]) => name);
   return `Known topics: ${tagNames.join(", ")}`;
+}
+
+/** Slice → continuity reference (end time comes from closeSlice's mutation). */
+function toPrevRef(s: TimeSlice): PrevSliceRef {
+  return { id: s.slice_id, focus: s.focus, start: s.start, end: s.end };
+}
+
+/**
+ * Find the most recent closed slice from the global timeline (newest first) —
+ * used for continuity when today has no active slice (cross-day return).
+ * Returns null if the timeline is unavailable.
+ */
+async function readMostRecentClosedSlice(): Promise<PrevSliceRef | null> {
+  try {
+    const raw = await fsReadFile("memory/episodic/timeline.md");
+    const m = raw.match(/^## (.+)\n- Focus: (.*)\n[\s\S]*?- Start: ([^\n]+)/m);
+    if (!m) return null;
+    return { id: m[1].trim(), focus: m[2].trim(), start: m[3].trim() };
+  } catch {
+    return null;
+  }
 }
 
 // ─── Step 1: Housekeeping ────────────────────────────────────────────────
@@ -167,9 +144,13 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   startBatch();
 
   let slice: TimeSlice;
+  /** The slice we came from — set when we close one this call, or resolved
+   *  from the global timeline when today has none. Drives the continuity brief. */
+  let prevSlice: PrevSliceRef | null = null;
   const diskSlice = await tryLoadTodaySlice();
 
-  // ── 1. Slice lifecycle + context continuity ──────────────────────────
+  // ── 1. Decide lifecycle (pure — no I/O, no LLM yet) ──────────────────
+  let closeSignal: SlicingSignal | null = null;
   if (diskSlice && diskSlice.status === "active") {
     const lastTurn = diskSlice.turns[diskSlice.turns.length - 1];
     const lastActivity = lastTurn
@@ -177,30 +158,56 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
       : Date.now();
 
     if (checkTimeSilence(lastActivity, silenceMs)) {
-      await closeSlice(diskSlice, "time_silence");
-      console.log(`[Episodic] Closed stale slice: ${diskSlice.slice_id}`);
-      await generateGlobalTimeline();
-      slice = createSlice(lastUserMessage, clientTimezone, input.turnId);
+      closeSignal = "time_silence";
     } else if (diskSlice.turns.length >= config.slicing.maxTurnsPerSlice) {
-      await closeSlice(diskSlice, "capacity");
-      console.log(`[Episodic] Closed at turn cap: ${diskSlice.slice_id} (${diskSlice.turns.length} turns)`);
-      await generateGlobalTimeline();
-      slice = createSlice(lastUserMessage, clientTimezone, input.turnId);
+      closeSignal = "capacity";
     } else if (checkContextLost(modelMessages, diskSlice)) {
-      await closeSlice(diskSlice, "context_lost");
-      console.log(`[Episodic] Closed (context lost): ${diskSlice.slice_id} (client has ${modelMessages.filter(m => m.role === "assistant").length} assistant msgs, slice has ${diskSlice.turns.filter(t => t.role === "agent").length} agent turns)`);
-      await generateGlobalTimeline();
-      slice = createSlice(lastUserMessage, clientTimezone, input.turnId);
-    } else {
-      slice = diskSlice;
-      console.log(`[Episodic] Restored active slice: ${diskSlice.slice_id} (${diskSlice.turns.length} turns)`);
+      closeSignal = "context_lost";
     }
+  }
+
+  // ── 2. One worker-model analyze: message tags + semantic hint + (on close) marking ──
+  const existingStrands = await readStrands();
+  const analysis = await analyzeTurn({
+    model: input.workerModel,
+    userMessage: lastUserMessage,
+    existingStrandNames: Object.keys(existingStrands),
+    closingSlice:
+      closeSignal && diskSlice
+        ? { turns: diskSlice.turns, tags: diskSlice.tags }
+        : undefined,
+  });
+
+  // ── 3. Execute lifecycle — close marking is applied BEFORE the slice persists ──
+  if (closeSignal && diskSlice) {
+    if (analysis.closedMarking) {
+      if (analysis.closedMarking.focus) diskSlice.focus = analysis.closedMarking.focus;
+      if (analysis.closedMarking.summary) diskSlice.summary = analysis.closedMarking.summary;
+      if (analysis.closedMarking.tags.length > 0) diskSlice.tags = analysis.closedMarking.tags;
+      if (analysis.closedMarking.tone) diskSlice.emotional_tone = analysis.closedMarking.tone;
+    }
+    prevSlice = toPrevRef(diskSlice);
+    await closeSlice(diskSlice, closeSignal);
+    console.log(`[Episodic] Closed slice: ${diskSlice.slice_id} (${closeSignal})`);
+    await generateGlobalTimeline();
+    slice = createSlice(lastUserMessage, clientTimezone, input.turnId);
+  } else if (diskSlice && diskSlice.status === "active") {
+    slice = diskSlice;
+    console.log(`[Episodic] Restored active slice: ${diskSlice.slice_id} (${diskSlice.turns.length} turns)`);
   } else {
     slice = createSlice(lastUserMessage, clientTimezone, input.turnId);
     console.log(`[Episodic] Created new slice: ${slice.slice_id}`);
   }
 
-  // ── 2. Append user turn ───────────────────────────────────────────────
+  // ── 4. Apply the current message's tags to the active slice ──────────
+  if (analysis.messageTags.length > 0) {
+    for (const tag of analysis.messageTags) {
+      if (!slice.tags.includes(tag)) slice.tags.push(tag);
+    }
+    console.log(`[FlashTags] Extracted: ${analysis.messageTags.join(", ")}`);
+  }
+
+  // ── 5. Append user turn ───────────────────────────────────────────────
   const isNewSlice =
     slice.turns.length === 1 && slice.turns[0].content === lastUserMessage;
   if (!isNewSlice) {
@@ -210,24 +217,6 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
       content: lastUserMessage,
       turnId: input.turnId,
     });
-  }
-
-  // ── 3. Flash tag extraction ──────────────────────────────────────────
-  try {
-    const strands = await readStrands();
-    const existingTagNames = Object.keys(strands);
-    const newTags = await extractFlashTags(lastUserMessage, existingTagNames);
-
-    if (newTags.length > 0) {
-      for (const tag of newTags) {
-        if (!slice.tags.includes(tag)) {
-          slice.tags.push(tag);
-        }
-      }
-      console.log(`[FlashTags] Extracted: ${newTags.join(", ")}`);
-    }
-  } catch (err) {
-    console.warn("[FlashTags] Extraction failed:", err instanceof Error ? err.message : err);
   }
 
   // ── 4. Ensure previously.md (pure copy forward, no decay) ────────────
@@ -244,7 +233,37 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   await flushBatch(`Turn ${input.turnId} — housekeeping`);
 
   // ── 6. Build strands menu ────────────────────────────────────────────
-  const strandsMenu = await buildStrandsMenu();
+  const strands = await readStrands();
+  const strandsMenu = buildStrandsMenu(strands);
+
+  // ── 6b. Continuity + turn priming + identity ─────────────────────────
+  // Continuity source: a slice we closed this call (its `end` is exact), else
+  // the most recent closed slice from the global timeline (cross-day return).
+  // Skipped entirely when we're continuing the same active slice.
+  if (!prevSlice && slice !== diskSlice) {
+    prevSlice = await readMostRecentClosedSlice();
+  }
+  const continuity = classifyContinuity(
+    input.startedAtIso,
+    prevSlice,
+    slice === diskSlice,
+  );
+
+  const turnPriming = buildTurnPriming({
+    message: input.lastUserMessage,
+    clientTimezone: input.clientTimezone,
+    nowIso: input.startedAtIso,
+    continuity,
+    strands,
+    excludeSliceId: slice.slice_id,
+    semanticHint: analysis.semanticHint,
+    intent: analysis.intent,
+  });
+
+  // The agent's constitution (SOUL + who-you're-assisting + DIRECTIVES),
+  // derived from the already-loaded previously.md identity section.
+  const profile = parseIdentityFromPreviously(previouslyContent);
+  const identityPrompt = buildAgentIdentityPrompt(profile);
 
   // ── 7. Open UI stream ────────────────────────────────────────────────
   const writer = getWritable<UIMessageChunk>().getWriter();
@@ -257,7 +276,7 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   } as UIMessageChunk);
   writer.releaseLock();
 
-  return { slice, previouslyContent, strandsMenu };
+  return { slice, previouslyContent, strandsMenu, turnPriming, identityPrompt };
 }
 
 // ─── Step 2: Finalize turn ───────────────────────────────────────────────

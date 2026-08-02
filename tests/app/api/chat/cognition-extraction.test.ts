@@ -145,6 +145,31 @@ describe("extractCognition", () => {
     expect(result).not.toContain("\n\n");
   });
 
+  it("concatenates token-sized reasoning fragments instead of one per line", () => {
+    // Streaming reasoning arrives as token-sized fragments ("The" + " user" + …)
+    // that must be joined into continuous text, not emitted each on its own line.
+    const steps: CogStep[] = [
+      step({ reasoning: ["The", " user", " asks", " about", " Rust."] }),
+    ];
+    const result = extractCognition([], steps);
+    expect(result).toContain("The user asks about Rust.");
+    // The fragments must not each land on their own line.
+    expect(result).not.toContain("The\n user");
+  });
+
+  it("wraps reasoning into paragraphs at blank-line boundaries", () => {
+    const steps: CogStep[] = [
+      step({
+        reasoning: ["First paragraph.", "\n\nSecond paragraph."],
+      }),
+    ];
+    const result = extractCognition([], steps);
+    expect(result).toContain("First paragraph.");
+    expect(result).toContain("Second paragraph.");
+    // Paragraphs are joined by a single newline, not a blank line.
+    expect(result).not.toContain("paragraph.\n\nSecond");
+  });
+
   it("combines thinking and tools across multiple steps", () => {
     const steps: CogStep[] = [
       step({

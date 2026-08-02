@@ -44,6 +44,8 @@ export interface LoopInput {
   startedAt: string;
   /** Hard cap on iterations — the structural runaway guard. */
   maxIterations: number;
+  /** Resolved worker model for the loop brain (see src/lib/models/worker.ts). */
+  workerModel: import("@/lib/models/registry").ModelConfig;
 }
 
 /** The full run record, serialized to the loop's markdown file. */

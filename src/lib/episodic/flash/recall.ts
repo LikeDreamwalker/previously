@@ -7,16 +7,19 @@
  * slices → structured report.
  *
  * Flash ONLY returns pointers (which slices, which turns, why relevant).
- * The EXECUTOR reads the actual slice files and returns raw content to Pro.
- * Flash never produces semantic summaries of episodic content.
+ * The EXECUTOR passes those pointers straight back to Pro, which then calls
+ * readSlice for any content it wants. Flash never produces semantic summaries
+ * of episodic content.
  */
 
 import { generateText, tool, isStepCount } from "ai";
-import { deepseek } from "@ai-sdk/deepseek";
 import { z } from "zod";
 import { fsReadFile } from "../io-helpers";
 import { readStrands } from "@/lib/episodic/manager";
 import { generateGlobalTimeline } from "@/lib/episodic/flash/global-timeline";
+import { createModel } from "@/lib/models/provider";
+import { workerProviderOptions } from "@/lib/models/worker";
+import type { ModelConfig } from "@/lib/models/registry";
 
 // ─── Types ──────────────────────────────────────────────────────────────
 
@@ -42,6 +45,8 @@ export interface RecallSearchInput {
   useDemo: boolean;
   /** Available strands (keyword tag → slice paths). Flash auto-traces matching ones. */
   strandsContext?: Record<string, string[]>;
+  /** The worker model to run the recall search on (resolved from config). */
+  model: ModelConfig;
 }
 
 // ─── Global timeline path ──────────────────────────────────────────────
@@ -226,7 +231,7 @@ IMPORTANT: You MUST end by calling recallReport. Even if nothing matches, call i
 
   try {
     const result = await generateText({
-      model: deepseek("deepseek-v4-flash"),
+      model: createModel(input.model),
       system: RECALL_SYSTEM_PROMPT,
       prompt: userPrompt,
       temperature: 0.1,
@@ -268,9 +273,7 @@ IMPORTANT: You MUST end by calling recallReport. Even if nothing matches, call i
       },
       toolChoice: "auto",
       stopWhen: isStepCount(MAX_STEPS),
-      providerOptions: {
-        deepseek: { thinking: { type: "disabled" as const } },
-      },
+      providerOptions: workerProviderOptions(input.model.sdk),
     });
 
     // Extract the recallReport tool call

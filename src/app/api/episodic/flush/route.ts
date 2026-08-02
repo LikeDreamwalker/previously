@@ -11,7 +11,8 @@ import { readFile, writeFile } from "@/lib/tools";
 import { readFileLocal, writeFileLocal } from "@/lib/tools/local-fs";
 import { sliceIdToFilePath } from "@/lib/episodic/manager";
 import { z } from "zod";
-import { canWrite, getRepoConfig, isDemo } from "@/lib/capabilities";
+import { getRepoConfig, isDemo } from "@/lib/capabilities";
+import { resolveDataSource } from "@/lib/data-source/resolve";
 
 // ─── Types ───────────────────────────────────────────────────────────────
 
@@ -99,7 +100,7 @@ export async function POST(request: Request) {
     // ── Read the existing slice body (if any) ──────────────────────────
     let existingContent = "";
     try {
-      if (canWrite()) {
+      if (resolveDataSource() === "github") {
         const { owner, repo } = getRepoConfig();
         existingContent = await readFile(slicePath, repo, owner);
       } else {
@@ -126,7 +127,7 @@ export async function POST(request: Request) {
     }
 
     // ── Persist ────────────────────────────────────────────────────────
-    if (canWrite()) {
+    if (resolveDataSource() === "github") {
       const { owner, repo } = getRepoConfig();
       await writeFile(slicePath, newContent, repo, owner, `Flush turns for slice ${sliceId}`);
     } else {

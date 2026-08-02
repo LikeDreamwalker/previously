@@ -25,6 +25,7 @@ import {
   webSearchExecute,
   recallExecute,
   startLoopExecute,
+  continueOutputExecute,
   loopReportExecute,
   type ToolContext,
   type LoopToolContext,
@@ -42,6 +43,25 @@ const toolContextSchema = z.object({
     role: z.string(),
     content: z.string(),
   })),
+  // The worker model config flows through the context for recall / loop calls.
+  // Mirrors ModelConfig structurally so the AI SDK's inferred context type
+  // stays assignable (passthrough/record would force an index signature).
+  workerModel: z.object({
+    id: z.string(),
+    name: z.string(),
+    provider: z.string(),
+    providerName: z.string(),
+    sdk: z.enum(["deepseek", "anthropic", "openai"]),
+    envKey: z.string(),
+    baseURL: z.string().optional(),
+    capabilities: z.object({
+      thinking: z.boolean(),
+      vision: z.boolean(),
+      maxTokens: z.number(),
+    }),
+    defaultThinking: z.boolean(),
+    defaultEffort: z.enum(["low", "medium", "high"]),
+  }).optional(),
 });
 
 const loopToolContextSchema = z.object({
@@ -188,16 +208,26 @@ export const conceptTools = {
 };
 
 // ─── Chat tool set ───────────────────────────────────────────────────────
-
+//
+// The CHAT agent gets only the "pointed read" concept tools (read a slice /
+// belief / cognition it was given an id for) plus the delegation tools
+// (`recall` hands the actual search to the Flash recall engine; webSearch /
+// startLoop / continueOutput). The exploration tools (readTimeline /
+// listSlices / listStrands / readStrand) are the recall engine's job — the
+// main agent does not browse memory itself.
 export const chatTools = {
-  ...conceptTools,
+  readSlice: conceptTools.readSlice,
+  readPreviously: conceptTools.readPreviously,
+  readAgentTimeline: conceptTools.readAgentTimeline,
   recall: tool({
     description:
       "Search past conversation slices for context relevant to the current " +
       "query. Use this when you need to recall what was discussed in previous " +
       "sessions, or when the user references something you need to look up in " +
-      "their history. Returns raw conversation content from matching slices — " +
-      "no summaries, just the original conversations.",
+      "their history. Returns POINTERS — which slices are relevant and why " +
+      "(slice ids, relevance, reasons) — not the conversation content itself. " +
+      "Call readSlice (optionally with a range) to fetch the actual turns from " +
+      "the slices you want to use.",
     inputSchema: z.object({
       query: z
         .string()
@@ -240,6 +270,17 @@ export const chatTools = {
     contextSchema: toolContextSchema,
     execute: startLoopExecute,
   }),
+  continueOutput: tool({
+    description:
+      "Signal that your answer is not finished and you want to keep writing. " +
+      "Use this for LONG or COMPLEX responses: write a section, call this " +
+      "tool, then keep writing in the next step. The system keeps your " +
+      "partial text in context — pick up exactly where you left off, do not " +
+      "repeat. Do NOT call it once your answer is complete.",
+    inputSchema: z.object({}),
+    contextSchema: toolContextSchema,
+    execute: continueOutputExecute,
+  }),
 };
 
 // ─── Loop tool set ───────────────────────────────────────────────────────
@@ -268,15 +309,12 @@ export const loopTools = {
 export function buildChatToolsContext(ctx: ToolContext): Record<keyof typeof chatTools, ToolContext> {
   return {
     readSlice: ctx,
-    listSlices: ctx,
-    readTimeline: ctx,
-    readStrand: ctx,
-    listStrands: ctx,
-    readAgentTimeline: ctx,
     readPreviously: ctx,
+    readAgentTimeline: ctx,
     recall: ctx,
     webSearch: ctx,
     startLoop: ctx,
+    continueOutput: ctx,
   };
 }
 

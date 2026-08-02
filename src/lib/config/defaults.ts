@@ -1,4 +1,4 @@
-import type { UserConfig } from "./types";
+import type { UserConfig, UserConfigOverrides } from "./types";
 import { resolveModelId } from "@/lib/models/registry";
 
 /**
@@ -13,12 +13,15 @@ export const DEFAULTS: UserConfig = {
   },
   context: {
     recentTurnsLimit: 20,
-    tokenBudget: 12000,
   },
   model: {
     provider: "deepseek-v4-pro",
     thinking: true,
     reasoningEffort: "medium" as const,
+  },
+  worker: {
+    mode: "auto" as const,
+    provider: "",
   },
   onboarded: false,
   datasource: "demo",
@@ -32,11 +35,36 @@ export const DEFAULTS: UserConfig = {
 export function mergeConfig(overrides: Partial<UserConfig>): UserConfig {
   const model = { ...DEFAULTS.model, ...overrides.model };
   model.provider = resolveModelId(model.provider);
+  const worker = {
+    ...DEFAULTS.worker,
+    ...(overrides.worker ?? {}),
+  };
+  if (worker.provider) worker.provider = resolveModelId(worker.provider);
   return {
     slicing: { ...DEFAULTS.slicing, ...overrides.slicing },
     context: { ...DEFAULTS.context, ...overrides.context },
     model,
+    worker,
     onboarded: overrides.onboarded ?? DEFAULTS.onboarded,
     datasource: overrides.datasource ?? DEFAULTS.datasource,
   };
+}
+
+/**
+ * Deep-merge partial overrides onto an existing config. Unlike `mergeConfig`
+ * (which merges onto factory defaults), this preserves the CURRENT nested
+ * groups and carries top-level fields (onboarded, datasource) — so a save
+ * never clobbers what's already stored.
+ */
+export function mergeConfigOverrides(
+  current: UserConfig,
+  overrides: UserConfigOverrides,
+): UserConfig {
+  return mergeConfig({
+    ...overrides,
+    slicing: { ...current.slicing, ...overrides.slicing },
+    context: { ...current.context, ...overrides.context },
+    model: { ...current.model, ...overrides.model },
+    worker: { ...current.worker, ...overrides.worker },
+  });
 }

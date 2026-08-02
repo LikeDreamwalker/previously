@@ -36,25 +36,6 @@ import {
   finalizeTurn,
 } from "./steps";
 
-// ─── Static prompt fragments (cache-friendly: never change between turns) ─
-
-const MEMORY_RULES = `## Memory access rules
-
-When you need context from past conversations, follow this order:
-
-1. **Recall first.** Call \`recall\` to search episodic memory. The recall agent returns pointers (which slices, which turns, why relevant). Do NOT call readSlice, readTimeline, readStrand, or listStrands until recall returns results.
-2. **Read deeper if needed.** After recall returns, call \`readSlice\` to fetch content from specific slices. Use \`range\` to fetch only what you need:
-   - \`range: { type: "last", count: 3 }\` — last 3 turns
-   - \`range: { type: "turns", indices: [0, 5, 7] }\` — specific turns
-   - \`range: { type: "date", after: "2026-07-24T00:00:00Z" }\` — turns after a date
-   - Omit \`range\` for the full slice (use sparingly on large slices)
-3. **Follow up.** Use \`readStrand\` or \`readTimeline\` only to follow leads from recall results.
-
-**Think in time.** When recall returns results, prefer more recent slices — the user's current state is usually what matters most. When referencing past conversations, anchor in time ("You mentioned last Tuesday…" not "You mentioned…") so the user knows you placed the timeline correctly. What changed since then is often more useful than what was said.
-
-Use \`webSearch\` for live web information when relevant.
-Use \`startLoop\` to launch durable background loops for ongoing or long-running tasks. Tell the user when you start one.`;
-
 // ─── Pure helpers (serializable data in, serializable data out) ──────────
 
 /** Final assistant text from the agent's message history. */
@@ -126,11 +107,19 @@ export function extractCognition(
     const reasoning = stepObj.reasoning as Array<{ type: string; text?: string; data?: unknown }> | undefined;
     if (reasoning && reasoning.length > 0) {
       lines.push("\n### Thinking");
-      for (const r of reasoning) {
-        const content: unknown = typeof r.text === "string" ? r.text : r.data;
-        if (typeof content === "string" && content.trim()) {
-          lines.push(content);
-        }
+      // Reasoning arrives as per-delta fragments (often token-sized) that must
+      // be concatenated — emitting each fragment on its own line would produce
+      // one-token-per-line output. Join the fragments, then wrap at paragraph
+      // boundaries.
+      const text = reasoning
+        .map((r) => {
+          const content: unknown = typeof r.text === "string" ? r.text : r.data;
+          return typeof content === "string" ? content : "";
+        })
+        .join("");
+      for (const paragraph of text.split(/\n{2,}/)) {
+        const trimmed = paragraph.trim();
+        if (trimmed) lines.push(trimmed);
       }
     }
 
@@ -237,38 +226,36 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
 
   // ── Pre-turn steps ─────────────────────────────────────────────────────
 
-  const { slice, previouslyContent, strandsMenu } = await housekeeping(input);
+  const {
+    slice,
+    previouslyContent,
+    strandsMenu,
+    turnPriming,
+    identityPrompt,
+  } = await housekeeping(input);
 
   // ── Assemble system prompt ──────────────────────────────────────────────
 
-  // Static rules first (never change → highest cache hit rate),
-  // then previously (rarely changes), then strands menu (short, may change),
-  // finally demo notice only when applicable.
-  const systemPrompt = `${MEMORY_RULES}
-
-## What I know about you
-
-${previouslyContent}
-
-The above is my current understanding of you. Tell me if anything is outdated or wrong and I'll update it.
-${strandsMenu ? `
-## Memory topics
-
-${strandsMenu}
-When the user mentions these topics, use recall to search for related memories.
-` : ""}${input.useDemo ? `
-## Demo mode (read-only)
-
-You are running in demo mode. You can browse sample data, recall past conversations, and search the live web — but **writes are not persisted**. No GitHub repo is connected; you are seeing pre-seeded sample memories.
-
-When the user asks to save anything, create memories, or start background tasks, tell them naturally:
-- This is demo mode and data cannot be saved
-- They need to deploy their own instance to unlock full read/write and background loop capabilities
-
-Deployment guide: ${DEPLOY_GUIDE_URL}
-
-It's perfectly normal for users to explore in demo mode — help them understand what this product can do and what they'll get after deploying.
-` : ""}`;
+  // Order (situational → standing → beliefs): the turn brief first, then the
+  // identity block (SOUL + "who you're assisting" + DIRECTIVES — the memory
+  // access rules now live inside DIRECTIVES), then previously (rarely
+  // changes), then the strands menu, then the demo notice.
+  const dateAnchor = input.startedAtIso.slice(0, 10);
+  const systemPrompt = [
+    turnPriming,
+    identityPrompt,
+    `## What I know about you (as of ${dateAnchor})`,
+    previouslyContent,
+    "The above is my current understanding of you. Tell me if anything is outdated or wrong and I'll update it.",
+    strandsMenu
+      ? `## Memory topics\n\n${strandsMenu}\nWhen the user mentions these topics, use recall to search for related memories.`
+      : "",
+    input.useDemo
+      ? `## Demo mode (read-only)\n\nYou are running in demo mode. You can browse sample data, recall past conversations, and search the live web — but **writes are not persisted**. No GitHub repo is connected; you are seeing pre-seeded sample memories.\n\nWhen the user asks to save anything, create memories, or start background tasks, tell them naturally:\n- This is demo mode and data cannot be saved\n- They need to deploy their own instance to unlock full read/write and background loop capabilities\n\nDeployment guide: ${DEPLOY_GUIDE_URL}\n\nIt's perfectly normal for users to explore in demo mode — help them understand what this product can do and what they'll get after deploying.`
+      : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 
   // ── Pro agent ──────────────────────────────────────────────────────────
 
@@ -285,7 +272,7 @@ It's perfectly normal for users to explore in demo mode — help them understand
   const MAX_CONTINUATIONS = 5;
 
   const agent = createChatAgent({
-    modelId: input.model,
+    model: input.modelConfig,
     thinking: input.thinking,
     reasoningEffort: input.reasoningEffort,
     maxOutputTokens: MAX_OUTPUT_TOKENS,
@@ -296,6 +283,7 @@ It's perfectly normal for users to explore in demo mode — help them understand
       useDemo: input.useDemo,
       sliceId: slice.slice_id,
       recentTurns: input.recentTurns,
+      workerModel: input.workerModel,
     }),
   });
 

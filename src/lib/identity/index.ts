@@ -47,5 +47,9 @@ export function buildAgentIdentityPrompt(profile: UserProfile | null): string {
   return parts.join("\n\n");
 }
 
-export { loadUserProfile, getUserName } from "./user-profile";
+export {
+  loadUserProfile,
+  getUserName,
+  parseIdentityFromPreviously,
+} from "./user-profile";
 export type { UserProfile } from "./user-profile";

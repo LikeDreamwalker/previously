@@ -29,7 +29,11 @@
  */
 import { registerSerializationClass } from "workflow/internal/class-serialization";
 import { deepseek } from "@ai-sdk/deepseek";
+import { createAnthropic } from "@ai-sdk/anthropic";
+import { createOpenAI } from "@ai-sdk/openai";
 import deepseekPkg from "@ai-sdk/deepseek/package.json";
+import anthropicPkg from "@ai-sdk/anthropic/package.json";
+import openaiPkg from "@ai-sdk/openai/package.json";
 
 // Global-registry symbol shared with @workflow/serde (Symbol.for — safe to
 // recreate here without importing the transitive package).
@@ -51,4 +55,55 @@ function DeepSeekChatLanguageModelHost(): void {}
 registerSerializationClass(
   `class//@ai-sdk/deepseek@${deepseekPkg.version}//DeepSeekChatLanguageModel`,
   DeepSeekChatLanguageModelHost
+);
+
+// Anthropic — same rebuild-through-factory pattern, keyed on the SDK's actual
+// class name (AnthropicLanguageModel). createAnthropic({}) restores the
+// complete config (baseURL, auth headers from ANTHROPIC_API_KEY, url/fetch)
+// from the step runtime's environment.
+function AnthropicLanguageModelHost(): void {}
+(
+  AnthropicLanguageModelHost as unknown as Record<symbol, unknown>
+)[WORKFLOW_DESERIALIZE] = (options: SerializedModelOptions) =>
+  createAnthropic({})(options.modelId);
+
+registerSerializationClass(
+  `class//@ai-sdk/anthropic@${anthropicPkg.version}//AnthropicLanguageModel`,
+  AnthropicLanguageModelHost
+);
+
+// OpenAI / OpenAI-compatible (Kimi, Qwen, ...) — same rebuild-through-factory
+// pattern. Unlike deepseek/anthropic, there is no single global env var or
+// baseURL for the catch-all provider, so the deserializer reads them back from
+// the serialized config (baseURL + apiKey are JSON-safe; only url/fetch are
+// dropped). When absent it degrades to a bare openai provider rather than
+// crashing with "Class not found".
+function rebuildOpenAIModel(options: SerializedModelOptions) {
+  const cfg = (options.config ?? {}) as Record<string, unknown>;
+  return createOpenAI({
+    ...(typeof cfg.baseURL === "string" && cfg.baseURL ? { baseURL: cfg.baseURL } : {}),
+    ...(typeof cfg.apiKey === "string" && cfg.apiKey ? { apiKey: cfg.apiKey } : {}),
+  })(options.modelId);
+}
+
+function OpenAIChatLanguageModelHost(): void {}
+(
+  OpenAIChatLanguageModelHost as unknown as Record<symbol, unknown>
+)[WORKFLOW_DESERIALIZE] = rebuildOpenAIModel;
+
+registerSerializationClass(
+  `class//@ai-sdk/openai@${openaiPkg.version}//OpenAIChatLanguageModel`,
+  OpenAIChatLanguageModelHost
+);
+
+// The default `provider(modelId)` may instantiate the Responses API model —
+// register that class name too so either default deserializes.
+function OpenAIResponsesLanguageModelHost(): void {}
+(
+  OpenAIResponsesLanguageModelHost as unknown as Record<symbol, unknown>
+)[WORKFLOW_DESERIALIZE] = rebuildOpenAIModel;
+
+registerSerializationClass(
+  `class//@ai-sdk/openai@${openaiPkg.version}//OpenAIResponsesLanguageModel`,
+  OpenAIResponsesLanguageModelHost
 );

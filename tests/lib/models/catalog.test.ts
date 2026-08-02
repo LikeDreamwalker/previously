@@ -1,0 +1,112 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { resolveAvailableModels, __resetCatalogCache } from "@/lib/models/catalog";
+
+const SAVED_ENV = { ...process.env };
+
+function jsonResponse(body: unknown) {
+  return Promise.resolve({ ok: true, json: async () => body });
+}
+
+beforeEach(() => {
+  delete process.env.DEEPSEEK_API_KEY;
+  delete process.env.ANTHROPIC_API_KEY;
+  delete process.env.OPENAI_API_KEY;
+  delete process.env.MOONSHOT_API_KEY;
+  delete process.env.DASHSCOPE_API_KEY;
+  delete process.env.GOOGLE_API_KEY;
+  __resetCatalogCache();
+});
+
+afterEach(() => {
+  process.env = { ...SAVED_ENV };
+  vi.unstubAllGlobals();
+  __resetCatalogCache();
+});
+
+describe("resolveAvailableModels (live provider lists)", () => {
+  it("lists only providers whose key is configured", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((url: string) =>
+        url.startsWith("https://api.deepseek.com")
+          ? jsonResponse({ data: [{ id: "deepseek-v4-flash" }] })
+          : Promise.resolve({ ok: false }),
+      ),
+    );
+    process.env.DEEPSEEK_API_KEY = "sk";
+    const models = await resolveAvailableModels();
+    expect(models.some((m) => m.provider === "deepseek")).toBe(true);
+    expect(models.some((m) => m.provider === "openai")).toBe(false);
+    expect(models.some((m) => m.provider === "moonshotai")).toBe(false);
+  });
+
+  it("normalizes legacy deepseek ids to their current curated name", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ data: [{ id: "deepseek-chat" }] })));
+    process.env.DEEPSEEK_API_KEY = "sk";
+    const models = await resolveAvailableModels();
+    const flash = models.find((m) => m.provider === "deepseek");
+    expect(flash?.id).toBe("deepseek-v4-flash");
+    expect(flash?.name).toBe("DeepSeek V4 Flash");
+  });
+
+  it("dedupes when legacy + current names both come back live", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse({ data: [{ id: "deepseek-v4-flash" }, { id: "deepseek-chat" }] }),
+      ),
+    );
+    process.env.DEEPSEEK_API_KEY = "sk";
+    const models = await resolveAvailableModels();
+    const flash = models.filter((m) => m.id === "deepseek-v4-flash");
+    expect(flash.length).toBe(1);
+  });
+
+  it("synthesizes metadata for unknown live ids with provider defaults", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ data: [{ id: "kimi-k2.5" }] })));
+    process.env.MOONSHOT_API_KEY = "sk";
+    const models = await resolveAvailableModels();
+    const kimi = models.find((m) => m.id === "kimi-k2.5");
+    expect(kimi?.sdk).toBe("openai");
+    expect(kimi?.baseURL).toBe("https://api.moonshot.cn/v1");
+    expect(kimi?.envKey).toBe("MOONSHOT_API_KEY");
+    expect(kimi?.providerName).toBe("Moonshot AI");
+    // OpenAI-compatible unknown models default to thinking off (don't send
+    // reasoning params to providers that may not support them).
+    expect(kimi?.defaultThinking).toBe(false);
+  });
+
+  it("drops non-chat ids from openai-compatible lists", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse({ data: [{ id: "gpt-5.4" }, { id: "text-embedding-3" }, { id: "whisper-1" }] }),
+      ),
+    );
+    process.env.OPENAI_API_KEY = "sk";
+    const models = await resolveAvailableModels();
+    expect(models.some((m) => m.id === "gpt-5.4")).toBe(true);
+    expect(models.some((m) => m.id === "text-embedding-3")).toBe(false);
+    expect(models.some((m) => m.id === "whisper-1")).toBe(false);
+  });
+
+  it("falls back to curated entries when a provider's live list fails", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
+    process.env.DEEPSEEK_API_KEY = "sk";
+    const models = await resolveAvailableModels();
+    expect(models.some((m) => m.id === "deepseek-v4-flash")).toBe(true);
+  });
+
+  it("caches the resolved list within the TTL", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ data: [{ id: "deepseek-v4-flash" }] }));
+    vi.stubGlobal("fetch", fetchMock);
+    process.env.DEEPSEEK_API_KEY = "sk";
+
+    const first = await resolveAvailableModels();
+    const second = await resolveAvailableModels();
+    expect(first).toEqual(second);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
