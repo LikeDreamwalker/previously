@@ -1,152 +1,277 @@
 /**
- * Runtime model catalog — resolves the full available-model list for the
- * selector.
+ * Runtime model catalog — the available models for the deployment, resolved
+ * from each configured provider's live API.
  *
- * Primary source is models.dev (https://models.dev/api.json), a community-
- * maintained database that lists each provider's models with metadata and —
- * crucially — carries each provider's API key env-var name and baseURL. That
- * means ANY provider in the database whose key the deployer sets becomes
- * selectable with no code change; the OpenAI-compatible ones are called via
- * @ai-sdk/openai (see providers.ts / provider.ts).
- *
- * When models.dev is unreachable (timeout, offline, first run), we fall back
- * to the curated list in ./registry. Curated per-model overrides
- * (defaultThinking / defaultEffort) are applied on top of models.dev entries
- * for known ids.
+ * No community catalog: the list is built by calling the model-list endpoint
+ * of every provider whose API key is set (DeepSeek `/models`, Anthropic
+ * `/v1/models`, OpenAI-compatible `/models`, Google's native list). Live ids
+ * are normalized (legacy → current names), enriched with curated metadata for
+ * known ids, and given sensible provider defaults when unknown. A provider
+ * whose list call fails falls back to its curated entries so it stays usable
+ * offline.
  *
  * The result is cached briefly; env changes take effect after TTL.
  */
 
 import type { ModelConfig } from "./registry";
-import { getAvailableModels, getModelOverrides } from "./registry";
-import { resolveProviderRoute } from "./providers";
+import {
+  ALL_MODELS,
+  getModelOverrides,
+  getAvailableModels,
+  resolveModelId,
+} from "./registry";
+import type { ProviderSdk } from "./providers";
 
-const MODELS_DEV_URL = "https://models.dev/api.json";
-// models.dev is a ~3.3MB JSON. On Vercel the fetch is fast, but a conservative
-// timeout avoids spuriously falling back on a slow moment. Local dev with a
-// slow route to models.dev still degrades gracefully to the curated list.
+const CACHE_TTL_MS = 30 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 10_000;
-const CACHE_TTL_MS = 30 * 60 * 1000; // 30 min
 
 let cache: { at: number; models: ModelConfig[] } | null = null;
 
-// ─── models.dev schema (subset we use) ─────────────────────────────────
+// ─── Live list fetching ───────────────────────────────────────────────────
 
-interface ModelsDevModel {
-  id?: string;
+interface LiveModel {
+  id: string;
   name?: string;
-  /** Thinking / extended reasoning support. */
-  reasoning?: boolean;
-  /** Multimodal (image/video) input support. */
-  attachment?: boolean;
-  limit?: { context?: number };
-  modalities?: { input?: string[]; output?: string[] };
 }
 
-interface ModelsDevProvider {
-  /** Candidate env-var names for the API key. */
-  env?: string[];
-  /** Base URL for the OpenAI-compatible endpoint. */
-  api?: string;
-  name?: string;
-  models?: Record<string, ModelsDevModel>;
-}
-
-// ─── Fetch + parse ─────────────────────────────────────────────────────
-
-async function fetchModelsDev(): Promise<Record<string, ModelsDevProvider>> {
+/** Fetch a JSON body with a timeout; null on any failure (never throws). */
+async function fetchJson(
+  url: string,
+  headers: Record<string, string> = {},
+): Promise<unknown | null> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
-    const res = await fetch(MODELS_DEV_URL, {
+    const res = await fetch(url, {
+      headers,
       signal: controller.signal,
       cache: "no-store",
     });
-    if (!res.ok) return {};
-    const json = (await res.json()) as Record<string, unknown>;
-    return json as Record<string, ModelsDevProvider>;
+    if (!res.ok) return null;
+    return await res.json();
   } catch {
-    return {};
+    return null;
   } finally {
     clearTimeout(timeout);
   }
 }
 
 /**
- * Live model list from an OpenAI-compatible `GET {baseURL}/models`. Used to
- * reverse-filter the models.dev catalog to what the provider actually serves.
- * Returns an empty set on any failure (endpoint unsupported, auth, network) —
- * callers then keep the models.dev list for that provider.
+ * Heuristic drop of obvious non-chat ids from OpenAI-compatible `/models`
+ * lists (embeddings, image/audio/tts, moderation, rerank, ...). Providers
+ * whose lists are clean (DeepSeek, Anthropic) don't need it.
  */
-async function fetchProviderModelIds(
-  baseURL: string,
-  envKey: string,
-): Promise<Set<string>> {
-  const key = process.env[envKey];
-  if (!key || !baseURL) return new Set();
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-  try {
-    const res = await fetch(`${baseURL}/models`, {
-      headers: { Authorization: `Bearer ${key}` },
-      signal: controller.signal,
-      cache: "no-store",
-    });
-    if (!res.ok) return new Set();
-    const json = (await res.json()) as { data?: Array<{ id?: unknown }> };
-    const ids = (json.data ?? [])
-      .map((d) => d.id)
-      .filter((x): x is string => typeof x === "string" && x.length > 0);
-    return new Set(ids);
-  } catch {
-    return new Set();
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-/** First configured env name for a provider, or undefined if none set. */
-function pickConfiguredEnv(env: string[] | undefined): string | undefined {
-  if (!env || env.length === 0) return undefined;
-  return env.find((e) => !!process.env[e]);
-}
-
-/**
- * Prune the catalog to the provider's live model list (reverse filter). Each
- * configured provider with an OpenAI-compatible /models endpoint is queried in
- * parallel; providers whose fetch fails (Anthropic has no endpoint, DeepSeek
- * if it doesn't serve /models, offline) keep their full models.dev list.
- */
-async function pruneByLiveModels(
-  models: ModelConfig[],
-): Promise<ModelConfig[]> {
-  const byProvider = new Map<string, ModelConfig[]>();
-  for (const m of models) {
-    const list = byProvider.get(m.provider) ?? [];
-    list.push(m);
-    byProvider.set(m.provider, list);
-  }
-
-  const pruned = await Promise.all(
-    [...byProvider.values()].map(async (group) => {
-      const first = group[0];
-      if (!first.baseURL) return group;
-      const liveIds = await fetchProviderModelIds(first.baseURL, first.envKey);
-      if (liveIds.size === 0) return group;
-      return group.filter((m) => liveIds.has(m.id));
-    }),
+function isChatModelId(id: string): boolean {
+  return !/(embedding|\bembed\b|moderation|whisper|\btts\b|dall-?e|\bimage\b|audio|rerank|transcri|translate|summariz|classificat|ocr)/i.test(
+    id,
   );
-  return pruned.flat();
 }
 
-function isChatModel(model: ModelsDevModel): boolean {
-  const output = model.modalities?.output;
-  // Entries without a modalities field are treated as chat models; entries
-  // with one must accept text output (drops embeddings / image-gen models).
-  return !output || output.includes("text");
+/** OpenAI-compatible `GET {baseURL}/models`. */
+function openAiCompatList(
+  baseURL: string,
+): (key: string) => Promise<LiveModel[]> {
+  return async (key) => {
+    const json = await fetchJson(`${baseURL}/models`, {
+      Authorization: `Bearer ${key}`,
+    });
+    const data = (json as { data?: Array<{ id?: unknown; name?: unknown }> } | null)?.data;
+    if (!Array.isArray(data)) return [];
+    return data
+      .map((d) => ({
+        id: typeof d.id === "string" ? d.id : "",
+        name: typeof d.name === "string" ? d.name : undefined,
+      }))
+      .filter((m) => m.id && isChatModelId(m.id));
+  };
 }
 
-// ─── Build ─────────────────────────────────────────────────────────────
+/** Anthropic `GET /v1/models` (x-api-key auth). */
+async function anthropicList(key: string): Promise<LiveModel[]> {
+  const json = await fetchJson("https://api.anthropic.com/v1/models", {
+    "x-api-key": key,
+    "anthropic-version": "2023-06-01",
+  });
+  const data = (json as { data?: Array<{ id?: unknown; display_name?: unknown }> } | null)?.data;
+  if (!Array.isArray(data)) return [];
+  return data
+    .map((d) => ({
+      id: typeof d.id === "string" ? d.id : "",
+      name: typeof d.display_name === "string" ? d.display_name : undefined,
+    }))
+    .filter((m) => m.id);
+}
+
+/** Google native `GET /v1beta/models` (query-param auth). */
+async function googleList(key: string): Promise<LiveModel[]> {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`;
+  const json = await fetchJson(url);
+  const models = (json as
+    | {
+        models?: Array<{
+          name?: unknown;
+          displayName?: unknown;
+          supportedGenerationMethods?: unknown;
+        }>;
+      }
+    | null)?.models;
+  if (!Array.isArray(models)) return [];
+  return models
+    .filter(
+      (m) =>
+        Array.isArray(m.supportedGenerationMethods) &&
+        m.supportedGenerationMethods.includes("generateContent"),
+    )
+    .map((m) => ({
+      id: typeof m.name === "string" ? m.name.replace(/^models\//, "") : "",
+      name: typeof m.displayName === "string" ? m.displayName : undefined,
+    }))
+    .filter((m) => m.id);
+}
+
+// ─── Provider sources ─────────────────────────────────────────────────────
+
+interface ModelDefaults {
+  thinking: boolean;
+  vision: boolean;
+  maxTokens: number;
+  effort: "low" | "medium" | "high";
+}
+
+interface ProviderSource {
+  /** Provider key — the `provider` field on ModelConfig and route lookups. */
+  key: string;
+  providerName: string;
+  /** Candidate env vars for the API key (first configured one wins). */
+  envKeys: string[];
+  sdk: ProviderSdk;
+  /** OpenAI-compatible base URL; set on ModelConfig for openai-sdk dispatch. */
+  openaiBaseURL?: string;
+  list: (key: string) => Promise<LiveModel[]>;
+  /** Defaults for live ids not present in the curated registry. */
+  defaults: ModelDefaults;
+}
+
+const SOURCES: ProviderSource[] = [
+  {
+    key: "deepseek",
+    providerName: "DeepSeek",
+    envKeys: ["DEEPSEEK_API_KEY"],
+    sdk: "deepseek",
+    openaiBaseURL: "https://api.deepseek.com",
+    list: openAiCompatList("https://api.deepseek.com"),
+    defaults: { thinking: true, vision: false, maxTokens: 393216, effort: "low" },
+  },
+  {
+    key: "anthropic",
+    providerName: "Anthropic",
+    envKeys: ["ANTHROPIC_API_KEY"],
+    sdk: "anthropic",
+    list: anthropicList,
+    defaults: { thinking: true, vision: true, maxTokens: 200000, effort: "medium" },
+  },
+  {
+    key: "openai",
+    providerName: "OpenAI",
+    envKeys: ["OPENAI_API_KEY"],
+    sdk: "openai",
+    openaiBaseURL: "https://api.openai.com/v1",
+    list: openAiCompatList("https://api.openai.com/v1"),
+    defaults: { thinking: false, vision: false, maxTokens: 200000, effort: "low" },
+  },
+  {
+    key: "moonshotai",
+    providerName: "Moonshot AI",
+    envKeys: ["MOONSHOT_API_KEY"],
+    sdk: "openai",
+    openaiBaseURL: "https://api.moonshot.cn/v1",
+    list: openAiCompatList("https://api.moonshot.cn/v1"),
+    defaults: { thinking: false, vision: false, maxTokens: 200000, effort: "low" },
+  },
+  {
+    key: "alibaba",
+    providerName: "Alibaba",
+    envKeys: ["DASHSCOPE_API_KEY"],
+    sdk: "openai",
+    openaiBaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    list: openAiCompatList("https://dashscope.aliyuncs.com/compatible-mode/v1"),
+    defaults: { thinking: false, vision: false, maxTokens: 200000, effort: "low" },
+  },
+  {
+    key: "google",
+    providerName: "Google",
+    envKeys: ["GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY", "GEMINI_API_KEY"],
+    sdk: "openai",
+    openaiBaseURL: "https://generativelanguage.googleapis.com/v1beta/openai",
+    list: googleList,
+    defaults: { thinking: false, vision: false, maxTokens: 200000, effort: "low" },
+  },
+  {
+    key: "mistral",
+    providerName: "Mistral",
+    envKeys: ["MISTRAL_API_KEY"],
+    sdk: "openai",
+    openaiBaseURL: "https://api.mistral.ai/v1",
+    list: openAiCompatList("https://api.mistral.ai/v1"),
+    defaults: { thinking: false, vision: false, maxTokens: 200000, effort: "low" },
+  },
+  {
+    key: "xai",
+    providerName: "xAI",
+    envKeys: ["XAI_API_KEY"],
+    sdk: "openai",
+    openaiBaseURL: "https://api.x.ai/v1",
+    list: openAiCompatList("https://api.x.ai/v1"),
+    defaults: { thinking: false, vision: false, maxTokens: 200000, effort: "low" },
+  },
+  {
+    key: "groq",
+    providerName: "Groq",
+    envKeys: ["GROQ_API_KEY"],
+    sdk: "openai",
+    openaiBaseURL: "https://api.groq.com/openai/v1",
+    list: openAiCompatList("https://api.groq.com/openai/v1"),
+    defaults: { thinking: false, vision: false, maxTokens: 200000, effort: "low" },
+  },
+];
+
+// ─── Config building ──────────────────────────────────────────────────────
+
+/** First configured candidate env var for a provider, or undefined. */
+function firstConfiguredKey(envKeys: string[]): string | undefined {
+  return envKeys.find((k) => !!process.env[k]);
+}
+
+function buildConfig(
+  id: string,
+  name: string | undefined,
+  source: ProviderSource,
+  envKey: string,
+): ModelConfig {
+  const normalized = resolveModelId(id);
+  const curated = ALL_MODELS.find((m) => m.id === normalized);
+  if (curated) return curated;
+
+  const override = getModelOverrides(normalized);
+  return {
+    id: normalized,
+    name: name ?? normalized,
+    provider: source.key,
+    providerName: source.providerName,
+    sdk: source.sdk,
+    envKey,
+    baseURL: source.openaiBaseURL,
+    capabilities: {
+      thinking: source.defaults.thinking,
+      vision: source.defaults.vision,
+      maxTokens: source.defaults.maxTokens,
+    },
+    defaultThinking: source.defaults.thinking,
+    defaultEffort: override?.defaultEffort ?? source.defaults.effort,
+  };
+}
+
+// ─── Public API ───────────────────────────────────────────────────────────
 
 /** Reset the module-level cache (used by tests). */
 export function __resetCatalogCache(): void {
@@ -154,80 +279,43 @@ export function __resetCatalogCache(): void {
 }
 
 /**
- * Build ModelConfig entries from a models.dev payload for every provider whose
- * API key env var is set. Exported for testing; callers should use
- * `resolveAvailableModels`.
- */
-export function buildFromModelsDev(
-  data: Record<string, ModelsDevProvider>,
-): ModelConfig[] {
-  const models: ModelConfig[] = [];
-
-  for (const [providerKey, provider] of Object.entries(data)) {
-    const envKey = pickConfiguredEnv(provider.env);
-    if (!envKey) continue; // this provider's key isn't configured — skip
-
-    const route = resolveProviderRoute(providerKey);
-    for (const [modelKey, raw] of Object.entries(provider.models ?? {})) {
-      if (!isChatModel(raw)) continue;
-      const id = raw.id ?? modelKey;
-      if (!id) continue;
-
-      const reasoning = raw.reasoning ?? true;
-      const overrides = getModelOverrides(id);
-      const context = raw.limit?.context;
-
-      models.push({
-        id,
-        name: raw.name ?? id,
-        provider: providerKey,
-        providerName: provider.name ?? providerKey,
-        sdk: route.sdk,
-        envKey,
-        // models.dev carries the provider's base URL. Dedicated SDKs ignore it;
-        // OpenAI-compatible providers pass it to createOpenAI. It's also the
-        // basis for the live /models reverse-filter below.
-        baseURL: provider.api,
-        capabilities: {
-          thinking: reasoning,
-          vision: raw.attachment ?? false,
-          maxTokens: context ?? 200000,
-        },
-        defaultThinking: overrides?.defaultThinking ?? reasoning,
-        defaultEffort: overrides?.defaultEffort ?? (reasoning ? "medium" : "low"),
-      });
-    }
-  }
-
-  return models;
-}
-
-// ─── Public API ────────────────────────────────────────────────────────
-
-/**
  * Resolve the available models for the current deployment. Server-only
- * (reads process.env). Returns models.dev-derived entries for every provider
- * whose API key is configured, falling back to the curated list when
- * models.dev is unreachable.
+ * (reads process.env). For every provider whose API key is configured, pulls
+ * the live model list; unknown ids get provider defaults; a failed list falls
+ * back to that provider's curated entries.
  */
 export async function resolveAvailableModels(): Promise<ModelConfig[]> {
   const now = Date.now();
   if (cache && now - cache.at < CACHE_TTL_MS) return cache.models;
 
-  const devData = await fetchModelsDev();
-  const base =
-    devData && Object.keys(devData).length > 0
-      ? buildFromModelsDev(devData)
-      : getAvailableModels();
+  const configured = SOURCES.filter((s) => firstConfiguredKey(s.envKeys));
+  const groups = await Promise.all(
+    configured.map(async (source) => {
+      const envKey = firstConfiguredKey(source.envKeys) as string;
+      let live: LiveModel[] = [];
+      try {
+        live = await source.list(envKey);
+      } catch {
+        live = [];
+      }
+      if (live.length > 0) {
+        return live.map((m) => buildConfig(m.id, m.name, source, envKey));
+      }
+      console.warn(
+        `[catalog] ${source.key}: live model list unavailable — using curated entries`,
+      );
+      return getAvailableModels().filter((m) => m.provider === source.key);
+    }),
+  );
 
-  // Reverse filter: intersect with each provider's live /models list so the
-  // selector shows what's actually callable (legacy/phantom ids drop out).
-  // Only meaningful when models.dev provided the catalog (curated fallback has
-  // no baseURL to query against).
-  const models =
-    devData && Object.keys(devData).length > 0
-      ? await pruneByLiveModels(base)
-      : base;
+  // Dedupe by id — legacy + current names normalize to the same id.
+  const seen = new Set<string>();
+  const models: ModelConfig[] = [];
+  for (const m of groups.flat()) {
+    if (seen.has(m.id)) continue;
+    seen.add(m.id);
+    models.push(m);
+  }
 
   cache = { at: now, models };
   return models;
