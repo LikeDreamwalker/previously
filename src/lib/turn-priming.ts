@@ -336,6 +336,7 @@ export function buildTurnPriming(input: PrimingInput): string {
     "## This turn — analysis",
     "Analyzed:",
     `- Sent: ${t.local} (${t.zone}${offset}) · UTC ${t.utc}`,
+    `- Slice ids are UTC labels (YYYY-MM-DD-HHMM; stored at memory/episodic/slices/YYYY/MM/DD/HHMM). The times in this brief are already computed in the user's zone and in UTC.`,
   ];
 
   // Intent — LLM-classified in housekeeping. Omitted entirely when the analyze
