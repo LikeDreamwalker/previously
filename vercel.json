@@ -5,5 +5,5 @@
       "supportsCancellation": true
     }
   },
-  "ignoreCommand": "git diff --name-only HEAD^ HEAD 2>/dev/null | grep -qvE '^(memory|tasks|sessions)/' && exit 1 || exit 0"
+  "ignoreCommand": "node scripts/vercel-ignore.mjs"
 }

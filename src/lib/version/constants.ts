@@ -36,7 +36,6 @@ export const SYNC_ROOT_FILES = [
   "postcss.config.mjs",
   "eslint.config.mjs",
   "vercel.json",
-  "vercel-ignore.sh",
   "vitest.config.mts",
   "playwright.config.ts",
   "LICENSE",
