@@ -29,6 +29,25 @@ export async function getUserConfig(): Promise<UserConfig> {
   return loadUserConfig();
 }
 
+/**
+ * Deep-merge partial overrides onto the current config. Unlike `mergeConfig`
+ * (which merges onto factory defaults), this preserves the CURRENT nested
+ * groups and also carries top-level fields (onboarded, datasource) — so a
+ * save never clobbers what's already stored.
+ */
+export function mergeConfigOverrides(
+  current: UserConfig,
+  overrides: UserConfigOverrides,
+): UserConfig {
+  return mergeConfig({
+    ...overrides,
+    slicing: { ...current.slicing, ...overrides.slicing },
+    context: { ...current.context, ...overrides.context },
+    model: { ...current.model, ...overrides.model },
+    worker: { ...current.worker, ...overrides.worker },
+  });
+}
+
 export async function saveUserConfig(
   overrides: UserConfigOverrides,
 ): Promise<{ ok: boolean; error?: string }> {
@@ -39,12 +58,7 @@ export async function saveUserConfig(
     }
 
     const current = await loadUserConfig();
-    const merged = mergeConfig({
-      slicing: { ...current.slicing, ...overrides.slicing },
-      context: { ...current.context, ...overrides.context },
-      model: { ...current.model, ...overrides.model },
-      worker: { ...current.worker, ...overrides.worker },
-    });
+    const merged = mergeConfigOverrides(current, overrides);
 
     const json = JSON.stringify(merged, null, 2);
 
