@@ -1,4 +1,4 @@
-import type { UserConfig } from "./types";
+import type { UserConfig, UserConfigOverrides } from "./types";
 import { resolveModelId } from "@/lib/models/registry";
 
 /**
@@ -48,4 +48,23 @@ export function mergeConfig(overrides: Partial<UserConfig>): UserConfig {
     onboarded: overrides.onboarded ?? DEFAULTS.onboarded,
     datasource: overrides.datasource ?? DEFAULTS.datasource,
   };
+}
+
+/**
+ * Deep-merge partial overrides onto an existing config. Unlike `mergeConfig`
+ * (which merges onto factory defaults), this preserves the CURRENT nested
+ * groups and carries top-level fields (onboarded, datasource) — so a save
+ * never clobbers what's already stored.
+ */
+export function mergeConfigOverrides(
+  current: UserConfig,
+  overrides: UserConfigOverrides,
+): UserConfig {
+  return mergeConfig({
+    ...overrides,
+    slicing: { ...current.slicing, ...overrides.slicing },
+    context: { ...current.context, ...overrides.context },
+    model: { ...current.model, ...overrides.model },
+    worker: { ...current.worker, ...overrides.worker },
+  });
 }

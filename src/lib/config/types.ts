@@ -48,3 +48,14 @@ export interface UserConfig {
   /** User's preferred data source: "demo" (benchmark personas) or "own" (GitHub repo). Only persisted when writes are available. */
   datasource?: "demo" | "own";
 }
+
+/**
+ * Partial config overrides for a save — nested groups are partial too, so
+ * callers can touch just `model.provider` without respecifying the rest.
+ */
+export type UserConfigOverrides = Partial<
+  Omit<UserConfig, "model" | "worker">
+> & {
+  model?: Partial<ModelConfig>;
+  worker?: Partial<WorkerConfig>;
+};

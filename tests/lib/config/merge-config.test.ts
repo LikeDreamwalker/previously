@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { mergeConfigOverrides } from "@/lib/config/actions";
+import { mergeConfigOverrides } from "@/lib/config/defaults";
 import type { UserConfig } from "@/lib/config/types";
 
 const current: UserConfig = {
