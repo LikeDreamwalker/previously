@@ -107,11 +107,19 @@ export function extractCognition(
     const reasoning = stepObj.reasoning as Array<{ type: string; text?: string; data?: unknown }> | undefined;
     if (reasoning && reasoning.length > 0) {
       lines.push("\n### Thinking");
-      for (const r of reasoning) {
-        const content: unknown = typeof r.text === "string" ? r.text : r.data;
-        if (typeof content === "string" && content.trim()) {
-          lines.push(content);
-        }
+      // Reasoning arrives as per-delta fragments (often token-sized) that must
+      // be concatenated — emitting each fragment on its own line would produce
+      // one-token-per-line output. Join the fragments, then wrap at paragraph
+      // boundaries.
+      const text = reasoning
+        .map((r) => {
+          const content: unknown = typeof r.text === "string" ? r.text : r.data;
+          return typeof content === "string" ? content : "";
+        })
+        .join("");
+      for (const paragraph of text.split(/\n{2,}/)) {
+        const trimmed = paragraph.trim();
+        if (trimmed) lines.push(trimmed);
       }
     }
 
