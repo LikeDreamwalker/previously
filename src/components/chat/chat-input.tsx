@@ -8,14 +8,25 @@ import { Link } from "@/i18n/navigation";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ModelSelector, type ModelDefaults } from "./model-selector";
 
-const EFFORT_LEVELS = ["low", "medium", "high"] as const;
-type EffortLevel = (typeof EFFORT_LEVELS)[number];
+/**
+ * Only "low" and "high" are meaningfully distinct for DeepSeek — "medium" is
+ * silently mapped to "high" server-side (v0.6 reasoning semantics), so the
+ * cycle offers just two levels. "medium" stays in the type for backward
+ * compatibility with stored configs; it displays and cycles as "high".
+ */
+const EFFORT_LEVELS = ["low", "high"] as const;
+type EffortLevel = "low" | "medium" | "high";
 
 const EFFORT_LABELS: Record<EffortLevel, string> = {
   low: "Low",
-  medium: "Med",
+  medium: "High",
   high: "High",
 };
+
+/** A stored "medium" is a high in disguise — normalize before cycling. */
+function normalizeEffort(level: EffortLevel): "low" | "high" {
+  return level === "low" ? "low" : "high";
+}
 
 interface ChatInputProps {
   onSubmit: (message: string) => void;
@@ -124,7 +135,7 @@ export function ChatInput({
   };
 
   const cycleEffort = useCallback(() => {
-    const idx = EFFORT_LEVELS.indexOf(currentEffort);
+    const idx = EFFORT_LEVELS.indexOf(normalizeEffort(currentEffort));
     const next = EFFORT_LEVELS[(idx + 1) % EFFORT_LEVELS.length];
     onEffortChange(next);
   }, [currentEffort, onEffortChange]);
@@ -249,7 +260,7 @@ export function ChatInput({
                 >
                   <Zap className="h-3 w-3" />
                   <span className="text-[10px] font-medium leading-none">
-                    {mounted ? EFFORT_LABELS[currentEffort] : "Med"}
+                    {mounted ? EFFORT_LABELS[currentEffort] : "High"}
                   </span>
                 </button>
               }

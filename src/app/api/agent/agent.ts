@@ -147,6 +147,9 @@ export function createLoopAgent(opts: {
   return new WorkflowAgent({
     model: createModel(opts.model),
     temperature: 0.4,
+    // Layer 1: cap each LLM call. The loop worker is thinking-disabled (fast
+    // flash), so 8000 tokens is comfortably safe under the 300s step limit.
+    maxOutputTokens: 8_000,
     // V4 models default to thinking ENABLED — the loop worker matches the old
     // deepseek-chat behavior (non-thinking); its power is iteration, not depth.
     providerOptions: {

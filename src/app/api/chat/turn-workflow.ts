@@ -31,6 +31,7 @@ import type {
   StartedLoopRef,
 } from "@/lib/chat/turn-types";
 import { DEPLOY_GUIDE_URL } from "@/lib/capabilities";
+import { tokenBudget } from "@/lib/chat/token-budget";
 import {
   housekeeping,
   finalizeTurn,
@@ -260,14 +261,16 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
   // ── Pro agent ──────────────────────────────────────────────────────────
 
   /**
-   * Safety cap on tokens per LLM call. Each `doStreamStep` inside the
-   * WorkflowAgent is a single Vercel Workflow step with a 5‑minute hard
-   * limit. 8000 tokens keeps even a slow thinking-model generation under
-   * that ceiling. When the model hits this cap mid-response, the
-   * continuation loop below feeds its output back so it can pick up
-   * where it left off — the user sees a single continuous stream.
+   * Per-provider token cap (Layer 1 of v0.6). Each `doStreamStep` inside the
+   * WorkflowAgent is a single Vercel Workflow step with a 5‑minute hard limit;
+   * the budget keeps a worst-case generation under the wall (see
+   * src/lib/chat/token-budget.ts). When the model hits the cap mid-response,
+   * the continuation loop below feeds its output back so it can pick up where
+   * it left off — the user sees a single continuous stream.
    */
-  const MAX_OUTPUT_TOKENS = 8_000;
+  const budget = tokenBudget(input.modelConfig.sdk);
+  /** Wall-clock safety fuse per stream call — see token-budget.ts rationale. */
+  const STEP_TIMEOUT_MS = 280_000;
   /** Hard cap on continuations to guard against infinite loops. */
   const MAX_CONTINUATIONS = 5;
 
@@ -275,7 +278,7 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
     model: input.modelConfig,
     thinking: input.thinking,
     reasoningEffort: input.reasoningEffort,
-    maxOutputTokens: MAX_OUTPUT_TOKENS,
+    maxOutputTokens: budget,
     toolsContext: buildChatToolsContext({
       repo: input.repo,
       owner: input.owner,
@@ -307,6 +310,12 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
         stopWhen: isStepCount(20),
         sendFinish: false,
         preventClose: true,
+        // Per-call overrides take precedence over the constructor defaults —
+        // the token cap keeps generation under the 300s wall, the timeout is
+        // the independent safety fuse for rate variance / server-side effort
+        // escalation.
+        timeout: STEP_TIMEOUT_MS,
+        maxOutputTokens: budget,
       });
 
       allText += extractFinalText(result.messages);

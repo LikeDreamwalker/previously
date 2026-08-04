@@ -132,6 +132,10 @@ export async function loopWorkflow(input: LoopInput): Promise<LoopResult> {
       prompt: buildLoopPrompt(input),
       writable: getWritable<ModelCallStreamPart>(),
       stopWhen: [loopReportedDone, noProgress, isStepCount(stepBudget(input))],
+      // Layer 1: per-call token cap + wall-clock fuse keep each LLM step under
+      // the 300s Vercel limit (constructor cap is 8000; explicit here too).
+      maxOutputTokens: 8_000,
+      timeout: 280_000,
       // finalizeLoop owns the stream tail (final data-loop chunk + close).
       sendFinish: false,
       preventClose: true,
