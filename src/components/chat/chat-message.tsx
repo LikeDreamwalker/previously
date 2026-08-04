@@ -7,13 +7,26 @@ import { AnimatePresence, motion } from "motion/react";
 import { MarkdownRenderer } from "./markdown";
 import { ThinkingSteps } from "./thinking";
 import { PhaseIndicator } from "./phase-indicator";
+import { ToolLayout } from "./tool-layout";
 import { MessageActions } from "./message-actions";
 import { ToolRenderer } from "./tool-renderer";
 import { Message, MessageContent, MessageFooter } from "@/components/ui/message";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
-import { Activity } from "lucide-react";
+import {
+  Activity,
+  AlertTriangle,
+  Brain,
+  Calendar,
+  FileText,
+  GitBranch,
+  Sparkles,
+  Tag,
+  XCircle,
+} from "lucide-react";
 import { LoadingTip } from "./loading-tip";
 import { EvolutionIndicator, type EvolutionState } from "./evolution-indicator";
+import type { TurnStatus } from "@/lib/chat/turn-types";
+import type { ToolRenderState } from "@/lib/chat/tool-state";
 
 interface ChatMessageProps {
   message: UIMessage;
@@ -40,11 +53,29 @@ type StreamItem =
   | { kind: "reasoning"; text: string }
   | { kind: "text"; content: string }
   | { kind: "tool"; toolCallId: string; toolName: string; state: string; input?: unknown; output?: unknown }
-  | { kind: "phase"; phase: string; running?: boolean; mode?: string; summaries?: string[] };
+  | { kind: "phase"; phase: string; running?: boolean; mode?: string; summaries?: string[]; compact?: boolean }
+  | { kind: "turnStatus"; status: TurnStatus; running?: boolean; thinkIds?: string[]; questions?: string[] };
 
-/** Maps a running-phase i18n key to its done-state key. */
+/**
+ * Maps a running-phase i18n key to its done-state key. `slicing` is kept for
+ * backward compatibility with messages streamed before the housekeeping phases
+ * were granularized; the current phases (slice/tags/context/strands) all carry
+ * a `compact: true` flag and render as ToolLayout bars.
+ */
 const PHASE_DONE_KEYS: Record<string, string> = {
   slicing: "sliced",
+  slice: "sliced",
+  tags: "tagged",
+  context: "contextLoaded",
+  strands: "strandsWoven",
+};
+
+/** Per-housekeeping-phase icons for the compact ToolLayout bars. */
+const COMPACT_PHASE_ICONS: Record<string, React.ReactNode> = {
+  slice: <Calendar className="h-3 w-3" />,
+  tags: <Tag className="h-3 w-3" />,
+  context: <FileText className="h-3 w-3" />,
+  strands: <GitBranch className="h-3 w-3" />,
 };
 
 /** Stable key for a stream item — used by AnimatePresence for enter/exit animation. */
@@ -58,6 +89,8 @@ function itemKey(item: StreamItem, index: number): string {
       return `tool-${item.toolCallId}`;
     case "phase":
       return `phase-${item.phase}-${index}`;
+    case "turnStatus":
+      return `turnStatus-${item.status}-${index}`;
   }
 }
 
@@ -87,7 +120,7 @@ function buildStream(parts: readonly AnyPart[], isStreaming: boolean): StreamIte
       textBuf.push((p as { text: string }).text ?? "");
     } else if (p.type === "data-phase") {
       flushText();
-      const d = p.data as { phase?: string; running?: boolean; mode?: string; summaries?: string[] } | undefined;
+      const d = p.data as { phase?: string; running?: boolean; mode?: string; summaries?: string[]; compact?: boolean } | undefined;
       if (d?.phase) {
         // Merge with existing phase item of the same name — a phase emits
         // { running: true } at start and { running: false, summaries: [...] } at end.
@@ -99,6 +132,7 @@ function buildStream(parts: readonly AnyPart[], isStreaming: boolean): StreamIte
           existing.running = d.running ?? false;
           if (d.mode !== undefined) existing.mode = d.mode;
           if (d.summaries !== undefined) existing.summaries = d.summaries;
+          if (d.compact !== undefined) existing.compact = d.compact;
         } else {
           items.push({
             kind: "phase",
@@ -106,6 +140,62 @@ function buildStream(parts: readonly AnyPart[], isStreaming: boolean): StreamIte
             running: d.running ?? false,
             mode: d.mode,
             summaries: d.summaries,
+            compact: d.compact,
+          });
+        }
+      }
+    } else if (p.type === "data-turn-status") {
+      flushText();
+      const d = p.data as {
+        status?: TurnStatus;
+        running?: boolean;
+        thinkIds?: string[];
+        questions?: string[];
+      } | undefined;
+      const status = d?.status;
+      if (!status || status === "active") continue;
+
+      if (status === "thinking" || status === "synthesizing") {
+        // Mid-turn lifecycle — one card per status, merged in place as the
+        // running true→false pair arrives (distinct per-status chunk ids).
+        const existing = items.find(
+          (it): it is Extract<StreamItem, { kind: "turnStatus" }> =>
+            it.kind === "turnStatus" && it.status === status,
+        );
+        if (existing) {
+          if (d.running !== undefined) existing.running = d.running;
+          if (d.thinkIds !== undefined) existing.thinkIds = d.thinkIds;
+          if (d.questions !== undefined) existing.questions = d.questions;
+        } else {
+          items.push({
+            kind: "turnStatus",
+            status,
+            running: d.running ?? true,
+            thinkIds: d.thinkIds,
+            questions: d.questions,
+          });
+        }
+      } else {
+        // Terminal status: close any in-flight lifecycle cards, and surface
+        // interrupted/error inline (done renders nothing — the reply text is
+        // the completion signal).
+        for (const it of items) {
+          if (it.kind === "turnStatus") it.running = false;
+        }
+        if (status === "done") continue;
+        const terminalPhase =
+          status === "interrupted" ? "terminal-interrupted" : "terminal-error";
+        const existing = items.find(
+          (it): it is Extract<StreamItem, { kind: "phase" }> =>
+            it.kind === "phase" && it.phase === terminalPhase,
+        );
+        if (!existing) {
+          items.push({
+            kind: "phase",
+            phase: terminalPhase,
+            running: false,
+            mode: "terminal",
+            summaries: [],
           });
         }
       }
@@ -221,7 +311,65 @@ export const ChatMessage = memo(function ChatMessage({ message, onRegenerate, is
                     );
                   }
                   if (item.kind === "phase") {
-                    // Phase label switches based on running state.
+                    // Housekeeping sub-steps — unobtrusive ToolLayout bars.
+                    if (item.compact) {
+                      const doneKey = PHASE_DONE_KEYS[item.phase];
+                      const label = item.running
+                        ? t(item.phase)
+                        : doneKey
+                          ? t(doneKey)
+                          : t(item.phase);
+                      const compactState: ToolRenderState = {
+                        running: item.running ?? false,
+                        inputStreaming: false,
+                        interrupted: false,
+                        denied: false,
+                        approvalRequested: false,
+                        isActiveApproval: false,
+                      };
+                      return (
+                        <ToolLayout
+                          key={key}
+                          name={label}
+                          summary={item.summaries?.join(", ") ?? ""}
+                          state={compactState}
+                          icon={COMPACT_PHASE_ICONS[item.phase]}
+                        />
+                      );
+                    }
+
+                    // Terminal interrupted/error — prominent static card.
+                    if (item.mode === "terminal") {
+                      const isInterrupted = item.phase.includes("interrupted");
+                      return (
+                        <PhaseIndicator
+                          key={key}
+                          mode="static"
+                          icon={
+                            isInterrupted ? (
+                              <AlertTriangle className="h-3.5 w-3.5 text-yellow-500" />
+                            ) : (
+                              <XCircle className="h-3.5 w-3.5 text-red-500" />
+                            )
+                          }
+                          label={
+                            isInterrupted
+                              ? t("turnInterrupted")
+                              : t("turnError")
+                          }
+                          state={{
+                            running: false,
+                            inputStreaming: false,
+                            interrupted: isInterrupted,
+                            denied: false,
+                            approvalRequested: false,
+                            isActiveApproval: false,
+                          }}
+                        />
+                      );
+                    }
+
+                    // Regular phase — PhaseIndicator static.
                     const doneKey = PHASE_DONE_KEYS[item.phase];
                     const label = item.running
                       ? t(item.phase)
@@ -252,6 +400,66 @@ export const ChatMessage = memo(function ChatMessage({ message, onRegenerate, is
                               </div>
                             : undefined
                         }
+                      />
+                    );
+                  }
+
+                  if (item.kind === "turnStatus") {
+                    // thinkDeep dispatch/integration — prominent PhaseIndicator.
+                    const isThinking = item.status === "thinking";
+                    const running = (item.running ?? true) && (isStreaming ?? false);
+                    const count = (item.questions ?? []).length;
+                    const questions = item.questions ?? [];
+                    const expandedContent = questions.length > 0 ? (
+                      <div className="space-y-1.5">
+                        {questions.map((q, j) => (
+                          <div
+                            key={j}
+                            className="text-xs text-muted-foreground leading-relaxed"
+                          >
+                            {q}
+                          </div>
+                        ))}
+                      </div>
+                    ) : undefined;
+                    return (
+                      <PhaseIndicator
+                        key={key}
+                        mode="streaming"
+                        icon={
+                          isThinking ? (
+                            <Brain className="h-3.5 w-3.5" />
+                          ) : (
+                            <Sparkles className="h-3.5 w-3.5" />
+                          )
+                        }
+                        label={
+                          isThinking
+                            ? running
+                              ? t("dispatching")
+                              : t("dispatched")
+                            : running
+                              ? t("synthesizing")
+                              : t("synthesized")
+                        }
+                        state={{
+                          running,
+                          inputStreaming: false,
+                          interrupted: false,
+                          denied: false,
+                          approvalRequested: false,
+                          isActiveApproval: false,
+                        }}
+                        streamingText={
+                          isThinking
+                            ? count > 0
+                              ? t("subAgentsWorking", { count })
+                              : undefined
+                            : count > 0
+                              ? t("reportsIntegrating", { count })
+                              : undefined
+                        }
+                        expandedContent={expandedContent}
                       />
                     );
                   }

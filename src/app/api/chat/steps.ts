@@ -57,6 +57,28 @@ import { deriveTurnStatus } from "@/lib/chat/turn-types";
 // ─── Private helpers ──────────────────────────────────────────────────────
 
 /**
+ * Emit a compact housekeeping phase (rendered as a ToolLayout card on the
+ * client). Each phase is a `data-phase` chunk with `compact: true` so
+ * buildStream renders it as an unobtrusive tool-style bar, not a prominent
+ * PhaseIndicator. Emit `running: true` before the work, `running: false`
+ * (with result summaries) after.
+ */
+async function emitPhase(
+  phase: string,
+  running: boolean,
+  summaries?: string[],
+): Promise<void> {
+  const writable = getWritable<UIMessageChunk>();
+  const writer = writable.getWriter();
+  await writer.write({
+    type: "data-phase" as `data-${string}`,
+    id: `phase-${phase}`,
+    data: { phase, running, compact: true, summaries },
+  } as UIMessageChunk);
+  writer.releaseLock();
+}
+
+/**
  * Detect when the client has lost conversational context (page refresh,
  * device switch). Compares assistant messages in the client's message
  * history against agent turns in the recovered slice.
@@ -130,14 +152,8 @@ async function readMostRecentClosedSlice(): Promise<PrevSliceRef | null> {
 export async function housekeeping(input: TurnInput): Promise<HousekeepingResult> {
   "use step";
 
-  // ── Phase: UI spinner ──────────────────────────────────────────────────
-  const phaseWriter0 = getWritable<UIMessageChunk>().getWriter();
-  await phaseWriter0.write({
-    type: "data-phase" as `data-${string}`,
-    id: "phase-prepare",
-    data: { phase: "slicing", running: true },
-  } as UIMessageChunk);
-  phaseWriter0.releaseLock();
+  // ── Phase: slice — manage the time slice (recover/close/create) ─────
+  await emitPhase("slice", true);
 
   const { config, clientTimezone, lastUserMessage, modelMessages } = input;
   const silenceMs = config.slicing.timeSilenceMinutes * 60 * 1000;
@@ -169,6 +185,8 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   }
 
   // ── 2. One worker-model analyze: message tags + semantic hint + (on close) marking ──
+  // Phase: tags — one cheap worker-model pass extracts topics from the message.
+  await emitPhase("tags", true);
   const existingStrands = await readStrands();
   const analysis = await analyzeTurn({
     model: input.workerModel,
@@ -208,6 +226,7 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
     }
     console.log(`[FlashTags] Extracted: ${analysis.messageTags.join(", ")}`);
   }
+  await emitPhase("tags", false, analysis.messageTags);
 
   // ── 5. Append user turn ───────────────────────────────────────────────
   const isNewSlice =
@@ -220,6 +239,10 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
       turnId: input.turnId,
     });
   }
+  await emitPhase("slice", false, [slice.slice_id]);
+
+  // ── Phase: context — load the user profile (previously + identity) ───
+  await emitPhase("context", true);
 
   // ── 4. Ensure previously.md (pure copy forward, no decay) ────────────
   const previouslyContent = await ensurePreviously(slice.slice_id);
@@ -234,9 +257,11 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   // (which reads strands.json) and opening the UI stream.
   await flushBatch(`Turn ${input.turnId} — housekeeping`);
 
-  // ── 6. Build strands menu ────────────────────────────────────────────
+  // ── Phase: strands — weave the memory-topic index ────────────────────
+  await emitPhase("strands", true);
   const strands = await readStrands();
   const strandsMenu = buildStrandsMenu(strands);
+  await emitPhase("strands", false, [`${Object.keys(strands).length} strands`]);
 
   // ── 6b. Continuity + turn priming + identity ─────────────────────────
   // Continuity source: a slice we closed this call (its `end` is exact), else
@@ -267,15 +292,12 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   const profile = parseIdentityFromPreviously(previouslyContent);
   const identityPrompt = buildAgentIdentityPrompt(profile);
 
+  await emitPhase("context", false, [`continuity: ${continuity.tier}`]);
+
   // ── 7. Open UI stream ────────────────────────────────────────────────
   const writer = getWritable<UIMessageChunk>().getWriter();
   await writer.write({ type: "start" } as UIMessageChunk);
   await writer.write({ type: "start-step" } as UIMessageChunk);
-  await writer.write({
-    type: "data-phase" as `data-${string}`,
-    id: "phase-prepare",
-    data: { phase: "slicing", running: false },
-  } as UIMessageChunk);
   writer.releaseLock();
 
   return { slice, previouslyContent, strandsMenu, turnPriming, identityPrompt };
@@ -289,10 +311,27 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
  * resuming as "synthesizing"). A step (not inline in the workflow body) so the
  * ISO timestamp comes from real wall-clock Date, which the deterministic body
  * cannot use. Best-effort — a stream failure must not fail the turn.
+ *
+ * `opts.running` marks a phase transition: `true` when entering a status (the
+ * client starts its spinner/timer), `false` when the status's work completes.
+ * `thinkIds`/`questions` carry the dispatched sub-agent descriptors so the
+ * client can show them in the thinking card.
+ *
+ * IMPORTANT: each status uses its OWN chunk id (`turn-status-${status}`). The
+ * SDK merges parts by type+id by OVERWRITING the data, so a shared id would
+ * collapse thinking → synthesizing → done into one part and the client would
+ * only ever see the last status. Distinct per-status ids keep each lifecycle
+ * card separate while still letting a status's running true→false pair merge
+ * into one card that updates in place.
  */
 export async function emitTurnStatus(
   status: TurnStatus,
   turnId: string,
+  opts?: {
+    running?: boolean;
+    thinkIds?: string[];
+    questions?: string[];
+  },
 ): Promise<void> {
   "use step";
   try {
@@ -300,8 +339,15 @@ export async function emitTurnStatus(
     const writer = writable.getWriter();
     await writer.write({
       type: "data-turn-status",
-      id: "turn-status",
-      data: { status, turnId, updatedAt: new Date().toISOString() },
+      id: `turn-status-${status}`,
+      data: {
+        status,
+        turnId,
+        updatedAt: new Date().toISOString(),
+        running: opts?.running,
+        thinkIds: opts?.thinkIds,
+        questions: opts?.questions,
+      },
     } as UIMessageChunk);
     writer.releaseLock();
   } catch (err) {
@@ -401,7 +447,7 @@ export async function finalizeTurn(
   const writer = writable.getWriter();
   await writer.write({
     type: "data-turn-status",
-    id: "turn-status",
+    id: "turn-status-terminal",
     data: { status, turnId, updatedAt: new Date().toISOString() },
   } as UIMessageChunk);
   await writer.write({ type: "finish-step" } as UIMessageChunk);

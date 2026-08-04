@@ -25,8 +25,6 @@ import { TextGenerateEffect } from "@/components/ui/text-generate-effect";
 import { getUserConfig, saveUserConfig } from "@/lib/config/actions";
 import { useTranslations } from "next-intl";
 import { toast } from "sonner";
-import type { TurnStatus } from "@/lib/chat/turn-types";
-import { TurnStatusIndicator } from "./turn-status-indicator";
 
 interface ChatPageProps {
   children: React.ReactNode;
@@ -314,37 +312,31 @@ function Inner({ children }: { children: React.ReactNode }) {
     return messages;
   }, [messages, demoMessages]);
 
-  // ── Turn status (Layer 2: background-first) ─────────────────────────────
-  // Derived from the `data-turn-status` part the workflow's finalizeTurn emits;
-  // reset to "active" whenever a new turn starts streaming.
+  // ── Background-completion toast ──────────────────────────────────────────
+  // A turn that finishes while the tab is backgrounded is exactly the
+  // "I come after you're done" moment — nudge the user back. The turn lifecycle
+  // itself renders inline in the bubble (chat-message's buildStream), so this
+  // only fires the notification.
   const t = useTranslations("chat");
-  const [turnStatus, setTurnStatus] = useState<TurnStatus | null>(null);
   const backgroundToastShownRef = useRef(false);
 
   useEffect(() => {
     if (status === "submitted" || status === "streaming") {
-      setTurnStatus("active");
       backgroundToastShownRef.current = false;
     }
   }, [status]);
 
-  // Watch the latest assistant message for the terminal turn-status part.
   useEffect(() => {
     const last = allMessages[allMessages.length - 1];
     if (!last || last.role !== "assistant") return;
     const parts = (last.parts ?? []) as Array<{
       type?: string;
-      data?: { status?: TurnStatus };
+      data?: { status?: string };
     }>;
     for (const part of parts) {
       if (part.type !== "data-turn-status") continue;
-      const terminal = part.data?.status;
-      if (!terminal) continue;
-      setTurnStatus(terminal);
-      // A turn that finishes while the tab is backgrounded is exactly the
-      // "I come after you're done" moment — nudge the user back.
+      if (part.data?.status !== "done") continue;
       if (
-        terminal === "done" &&
         !backgroundToastShownRef.current &&
         typeof document !== "undefined" &&
         document.hidden
@@ -506,17 +498,6 @@ function Inner({ children }: { children: React.ReactNode }) {
       {/* ── Fixed bottom bar ────────────────────────────────────────────── */}
       <div className="fixed bottom-0 inset-x-0 z-10">
         <div className="pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom,0.5rem))]">
-          {turnStatus && showingLive && (
-            <div className="mx-auto w-full md:max-w-2xl px-4 sm:px-6 lg:px-8 pb-1">
-              <TurnStatusIndicator
-                status={turnStatus}
-                onContinue={() => {
-                  setTurnStatus("active");
-                  handleSubmit(t("turnStatus.interruptedContinuePrompt"));
-                }}
-              />
-            </div>
-          )}
           <div className="mx-auto w-full md:max-w-2xl px-4 sm:px-6 lg:px-8">
             <ChatInput
               onSubmit={handleSubmit}

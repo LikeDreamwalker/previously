@@ -257,6 +257,32 @@ export function extractThinkIds(messages: ModelMessage[]): string[] {
   return ids;
 }
 
+/**
+ * The `question` strings of every thinkDeep tool-call in the turn's assistant
+ * messages — used to describe the dispatched sub-agents in the client's
+ * "thinking" card. Mirrors extractThinkIds, but reads the assistant-side
+ * tool-call input (the questions live there, not in the tool results).
+ */
+export function extractThinkQuestions(messages: ModelMessage[]): string[] {
+  const questions: string[] = [];
+  for (const m of messages) {
+    if (m.role !== "assistant") continue;
+    const parts = Array.isArray(m.content) ? m.content : [];
+    for (const part of parts) {
+      const p = part as {
+        type?: string;
+        toolName?: string;
+        input?: { question?: unknown };
+      };
+      if (p.type === "tool-call" && p.toolName === "thinkDeep") {
+        const q = p.input?.question;
+        if (typeof q === "string") questions.push(q);
+      }
+    }
+  }
+  return questions;
+}
+
 // ─── The workflow ────────────────────────────────────────────────────────
 
 export async function turnWorkflow(input: TurnInput): Promise<void> {
@@ -415,7 +441,12 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
     //    each `sleep` / step call is a top-level durable step.
     const thinkIds = extractThinkIds(finalMessages);
     if (thinkIds.length > 0) {
-      await emitTurnStatus("thinking", input.turnId);
+      // Enter "thinking": dispatched sub-agents are working in the background.
+      await emitTurnStatus("thinking", input.turnId, {
+        running: true,
+        thinkIds,
+        questions: extractThinkQuestions(finalMessages),
+      });
 
       /** Poll cadence — durable sleep between checks, zero compute while waiting. */
       const POLL_MS = 15_000;
@@ -431,7 +462,9 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
       // reports carry partial findings the main agent can work with.
       const reports = await readAllReports(thinkIds);
 
-      await emitTurnStatus("synthesizing", input.turnId);
+      // "thinking" done → "synthesizing": reports landed, main agent integrates.
+      await emitTurnStatus("thinking", input.turnId, { running: false });
+      await emitTurnStatus("synthesizing", input.turnId, { running: true });
 
       // Integration pass — a second continuation loop with the reports as a
       // user message.
@@ -463,6 +496,9 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
           },
         ];
       }
+
+      // "synthesizing" done — the integrated reply follows in the stream tail.
+      await emitTurnStatus("synthesizing", input.turnId, { running: false });
     }
 
     outcome = {
