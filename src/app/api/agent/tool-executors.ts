@@ -18,7 +18,7 @@ import crypto from "crypto";
 // serialization registry (see register-model-classes.ts for why).
 import "./register-model-classes";
 import { startThink } from "@/app/api/thinking/start-think";
-import { registerThinkingAgent } from "@/app/api/thinking/steps";
+import { appendThinkingAgent } from "@/lib/sessions/store";
 import { writeTaskCard } from "@/lib/thinking/store";
 import type { ThinkInput } from "@/lib/thinking/types";
 import { readFile } from "@/lib/tools/readFile";
@@ -466,7 +466,8 @@ export async function thinkDeepExecute(
   try {
     await writeTaskCard(input);
     await startThink(input);
-    await registerThinkingAgent(ctx.turnId, thinkId);
+    // Best-effort registration with the turn state (for the status endpoint).
+    await appendThinkingAgent(ctx.turnId, thinkId).catch(() => {});
     return { ok: true, thinkId, status: "dispatched" };
   } catch (e) {
     return {

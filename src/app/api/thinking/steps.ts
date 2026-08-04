@@ -13,7 +13,6 @@ import { type UIMessageChunk } from "ai";
 import { getWritable } from "workflow";
 import type { ThinkInput, ThinkReport, ThinkStatus } from "@/lib/thinking/types";
 import { readReport, reportExists, writeReport } from "@/lib/thinking/store";
-import { writeTurnState, readTurnState } from "@/lib/sessions/store";
 
 /**
  * Write the thinking agent's final report. On interruption (timeout/error) we
@@ -93,30 +92,4 @@ export async function readAllReports(thinkIds: string[]): Promise<string> {
     );
   }
   return sections.join("\n");
-}
-
-/**
- * Register a dispatched thinking agent with the turn's durable state so the
- * status endpoint exposes it (TurnState.thinkingAgentIds). Best-effort.
- */
-export async function registerThinkingAgent(
-  turnId: string,
-  thinkId: string,
-): Promise<void> {
-  "use step";
-  try {
-    const state = await readTurnState(turnId);
-    if (!state) return;
-    if (state.thinkingAgentIds.includes(thinkId)) return;
-    await writeTurnState({
-      ...state,
-      thinkingAgentIds: [...state.thinkingAgentIds, thinkId],
-      updatedAt: new Date().toISOString(),
-    });
-  } catch (err) {
-    console.warn(
-      `[Thinking] failed to register think ${thinkId} with turn ${turnId}:`,
-      err instanceof Error ? err.message : err,
-    );
-  }
 }

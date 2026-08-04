@@ -103,6 +103,24 @@ export async function writeRunTurnMapping(
   await writeFileLocal(runMapPath(runId), content);
 }
 
+/**
+ * Append a dispatched thinking agent id to a turn's durable state (Layer 3).
+ * Best-effort: reads the current state (if any) and adds the id once.
+ */
+export async function appendThinkingAgent(
+  turnId: string,
+  thinkId: string,
+): Promise<void> {
+  const state = await readTurnState(turnId);
+  if (!state) return;
+  if (state.thinkingAgentIds.includes(thinkId)) return;
+  await writeTurnState({
+    ...state,
+    thinkingAgentIds: [...state.thinkingAgentIds, thinkId],
+    updatedAt: new Date().toISOString(),
+  });
+}
+
 /** Resolve the turn that a workflow run belongs to; null when unregistered. */
 export async function readTurnIdByRun(runId: string): Promise<string | null> {
   let raw: string;

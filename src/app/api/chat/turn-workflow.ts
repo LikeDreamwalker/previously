@@ -257,33 +257,6 @@ export function extractThinkIds(messages: ModelMessage[]): string[] {
   return ids;
 }
 
-/**
- * Durable wait for dispatched thinking agents, then the integration pass.
- *
- * Polls the report files via durable `sleep()` steps — a single step never runs
- * longer than the sleep; the run stays alive while the sub-agents work. When
- * every report is in (or the budget is exhausted), assembles them and returns
- * the integration user message for the main agent.
- */
-async function waitForThinkingReports(
-  thinkIds: string[],
-): Promise<string> {
-  /** Poll cadence (durable sleep between checks — zero compute while waiting). */
-  const POLL_MS = 15_000;
-  /** Hard cap on wait: 40 × 15s = 10 minutes of background thinking time. */
-  const MAX_POLLS = 40;
-
-  let ready = false;
-  for (let i = 0; i < MAX_POLLS; i++) {
-    ready = await allReportsReady(thinkIds);
-    if (ready) break;
-    await sleep(POLL_MS);
-  }
-  // Even if not all reports landed (budget exhausted), integrate what exists —
-  // interrupted reports carry partial findings the main agent can work with.
-  return await readAllReports(thinkIds);
-}
-
 // ─── The workflow ────────────────────────────────────────────────────────
 
 export async function turnWorkflow(input: TurnInput): Promise<void> {
@@ -374,39 +347,39 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
     }),
   });
 
-  /**
-   * Stream the agent to a (possibly multi-continuation) completion and collect
-   * the accumulated text / cognition / final message history.
-   */
-  async function streamTurn(
-    messages: ModelMessage[],
-  ): Promise<{
-    allText: string;
-    allCognition: string;
-    finalMessages: ModelMessage[];
-    finalFinishReason: string;
-  }> {
+  /** Shared stream options (continuation-safe, see below). */
+  const streamOpts = {
+    writable: getWritable<ModelCallStreamPart>(),
+    stopWhen: isStepCount(20),
+    sendFinish: false,
+    preventClose: true,
+    // Per-call overrides take precedence over the constructor defaults —
+    // the token cap keeps generation under the 300s wall, the timeout is
+    // the independent safety fuse for rate variance / server-side effort
+    // escalation.
+    timeout: STEP_TIMEOUT_MS,
+    maxOutputTokens: budget,
+  } as const;
+
+  let outcome: TurnOutcome;
+  let streamError: unknown = null;
+  try {
     let allText = "";
     let allCognition = "";
     let finalFinishReason = "stop";
-    let finalMessages = messages;
-    let currentMessages = messages;
+    let finalMessages: ModelMessage[] = [];
+    let currentMessages = input.modelMessages;
     let continuations = 0;
 
+    // ── Pass 1: the agent's routing + dispatch (and any direct answer) ──
+    // Inline loop — NOT a nested closure: the workflow transform instruments
+    // awaits at the top level of the "use workflow" body, so `agent.stream`
+    // (self-managed steps) must stay here, exactly as the loop engine does.
     while (true) {
       const result = await agent.stream({
         messages: currentMessages,
         system: systemPrompt,
-        writable: getWritable<ModelCallStreamPart>(),
-        stopWhen: isStepCount(20),
-        sendFinish: false,
-        preventClose: true,
-        // Per-call overrides take precedence over the constructor defaults —
-        // the token cap keeps generation under the 300s wall, the timeout is
-        // the independent safety fuse for rate variance / server-side effort
-        // escalation.
-        timeout: STEP_TIMEOUT_MS,
-        maxOutputTokens: budget,
+        ...streamOpts,
       });
 
       allText += extractFinalText(result.messages);
@@ -431,48 +404,67 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
       ];
     }
 
-    return { allText, allCognition, finalMessages, finalFinishReason };
-  }
-
-  let outcome: TurnOutcome;
-  let streamError: unknown = null;
-  try {
-    // ── Pass 1: the agent's routing + dispatch (and any direct answer) ──
-    const pass1 = await streamTurn(input.modelMessages);
-
-    // ── Pass 2 (dispatch phase): if the agent dispatched thinking agents,
-    //    wait durably for their reports, then re-prompt the agent to integrate.
-    const thinkIds = extractThinkIds(pass1.finalMessages);
-    let finalMessages = pass1.finalMessages;
-    let finalFinishReason = pass1.finalFinishReason;
-
+    // ── Dispatch phase: if the agent dispatched thinking agents, wait durably
+    //    for their reports, then re-prompt the agent to integrate. Inline —
+    //    each `sleep` / step call is a top-level durable step.
+    const thinkIds = extractThinkIds(finalMessages);
     if (thinkIds.length > 0) {
-      // Tell the client the turn is now working in the background.
       await emitTurnStatus("thinking", input.turnId);
-      const reports = await waitForThinkingReports(thinkIds);
+
+      /** Poll cadence — durable sleep between checks, zero compute while waiting. */
+      const POLL_MS = 15_000;
+      /** Hard cap: 40 × 15s = 10 minutes of background thinking time. */
+      const MAX_POLLS = 40;
+      let ready = false;
+      for (let i = 0; i < MAX_POLLS; i++) {
+        ready = await allReportsReady(thinkIds);
+        if (ready) break;
+        await sleep(POLL_MS);
+      }
+      // Even if not all reports landed, integrate what exists — interrupted
+      // reports carry partial findings the main agent can work with.
+      const reports = await readAllReports(thinkIds);
+
       await emitTurnStatus("synthesizing", input.turnId);
 
-      const pass2 = await streamTurn([
-        ...pass1.finalMessages.filter((m) => m.role !== "system"),
+      // Integration pass — a second continuation loop with the reports as a
+      // user message.
+      let integMessages: ModelMessage[] = [
+        ...finalMessages.filter((m) => m.role !== "system"),
         { role: "user" as const, content: buildIntegrationPrompt(reports) },
-      ]);
-      finalMessages = pass2.finalMessages;
-      finalFinishReason = pass2.finalFinishReason;
+      ];
+      let integContinuations = 0;
+      while (true) {
+        const result = await agent.stream({
+          messages: integMessages,
+          system: systemPrompt,
+          ...streamOpts,
+        });
 
-      outcome = {
-        text: pass1.allText + pass2.allText,
-        finishReason: finalFinishReason,
-        startedLoops: extractStartedLoops(finalMessages),
-        cognition: pass1.allCognition + pass2.allCognition,
-      };
-    } else {
-      outcome = {
-        text: pass1.allText,
-        finishReason: finalFinishReason,
-        startedLoops: extractStartedLoops(finalMessages),
-        cognition: pass1.allCognition,
-      };
+        allText += extractFinalText(result.messages);
+        allCognition += extractCognition(result.messages, result.steps);
+        finalMessages = result.messages;
+        finalFinishReason = result.finishReason;
+
+        if (result.finishReason !== "length") break;
+        if (++integContinuations >= MAX_CONTINUATIONS) break;
+        integMessages = [
+          ...result.messages.filter((m) => m.role !== "system"),
+          {
+            role: "user" as const,
+            content:
+              "You were cut off mid-response. Continue exactly where you left off — do not repeat anything you already said.",
+          },
+        ];
+      }
     }
+
+    outcome = {
+      text: allText,
+      finishReason: finalFinishReason,
+      startedLoops: extractStartedLoops(finalMessages),
+      cognition: allCognition,
+    };
   } catch (err) {
     streamError = err;
     outcome = { text: "", finishReason: "error", startedLoops: [], cognition: "" };
