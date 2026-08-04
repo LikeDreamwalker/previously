@@ -25,6 +25,7 @@ import {
   webSearchExecute,
   recallExecute,
   startLoopExecute,
+  thinkDeepExecute,
   continueOutputExecute,
   loopReportExecute,
   type ToolContext,
@@ -62,6 +63,28 @@ const toolContextSchema = z.object({
     defaultThinking: z.boolean(),
     defaultEffort: z.enum(["low", "medium", "high"]),
   }).optional(),
+  // Layer 3 dispatch context — set only on the chat tool set. The main model
+  // config (thinking agents run the main model, not the worker), the
+  // byte-identical shared prefix for cache-optimized parallel thinkers, and the
+  // turn id (to register dispatched agents in the turn state).
+  modelConfig: z.object({
+    id: z.string(),
+    name: z.string(),
+    provider: z.string(),
+    providerName: z.string(),
+    sdk: z.enum(["deepseek", "anthropic", "openai"]),
+    envKey: z.string(),
+    baseURL: z.string().optional(),
+    capabilities: z.object({
+      thinking: z.boolean(),
+      vision: z.boolean(),
+      maxTokens: z.number(),
+    }),
+    defaultThinking: z.boolean(),
+    defaultEffort: z.enum(["low", "medium", "high"]),
+  }).optional(),
+  sharedContext: z.string().optional(),
+  turnId: z.string().optional(),
 });
 
 const loopToolContextSchema = z.object({
@@ -270,6 +293,30 @@ export const chatTools = {
     contextSchema: toolContextSchema,
     execute: startLoopExecute,
   }),
+  thinkDeep: tool({
+    description:
+      "Dispatch a deep-thinking sub-agent that works a single bounded question " +
+      "in the background (in parallel with any other thinkDeep calls) and writes " +
+      "a structured report. Use when the task demands extended reasoning or " +
+      "multi-step analysis you can decompose into sub-questions. Each question " +
+      "must be self-contained — the sub-agent does NOT see this conversation. " +
+      "After dispatching, briefly tell the user you are working on it and stop; " +
+      "you will be re-prompted with the reports when they are ready.",
+    inputSchema: z.object({
+      question: z
+        .string()
+        .describe("Self-contained question for the thinking agent. Include all necessary context — it does NOT have access to this conversation."),
+      effort: z
+        .enum(["low", "high"])
+        .describe("How deeply to think. 'low' for quick analysis, 'high' for thorough reasoning."),
+      outputFormat: z
+        .string()
+        .optional()
+        .describe("What shape the report should take (e.g. 'pros and cons table', 'structured findings with evidence pointers')."),
+    }),
+    contextSchema: toolContextSchema,
+    execute: thinkDeepExecute,
+  }),
   continueOutput: tool({
     description:
       "Signal that your answer is not finished and you want to keep writing. " +
@@ -281,6 +328,18 @@ export const chatTools = {
     contextSchema: toolContextSchema,
     execute: continueOutputExecute,
   }),
+};
+
+// ─── Thinking-agent tool set ──────────────────────────────────────────────
+//
+// The thinkDeep sub-agents get the pointed memory reads (shared context for
+// grounding) + live web. No delegation tools (recall/startLoop/thinkDeep) — a
+// thinking agent is a focused analyst, not a delegator. The toolset is IDENTICAL
+// across all agents in a turn so the system-prompt prefix stays byte-identical
+// and DeepSeek's automatic prefix cache hits for agents 2-N.
+export const thinkTools = {
+  ...conceptTools,
+  webSearch: chatTools.webSearch,
 };
 
 // ─── Loop tool set ───────────────────────────────────────────────────────
@@ -314,6 +373,7 @@ export function buildChatToolsContext(ctx: ToolContext): Record<keyof typeof cha
     recall: ctx,
     webSearch: ctx,
     startLoop: ctx,
+    thinkDeep: ctx,
     continueOutput: ctx,
   };
 }
@@ -332,5 +392,21 @@ export function buildLoopToolsContext(
     readAgentTimeline: memoryCtx,
     readPreviously: memoryCtx,
     loopReport: loopCtx,
+  };
+}
+
+/** Thinking-agent context: every tool shares the same plain memory context. */
+export function buildThinkToolsContext(
+  memoryCtx: ToolContext,
+): Record<keyof typeof thinkTools, ToolContext> {
+  return {
+    readSlice: memoryCtx,
+    listSlices: memoryCtx,
+    readTimeline: memoryCtx,
+    readStrand: memoryCtx,
+    listStrands: memoryCtx,
+    readAgentTimeline: memoryCtx,
+    readPreviously: memoryCtx,
+    webSearch: memoryCtx,
   };
 }

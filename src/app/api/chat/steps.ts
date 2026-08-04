@@ -50,6 +50,7 @@ import type {
   HousekeepingResult,
   TurnOutcome,
   TurnState,
+  TurnStatus,
 } from "@/lib/chat/turn-types";
 import { deriveTurnStatus } from "@/lib/chat/turn-types";
 import { writeTurnState } from "@/lib/sessions/store";
@@ -280,6 +281,37 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   writer.releaseLock();
 
   return { slice, previouslyContent, strandsMenu, turnPriming, identityPrompt };
+}
+
+// ─── Mid-turn status step (Layer 2/3) ──────────────────────────────────────
+
+/**
+ * Emit a `data-turn-status` chunk for a mid-turn transition (e.g. the main
+ * agent entering the "thinking" wait state after dispatching sub-agents, or
+ * resuming as "synthesizing"). A step (not inline in the workflow body) so the
+ * ISO timestamp comes from real wall-clock Date, which the deterministic body
+ * cannot use. Best-effort — a stream failure must not fail the turn.
+ */
+export async function emitTurnStatus(
+  status: TurnStatus,
+  turnId: string,
+): Promise<void> {
+  "use step";
+  try {
+    const writable = getWritable<UIMessageChunk>();
+    const writer = writable.getWriter();
+    await writer.write({
+      type: "data-turn-status",
+      id: "turn-status",
+      data: { status, turnId, updatedAt: new Date().toISOString() },
+    } as UIMessageChunk);
+    writer.releaseLock();
+  } catch (err) {
+    console.warn(
+      `[turn-status] mid-turn chunk failed (${status}):`,
+      err instanceof Error ? err.message : err,
+    );
+  }
 }
 
 // ─── Step 2: Finalize turn ───────────────────────────────────────────────

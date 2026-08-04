@@ -13,9 +13,14 @@
 
 import type { UIMessageChunk } from "ai";
 import { getWritable } from "workflow";
+import crypto from "crypto";
 // Side effect: register the DeepSeek model class in the step runtime's
 // serialization registry (see register-model-classes.ts for why).
 import "./register-model-classes";
+import { startThink } from "@/app/api/thinking/start-think";
+import { registerThinkingAgent } from "@/app/api/thinking/steps";
+import { writeTaskCard } from "@/lib/thinking/store";
+import type { ThinkInput } from "@/lib/thinking/types";
 import { readFile } from "@/lib/tools/readFile";
 import { listFiles } from "@/lib/tools/listFiles";
 import {
@@ -68,6 +73,14 @@ export interface ToolContext {
    * Set on the chat tool set; loops resolve it separately via their input.
    */
   workerModel?: ModelConfig;
+  /**
+   * Layer 3 dispatch context (chat tool set only): the main model for thinking
+   * agents, the byte-identical shared prefix for cache-optimized parallel
+   * thinkers, and the turn id for registering dispatched agents.
+   */
+  modelConfig?: ModelConfig;
+  sharedContext?: string;
+  turnId?: string;
 }
 
 /**
@@ -389,6 +402,76 @@ export async function startLoopExecute(
     return {
       ok: false,
       error: e instanceof Error ? e.message : "failed to start loop",
+    };
+  }
+}
+
+/**
+ * thinkDeep — dispatch a background thinking agent (Layer 3). Fire-and-forget:
+ * writes the task card, starts the durable think workflow, registers the agent
+ * with the turn state, and returns immediately — the executor step NEVER waits
+ * on the sub-agent (that would make the step = sub-agent runtime and blow the
+ * 300s wall). The main turn workflow polls the report files and integrates.
+ */
+export async function thinkDeepExecute(
+  { question, effort, outputFormat }: {
+    question: string;
+    effort: "low" | "high";
+    outputFormat?: string;
+  },
+  { context: ctx }: ExecuteOpts<ToolContext>,
+): Promise<{
+  ok: boolean;
+  thinkId?: string;
+  status?: string;
+  error?: string;
+}> {
+  "use step";
+
+  // Demo mode: thinking agents need a writable repo for their reports.
+  if (!canWrite()) {
+    return {
+      ok: false,
+      error:
+        "The user is currently in demo mode (read-only preview data, no connected " +
+        "GitHub repository). Thinking agents need a real repository to write their " +
+        "reports. Tell the user they need to deploy their own instance to unlock " +
+        "deep-thinking dispatch. Setup guide: " + DEPLOY_GUIDE_URL,
+    };
+  }
+
+  if (!ctx.modelConfig || !ctx.sharedContext || !ctx.turnId) {
+    return {
+      ok: false,
+      error:
+        "Thinking agents are not configured for this turn (missing dispatch context). " +
+        "This is an internal configuration issue.",
+    };
+  }
+
+  const thinkId = `think-${Date.now()}-${crypto.randomBytes(3).toString("base64url")}`;
+  const input: ThinkInput = {
+    thinkId,
+    question,
+    effort,
+    outputFormat,
+    sharedContext: ctx.sharedContext,
+    model: ctx.modelConfig,
+    owner: ctx.owner,
+    repo: ctx.repo,
+    useGithub: ctx.useGithub,
+    startedAt: new Date().toISOString(),
+  };
+
+  try {
+    await writeTaskCard(input);
+    await startThink(input);
+    await registerThinkingAgent(ctx.turnId, thinkId);
+    return { ok: true, thinkId, status: "dispatched" };
+  } catch (e) {
+    return {
+      ok: false,
+      error: e instanceof Error ? e.message : "failed to dispatch thinking agent",
     };
   }
 }

@@ -21,7 +21,7 @@
  * default) picks up the `"use workflow"` directive.
  */
 import { isStepCount, type ModelMessage } from "ai";
-import { getWritable } from "workflow";
+import { getWritable, sleep } from "workflow";
 import type { ModelCallStreamPart } from "@ai-sdk/workflow";
 import { createChatAgent } from "@/app/api/agent/agent";
 import { buildChatToolsContext } from "@/app/api/agent/tools";
@@ -32,15 +32,21 @@ import type {
 } from "@/lib/chat/turn-types";
 import { DEPLOY_GUIDE_URL } from "@/lib/capabilities";
 import { tokenBudget } from "@/lib/chat/token-budget";
+import { buildIntegrationPrompt } from "@/lib/thinking/prompt";
 import {
   housekeeping,
   finalizeTurn,
+  emitTurnStatus,
 } from "./steps";
+import {
+  allReportsReady,
+  readAllReports,
+} from "@/app/api/thinking/steps";
 
 // ─── Pure helpers (serializable data in, serializable data out) ──────────
 
 /** Final assistant text from the agent's message history. */
-function extractFinalText(messages: ModelMessage[]): string {
+export function extractFinalText(messages: ModelMessage[]): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
     if (m.role !== "assistant") continue;
@@ -220,6 +226,64 @@ function extractStartedLoops(messages: ModelMessage[]): StartedLoopRef[] {
   return refs;
 }
 
+/**
+ * thinkIds of all successfully dispatched thinking agents in this turn.
+ *
+ * Mirrors extractStartedLoops: the thinkDeep tool RESULT lands in a
+ * `role: "tool"` message (ModelMessage tool-result output is wrapped as
+ * { type: 'json', value }), keyed by toolCallId. Only ok=true results count.
+ */
+export function extractThinkIds(messages: ModelMessage[]): string[] {
+  const ids: string[] = [];
+  for (const m of messages) {
+    if (m.role !== "tool") continue;
+    const parts = Array.isArray(m.content) ? m.content : [];
+    for (const part of parts) {
+      const p = part as {
+        type?: string;
+        toolName?: string;
+        output?: unknown;
+      };
+      if (p.type !== "tool-result" || p.toolName !== "thinkDeep") continue;
+      const raw = p.output as { value?: unknown } | undefined;
+      const value = (
+        raw && typeof raw === "object" && "value" in raw ? raw.value : raw
+      ) as { ok?: unknown; thinkId?: unknown } | undefined;
+      if (value?.ok === true && typeof value.thinkId === "string") {
+        ids.push(value.thinkId);
+      }
+    }
+  }
+  return ids;
+}
+
+/**
+ * Durable wait for dispatched thinking agents, then the integration pass.
+ *
+ * Polls the report files via durable `sleep()` steps — a single step never runs
+ * longer than the sleep; the run stays alive while the sub-agents work. When
+ * every report is in (or the budget is exhausted), assembles them and returns
+ * the integration user message for the main agent.
+ */
+async function waitForThinkingReports(
+  thinkIds: string[],
+): Promise<string> {
+  /** Poll cadence (durable sleep between checks — zero compute while waiting). */
+  const POLL_MS = 15_000;
+  /** Hard cap on wait: 40 × 15s = 10 minutes of background thinking time. */
+  const MAX_POLLS = 40;
+
+  let ready = false;
+  for (let i = 0; i < MAX_POLLS; i++) {
+    ready = await allReportsReady(thinkIds);
+    if (ready) break;
+    await sleep(POLL_MS);
+  }
+  // Even if not all reports landed (budget exhausted), integrate what exists —
+  // interrupted reports carry partial findings the main agent can work with.
+  return await readAllReports(thinkIds);
+}
+
 // ─── The workflow ────────────────────────────────────────────────────────
 
 export async function turnWorkflow(input: TurnInput): Promise<void> {
@@ -274,6 +338,21 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
   /** Hard cap on continuations to guard against infinite loops. */
   const MAX_CONTINUATIONS = 5;
 
+  /**
+   * The byte-identical prefix shared by every thinking agent dispatched this
+   * turn (identity + previously + strands menu). Placed first in each agent's
+   * prompt so DeepSeek's automatic prefix cache hits for agents 2-N.
+   */
+  const sharedContext = [
+    `## Your constitution`,
+    identityPrompt,
+    `## What I know about you (as of ${dateAnchor})`,
+    previouslyContent,
+    strandsMenu ? `## Memory topics\n\n${strandsMenu}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+
   const agent = createChatAgent({
     model: input.modelConfig,
     thinking: input.thinking,
@@ -287,25 +366,37 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
       sliceId: slice.slice_id,
       recentTurns: input.recentTurns,
       workerModel: input.workerModel,
+      // Layer 3 dispatch context — the thinkDeep executor reads these to start
+      // thinking agents that share this turn's context.
+      modelConfig: input.modelConfig,
+      sharedContext,
+      turnId: input.turnId,
     }),
   });
 
-  let outcome: TurnOutcome;
-  let streamError: unknown = null;
-  try {
+  /**
+   * Stream the agent to a (possibly multi-continuation) completion and collect
+   * the accumulated text / cognition / final message history.
+   */
+  async function streamTurn(
+    messages: ModelMessage[],
+  ): Promise<{
+    allText: string;
+    allCognition: string;
+    finalMessages: ModelMessage[];
+    finalFinishReason: string;
+  }> {
     let allText = "";
     let allCognition = "";
     let finalFinishReason = "stop";
-    let finalMessages: ModelMessage[] = [];
-    let finalSteps: unknown[] = [];
-    let currentMessages = input.modelMessages;
-    let currentSystem: string | undefined = systemPrompt;
+    let finalMessages = messages;
+    let currentMessages = messages;
     let continuations = 0;
 
     while (true) {
       const result = await agent.stream({
         messages: currentMessages,
-        ...(currentSystem ? { system: currentSystem } : {}),
+        system: systemPrompt,
         writable: getWritable<ModelCallStreamPart>(),
         stopWhen: isStepCount(20),
         sendFinish: false,
@@ -321,7 +412,6 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
       allText += extractFinalText(result.messages);
       allCognition += extractCognition(result.messages, result.steps);
       finalMessages = result.messages;
-      finalSteps = result.steps;
       finalFinishReason = result.finishReason;
 
       // Only loop when the model hit the token cap before it was done.
@@ -339,15 +429,50 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
             "You were cut off mid-response. Continue exactly where you left off — do not repeat anything you already said.",
         },
       ];
-      currentSystem = systemPrompt;
     }
 
-    outcome = {
-      text: allText,
-      finishReason: finalFinishReason,
-      startedLoops: extractStartedLoops(finalMessages),
-      cognition: allCognition,
-    };
+    return { allText, allCognition, finalMessages, finalFinishReason };
+  }
+
+  let outcome: TurnOutcome;
+  let streamError: unknown = null;
+  try {
+    // ── Pass 1: the agent's routing + dispatch (and any direct answer) ──
+    const pass1 = await streamTurn(input.modelMessages);
+
+    // ── Pass 2 (dispatch phase): if the agent dispatched thinking agents,
+    //    wait durably for their reports, then re-prompt the agent to integrate.
+    const thinkIds = extractThinkIds(pass1.finalMessages);
+    let finalMessages = pass1.finalMessages;
+    let finalFinishReason = pass1.finalFinishReason;
+
+    if (thinkIds.length > 0) {
+      // Tell the client the turn is now working in the background.
+      await emitTurnStatus("thinking", input.turnId);
+      const reports = await waitForThinkingReports(thinkIds);
+      await emitTurnStatus("synthesizing", input.turnId);
+
+      const pass2 = await streamTurn([
+        ...pass1.finalMessages.filter((m) => m.role !== "system"),
+        { role: "user" as const, content: buildIntegrationPrompt(reports) },
+      ]);
+      finalMessages = pass2.finalMessages;
+      finalFinishReason = pass2.finalFinishReason;
+
+      outcome = {
+        text: pass1.allText + pass2.allText,
+        finishReason: finalFinishReason,
+        startedLoops: extractStartedLoops(finalMessages),
+        cognition: pass1.allCognition + pass2.allCognition,
+      };
+    } else {
+      outcome = {
+        text: pass1.allText,
+        finishReason: finalFinishReason,
+        startedLoops: extractStartedLoops(finalMessages),
+        cognition: pass1.allCognition,
+      };
+    }
   } catch (err) {
     streamError = err;
     outcome = { text: "", finishReason: "error", startedLoops: [], cognition: "" };

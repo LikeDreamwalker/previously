@@ -6,6 +6,7 @@ import { MemoryToolRenderer } from "./tool-renderers/memory-tool";
 import { RecallToolRenderer } from "./tool-renderers/recall";
 import { WebSearchRenderer } from "./tool-renderers/web-search";
 import { LoopToolRenderer } from "./tool-renderers/loop";
+import { ThinkDeepToolRenderer } from "./tool-renderers/think-deep";
 import { DefaultRenderer } from "./tool-renderers/default";
 
 interface ToolRendererProps {
@@ -75,6 +76,22 @@ export function ToolRenderer({ toolName, state, input, output, isStreaming }: To
           output={
             output as
               | { ok?: boolean; loopId?: string; filePath?: string; error?: string }
+              | undefined
+          }
+          state={renderState}
+        />
+      );
+    case "thinkDeep":
+      return (
+        <ThinkDeepToolRenderer
+          input={
+            input as
+              | { question?: string; effort?: string; outputFormat?: string }
+              | undefined
+          }
+          output={
+            output as
+              | { ok?: boolean; thinkId?: string; status?: string; error?: string }
               | undefined
           }
           state={renderState}
