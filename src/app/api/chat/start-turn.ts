@@ -16,6 +16,10 @@ import crypto from "crypto";
 import { convertToModelMessages, type UIMessage } from "ai";
 import { turnWorkflow } from "./turn-workflow";
 import type { TurnInput } from "@/lib/chat/turn-types";
+import {
+  writeRunTurnMapping,
+  writeTurnState,
+} from "@/lib/sessions/store";
 import { loadUserConfig } from "@/lib/config/loader";
 import {
   getModel,
@@ -147,5 +151,29 @@ export async function startTurn(
     turnId,
   };
 
-  return start(turnWorkflow, [input]);
+  const run = await start(turnWorkflow, [input]);
+
+  // Layer 2: register the run→turn mapping and seed the durable turn state so a
+  // client holding only the runId can resolve this turn's status even after the
+  // run has been evicted from memory (finalizeTurn writes the terminal state).
+  // The workflow body cannot know its own run id — the run id is minted by
+  // `start()` here — so this route layer owns the mapping write. Best-effort:
+  // a failed state write must not kill the just-started turn.
+  try {
+    await writeRunTurnMapping(run.runId, turnId);
+    await writeTurnState({
+      turnId,
+      status: "active",
+      updatedAt: new Date().toISOString(),
+      partialText: "",
+      thinkingAgentIds: [],
+    });
+  } catch (err) {
+    console.warn(
+      `[sessions] failed to seed state for run ${run.runId}:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
+
+  return run;
 }

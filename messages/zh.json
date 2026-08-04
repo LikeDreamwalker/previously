@@ -171,6 +171,18 @@
       "viewPreviously": "查看 previously.md →",
       "previouslyTitle": "前情提要 · Previously.md"
     },
+    "turnStatus": {
+      "active": "思考中…",
+      "thinking": "后台工作中…",
+      "synthesizing": "整合中…",
+      "done": "完成",
+      "interrupted": "已中断",
+      "error": "出错",
+      "interruptedHint": "这轮对话在完成前被中断了。",
+      "interruptedContinue": "继续",
+      "interruptedContinuePrompt": "请继续你之前被中断的回答——它还没完成。",
+      "backgroundDone": "你的回答已就绪"
+    },
     "loadingTips": [
       "你的对话被切成时间片——静默 30 分钟自动收束，开启新的一片",
       "agent 在你离开之后才开始工作——不是一直在线，回来的时候结果已经等着了",

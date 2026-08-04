@@ -33,6 +33,7 @@ const OUR_CHUNK_TYPES = new Set([
   "data-belief",
   "data-phase",
   "data-evolution",
+  "data-turn-status",
 ]);
 
 function isOurs(c: Record<string, unknown>, chunkType: string): boolean {

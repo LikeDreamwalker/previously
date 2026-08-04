@@ -112,3 +112,49 @@ export interface TurnOutcome {
    */
   cognition: string;
 }
+
+// ─── Turn status / persistent turn state (Layer 2, v0.6) ───────────────────
+
+/**
+ * Turn-level lifecycle status, streamed to the client as `data-turn-status`
+ * chunks and persisted to `memory/sessions/<turnId>.json` so a client can learn
+ * a turn's fate even after its workflow run has been evicted from memory.
+ *
+ * Phase 2 emits only the terminal transitions (active → done/interrupted/error).
+ * Phase 3 adds the mid-turn `thinking` / `synthesizing` states around dispatched
+ * background agents.
+ */
+export type TurnStatus =
+  | "active" // LLM is generating or tools are executing
+  | "thinking" // Dispatched thinking agents are working (user may leave)
+  | "synthesizing" // Thinking done, main agent integrating
+  | "done" // Final text delivered to client
+  | "interrupted" // Timeout or error, partial result available
+  | "error"; // Fatal error, no result
+
+/**
+ * The durable turn record — written by finalizeTurn when the turn settles and
+ * read back by `GET /api/chat/<runId>/status` for post-eviction reconnect.
+ * GitHub remains the source of truth; this is just the lifecycle record.
+ */
+export interface TurnState {
+  /** Turn identifier (also the file stem: memory/sessions/<turnId>.json). */
+  turnId: string;
+  status: TurnStatus;
+  /** ISO 8601 timestamp of the last status change. */
+  updatedAt: string;
+  /** Partial text accumulated so far (for interrupted recovery). */
+  partialText: string;
+  /** IDs of dispatched thinking agents (Layer 3). */
+  thinkingAgentIds: string[];
+}
+
+/**
+ * Derive the terminal turn status from the agent's finish reason and output —
+ * used by finalizeTurn to persist the state and emit the final chunk.
+ */
+export function deriveTurnStatus(outcome: TurnOutcome): TurnStatus {
+  if (outcome.finishReason === "stop") return "done";
+  if (outcome.text) return "interrupted";
+  return "error";
+}

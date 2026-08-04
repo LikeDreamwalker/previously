@@ -171,6 +171,18 @@
       "viewPreviously": "View previously.md →",
       "previouslyTitle": "前情提要 · Previously.md"
     },
+    "turnStatus": {
+      "active": "Thinking…",
+      "thinking": "Working in background…",
+      "synthesizing": "Synthesizing…",
+      "done": "Done",
+      "interrupted": "Interrupted",
+      "error": "Error",
+      "interruptedHint": "This turn was interrupted before finishing.",
+      "interruptedContinue": "Continue",
+      "interruptedContinuePrompt": "Please continue the response you were working on — it was interrupted before finishing.",
+      "backgroundDone": "Your answer is ready"
+    },
     "loadingTips": [
       "Your conversations are saved as time slices — 30 minutes of silence closes one and starts the next",
       "The agent works after you're done — not always-on, but results are waiting when you return",
