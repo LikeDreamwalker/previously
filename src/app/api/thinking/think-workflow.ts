@@ -47,10 +47,10 @@ export async function thinkWorkflow(input: ThinkInput): Promise<ThinkResult> {
       prompt: buildThinkPrompt(input),
       writable: getWritable<ModelCallStreamPart>(),
       stopWhen: isStepCount(15),
-      // Layer 1: cap the generation and fuse the wall-clock so a long
-      // thinking generation can't hit Vercel's 300s per-step limit.
+      // Layer 1: cap the generation so a long thinking generation can't hit
+      // Vercel's 300s per-step limit. No `timeout` — the workflow sandbox
+      // lacks the AbortSignal global the SDK's timeout option uses.
       maxOutputTokens: 8_000,
-      timeout: 280_000,
       // finalizeThink owns the stream tail.
       sendFinish: false,
       preventClose: true,

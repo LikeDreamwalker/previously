@@ -306,9 +306,17 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
    * it left off — the user sees a single continuous stream.
    */
   const budget = tokenBudget(input.modelConfig.sdk);
-  /** Wall-clock safety fuse per stream call — see token-budget.ts rationale. */
-  const STEP_TIMEOUT_MS = 280_000;
-  /** Hard cap on continuations to guard against infinite loops. */
+  /**
+   * Hard cap on continuations to guard against infinite loops.
+   *
+   * NOTE: there is deliberately NO `timeout` on agent.stream(). The workflow
+   * sandbox VM does not provision the `AbortSignal` global, and the SDK's
+   * timeout option calls `AbortSignal.timeout()` — which would crash every
+   * turn with `ReferenceError: AbortSignal is not defined`. The per-provider
+   * token budget above is the wall-clock guard (3500 DeepSeek tokens at
+   * ~15 tok/s ≈ 233s < 300s); a pathological slow generation is instead
+   * platform-killed at the 300s step limit and the turn is marked interrupted.
+   */
   const MAX_CONTINUATIONS = 5;
 
   /**
@@ -353,11 +361,9 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
     stopWhen: isStepCount(20),
     sendFinish: false,
     preventClose: true,
-    // Per-call overrides take precedence over the constructor defaults —
-    // the token cap keeps generation under the 300s wall, the timeout is
-    // the independent safety fuse for rate variance / server-side effort
-    // escalation.
-    timeout: STEP_TIMEOUT_MS,
+    // Per-call override takes precedence over the constructor default — the
+    // token cap keeps a single generation under the 300s wall. No `timeout`
+    // here: the sandbox has no AbortSignal (see note above).
     maxOutputTokens: budget,
   } as const;
 
