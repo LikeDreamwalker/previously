@@ -49,11 +49,9 @@ import type {
   TurnInput,
   HousekeepingResult,
   TurnOutcome,
-  TurnState,
   TurnStatus,
 } from "@/lib/chat/turn-types";
 import { deriveTurnStatus } from "@/lib/chat/turn-types";
-import { writeTurnState } from "@/lib/sessions/store";
 
 
 // ─── Private helpers ──────────────────────────────────────────────────────
@@ -394,36 +392,17 @@ export async function finalizeTurn(
   // Commit all queued writes as one commit before closing the stream.
   await flushBatch(`Turn ${turnId} — agent response`);
 
-  // 2c. Layer 2: persist the terminal turn state (best-effort — a failed
-  // state write must not break the turn's finalize) so a reconnecting client
-  // can learn this turn's fate after the run is evicted from memory.
+  // 3. Close the UI stream. Emit the terminal turn-status chunk just before
+  // the lifecycle tail so the client learns the outcome from the live stream.
+  // A reconnecting client replays the stream from the last-seen index and
+  // derives the status from the final assistant message.
   const status = deriveTurnStatus(outcome);
-  const updatedAt = new Date().toISOString();
-  try {
-    const state: TurnState = {
-      turnId,
-      status,
-      updatedAt,
-      partialText: outcome.text,
-      thinkingAgentIds: [],
-    };
-    await writeTurnState(state);
-  } catch (err) {
-    console.warn(
-      `[sessions] failed to persist terminal state for turn ${turnId}:`,
-      err instanceof Error ? err.message : err,
-    );
-  }
-
-  // 3. Close the UI stream. Emit the final turn-status chunk just before the
-  // lifecycle tail so the client learns the terminal status from the live
-  // stream (not just via reconnect polling).
   const writable = getWritable<UIMessageChunk>();
   const writer = writable.getWriter();
   await writer.write({
     type: "data-turn-status",
     id: "turn-status",
-    data: { status, turnId, updatedAt },
+    data: { status, turnId, updatedAt: new Date().toISOString() },
   } as UIMessageChunk);
   await writer.write({ type: "finish-step" } as UIMessageChunk);
   await writer.write({ type: "finish" } as UIMessageChunk);

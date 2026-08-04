@@ -117,12 +117,18 @@ export interface TurnOutcome {
 
 /**
  * Turn-level lifecycle status, streamed to the client as `data-turn-status`
- * chunks and persisted to `memory/sessions/<turnId>.json` so a client can learn
- * a turn's fate even after its workflow run has been evicted from memory.
+ * chunks. No persistence layer — the agent's reply is already in the time
+ * slice; the client sees these chunks live or reconnects via the stored runId.
  *
  * Phase 2 emits only the terminal transitions (active → done/interrupted/error).
  * Phase 3 adds the mid-turn `thinking` / `synthesizing` states around dispatched
  * background agents.
+ *
+ * TODO(v0.6): client-side reconnection — when the chat transport detects a
+ * dropped connection, it should replay the stream from the last-seen index
+ * (already supported by WorkflowChatTransport) and derive the terminal status
+ * from the last assistant message. The run→turn mapping can live in
+ * localStorage alongside the runId, not on disk.
  */
 export type TurnStatus =
   | "active" // LLM is generating or tools are executing
@@ -133,25 +139,9 @@ export type TurnStatus =
   | "error"; // Fatal error, no result
 
 /**
- * The durable turn record — written by finalizeTurn when the turn settles and
- * read back by `GET /api/chat/<runId>/status` for post-eviction reconnect.
- * GitHub remains the source of truth; this is just the lifecycle record.
- */
-export interface TurnState {
-  /** Turn identifier (also the file stem: memory/sessions/<turnId>.json). */
-  turnId: string;
-  status: TurnStatus;
-  /** ISO 8601 timestamp of the last status change. */
-  updatedAt: string;
-  /** Partial text accumulated so far (for interrupted recovery). */
-  partialText: string;
-  /** IDs of dispatched thinking agents (Layer 3). */
-  thinkingAgentIds: string[];
-}
-
-/**
- * Derive the terminal turn status from the agent's finish reason and output —
- * used by finalizeTurn to persist the state and emit the final chunk.
+ * Derive the terminal turn status from the agent's finish reason and output.
+ * Pure function — used by finalizeTurn to emit the terminal data-turn-status
+ * stream chunk. The client sees it live or reconnects via the stored runId.
  */
 export function deriveTurnStatus(outcome: TurnOutcome): TurnStatus {
   if (outcome.finishReason === "stop") return "done";
