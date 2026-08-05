@@ -120,9 +120,10 @@ export interface TurnOutcome {
  * chunks. No persistence layer — the agent's reply is already in the time
  * slice; the client sees these chunks live or reconnects via the stored runId.
  *
- * Phase 2 emits only the terminal transitions (active → done/interrupted/error).
- * Phase 3 adds the mid-turn `thinking` / `synthesizing` states around dispatched
- * background agents.
+ * Terminal-only lifecycle statuses. Mid-turn transitions (thinking /
+ * synthesizing around dispatched sub-agents) were removed when thinkDeep
+ * became an agent-as-a-tool: reasoning fragments now flow back inline through
+ * tool results, so there is no separate wait/integrate phase to announce.
  *
  * TODO(v0.6): client-side reconnection — when the chat transport detects a
  * dropped connection, it should replay the stream from the last-seen index
@@ -132,8 +133,6 @@ export interface TurnOutcome {
  */
 export type TurnStatus =
   | "active" // LLM is generating or tools are executing
-  | "thinking" // Dispatched thinking agents are working (user may leave)
-  | "synthesizing" // Thinking done, main agent integrating
   | "done" // Final text delivered to client
   | "interrupted" // Timeout or error, partial result available
   | "error"; // Fatal error, no result

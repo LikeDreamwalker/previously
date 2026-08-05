@@ -49,7 +49,6 @@ import type {
   TurnInput,
   HousekeepingResult,
   TurnOutcome,
-  TurnStatus,
 } from "@/lib/chat/turn-types";
 import { deriveTurnStatus } from "@/lib/chat/turn-types";
 
@@ -301,61 +300,6 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   writer.releaseLock();
 
   return { slice, previouslyContent, strandsMenu, turnPriming, identityPrompt };
-}
-
-// ─── Mid-turn status step (Layer 2/3) ──────────────────────────────────────
-
-/**
- * Emit a `data-turn-status` chunk for a mid-turn transition (e.g. the main
- * agent entering the "thinking" wait state after dispatching sub-agents, or
- * resuming as "synthesizing"). A step (not inline in the workflow body) so the
- * ISO timestamp comes from real wall-clock Date, which the deterministic body
- * cannot use. Best-effort — a stream failure must not fail the turn.
- *
- * `opts.running` marks a phase transition: `true` when entering a status (the
- * client starts its spinner/timer), `false` when the status's work completes.
- * `thinkIds`/`questions` carry the dispatched sub-agent descriptors so the
- * client can show them in the thinking card.
- *
- * IMPORTANT: each status uses its OWN chunk id (`turn-status-${status}`). The
- * SDK merges parts by type+id by OVERWRITING the data, so a shared id would
- * collapse thinking → synthesizing → done into one part and the client would
- * only ever see the last status. Distinct per-status ids keep each lifecycle
- * card separate while still letting a status's running true→false pair merge
- * into one card that updates in place.
- */
-export async function emitTurnStatus(
-  status: TurnStatus,
-  turnId: string,
-  opts?: {
-    running?: boolean;
-    thinkIds?: string[];
-    questions?: string[];
-  },
-): Promise<void> {
-  "use step";
-  try {
-    const writable = getWritable<UIMessageChunk>();
-    const writer = writable.getWriter();
-    await writer.write({
-      type: "data-turn-status",
-      id: `turn-status-${status}`,
-      data: {
-        status,
-        turnId,
-        updatedAt: new Date().toISOString(),
-        running: opts?.running,
-        thinkIds: opts?.thinkIds,
-        questions: opts?.questions,
-      },
-    } as UIMessageChunk);
-    writer.releaseLock();
-  } catch (err) {
-    console.warn(
-      `[turn-status] mid-turn chunk failed (${status}):`,
-      err instanceof Error ? err.message : err,
-    );
-  }
 }
 
 // ─── Step 2: Finalize turn ───────────────────────────────────────────────

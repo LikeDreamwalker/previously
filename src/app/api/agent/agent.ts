@@ -29,10 +29,8 @@ function stripFrontmatter(md: string): string {
 import {
   chatTools,
   loopTools,
-  thinkTools,
   type buildChatToolsContext,
   type buildLoopToolsContext,
-  type buildThinkToolsContext,
 } from "./tools";
 
 // ─── Provider-aware providerOptions ──────────────────────────────────────
@@ -95,10 +93,8 @@ function buildProviderOptions(
 
 export type ChatToolSet = typeof chatTools;
 export type LoopToolSet = typeof loopTools;
-export type ThinkToolSet = typeof thinkTools;
 export type ChatAgent = WorkflowAgent<ChatToolSet>;
 export type LoopAgent = WorkflowAgent<LoopToolSet>;
-export type ThinkAgent = WorkflowAgent<ThinkToolSet>;
 
 /**
  * Chat agent. The per-turn dynamic system prompt (identity + intent + episodic
@@ -170,33 +166,5 @@ Use your concept tools to read context: open specific slices with readSlice, bro
 After each meaningful increment of work, call the loopReport tool exactly once to record the action you took, the result, and whether the goal is done. Set done=true only when the goal is genuinely complete — do not pad with busywork. Stop working once you have reported done=true.`,
     tools: loopTools,
     toolsContext: opts.toolsContext,
-  });
-}
-
-/**
- * Thinking-agent factory (Layer 3 dispatch). A focused analyst: thinking ENABLED
- * at the dispatched effort (low/high), the same Layer 1 token cap as the other
- * agents, and a minimal toolset (pointed memory reads + webSearch). The shared
- * context + question arrive as the call-time prompt (see buildThinkPrompt) —
- * the shared prefix is byte-identical across agents in a turn for cache hits.
- */
-export function createThinkAgent(opts: {
-  /** The main model config (thinking agents run the main model, not the worker). */
-  model: ModelConfig;
-  /** How deeply to think: 'low' for quick analysis, 'high' for thorough. */
-  effort: "low" | "high";
-  toolsContext: ReturnType<typeof buildThinkToolsContext>;
-}): ThinkAgent {
-  return new WorkflowAgent({
-    model: createModel(opts.model),
-    maxOutputTokens: 8_000,
-    instructions:
-      "You are a focused analyst. Your ONLY job is to think deeply about ONE " +
-      "question and produce a structured markdown report. Work from the context " +
-      "you are given; use the memory and web tools only to ground specific facts. " +
-      "Your final text IS the report.",
-    tools: thinkTools,
-    toolsContext: opts.toolsContext,
-    providerOptions: buildProviderOptions(opts.model.sdk, true, opts.effort),
   });
 }

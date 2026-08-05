@@ -11,15 +11,11 @@
  * tool definitions that bind these executors live in ./tools.ts.
  */
 
-import type { UIMessageChunk } from "ai";
+import { streamText, type UIMessageChunk } from "ai";
 import { getWritable } from "workflow";
-import crypto from "crypto";
 // Side effect: register the DeepSeek model class in the step runtime's
 // serialization registry (see register-model-classes.ts for why).
 import "./register-model-classes";
-import { startThink } from "@/app/api/thinking/start-think";
-import { writeTaskCard } from "@/lib/thinking/store";
-import type { ThinkInput } from "@/lib/thinking/types";
 import { readFile } from "@/lib/tools/readFile";
 import { listFiles } from "@/lib/tools/listFiles";
 import {
@@ -38,8 +34,11 @@ import { isAIConfigured, canWrite, DEPLOY_GUIDE_URL } from "@/lib/capabilities";
 import type { LoopRun, LoopStep } from "@/lib/loops/types";
 import { runRecallSearch, type RecallHit } from "@/lib/episodic/flash/recall";
 import { readStrands } from "@/lib/episodic";
-import { resolveWorkerModel } from "@/lib/models/worker";
+import { resolveWorkerModel, resolveMainModelFromConfig } from "@/lib/models/worker";
+import { createModel } from "@/lib/models/provider";
 import type { ModelConfig } from "@/lib/models/registry";
+import type { ProviderSdk } from "@/lib/models/providers";
+import { withStepTimeout } from "@/lib/chat/step-timeout";
 import {
   parseSliceId,
   parseTurns,
@@ -72,14 +71,6 @@ export interface ToolContext {
    * Set on the chat tool set; loops resolve it separately via their input.
    */
   workerModel?: ModelConfig;
-  /**
-   * Layer 3 dispatch context (chat tool set only): the main model for thinking
-   * agents, the byte-identical shared prefix for cache-optimized parallel
-   * thinkers, and the turn id for registering dispatched agents.
-   */
-  modelConfig?: ModelConfig;
-  sharedContext?: string;
-  turnId?: string;
 }
 
 /**
@@ -103,6 +94,20 @@ export interface LoopToolContext {
 type ExecuteOpts<C> = {
   context: C;
 };
+
+// JSON-safe provider-options shape (isomorphic to @ai-sdk/provider's JSONObject).
+// Declared structurally here, matching agent.ts's buildProviderOptions, so
+// providerOptions stays assignable to the AI SDK's SharedV4ProviderOptions.
+type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | JsonObject
+  | JsonValue[];
+interface JsonObject {
+  [key: string]: JsonValue;
+}
 
 // ─── Concept tool executors (chat + loop) ────────────────────────────────
 
@@ -317,7 +322,19 @@ export async function webSearchExecute(
     return { error: "Web search is not configured (DEEPSEEK_API_KEY missing)." };
   }
 
-  return await searchViaFlash(query);
+  // Soft 60s safety net. searchViaFlash errors (transient search failures)
+  // still throw and get step retries — only a timeout returns an error result.
+  const timed = await withStepTimeout(() => searchViaFlash(query), 60_000);
+
+  if (!timed.ok || timed.result === undefined) {
+    return {
+      error: timed.ok
+        ? "Web search returned no result"
+        : `Web search timed out after ${timed.elapsedMs}ms`,
+    };
+  }
+
+  return timed.result;
 }
 
 // ── recall �?semantic search across past conversation slices ─────────
@@ -341,24 +358,42 @@ export async function recallExecute(
 
   const strands = await readStrands();
 
-  const searchResult = await runRecallSearch({
-    query,
-    currentSliceId: ctx.sliceId,
-    owner: ctx.owner,
-    repo: ctx.repo,
-    strandsContext: strands,
-    useGithub: ctx.useGithub,
-    useDemo: ctx.useDemo,
-    model: ctx.workerModel ?? (await resolveWorkerModel()),
-  });
+  // Soft 120s safety net. Recall is best-effort: a timeout returns an empty
+  // search rather than failing the step, so the main agent knows nothing was
+  // found instead of a hard error.
+  const workerModel = ctx.workerModel ?? (await resolveWorkerModel());
+  const timed = await withStepTimeout(
+    () =>
+      runRecallSearch({
+        query,
+        currentSliceId: ctx.sliceId,
+        owner: ctx.owner,
+        repo: ctx.repo,
+        strandsContext: strands,
+        useGithub: ctx.useGithub,
+        useDemo: ctx.useDemo,
+        model: workerModel,
+      }),
+    120_000,
+  );
 
-  // Flash returns pointers only �?the executor no longer reads raw content.
+  if (!timed.ok || timed.result === undefined) {
+    return {
+      hits: [],
+      confidence: 0,
+      reasoning: timed.ok
+        ? "Recall search returned no result"
+        : `Recall search timed out after ${timed.elapsedMs}ms`,
+    };
+  }
+
+  // Flash returns pointers only — the executor no longer reads raw content.
   // Pro should call readSlice (optionally with range) to fetch content from
   // slices it actually wants to use, keeping context usage minimal.
   return {
-    hits: searchResult.hits,
-    confidence: searchResult.confidence,
-    reasoning: searchResult.reasoning,
+    hits: timed.result.hits,
+    confidence: timed.result.confidence,
+    reasoning: timed.result.reasoning,
   };
 }
 
@@ -406,70 +441,258 @@ export async function startLoopExecute(
 }
 
 /**
- * thinkDeep — dispatch a background thinking agent (Layer 3). Fire-and-forget:
- * writes the task card, starts the durable think workflow, registers the agent
- * with the turn state, and returns immediately — the executor step NEVER waits
- * on the sub-agent (that would make the step = sub-agent runtime and blow the
- * 300s wall). The main turn workflow polls the report files and integrates.
+ * thinkDeep — a reasoning fragment (think-only sub-agent).
+ *
+ * Runs ONE bounded reasoning fragment as a single synchronous `streamText`
+ * call INSIDE this step, using the user's MAIN model at the requested thinking
+ * intensity. The sub-agent is think-only: NO tools, NO search — it reasons over
+ * the information the main agent embedded in the question and writes its
+ * conclusion. The conclusion + reasoning trail flow back as the tool result,
+ * and the WorkflowAgent loop integrates them naturally on the next step.
+ *
+ * TIME-based truncation, NOT token-based: there is deliberately NO
+ * `maxOutputTokens` here. A hard token cap is invisible to the model — it can't
+ * pace itself within it, and with thinking enabled the reasoning silently eats
+ * the shared budget, leaving an empty/truncated report (the old 3500-token
+ * behavior). Instead the step is bounded by wall-clock and the SDK's native
+ * timeout hook:
+ *
+ *   - `streamText({ timeout })` is the PRIMARY hook: the SDK runs
+ *     `AbortSignal.timeout()` (available here — this is real Node in a
+ *     `"use step"`, unlike the deterministic workflow body) and ABORTS the
+ *     stream cleanly at the deadline, surfacing as `AbortError`. The value is
+ *     adaptive: `STEP_TOTAL_MS` minus the prologue already elapsed, so the step
+ *     returns right around STEP_TOTAL_MS regardless of setup overhead — safely
+ *     under the 300s platform wall.
+ *   - `withStepTimeout` is the backstop: if the SDK abort somehow doesn't
+ *     surface, it still returns a structured result before the wall, so the
+ *     step NEVER dies silently.
+ *
+ * BOTH output channels are captured live via `onChunk`: `text-delta` (the
+ * written answer) and `reasoning-delta` (the thinking trail). On timeout the
+ * main agent receives the partial answer AND the full reasoning so far — the
+ * sub-agent's thinking is never lost, even if it is interrupted mid-thought.
+ *
+ * Why think-only? A sub-agent with tools re-runs the search/recall the main
+ * agent already did, and an unbounded tool-loop + thinking guarantees it
+ * exhausts the wall before writing (the v2 empty-report bug). Think-only
+ * fragments are single-invocation, bounded by construction, and cannot cascade.
+ *
+ * Provider options are built inline here — this module must NOT import from
+ * ./agent.ts, which pulls `@ai-sdk/workflow` into the step bundle.
  */
-export async function thinkDeepExecute(
-  { question, effort, outputFormat }: {
-    question: string;
-    effort: "low" | "high";
-    outputFormat?: string;
-  },
-  { context: ctx }: ExecuteOpts<ToolContext>,
-): Promise<{
+/**
+ * Total target for the whole thinkDeep step — the maximum safely usable under
+ * the 300s platform wall. The SDK abort + catch + return path needs a few
+ * hundred ms, and cold-start (unmeasurable from inside the handler) silently
+ * eats into the wall, so we cannot target the full 300s. 295s leaves ~4s of
+ * margin on the primary path; the backstop fires 3s later at ~298s with ~2s to
+ * return — past that the platform kill would win the race.
+ */
+const STEP_TOTAL_MS = 295_000;
+
+/** Guidance the main agent reads when a reasoning fragment is interrupted. */
+const SUB_AGENT_TIMEOUT_NOTE =
+  "The reasoning fragment was interrupted before finishing. The `answer` holds " +
+  "the partial conclusion and `reasoning` the thinking trail it already produced " +
+  "— work with them (noting the uncertainty). If you need more, gather the " +
+  "missing information yourself (webSearch/recall), embed it, and dispatch a " +
+  "finer fragment. Do not re-dispatch the same question unchanged — a fragment " +
+  "that timed out will likely time out again.";
+
+/** Structured result a thinkDeep reasoning fragment returns to the main agent. */
+export interface ThinkDeepResult {
   ok: boolean;
-  thinkId?: string;
-  status?: string;
+  /** completed = answer is whole; timeout = answer is partial (may be empty); error = nothing usable. */
+  status: "completed" | "timeout" | "error";
+  /** The fragment's conclusion — full, or partial when interrupted. */
+  answer?: string;
+  /** The fragment's thinking trail — always captured; returned on completion AND timeout. */
+  reasoning?: string;
+  /** Human-readable failure / interruption reason. */
   error?: string;
-}> {
+  /** For `timeout`: what the main agent can do next. Absent otherwise. */
+  note?: string;
+}
+
+/** Detect the SDK `timeout` abort — the SDK's `AbortSignal.timeout()` surfaces as name "AbortError". */
+function isTimeoutAbort(err: unknown): boolean {
+  return (
+    err !== null &&
+    typeof err === "object" &&
+    "name" in err &&
+    (err as { name?: unknown }).name === "AbortError"
+  );
+}
+const SUB_AGENT_SYSTEM_PROMPT = `You are the same agent as the caller, working on ONE small reasoning fragment.
+
+Your ONLY job is to reason through the sub-question below to a clear conclusion,
+then write that conclusion. You are THINK-ONLY: you have no search, no memory
+tools — every fact you need is already embedded in the question. Do not ask for
+information; reason with what you are given and state plainly anything you lack.
+
+Writing discipline (critical):
+- A hard deadline will cut you off. Write your conclusion AS YOU GO — every
+  sentence you emit is preserved and returned to the caller. Do not save all
+  writing for the end.
+- Keep it short and decisive. This is one fragment of a larger reasoning, not
+  a report — a few paragraphs at most.
+- If you reach a conclusion, state it clearly at the end ("Conclusion: …").
+- If the question cannot be answered from the given information, say exactly
+  what is missing and why.
+
+Answer in the language of the question.`;
+
+/** Provider options for a think-only fragment — thinking intensity per effort. */
+function subAgentProviderOptions(
+  sdk: ProviderSdk | undefined,
+  effort: "low" | "medium" | "high",
+): Record<string, JsonObject> | undefined {
+  switch (sdk) {
+    case "anthropic":
+      if (effort === "low") return undefined; // no extended thinking — fast direct answer
+      return {
+        anthropic: {
+          thinking: {
+            type: "enabled",
+            budgetTokens: effort === "high" ? 32_000 : 12_000,
+          },
+        },
+      };
+    case "openai":
+      return { openai: { reasoningEffort: effort } };
+    default:
+      // DeepSeek — thinking "off" explicit for low; enabled with effort otherwise.
+      if (effort === "low") return { deepseek: { thinking: { type: "off" } } };
+      return {
+        deepseek: {
+          thinking: { type: "enabled" },
+          reasoningEffort: effort === "high" ? "high" : "medium",
+        },
+      };
+  }
+}
+
+export async function thinkDeepExecute(
+  { question, effort = "low" }: {
+    question: string;
+    effort?: "low" | "medium" | "high";
+  },
+  { context: _ctx }: ExecuteOpts<ToolContext>,
+): Promise<ThinkDeepResult> {
   "use step";
 
-  // Demo mode: thinking agents need a writable repo for their reports.
-  if (!canWrite()) {
+  if (!isAIConfigured()) {
     return {
       ok: false,
+      status: "error",
       error:
-        "The user is currently in demo mode (read-only preview data, no connected " +
-        "GitHub repository). Thinking agents need a real repository to write their " +
-        "reports. Tell the user they need to deploy their own instance to unlock " +
-        "deep-thinking dispatch. Setup guide: " + DEPLOY_GUIDE_URL,
+        "AI is not configured (no API key). Set DEEPSEEK_API_KEY or another provider key.",
     };
   }
 
-  if (!ctx.modelConfig || !ctx.sharedContext || !ctx.turnId) {
-    return {
-      ok: false,
-      error:
-        "Thinking agents are not configured for this turn (missing dispatch context). " +
-        "This is an internal configuration issue.",
-    };
-  }
+  // Step start — the adaptive SDK timeout below guarantees the whole step
+  // returns around STEP_TOTAL_MS no matter how long the setup takes.
+  const stepStartMs = Date.now();
 
-  const thinkId = `think-${Date.now()}-${crypto.randomBytes(3).toString("base64url")}`;
-  const input: ThinkInput = {
-    thinkId,
-    question,
-    effort,
-    outputFormat,
-    sharedContext: ctx.sharedContext,
-    model: ctx.modelConfig,
-    owner: ctx.owner,
-    repo: ctx.repo,
-    useGithub: ctx.useGithub,
-    startedAt: new Date().toISOString(),
-  };
+  const modelConfig = await resolveMainModelFromConfig();
+  const providerOptions = subAgentProviderOptions(modelConfig.sdk, effort);
+  const dateAnchor = new Date().toISOString().slice(0, 10);
+
+  const userPrompt = [
+    `Today is ${dateAnchor}.`,
+    "",
+    "# Reasoning fragment",
+    "",
+    "Reason through the sub-question below to a clear conclusion. Write your",
+    "conclusion as you go — a hard deadline will cut you off, and every sentence",
+    "you emit is preserved and returned to the caller.",
+    "",
+    `Sub-question: ${question.trim()}`,
+    "",
+    "You have no tools and no search. Reason with what is given; state plainly",
+    "anything you lack.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  // Adaptive SDK timeout — the PRIMARY hook: `streamText({ timeout })` runs
+  // `AbortSignal.timeout()` (available in real Node) and ABORTS the stream
+  // cleanly at the deadline, surfacing as AbortError. Measured so the whole
+  // step returns around STEP_TOTAL_MS no matter how long setup took, staying
+  // safely under the 300s platform wall.
+  const streamTimeoutMs = Math.max(
+    30_000,
+    STEP_TOTAL_MS - (Date.now() - stepStartMs),
+  );
+
+  // Accumulated by onChunk — the written answer (text-delta) and the thinking
+  // trail (reasoning-delta). Both are returned on completion AND interruption.
+  let answer = "";
+  let reasoning = "";
 
   try {
-    await writeTaskCard(input);
-    await startThink(input);
-    return { ok: true, thinkId, status: "dispatched" };
-  } catch (e) {
+    const result = await withStepTimeout(
+      async () => {
+        // streamText (not generateText) so onChunk can capture BOTH channels
+        // progressively — never lost, even mid-thought.
+        const stream = await streamText({
+          model: createModel(modelConfig),
+          system: SUB_AGENT_SYSTEM_PROMPT,
+          prompt: userPrompt,
+          providerOptions,
+          // The SDK timeout hook — aborts the stream cleanly at the deadline.
+          timeout: streamTimeoutMs,
+          onChunk({ chunk }) {
+            if (chunk.type === "text-delta") {
+              answer += chunk.text;
+            } else if (chunk.type === "reasoning-delta") {
+              reasoning += chunk.text;
+            }
+          },
+        });
+        return await stream.text;
+      },
+      // Backstop (fires ~3s after the SDK abort): if the abort somehow doesn't
+      // surface, withStepTimeout still returns a structured result before the
+      // wall — the step never dies silently. This must stay strictly under 300s
+      // (plus return overhead) or the platform kill would beat it.
+      streamTimeoutMs + 3_000,
+      () => answer || undefined,
+    );
+
+    if (!result.ok) {
+      // Backstop fired (the SDK timeout didn't surface) — same structured return.
+      return {
+        ok: false,
+        status: "timeout",
+        error: `Reasoning fragment did not finish within ${Math.round(result.elapsedMs / 1000)}s and was interrupted.`,
+        answer,
+        reasoning,
+        note: SUB_AGENT_TIMEOUT_NOTE,
+      };
+    }
+
+    return { ok: true, status: "completed", answer: result.result ?? "", reasoning };
+  } catch (err) {
+    if (isTimeoutAbort(err)) {
+      // The SDK timeout hook aborted the stream — return the partial conclusion
+      // and the thinking trail.
+      return {
+        ok: false,
+        status: "timeout",
+        error: `Reasoning fragment did not finish within ${Math.round(streamTimeoutMs / 1000)}s and was interrupted.`,
+        answer,
+        reasoning,
+        note: SUB_AGENT_TIMEOUT_NOTE,
+      };
+    }
     return {
       ok: false,
-      error: e instanceof Error ? e.message : "failed to dispatch thinking agent",
+      status: "error",
+      error: err instanceof Error ? err.message : "Sub-agent failed",
+      answer: "",
+      reasoning: "",
     };
   }
 }

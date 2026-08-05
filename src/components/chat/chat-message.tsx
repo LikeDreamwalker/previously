@@ -15,17 +15,14 @@ import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import {
   Activity,
   AlertTriangle,
-  Brain,
   Calendar,
   FileText,
   GitBranch,
-  Sparkles,
   Tag,
   XCircle,
 } from "lucide-react";
 import { LoadingTip } from "./loading-tip";
 import { EvolutionIndicator, type EvolutionState } from "./evolution-indicator";
-import type { TurnStatus } from "@/lib/chat/turn-types";
 import type { ToolRenderState } from "@/lib/chat/tool-state";
 
 interface ChatMessageProps {
@@ -53,8 +50,7 @@ type StreamItem =
   | { kind: "reasoning"; text: string }
   | { kind: "text"; content: string }
   | { kind: "tool"; toolCallId: string; toolName: string; state: string; input?: unknown; output?: unknown }
-  | { kind: "phase"; phase: string; running?: boolean; mode?: string; summaries?: string[]; compact?: boolean }
-  | { kind: "turnStatus"; status: TurnStatus; running?: boolean; thinkIds?: string[]; questions?: string[] };
+  | { kind: "phase"; phase: string; running?: boolean; mode?: string; summaries?: string[]; compact?: boolean };
 
 /**
  * Maps a running-phase i18n key to its done-state key. `slicing` is kept for
@@ -89,8 +85,6 @@ function itemKey(item: StreamItem, index: number): string {
       return `tool-${item.toolCallId}`;
     case "phase":
       return `phase-${item.phase}-${index}`;
-    case "turnStatus":
-      return `turnStatus-${item.status}-${index}`;
   }
 }
 
@@ -145,59 +139,28 @@ function buildStream(parts: readonly AnyPart[], isStreaming: boolean): StreamIte
         }
       }
     } else if (p.type === "data-turn-status") {
+      // Terminal status only (done / interrupted / error) — the mid-turn
+      // thinking/synthesizing lifecycle was removed when thinkDeep became an
+      // agent-as-a-tool. Surface interrupted/error inline; done renders nothing
+      // (the reply text is the completion signal).
       flushText();
-      const d = p.data as {
-        status?: TurnStatus;
-        running?: boolean;
-        thinkIds?: string[];
-        questions?: string[];
-      } | undefined;
-      const status = d?.status;
-      if (!status || status === "active") continue;
+      const status = (p.data as { status?: string } | undefined)?.status;
+      if (!status || status === "active" || status === "done") continue;
 
-      if (status === "thinking" || status === "synthesizing") {
-        // Mid-turn lifecycle — one card per status, merged in place as the
-        // running true→false pair arrives (distinct per-status chunk ids).
-        const existing = items.find(
-          (it): it is Extract<StreamItem, { kind: "turnStatus" }> =>
-            it.kind === "turnStatus" && it.status === status,
-        );
-        if (existing) {
-          if (d.running !== undefined) existing.running = d.running;
-          if (d.thinkIds !== undefined) existing.thinkIds = d.thinkIds;
-          if (d.questions !== undefined) existing.questions = d.questions;
-        } else {
-          items.push({
-            kind: "turnStatus",
-            status,
-            running: d.running ?? true,
-            thinkIds: d.thinkIds,
-            questions: d.questions,
-          });
-        }
-      } else {
-        // Terminal status: close any in-flight lifecycle cards, and surface
-        // interrupted/error inline (done renders nothing — the reply text is
-        // the completion signal).
-        for (const it of items) {
-          if (it.kind === "turnStatus") it.running = false;
-        }
-        if (status === "done") continue;
-        const terminalPhase =
-          status === "interrupted" ? "terminal-interrupted" : "terminal-error";
-        const existing = items.find(
-          (it): it is Extract<StreamItem, { kind: "phase" }> =>
-            it.kind === "phase" && it.phase === terminalPhase,
-        );
-        if (!existing) {
-          items.push({
-            kind: "phase",
-            phase: terminalPhase,
-            running: false,
-            mode: "terminal",
-            summaries: [],
-          });
-        }
+      const terminalPhase =
+        status === "interrupted" ? "terminal-interrupted" : "terminal-error";
+      const existing = items.find(
+        (it): it is Extract<StreamItem, { kind: "phase" }> =>
+          it.kind === "phase" && it.phase === terminalPhase,
+      );
+      if (!existing) {
+        items.push({
+          kind: "phase",
+          phase: terminalPhase,
+          running: false,
+          mode: "terminal",
+          summaries: [],
+        });
       }
     } else if (p.type?.startsWith("tool-")) {
       flushText();
@@ -404,65 +367,6 @@ export const ChatMessage = memo(function ChatMessage({ message, onRegenerate, is
                     );
                   }
 
-                  if (item.kind === "turnStatus") {
-                    // thinkDeep dispatch/integration — prominent PhaseIndicator.
-                    const isThinking = item.status === "thinking";
-                    const running = (item.running ?? true) && (isStreaming ?? false);
-                    const count = (item.questions ?? []).length;
-                    const questions = item.questions ?? [];
-                    const expandedContent = questions.length > 0 ? (
-                      <div className="space-y-1.5">
-                        {questions.map((q, j) => (
-                          <div
-                            key={j}
-                            className="text-xs text-muted-foreground leading-relaxed"
-                          >
-                            {q}
-                          </div>
-                        ))}
-                      </div>
-                    ) : undefined;
-                    return (
-                      <PhaseIndicator
-                        key={key}
-                        mode="streaming"
-                        icon={
-                          isThinking ? (
-                            <Brain className="h-3.5 w-3.5" />
-                          ) : (
-                            <Sparkles className="h-3.5 w-3.5" />
-                          )
-                        }
-                        label={
-                          isThinking
-                            ? running
-                              ? t("dispatching")
-                              : t("dispatched")
-                            : running
-                              ? t("synthesizing")
-                              : t("synthesized")
-                        }
-                        state={{
-                          running,
-                          inputStreaming: false,
-                          interrupted: false,
-                          denied: false,
-                          approvalRequested: false,
-                          isActiveApproval: false,
-                        }}
-                        streamingText={
-                          isThinking
-                            ? count > 0
-                              ? t("subAgentsWorking", { count })
-                              : undefined
-                            : count > 0
-                              ? t("reportsIntegrating", { count })
-                              : undefined
-                        }
-                        expandedContent={expandedContent}
-                      />
-                    );
-                  }
                   if (item.kind === "text") {
                     return (
                       <motion.div

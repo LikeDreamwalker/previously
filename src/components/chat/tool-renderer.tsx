@@ -86,12 +86,19 @@ export function ToolRenderer({ toolName, state, input, output, isStreaming }: To
         <ThinkDeepToolRenderer
           input={
             input as
-              | { question?: string; effort?: string; outputFormat?: string }
+              | { question?: string; effort?: "low" | "medium" | "high" }
               | undefined
           }
           output={
             output as
-              | { ok?: boolean; thinkId?: string; status?: string; error?: string }
+              | {
+                  ok?: boolean;
+                  status?: "completed" | "timeout" | "error";
+                  answer?: string;
+                  reasoning?: string;
+                  error?: string;
+                  note?: string;
+                }
               | undefined
           }
           state={renderState}

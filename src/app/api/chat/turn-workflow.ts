@@ -21,7 +21,7 @@
  * default) picks up the `"use workflow"` directive.
  */
 import { isStepCount, type ModelMessage } from "ai";
-import { getWritable, sleep } from "workflow";
+import { getWritable } from "workflow";
 import type { ModelCallStreamPart } from "@ai-sdk/workflow";
 import { createChatAgent } from "@/app/api/agent/agent";
 import { buildChatToolsContext } from "@/app/api/agent/tools";
@@ -32,16 +32,10 @@ import type {
 } from "@/lib/chat/turn-types";
 import { DEPLOY_GUIDE_URL } from "@/lib/capabilities";
 import { tokenBudget } from "@/lib/chat/token-budget";
-import { buildIntegrationPrompt } from "@/lib/thinking/prompt";
 import {
   housekeeping,
   finalizeTurn,
-  emitTurnStatus,
 } from "./steps";
-import {
-  allReportsReady,
-  readAllReports,
-} from "@/app/api/thinking/steps";
 
 // ─── Pure helpers (serializable data in, serializable data out) ──────────
 
@@ -227,60 +221,62 @@ function extractStartedLoops(messages: ModelMessage[]): StartedLoopRef[] {
 }
 
 /**
- * thinkIds of all successfully dispatched thinking agents in this turn.
+ * The `question` + `report` pairs of every thinkDeep sub-agent in this turn —
+ * folded into the agent.md cognition body so sub-agent research survives in the
+ * agent's own timeline (the old `memory/thinking/` store is gone; reports now
+ * flow inline as tool results).
  *
- * Mirrors extractStartedLoops: the thinkDeep tool RESULT lands in a
- * `role: "tool"` message (ModelMessage tool-result output is wrapped as
- * { type: 'json', value }), keyed by toolCallId. Only ok=true results count.
+ * The question lives in the assistant-side tool-call input, the report in the
+ * matching `role: "tool"` result (ModelMessage tool-result output is wrapped as
+ * { type: 'json', value }). Any result carrying a non-empty report counts —
+ * including interrupted (`ok: false`) ones, whose partial findings are worth
+ * preserving in the timeline just as they are in the main agent's reply.
  */
-export function extractThinkIds(messages: ModelMessage[]): string[] {
-  const ids: string[] = [];
-  for (const m of messages) {
-    if (m.role !== "tool") continue;
-    const parts = Array.isArray(m.content) ? m.content : [];
-    for (const part of parts) {
-      const p = part as {
-        type?: string;
-        toolName?: string;
-        output?: unknown;
-      };
-      if (p.type !== "tool-result" || p.toolName !== "thinkDeep") continue;
-      const raw = p.output as { value?: unknown } | undefined;
-      const value = (
-        raw && typeof raw === "object" && "value" in raw ? raw.value : raw
-      ) as { ok?: unknown; thinkId?: unknown } | undefined;
-      if (value?.ok === true && typeof value.thinkId === "string") {
-        ids.push(value.thinkId);
-      }
-    }
-  }
-  return ids;
-}
+export function extractThinkDeepReports(
+  messages: ModelMessage[],
+): Array<{ question: string; answer: string; reasoning: string }> {
+  const questionByCallId = new Map<string, string>();
+  const results: Array<{ question: string; answer: string; reasoning: string }> =
+    [];
 
-/**
- * The `question` strings of every thinkDeep tool-call in the turn's assistant
- * messages — used to describe the dispatched sub-agents in the client's
- * "thinking" card. Mirrors extractThinkIds, but reads the assistant-side
- * tool-call input (the questions live there, not in the tool results).
- */
-export function extractThinkQuestions(messages: ModelMessage[]): string[] {
-  const questions: string[] = [];
   for (const m of messages) {
-    if (m.role !== "assistant") continue;
     const parts = Array.isArray(m.content) ? m.content : [];
     for (const part of parts) {
       const p = part as {
         type?: string;
+        toolCallId?: string;
         toolName?: string;
         input?: { question?: unknown };
+        output?: unknown;
       };
+
       if (p.type === "tool-call" && p.toolName === "thinkDeep") {
         const q = p.input?.question;
-        if (typeof q === "string") questions.push(q);
+        if (typeof q === "string" && typeof p.toolCallId === "string") {
+          questionByCallId.set(p.toolCallId, q);
+        }
+      }
+
+      if (p.type === "tool-result" && p.toolName === "thinkDeep") {
+        if (typeof p.toolCallId !== "string") continue;
+        const raw = p.output as { value?: unknown } | undefined;
+        const value = (
+          raw && typeof raw === "object" && "value" in raw ? raw.value : raw
+        ) as { ok?: unknown; answer?: unknown; reasoning?: unknown } | undefined;
+        const question = questionByCallId.get(p.toolCallId) ?? "";
+        const answer = typeof value?.answer === "string" ? value.answer : "";
+        const reasoning =
+          typeof value?.reasoning === "string" ? value.reasoning : "";
+        // Keep a fragment if it produced ANYTHING — the answer OR the thinking
+        // trail (an interrupted fragment's reasoning is still valuable).
+        if (answer.trim() || reasoning.trim()) {
+          results.push({ question, answer, reasoning });
+        }
       }
     }
   }
-  return questions;
+
+  return results;
 }
 
 // ─── The workflow ────────────────────────────────────────────────────────
@@ -345,21 +341,6 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
    */
   const MAX_CONTINUATIONS = 5;
 
-  /**
-   * The byte-identical prefix shared by every thinking agent dispatched this
-   * turn (identity + previously + strands menu). Placed first in each agent's
-   * prompt so DeepSeek's automatic prefix cache hits for agents 2-N.
-   */
-  const sharedContext = [
-    `## Your constitution`,
-    identityPrompt,
-    `## What I know about you (as of ${dateAnchor})`,
-    previouslyContent,
-    strandsMenu ? `## Memory topics\n\n${strandsMenu}` : "",
-  ]
-    .filter(Boolean)
-    .join("\n\n");
-
   const agent = createChatAgent({
     model: input.modelConfig,
     thinking: input.thinking,
@@ -373,11 +354,6 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
       sliceId: slice.slice_id,
       recentTurns: input.recentTurns,
       workerModel: input.workerModel,
-      // Layer 3 dispatch context — the thinkDeep executor reads these to start
-      // thinking agents that share this turn's context.
-      modelConfig: input.modelConfig,
-      sharedContext,
-      turnId: input.turnId,
     }),
   });
 
@@ -403,10 +379,15 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
     let currentMessages = input.modelMessages;
     let continuations = 0;
 
-    // ── Pass 1: the agent's routing + dispatch (and any direct answer) ──
+    // ── The agent loop ────────────────────────────────────────────────────
     // Inline loop — NOT a nested closure: the workflow transform instruments
     // awaits at the top level of the "use workflow" body, so `agent.stream`
     // (self-managed steps) must stay here, exactly as the loop engine does.
+    //
+    // Tool calls (recall / webSearch / thinkDeep) are handled inline by the
+    // WorkflowAgent loop: the executor runs in its own step and the result
+    // (e.g. a sub-agent report) is fed straight back to the model on the next
+    // step. No separate dispatch / polling / integration pass exists.
     while (true) {
       const result = await agent.stream({
         messages: currentMessages,
@@ -436,69 +417,20 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
       ];
     }
 
-    // ── Dispatch phase: if the agent dispatched thinking agents, wait durably
-    //    for their reports, then re-prompt the agent to integrate. Inline —
-    //    each `sleep` / step call is a top-level durable step.
-    const thinkIds = extractThinkIds(finalMessages);
-    if (thinkIds.length > 0) {
-      // Enter "thinking": dispatched sub-agents are working in the background.
-      await emitTurnStatus("thinking", input.turnId, {
-        running: true,
-        thinkIds,
-        questions: extractThinkQuestions(finalMessages),
-      });
-
-      /** Poll cadence — durable sleep between checks, zero compute while waiting. */
-      const POLL_MS = 15_000;
-      /** Hard cap: 40 × 15s = 10 minutes of background thinking time. */
-      const MAX_POLLS = 40;
-      let ready = false;
-      for (let i = 0; i < MAX_POLLS; i++) {
-        ready = await allReportsReady(thinkIds);
-        if (ready) break;
-        await sleep(POLL_MS);
+    // ── Sub-agent reports (thinkDeep) — keep the full research in the timeline ──
+    // Extracted ONCE from the final messages (not inside extractCognition, which
+    // runs per continuation over the full message history — that would duplicate
+    // the reports across token-cap continuations).
+    const thinkDeepReports = extractThinkDeepReports(finalMessages);
+    if (thinkDeepReports.length > 0) {
+      allCognition += "\n### Reasoning fragments";
+      for (const { question, answer, reasoning } of thinkDeepReports) {
+        allCognition += `\n\n**Q**: ${question}`;
+        if (answer) allCognition += `\n\n${answer.slice(0, 2000)}`;
+        if (reasoning)
+          allCognition += `\n\n<reasoning>\n${reasoning.slice(0, 1000)}\n</reasoning>`;
       }
-      // Even if not all reports landed, integrate what exists — interrupted
-      // reports carry partial findings the main agent can work with.
-      const reports = await readAllReports(thinkIds);
-
-      // "thinking" done → "synthesizing": reports landed, main agent integrates.
-      await emitTurnStatus("thinking", input.turnId, { running: false });
-      await emitTurnStatus("synthesizing", input.turnId, { running: true });
-
-      // Integration pass — a second continuation loop with the reports as a
-      // user message.
-      let integMessages: ModelMessage[] = [
-        ...finalMessages.filter((m) => m.role !== "system"),
-        { role: "user" as const, content: buildIntegrationPrompt(reports) },
-      ];
-      let integContinuations = 0;
-      while (true) {
-        const result = await agent.stream({
-          messages: integMessages,
-          system: systemPrompt,
-          ...streamOpts,
-        });
-
-        allText += extractFinalText(result.messages);
-        allCognition += extractCognition(result.messages, result.steps);
-        finalMessages = result.messages;
-        finalFinishReason = result.finishReason;
-
-        if (result.finishReason !== "length") break;
-        if (++integContinuations >= MAX_CONTINUATIONS) break;
-        integMessages = [
-          ...result.messages.filter((m) => m.role !== "system"),
-          {
-            role: "user" as const,
-            content:
-              "You were cut off mid-response. Continue exactly where you left off — do not repeat anything you already said.",
-          },
-        ];
-      }
-
-      // "synthesizing" done — the integrated reply follows in the stream tail.
-      await emitTurnStatus("synthesizing", input.turnId, { running: false });
+      allCognition += "\n";
     }
 
     outcome = {
