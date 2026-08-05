@@ -10,6 +10,10 @@ interface RecallToolRendererProps {
   input?: unknown;
   output?: unknown;
   state: ToolRenderState;
+  /** Live progress from `data-tool-progress` — the streaming subtitle. */
+  streamingText?: string;
+  /** Progress stage from `data-tool-progress` (unused — recall status stays dim). */
+  streamingStage?: string;
 }
 
 interface RecallHit {
@@ -45,17 +49,21 @@ function resolveLabel(
 }
 
 /**
- * Recall tool renderer using PhaseIndicator in static mode.
+ * Recall tool renderer using PhaseIndicator in streaming mode.
  *
  * Recall returns neutral pointers only — slice IDs, relevance, reasons,
  * key turn numbers. No raw content is returned; Pro uses readSlice
  * (with optional range) to fetch content from slices it actually needs.
+ * Streaming mode gives it a running label + "Scanning…" subtitle while it
+ * works; the subtitle fades and clicking expands the pointers.
  */
 export function RecallToolRenderer({
   toolName: _toolName,
   input,
   output,
   state,
+  streamingText,
+  streamingStage: _streamingStage,
 }: RecallToolRendererProps) {
   const t = useTranslations("chat.tool");
 
@@ -71,19 +79,6 @@ export function RecallToolRenderer({
   const isRunning = state.running;
 
   const label = resolveLabel(inp, out, isRunning, t);
-
-  // Summary for the header (only when not running)
-  const summary = isRunning
-    ? undefined
-    : hasHits
-      ? t("recallHits", { count: hits.length })
-      : t("recallNone");
-
-  // Meta: confidence (only when finished with hits)
-  const meta =
-    !isRunning && confidence !== null
-      ? `${Math.round(confidence * 100)}%`
-      : undefined;
 
   // Expanded content — hits list only, no raw content
   const expandedContent = hasHits ? (
@@ -135,12 +130,11 @@ export function RecallToolRenderer({
 
   return (
     <PhaseIndicator
-      mode="static"
+      mode="streaming"
       icon={<History className="h-3.5 w-3.5" />}
       label={label}
-      summary={summary}
-      meta={meta}
       state={state}
+      streamingText={streamingText}
       expandedContent={expandedContent}
     />
   );

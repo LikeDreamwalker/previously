@@ -40,6 +40,10 @@ import type { ModelConfig } from "@/lib/models/registry";
 import type { ProviderSdk } from "@/lib/models/providers";
 import { withStepTimeout } from "@/lib/chat/step-timeout";
 import {
+  shouldEmitProgress,
+  type ProgressWriteState,
+} from "@/lib/chat/progress-throttle";
+import {
   parseSliceId,
   parseTurns,
   applyRange,
@@ -90,10 +94,49 @@ export interface LoopToolContext {
   maxIterations: number;
 }
 
-/** Shorthand for the options object each execute function receives. */
+/**
+ * Shorthand for the options object each execute function receives.
+ *
+ * The AI SDK's `ToolExecutionOptions` provides `{ toolCallId, messages,
+ * abortSignal, context, ... }`; we narrow it to the fields our executors use.
+ * `toolCallId` is the client-side routing key for `data-tool-progress` chunks
+ * (merged into the matching tool card in buildStream).
+ */
 type ExecuteOpts<C> = {
   context: C;
+  toolCallId: string;
 };
+
+/**
+ * Best-effort live progress write to the run stream (`data-tool-progress`),
+ * routed client-side by `toolCallId` into the matching tool card. One write per
+ * call — tools that want continuous streaming throttle on their own (thinkDeep)
+ * and await the write when the status must settle BEFORE the tool result is
+ * ordered (webSearch / recall emit a final "found N" status). A stream failure
+ * must never fail the tool, so write errors are swallowed and the lock released
+ * after each write (an unreleased lock keeps the step's HTTP request alive).
+ */
+function emitToolProgress(
+  toolCallId: string,
+  toolName: string,
+  text: string,
+  stage?: string,
+): Promise<void> {
+  try {
+    const writer = getWritable<UIMessageChunk>().getWriter();
+    return writer
+      .write({
+        type: "data-tool-progress",
+        id: `tool-${toolCallId}`,
+        data: { toolCallId, toolName, text, stage },
+      })
+      .then(() => writer.releaseLock())
+      .catch(() => {});
+  } catch {
+    // getWritable() can throw outside a step context — never fail the tool.
+    return Promise.resolve();
+  }
+}
 
 // JSON-safe provider-options shape (isomorphic to @ai-sdk/provider's JSONObject).
 // Declared structurally here, matching agent.ts's buildProviderOptions, so
@@ -315,9 +358,13 @@ export async function readPreviouslyExecute(
  */
 export async function webSearchExecute(
   { query }: { query: string },
-  _opts: ExecuteOpts<ToolContext>,
+  { toolCallId }: ExecuteOpts<ToolContext>,
 ): Promise<WebSearchResult | { error: string }> {
   "use step";
+  // Status subtitle streams for the whole execution; awaited so it is ordered
+  // before the result.
+  await emitToolProgress(toolCallId, "webSearch", "Searching the web…", "running");
+
   if (!isAIConfigured()) {
     return { error: "Web search is not configured (DEEPSEEK_API_KEY missing)." };
   }
@@ -334,7 +381,16 @@ export async function webSearchExecute(
     };
   }
 
-  return timed.result;
+  // Settle the subtitle on the outcome before the tool result lands, so the
+  // typewriter box ends on "Found N sources" instead of the stale "Searching…".
+  const result = timed.result;
+  await emitToolProgress(
+    toolCallId,
+    "webSearch",
+    `Found ${result.sources.length} source${result.sources.length === 1 ? "" : "s"}`,
+    "running",
+  );
+  return result;
 }
 
 // ── recall �?semantic search across past conversation slices ─────────
@@ -348,13 +404,14 @@ export async function webSearchExecute(
  * never produces summaries. */
 export async function recallExecute(
   { query }: { query: string },
-  { context: ctx }: ExecuteOpts<ToolContext>,
+  { context: ctx, toolCallId }: ExecuteOpts<ToolContext>,
 ): Promise<{
   hits: RecallHit[];
   confidence: number;
   reasoning: string;
 }> {
   "use step";
+  await emitToolProgress(toolCallId, "recall", "Scanning memory slices…", "running");
 
   const strands = await readStrands();
 
@@ -387,13 +444,22 @@ export async function recallExecute(
     };
   }
 
+  // Settle the subtitle on the outcome before the tool result lands.
+  const result = timed.result;
+  await emitToolProgress(
+    toolCallId,
+    "recall",
+    `Found ${result.hits.length} match${result.hits.length === 1 ? "" : "es"}`,
+    "running",
+  );
+
   // Flash returns pointers only — the executor no longer reads raw content.
   // Pro should call readSlice (optionally with range) to fetch content from
   // slices it actually wants to use, keeping context usage minimal.
   return {
-    hits: timed.result.hits,
-    confidence: timed.result.confidence,
-    reasoning: timed.result.reasoning,
+    hits: result.hits,
+    confidence: result.confidence,
+    reasoning: result.reasoning,
   };
 }
 
@@ -562,8 +628,10 @@ function subAgentProviderOptions(
     case "openai":
       return { openai: { reasoningEffort: effort } };
     default:
-      // DeepSeek — thinking "off" explicit for low; enabled with effort otherwise.
-      if (effort === "low") return { deepseek: { thinking: { type: "off" } } };
+      // DeepSeek — thinking "disabled" explicit for low; enabled with effort
+      // otherwise. (The SDK validates type ∈ adaptive|enabled|disabled — "off"
+      // throws AI_InvalidArgumentError.)
+      if (effort === "low") return { deepseek: { thinking: { type: "disabled" } } };
       return {
         deepseek: {
           thinking: { type: "enabled" },
@@ -578,7 +646,7 @@ export async function thinkDeepExecute(
     question: string;
     effort?: "low" | "medium" | "high";
   },
-  { context: _ctx }: ExecuteOpts<ToolContext>,
+  { context: _ctx, toolCallId }: ExecuteOpts<ToolContext>,
 ): Promise<ThinkDeepResult> {
   "use step";
 
@@ -631,27 +699,116 @@ export async function thinkDeepExecute(
   let answer = "";
   let reasoning = "";
 
+  // Live progress → the shared `data-tool-progress` channel. The sub-agent's
+  // reasoning and answer stream token-by-token; we forward the CURRENT line
+  // (text after the last newline) so the client shows a growing single line
+  // that resets at line boundaries — the same flowing behavior as the thinking
+  // phase. A single reused writer keeps the step reliable: creating a fresh
+  // `getWritable()` pipeline per write failed silently on long fragments. The
+  // client merges these chunks by (type, id = tool-<toolCallId>) into one part,
+  // so the write cadence here is decoupled from delivery — the client just
+  // replaces that part's data on each arrival.
+  //
+  // Writes are THROTTLED (see progress-throttle.ts): the getWritable() pump
+  // drains only ~55-60 chunks/sec, and writing every token fire-and-forget
+  // backed up a queue whose tail (the whole answer) arrived ~49s after the
+  // turn rendered. Stage changes and line resets force-send immediately so the
+  // thinking → answer transition and the per-line re-render stay visible.
+  let progressWriter: WritableStreamDefaultWriter<UIMessageChunk> | null = null;
+  let progressState: ProgressWriteState = {
+    lastWriteMs: 0,
+    lastLine: "",
+    lastStage: undefined,
+    sentAny: false,
+  };
+
+  const emitLine = (line: string, stage: "reasoning" | "writing") => {
+    if (!progressWriter) {
+      try {
+        progressWriter = getWritable<UIMessageChunk>().getWriter();
+      } catch {
+        return;
+      }
+    }
+    void progressWriter
+      .write({
+        type: "data-tool-progress",
+        id: `tool-${toolCallId}`,
+        data: { toolCallId, toolName: "thinkDeep", text: line, stage },
+      })
+      .catch(() => {});
+  };
+
+  const writeProgress = () => {
+    const source = answer || reasoning;
+    if (!source) return;
+    const now = Date.now();
+    const line = source.slice(source.lastIndexOf("\n") + 1);
+    const stage: "reasoning" | "writing" = answer ? "writing" : "reasoning";
+    if (!shouldEmitProgress(progressState, { line, stage }, now)) return;
+    progressState = { lastWriteMs: now, lastLine: line, lastStage: stage, sentAny: true };
+    emitLine(line, stage);
+  };
+
+  // Push the final line at step end so the box settles on the real last line
+  // (the last throttled write may have been a few lines behind).
+  const flushProgress = () => {
+    const source = answer || reasoning;
+    if (!source) return;
+    const line = source.slice(source.lastIndexOf("\n") + 1);
+    const stage: "reasoning" | "writing" = answer ? "writing" : "reasoning";
+    if (
+      progressState.sentAny &&
+      line === progressState.lastLine &&
+      stage === progressState.lastStage
+    ) {
+      return;
+    }
+    progressState = {
+      lastWriteMs: Date.now(),
+      lastLine: line,
+      lastStage: stage,
+      sentAny: true,
+    };
+    emitLine(line, stage);
+  };
+
   try {
     const result = await withStepTimeout(
       async () => {
-        // streamText (not generateText) so onChunk can capture BOTH channels
-        // progressively — never lost, even mid-thought.
-        const stream = await streamText({
-          model: createModel(modelConfig),
-          system: SUB_AGENT_SYSTEM_PROMPT,
-          prompt: userPrompt,
-          providerOptions,
-          // The SDK timeout hook — aborts the stream cleanly at the deadline.
-          timeout: streamTimeoutMs,
-          onChunk({ chunk }) {
-            if (chunk.type === "text-delta") {
-              answer += chunk.text;
-            } else if (chunk.type === "reasoning-delta") {
-              reasoning += chunk.text;
-            }
-          },
-        });
-        return await stream.text;
+        try {
+          // streamText (not generateText) so onChunk can capture BOTH channels
+          // progressively — never lost, even mid-thought.
+          const stream = await streamText({
+            model: createModel(modelConfig),
+            system: SUB_AGENT_SYSTEM_PROMPT,
+            prompt: userPrompt,
+            providerOptions,
+            // The SDK timeout hook — aborts the stream cleanly at the deadline.
+            timeout: streamTimeoutMs,
+            onChunk({ chunk }) {
+              if (chunk.type === "text-delta") {
+                answer += chunk.text;
+                // Stream the live reasoning/answer line to the client.
+                writeProgress();
+              } else if (chunk.type === "reasoning-delta") {
+                reasoning += chunk.text;
+                writeProgress();
+              }
+            },
+          });
+          return await stream.text;
+        } finally {
+          // Push the final progress line, then release the writer so the step's
+          // HTTP request can terminate (an unreleased lock keeps it alive until
+          // timeout).
+          try {
+            flushProgress();
+            progressWriter?.releaseLock();
+          } catch {
+            /* ignore */
+          }
+        }
       },
       // Backstop (fires ~3s after the SDK abort): if the abort somehow doesn't
       // surface, withStepTimeout still returns a structured result before the

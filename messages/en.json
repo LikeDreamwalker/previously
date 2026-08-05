@@ -99,7 +99,6 @@
       "thinkEffortMedium": "Moderate",
       "thinkEffortHigh": "Deep",
       "thinkTimedOut": "Reasoning fragment interrupted — partial answer",
-      "thinkAnswer": "Answer",
       "thinkReasoning": "Reasoning trail",
       "updatePreviously": "Updating 前情提要…",
       "signalNewObservation": "New observation",

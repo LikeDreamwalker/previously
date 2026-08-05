@@ -49,7 +49,18 @@ type AnyPart = {
 type StreamItem =
   | { kind: "reasoning"; text: string }
   | { kind: "text"; content: string }
-  | { kind: "tool"; toolCallId: string; toolName: string; state: string; input?: unknown; output?: unknown }
+  | {
+      kind: "tool";
+      toolCallId: string;
+      toolName: string;
+      state: string;
+      input?: unknown;
+      output?: unknown;
+      /** Live progress from `data-tool-progress` chunks — the streaming subtitle. */
+      streamingText?: string;
+      /** Progress stage ("reasoning" | "writing" | "running") — drives subtitle tone. */
+      streamingStage?: string;
+    }
   | { kind: "phase"; phase: string; running?: boolean; mode?: string; summaries?: string[]; compact?: boolean };
 
 /**
@@ -91,6 +102,10 @@ function itemKey(item: StreamItem, index: number): string {
 function buildStream(parts: readonly AnyPart[], isStreaming: boolean): StreamItem[] {
   const items: StreamItem[] = [];
   let textBuf: string[] = [];
+  // Progress chunks that arrived before their tool-* part (the tool-executor
+  // writes mid-step; the tool part can surface a tick later). Applied when the
+  // tool item is created.
+  const pendingProgress = new Map<string, string>();
 
   const flushText = () => {
     if (textBuf.length > 0) {
@@ -100,6 +115,27 @@ function buildStream(parts: readonly AnyPart[], isStreaming: boolean): StreamIte
   };
 
   for (const p of parts) {
+    if (p.type === "data-tool-progress") {
+      // Live streaming text for a tool card — route to the tool item by id.
+      // Does not create an item of its own and must not flush text.
+      const d = p.data as
+        | { toolCallId?: string; text?: string; stage?: string }
+        | undefined;
+      if (d?.toolCallId && typeof d.text === "string") {
+        const target = items.find(
+          (it): it is Extract<StreamItem, { kind: "tool" }> =>
+            it.kind === "tool" && it.toolCallId === d.toolCallId,
+        );
+        if (target) {
+          target.streamingText = d.text;
+          if (d.stage !== undefined) target.streamingStage = d.stage;
+        } else {
+          pendingProgress.set(d.toolCallId, d.text);
+        }
+      }
+      continue;
+    }
+
     if (p.type === "reasoning") {
       flushText();
       const reasoningText = (p as { text: string }).text ?? "";
@@ -186,7 +222,9 @@ function buildStream(parts: readonly AnyPart[], isStreaming: boolean): StreamIte
           state: (p as { state?: string }).state ?? "running",
           input: p.input,
           output: p.output,
+          streamingText: pendingProgress.get(toolCallId),
         });
+        pendingProgress.delete(toolCallId);
       }
     }
   }
@@ -269,6 +307,8 @@ export const ChatMessage = memo(function ChatMessage({ message, onRegenerate, is
                         state={item.state}
                         input={item.input}
                         output={item.output}
+                        streamingText={item.streamingText}
+                        streamingStage={item.streamingStage}
                         isStreaming={isStreaming ?? false}
                       />
                     );

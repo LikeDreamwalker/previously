@@ -3,7 +3,7 @@
 import type { ToolRenderState } from "@/lib/chat/tool-state";
 import { AlertTriangle, Brain } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { ToolLayout } from "../tool-layout";
+import { PhaseIndicator } from "../phase-indicator";
 import { MarkdownRenderer } from "../markdown";
 
 interface ThinkDeepToolRendererProps {
@@ -17,9 +17,11 @@ interface ThinkDeepToolRendererProps {
     note?: string;
   };
   state: ToolRenderState;
+  /** Live reasoning/answer line from `data-tool-progress` — the streaming subtitle. */
+  streamingText?: string;
+  /** Progress stage ("reasoning" | "writing") — drives subtitle tone (dim vs primary). */
+  streamingStage?: string;
 }
-
-const MAX_QUESTION_SUMMARY_LENGTH = 60;
 
 function effortLabelKey(
   effort: "low" | "medium" | "high" | undefined,
@@ -37,27 +39,22 @@ function effortLabelKey(
 }
 
 /**
- * thinkDeep reasoning-fragment card — a Brain icon with the sub-question as
- * summary. Expanded shows the fragment's answer plus its captured thinking
- * trail (returned even when the fragment was interrupted), or the failure
- * reason.
+ * thinkDeep reasoning-fragment card — PhaseIndicator in streaming mode: while
+ * the fragment runs, a single-line typewriter subtitle streams the live
+ * reasoning tail (`data-tool-progress`); on completion the subtitle fades and
+ * clicking expands the full answer + captured thinking trail (returned even
+ * when the fragment was interrupted), or the failure reason.
  */
 export function ThinkDeepToolRenderer({
   input,
   output,
   state,
+  streamingText,
+  streamingStage,
 }: ThinkDeepToolRendererProps) {
   const t = useTranslations("chat.tool");
 
   const question = input?.question ?? "";
-  const truncated =
-    question.length > MAX_QUESTION_SUMMARY_LENGTH
-      ? `${question.slice(0, MAX_QUESTION_SUMMARY_LENGTH)}…`
-      : question;
-
-  const summary = truncated ? (
-    <span className="truncate text-muted-foreground text-xs">{truncated}</span>
-  ) : null;
 
   const timedOut = output?.status === "timeout";
   const failed = output?.ok === false && !timedOut;
@@ -75,7 +72,7 @@ export function ThinkDeepToolRenderer({
 
   // The fragment's captured thinking trail — collapsible inside the card.
   const reasoningBlock = reasoning ? (
-    <details className="mt-3 rounded-md border border-muted/60 px-3 py-2">
+    <details className="rounded-md border border-muted/60 px-3 py-2">
       <summary className="cursor-pointer text-xs font-medium text-muted-foreground select-none">
         {t("thinkReasoning")}
       </summary>
@@ -85,8 +82,13 @@ export function ThinkDeepToolRenderer({
     </details>
   ) : null;
 
+  // Normal reading order: thinking trail on top (collapsible), then the written
+  // conclusion below it — like a thinking block above an answer, not the other
+  // way around. The answer carries no extra heading; the content speaks for
+  // itself.
   const expandedContent = timedOut ? (
     <div className="space-y-2">
+      {reasoningBlock}
       <div className="flex items-center gap-1.5 text-xs font-medium text-amber-500">
         <AlertTriangle className="h-3 w-3 shrink-0" />
         {t("thinkTimedOut")}
@@ -98,7 +100,6 @@ export function ThinkDeepToolRenderer({
           {errorText ?? t("thinkTimedOut")}
         </pre>
       )}
-      {reasoningBlock}
     </div>
   ) : failed ? (
     <pre className="whitespace-pre-wrap break-all font-mono text-xs leading-relaxed text-red-400">
@@ -106,11 +107,8 @@ export function ThinkDeepToolRenderer({
     </pre>
   ) : answer ? (
     <div className="space-y-2">
-      <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground/70">
-        {t("thinkAnswer")}
-      </div>
-      <MarkdownRenderer content={answer} />
       {reasoningBlock}
+      <MarkdownRenderer content={answer} />
     </div>
   ) : (
     <div className="space-y-2 font-mono text-xs leading-relaxed text-muted-foreground">
@@ -133,12 +131,30 @@ export function ThinkDeepToolRenderer({
     </div>
   );
 
+  // Fold the fragment's own outcome (timeout/error from the output) into the
+  // SDK part state so PhaseIndicator renders the right visual: amber
+  // interrupted for a timeout, red error for a failure.
+  const displayState: ToolRenderState = {
+    ...state,
+    interrupted: state.interrupted || timedOut,
+    error:
+      state.error ?? (failed ? (errorText ?? "Unknown error") : undefined),
+  };
+
+  // The written answer streams in the primary tone; the reasoning trail stays
+  // in the dim thinking tone. The transition is the visible "thinking → answer"
+  // handoff.
+  const subtitleTone: "thinking" | "answer" =
+    streamingStage === "writing" ? "answer" : "thinking";
+
   return (
-    <ToolLayout
-      name={t("thinkDeep")}
+    <PhaseIndicator
+      mode="streaming"
       icon={<Brain className="h-3.5 w-3.5" />}
-      summary={summary}
-      state={state}
+      label={t("thinkDeep")}
+      state={displayState}
+      streamingText={streamingText}
+      subtitleTone={subtitleTone}
       expandedContent={expandedContent}
     />
   );

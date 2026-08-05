@@ -14,6 +14,10 @@ interface ToolRendererProps {
   state: string;
   input?: unknown;
   output?: unknown;
+  /** Live streaming text from `data-tool-progress` — fed to PhaseIndicator's typewriter subtitle. */
+  streamingText?: string;
+  /** Progress stage ("reasoning" | "writing" | "running") — drives subtitle tone. */
+  streamingStage?: string;
   isStreaming: boolean;
 }
 
@@ -24,7 +28,7 @@ interface ToolRendererProps {
  * from input/output data — no pre-computed labels. This lets renderers produce
  * content-aware names (e.g. "查看了 7月25日 的对话" instead of "查看时间片").
  */
-export function ToolRenderer({ toolName, state, input, output, isStreaming }: ToolRendererProps) {
+export function ToolRenderer({ toolName, state, input, output, streamingText, streamingStage, isStreaming }: ToolRendererProps) {
   const renderState = extractRenderState({ state }, null, isStreaming);
 
   switch (toolName) {
@@ -58,6 +62,8 @@ export function ToolRenderer({ toolName, state, input, output, isStreaming }: To
           input={input}
           output={output}
           state={renderState}
+          streamingText={streamingText}
+          streamingStage={streamingStage}
         />
       );
     case "recall":
@@ -67,6 +73,8 @@ export function ToolRenderer({ toolName, state, input, output, isStreaming }: To
           input={input}
           output={output}
           state={renderState}
+          streamingText={streamingText}
+          streamingStage={streamingStage}
         />
       );
     case "startLoop":
@@ -102,6 +110,8 @@ export function ToolRenderer({ toolName, state, input, output, isStreaming }: To
               | undefined
           }
           state={renderState}
+          streamingText={streamingText}
+          streamingStage={streamingStage}
         />
       );
     default:

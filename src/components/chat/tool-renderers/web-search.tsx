@@ -3,7 +3,7 @@
 import type { ToolRenderState } from "@/lib/chat/tool-state";
 import { Globe } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { ToolLayout } from "../tool-layout";
+import { PhaseIndicator } from "../phase-indicator";
 import { MarkdownRenderer } from "../markdown";
 
 interface WebSearchRendererProps {
@@ -11,6 +11,10 @@ interface WebSearchRendererProps {
   input?: unknown;
   output?: unknown;
   state: ToolRenderState;
+  /** Live progress from `data-tool-progress` — the streaming subtitle. */
+  streamingText?: string;
+  /** Progress stage from `data-tool-progress` (unused — search status stays dim). */
+  streamingStage?: string;
 }
 
 function resolveName(
@@ -34,14 +38,18 @@ function resolveName(
 }
 
 /**
- * webSearch tool: Globe icon, the query as the collapsed summary, and the
- * cited answer + source links in the expanded view.
+ * webSearch tool: Globe icon, the query as the label, and the cited answer +
+ * source links in the expanded view. PhaseIndicator in streaming mode — the
+ * running label plus a "Searching…" subtitle while it works; the subtitle fades
+ * on completion and clicking expands the sources.
  */
 export function WebSearchRenderer({
   toolName: _toolName,
   input,
   output,
   state,
+  streamingText,
+  streamingStage: _streamingStage,
 }: WebSearchRendererProps) {
   const t = useTranslations("chat.tool");
 
@@ -57,13 +65,6 @@ export function WebSearchRenderer({
     : [];
 
   const displayName = resolveName(inp, out, state.running, t);
-
-  const summary = query ? (
-    <span className="max-w-xs truncate text-xs text-muted-foreground">{query}</span>
-  ) : null;
-
-  const meta =
-    sources.length > 0 ? t("sources", { count: sources.length }) : undefined;
 
   const expandedContent = out ? (
     out.error ? (
@@ -98,13 +99,19 @@ export function WebSearchRenderer({
     )
   ) : undefined;
 
+  // Surface a search failure through the PhaseIndicator error state.
+  const displayState: ToolRenderState = {
+    ...state,
+    error: state.error ?? (out?.error ?? undefined),
+  };
+
   return (
-    <ToolLayout
-      name={displayName}
+    <PhaseIndicator
+      mode="streaming"
       icon={<Globe className="h-3.5 w-3.5" />}
-      summary={summary}
-      meta={meta}
-      state={state}
+      label={displayName}
+      state={displayState}
+      streamingText={streamingText}
       expandedContent={expandedContent}
     />
   );
