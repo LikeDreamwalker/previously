@@ -98,9 +98,11 @@ const searchReportSchema = tool({
   inputSchema: z.object({
     answer: z
       .string()
+      .catch("")
       .describe("Concise cited answer (2-5 paragraphs), grounded in what you actually found."),
     recommendation: z
       .string()
+      .catch("")
       .describe(
         "VAR-style advice to the main agent: what the results suggest, " +
         "which sources look strongest, what is uncertain or conflicting, " +
@@ -110,13 +112,13 @@ const searchReportSchema = tool({
     suggested_reads: z
       .array(
         z.object({
-          url: z.string().describe("Full URL the main agent could webFetch."),
-          title: z.string().describe("Page title or short label."),
-          reason: z.string().describe("One line: why this page is worth reading."),
+          url: z.string().catch("").describe("Full URL the main agent could webFetch."),
+          title: z.string().catch("").describe("Page title or short label."),
+          reason: z.string().catch("").describe("One line: why this page is worth reading."),
         }),
       )
       .max(3)
-      .optional()
+      .catch([])
       .describe(
         "Pages the main agent might open with webFetch for deeper reading. " +
         "Leave empty if no single page adds value beyond your answer."

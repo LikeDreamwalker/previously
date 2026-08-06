@@ -14,6 +14,10 @@
 
 import { generateText, tool, isStepCount } from "ai";
 import { z } from "zod";
+import {
+  tolerantBounded01,
+  tolerantNumberArray,
+} from "@/lib/chat/tolerant-schemas";
 import { fsReadFile } from "../io-helpers";
 import { readStrands } from "@/lib/episodic/manager";
 import { generateGlobalTimeline } from "@/lib/episodic/flash/global-timeline";
@@ -166,16 +170,12 @@ const recallReportSchema = tool({
           slice_id: z
             .string()
             .describe("Slice ID in YYYY-MM-DD-HHMM format"),
-          relevance: z
-            .number()
-            .min(0)
-            .max(1)
+          relevance: tolerantBounded01
             .describe("How relevant this slice is to the query, 0-1"),
           reason: z
             .string()
             .describe("One-line explanation of why this slice is relevant"),
-          key_turns: z
-            .array(z.number())
+          key_turns: tolerantNumberArray
             .describe(
               "Turn numbers within the slice that are most relevant. Empty array if you didn't deep-read the slice.",
             ),
@@ -183,10 +183,7 @@ const recallReportSchema = tool({
       )
       .describe("Relevant slices found. Empty if nothing matches."),
 
-    confidence: z
-      .number()
-      .min(0)
-      .max(1)
+    confidence: tolerantBounded01
       .describe("Your confidence in the completeness of this recall, 0-1"),
 
     reasoning: z

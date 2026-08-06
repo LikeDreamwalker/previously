@@ -51,6 +51,7 @@ import { createModel } from "@/lib/models/provider";
 import type { ModelConfig } from "@/lib/models/registry";
 import type { ProviderSdk } from "@/lib/models/providers";
 import { withStepTimeout } from "@/lib/chat/step-timeout";
+import { isTransientError, triageErrorMessage } from "@/lib/chat/tool-triage";
 import {
   shouldEmitProgress,
   type ProgressWriteState,
@@ -424,13 +425,26 @@ export async function webSearchExecute(
 
   // Soft 60s safety net. searchViaFlash errors (transient search failures)
   // still throw and get step retries — only a timeout returns an error result.
-  const timed = await withStepTimeout(
-    () =>
-      searchViaFlash(query, (text) => {
-        void emitToolProgress(toolCallId, "webSearch", text, "running");
-      }),
-    60_000,
-  );
+  let timed: Awaited<ReturnType<typeof withStepTimeout<WebSearchResult>>>;
+  try {
+    timed = await withStepTimeout(
+      () =>
+        searchViaFlash(query, (text) => {
+          void emitToolProgress(toolCallId, "webSearch", text, "running");
+        }),
+      60_000,
+    );
+  } catch (err) {
+    // Triage: deterministic failures (schema validation, config, domain) become
+    // a model-readable tool result so the workflow does NOT retry them. Only
+    // genuinely transient errors re-throw for the step's auto-retry.
+    if (isTransientError(err)) throw err;
+    console.warn(
+      "[WebSearch] triaged failure:",
+      err instanceof Error ? err.message : err,
+    );
+    return { error: triageErrorMessage(err, "webSearch") };
+  }
 
   if (!timed.ok || timed.result === undefined) {
     return {
@@ -567,61 +581,77 @@ export async function recallExecute(
   "use step";
   await emitToolProgress(toolCallId, "recall", "Scanning memory slices…", "running");
 
-  const strands = await readStrands();
+  try {
+    const strands = await readStrands();
 
-  // Soft 120s safety net. Recall is best-effort: a timeout returns an empty
-  // search rather than failing the step, so the main agent knows nothing was
-  // found instead of a hard error.
-  const workerModel = ctx.workerModel ?? (await resolveWorkerModel());
-  const timed = await withStepTimeout(
-    () =>
-      runRecallSearch({
-        query,
-        currentSliceId: ctx.sliceId,
-        owner: ctx.owner,
-        repo: ctx.repo,
-        strandsContext: strands,
-        useGithub: ctx.useGithub,
-        useDemo: ctx.useDemo,
-        model: workerModel,
-        // Stream each sub-agent tool step ("Reading global timeline…",
-        // "Tracing strand: X…") into the typewriter subtitle as it happens.
-        onProgress: (text) => {
-          void emitToolProgress(toolCallId, "recall", text, "running");
-        },
-      }),
-    120_000,
-  );
+    // Soft 120s safety net. Recall is best-effort: a timeout returns an empty
+    // search rather than failing the step, so the main agent knows nothing was
+    // found instead of a hard error.
+    const workerModel = ctx.workerModel ?? (await resolveWorkerModel());
+    const timed = await withStepTimeout(
+      () =>
+        runRecallSearch({
+          query,
+          currentSliceId: ctx.sliceId,
+          owner: ctx.owner,
+          repo: ctx.repo,
+          strandsContext: strands,
+          useGithub: ctx.useGithub,
+          useDemo: ctx.useDemo,
+          model: workerModel,
+          // Stream each sub-agent tool step ("Reading global timeline…",
+          // "Tracing strand: X…") into the typewriter subtitle as it happens.
+          onProgress: (text) => {
+            void emitToolProgress(toolCallId, "recall", text, "running");
+          },
+        }),
+      120_000,
+    );
 
-  if (!timed.ok || timed.result === undefined) {
+    if (!timed.ok || timed.result === undefined) {
+      return {
+        hits: [],
+        confidence: 0,
+        reasoning: timed.ok
+          ? "Recall search returned no result"
+          : `Recall search timed out after ${timed.elapsedMs}ms`,
+        recommendedReads: [],
+      };
+    }
+
+    // Settle the subtitle on the outcome before the tool result lands.
+    const result = timed.result;
+    await emitToolProgress(
+      toolCallId,
+      "recall",
+      `Found ${result.hits.length} match${result.hits.length === 1 ? "" : "es"}`,
+      "running",
+    );
+
+    // Flash returns pointers + recommendations only — it never reads slice bodies.
+    // Pro should call readSlice (optionally with range) to fetch content from
+    // slices it actually wants to use, keeping context usage minimal.
+    return {
+      hits: result.hits,
+      confidence: result.confidence,
+      reasoning: result.reasoning,
+      recommendedReads: result.recommendedReads,
+    };
+  } catch (err) {
+    // Triage: a deterministic recall failure returns as data so the model sees
+    // "recall is unavailable" instead of a thrown error retrying the step.
+    if (isTransientError(err)) throw err;
+    console.warn(
+      "[Recall] triaged failure:",
+      err instanceof Error ? err.message : err,
+    );
     return {
       hits: [],
       confidence: 0,
-      reasoning: timed.ok
-        ? "Recall search returned no result"
-        : `Recall search timed out after ${timed.elapsedMs}ms`,
+      reasoning: triageErrorMessage(err, "recall"),
       recommendedReads: [],
     };
   }
-
-  // Settle the subtitle on the outcome before the tool result lands.
-  const result = timed.result;
-  await emitToolProgress(
-    toolCallId,
-    "recall",
-    `Found ${result.hits.length} match${result.hits.length === 1 ? "" : "es"}`,
-    "running",
-  );
-
-  // Flash returns pointers + recommendations only — it never reads slice bodies.
-  // Pro should call readSlice (optionally with range) to fetch content from
-  // slices it actually wants to use, keeping context usage minimal.
-  return {
-    hits: result.hits,
-    confidence: result.confidence,
-    reasoning: result.reasoning,
-    recommendedReads: result.recommendedReads,
-  };
 }
 
 export async function startLoopExecute(
@@ -1056,55 +1086,67 @@ export async function loopReportExecute(
     };
   }
 
-  const existing = await readLoopRun(ctx.filePath);
-  const priorSteps: LoopStep[] = existing?.steps ?? [];
-  const step: LoopStep = {
-    step: priorSteps.length + 1,
-    action,
-    result,
-    time: new Date().toISOString(),
-  };
-  const steps = [...priorSteps, step];
-
-  const run: LoopRun = {
-    loopId: ctx.loopId,
-    goal: ctx.goal,
-    status: "running", // final status is stamped by the workflow's finalizeLoop
-    startedAt: ctx.startedAt,
-    updatedAt: new Date().toISOString(),
-    sliceOrigin: ctx.sliceOrigin,
-    tags: ctx.tags,
-    iterations: steps.length,
-    maxIterations: ctx.maxIterations,
-    lastError: existing?.lastError ?? "",
-    steps,
-  };
-  await writeLoopFile(ctx.filePath, serializeLoop(run));
-
-  // Live progress chunk �?best-effort: the memory-truth write above already
-  // committed, so a stream failure must never fail the checkpoint.
   try {
-    const writable = getWritable<UIMessageChunk>();
-    const writer = writable.getWriter();
-    await writer.write({
-      type: "data-loop",
-      id: `loop-${ctx.loopId}`,
-      data: {
-        loopId: ctx.loopId,
-        goal: ctx.goal,
-        status: "running",
-        iteration: steps.length,
-        latestStep: step,
-        done: false,
-      },
-    } as UIMessageChunk);
-    writer.releaseLock();
-  } catch (err) {
-    console.warn(
-      `[Loop] progress chunk failed (loop=${ctx.loopId}):`,
-      err instanceof Error ? err.message : err
-    );
-  }
+    const existing = await readLoopRun(ctx.filePath);
+    const priorSteps: LoopStep[] = existing?.steps ?? [];
+    const step: LoopStep = {
+      step: priorSteps.length + 1,
+      action,
+      result,
+      time: new Date().toISOString(),
+    };
+    const steps = [...priorSteps, step];
 
-  return { recorded: true, step: step.step, done };
+    const run: LoopRun = {
+      loopId: ctx.loopId,
+      goal: ctx.goal,
+      status: "running", // final status is stamped by the workflow's finalizeLoop
+      startedAt: ctx.startedAt,
+      updatedAt: new Date().toISOString(),
+      sliceOrigin: ctx.sliceOrigin,
+      tags: ctx.tags,
+      iterations: steps.length,
+      maxIterations: ctx.maxIterations,
+      lastError: existing?.lastError ?? "",
+      steps,
+    };
+    await writeLoopFile(ctx.filePath, serializeLoop(run));
+
+    // Live progress chunk �?best-effort: the memory-truth write above already
+    // committed, so a stream failure must never fail the checkpoint.
+    try {
+      const writable = getWritable<UIMessageChunk>();
+      const writer = writable.getWriter();
+      await writer.write({
+        type: "data-loop",
+        id: `loop-${ctx.loopId}`,
+        data: {
+          loopId: ctx.loopId,
+          goal: ctx.goal,
+          status: "running",
+          iteration: steps.length,
+          latestStep: step,
+          done: false,
+        },
+      } as UIMessageChunk);
+      writer.releaseLock();
+    } catch (err) {
+      console.warn(
+        `[Loop] progress chunk failed (loop=${ctx.loopId}):`,
+        err instanceof Error ? err.message : err
+      );
+    }
+
+    return { recorded: true, step: step.step, done };
+  } catch (err) {
+    // Triage: a failed checkpoint returns as data — the loop run file is the
+    // accumulator, so the model sees "couldn't checkpoint" instead of a thrown
+    // error that retries a step whose work is already committed.
+    if (isTransientError(err)) throw err;
+    console.warn(
+      `[Loop] triaged checkpoint failure (loop=${ctx.loopId}):`,
+      err instanceof Error ? err.message : err,
+    );
+    return { error: triageErrorMessage(err, "loopReport") };
+  }
 }
