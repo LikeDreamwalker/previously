@@ -16,7 +16,12 @@ export function parseSliceId(sliceId: string): { y: string; m: string; d: string
 
 /** Parsed turn from a core.md slice file. */
 export interface ParsedTurn {
+  /** Ordinal position of this turn in the slice (0, 1, 2, …). Stable and
+   *  serializable — used by `range: { type: "turns" }` index matching. */
   index: number;
+  /** The raw turn ID from the header ("1", "2", or base64url "a3fk2w").
+   *  Absent on legacy slices whose header had no ID. */
+  turnId?: string;
   header: string;   // "## Turn {id} — TIMESTAMP (role)"
   content: string;   // turn body text
   timestamp: string; // ISO 8601
@@ -30,27 +35,32 @@ export const TURN_HEADER_RE = /^## Turn (\S+) — (\S+) \((\w+)\)/;
 /**
  * Parse core.md content into frontmatter + array of parsed turns.
  * Frontmatter is everything before the first turn header.
+ * `index` is the ORDINAL position (0-based), not the header ID — legacy
+ * numeric IDs and base64url IDs both map to a stable ordinal, so index-based
+ * range filtering works regardless of ID format.
  */
 export function parseTurns(raw: string): { frontmatter: string; turns: ParsedTurn[] } {
   const lines = raw.split("\n");
   const turns: ParsedTurn[] = [];
   const frontmatterLines: string[] = [];
-  let currentTurn: { index: number; header: string; timestamp: string; contentLines: string[] } | null = null;
+  let currentTurn: { turnId?: string; header: string; timestamp: string; contentLines: string[] } | null = null;
   let inFrontmatter = true;
+  let turnOrdinal = 0;
 
   for (const line of lines) {
     const match = line.match(TURN_HEADER_RE);
     if (match) {
       if (currentTurn) {
         turns.push({
-          index: currentTurn.index,
+          index: turnOrdinal++,
+          turnId: currentTurn.turnId,
           header: currentTurn.header,
           timestamp: currentTurn.timestamp,
           content: currentTurn.contentLines.join("\n").trimEnd(),
         });
       }
       currentTurn = {
-        index: parseInt(match[1], 10),
+        turnId: match[1],
         header: line,
         timestamp: match[2],
         contentLines: [],
@@ -65,7 +75,8 @@ export function parseTurns(raw: string): { frontmatter: string; turns: ParsedTur
   // Don't forget the last turn
   if (currentTurn) {
     turns.push({
-      index: currentTurn.index,
+      index: turnOrdinal,
+      turnId: currentTurn.turnId,
       header: currentTurn.header,
       timestamp: currentTurn.timestamp,
       content: currentTurn.contentLines.join("\n").trimEnd(),

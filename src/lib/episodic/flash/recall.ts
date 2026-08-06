@@ -30,10 +30,55 @@ export interface RecallHit {
   key_turns: number[];
 }
 
+/** A slice the main agent should consider reading, with a suggested priority. */
+export interface RecommendedRead {
+  slice_id: string;
+  priority: "high" | "medium" | "low";
+  reason: string;
+  note?: string;
+}
+
+/** A raw recommended_reads entry straight from the model's recallReport input. */
+interface RawRecommendedRead {
+  slice_id?: unknown;
+  priority?: unknown;
+  reason?: unknown;
+  note?: unknown;
+}
+
+/**
+ * Normalize the model's `recommended_reads` array into `RecommendedRead[]`.
+ * Drops entries without a usable slice_id, defaults priority to "medium",
+ * and caps at 5 — the main agent should not be handed a wall of suggestions.
+ */
+export function normalizeRecommendedReads(
+  raw: RawRecommendedRead[] | undefined,
+): RecommendedRead[] {
+  return (raw ?? [])
+    .filter((r): r is RawRecommendedRead & { slice_id: string } => {
+      return (
+        r !== null &&
+        typeof r === "object" &&
+        typeof r.slice_id === "string" &&
+        r.slice_id.length > 0
+      );
+    })
+    .slice(0, 5)
+    .map((r) => ({
+      slice_id: r.slice_id,
+      priority:
+        r.priority === "high" || r.priority === "low" ? r.priority : "medium",
+      reason: typeof r.reason === "string" ? r.reason : "",
+      note: typeof r.note === "string" && r.note.length > 0 ? r.note : undefined,
+    }));
+}
+
 export interface RecallSearchOutput {
   hits: RecallHit[];
   confidence: number;
   reasoning: string;
+  /** Slices worth opening with readSlice — the recall agent's advisory output. */
+  recommendedReads: RecommendedRead[];
 }
 
 export interface RecallSearchInput {
@@ -47,6 +92,10 @@ export interface RecallSearchInput {
   strandsContext?: Record<string, string[]>;
   /** The worker model to run the recall search on (resolved from config). */
   model: ModelConfig;
+  /** Live exploration callback — fired as the sub-agent starts each tool, so
+   *  the caller can stream real progress ("Reading global timeline…",
+   *  "Tracing strand X…") instead of a static status line. */
+  onProgress?: (text: string) => void;
 }
 
 // ─── Global timeline path ──────────────────────────────────────────────
@@ -105,36 +154,6 @@ async function readStrandImpl(strand: string): Promise<string> {
   }
 }
 
-// ─── Sub-agent tool: readSlice ────────────────────────────────────────
-
-function sliceIdToCorePath(sliceId: string): string {
-  const parts = sliceId.split("-");
-  if (parts.length >= 4) {
-    const [y, m, d, hm] = parts;
-    return `memory/episodic/slices/${y}/${m}/${d}/${hm}/timeline/core.md`;
-  }
-  // Legacy format: YYYY-MM-DD
-  const [y, m, d] = parts;
-  return `memory/episodic/slices/${y}/${m}/${d}/core.md`;
-}
-
-async function readSliceImpl(sliceId: string): Promise<string> {
-  try {
-    const path = sliceIdToCorePath(sliceId);
-    const content = await fsReadFile(path);
-    // Return last ~2000 chars for context — enough to see recent turns
-    if (content.length > 2500) {
-      return (
-        "(Last ~2500 chars of slice)\n" +
-        content.slice(-2500)
-      );
-    }
-    return content;
-  } catch {
-    return `Slice "${sliceId}" not found or could not be read.`;
-  }
-}
-
 // ─── Structured output schema: recallReport ─────────────────────────
 
 const recallReportSchema = tool({
@@ -173,31 +192,60 @@ const recallReportSchema = tool({
     reasoning: z
       .string()
       .describe("Brief explanation of your search strategy and what you found"),
+
+    recommended_reads: z
+      .array(
+        z.object({
+          slice_id: z
+            .string()
+            .describe("Slice ID in YYYY-MM-DD-HHMM format"),
+          priority: z
+            .enum(["high", "medium", "low"])
+            .describe("How strongly you recommend the main agent read this slice."),
+          reason: z
+            .string()
+            .describe("One line: why this slice is worth reading for the query."),
+          note: z
+            .string()
+            .optional()
+            .describe("Optional: what to look for inside the slice, if you can tell from its summary."),
+        }),
+      )
+      .max(5)
+      .describe(
+        "Slices the main agent should consider opening with readSlice. " +
+        "You did NOT read these slices' content — base this on the timeline summary, " +
+        "strand overlap, and tag relevance. Rank by likely usefulness.",
+      ),
   }),
 });
 
 // ─── Agent setup ──────────────────────────────────────────────────────
 
 const RECALL_SYSTEM_PROMPT = `You are the recall search engine for a personal AI platform.
-Your job: find past conversations relevant to a search query.
+Your job: find past conversations relevant to a search query and advise the main agent on what to read.
+
+You work from SUMMARIES ONLY — the global timeline holds one summary per closed slice. You NEVER read slice content (no readSlice tool). Your value is fast, accurate navigation over the memory index.
 
 Process:
 1. Read the global timeline index to see all available past conversations with their summaries.
-2. If a topic seems relevant, you can use readStrand to trace it across slices, or readSlice to inspect specific slices for more detail.
-3. When you have enough information, call recallReport with your findings.
+2. If a topic seems relevant, use readStrand to trace it across slices — the strand maps a keyword to its slice paths.
+3. When you have enough information, call recallReport with:
+   - hits: slices with a clear connection to the query (with a one-line reason).
+   - recommended_reads: slices the main agent should consider opening with readSlice — the slices whose summaries suggest the deepest or most direct relevance. The main agent decides whether to read them; you only advise.
 
 Guidelines:
 - Be thorough but efficient — aim for 2-4 steps.
-- Only report slices with a clear connection to the query.
+- Base relevance and priority on summary quality, strand overlap, and tag relevance — not on content you never read.
+- Do NOT invent key_turns: without reading a slice you cannot know which turns matter, so leave key_turns empty.
 - If nothing is relevant, return an empty hits array. That's fine.
 - Focus on RECALLING context, not answering the question.
-- key_turns should identify specific turns within a slice that are relevant (if you read the slice).
 
 The current session is NOT in the timeline — it only contains closed past slices.`;
 
 // ─── Public API ────────────────────────────────────────────────────────
 
-const MAX_STEPS = 20;
+const MAX_STEPS = 5;
 
 /**
  * Run the recall search mini-agent using AI SDK v7 native multi-step.
@@ -210,7 +258,7 @@ const MAX_STEPS = 20;
 export async function runRecallSearch(
   input: RecallSearchInput,
 ): Promise<RecallSearchOutput> {
-  const { query, currentSliceId, strandsContext } = input;
+  const { query, currentSliceId, strandsContext, onProgress } = input;
 
   const strandsHint = strandsContext && Object.keys(strandsContext).length > 0
     ? `
@@ -223,9 +271,9 @@ IMPORTANT: After reading the global timeline, check which strands match your que
 Current slice: ${currentSliceId}${strandsHint}
 
 Follow this process:
-1. START — call readGlobalTimeline to see all available past conversations.
-2. EXPLORE — trace any matching strands with readStrand, then deep-read promising slices with readSlice.
-3. REPORT — call recallReport with your findings.
+1. START — call readGlobalTimeline to see all available past conversations and their summaries.
+2. EXPLORE — trace any matching strands with readStrand to find which slices carry the topic.
+3. REPORT — call recallReport with your findings, including recommended_reads advising the main agent which slices are worth opening.
 
 IMPORTANT: You MUST end by calling recallReport. Even if nothing matches, call it with an empty hits array.`;
 
@@ -255,21 +303,28 @@ IMPORTANT: You MUST end by calling recallReport. Even if nothing matches, call i
             return content;
           },
         }),
-        readSlice: tool({
-          description:
-            "Read the full content of a specific time slice. Use this to inspect " +
-            "promising slices identified from the timeline or strand search.",
-          inputSchema: z.object({
-            sliceId: z
-              .string()
-              .describe("Slice ID in YYYY-MM-DD-HHMM format, e.g. '2026-07-24-1500'."),
-          }),
-          execute: async ({ sliceId }: { sliceId: string }) => {
-            const content = await readSliceImpl(sliceId);
-            return content;
-          },
-        }),
         recallReport: recallReportSchema,
+      },
+      // Stream the sub-agent's exploration trail live: each tool the recall
+      // engine starts surfaces as a progress line to the caller (which feeds
+      // it into the data-tool-progress channel). Throttle-free — tool steps
+      // are discrete ~1-5Hz events, far under the 40ms write throttle.
+      onToolExecutionStart: ({ toolCall }) => {
+        if (!onProgress) return;
+        const name = toolCall.toolName;
+        if (name === "readGlobalTimeline") {
+          onProgress("Reading global timeline…");
+        } else if (name === "readStrand") {
+          const strand =
+            typeof toolCall.input === "object" &&
+            toolCall.input !== null &&
+            "strand" in toolCall.input
+              ? String((toolCall.input as { strand?: unknown }).strand ?? "")
+              : "";
+          onProgress(strand ? `Tracing strand: ${strand}…` : "Tracing a strand…");
+        } else if (name === "recallReport") {
+          onProgress("Compiling recall report…");
+        }
       },
       toolChoice: "auto",
       stopWhen: isStepCount(MAX_STEPS),
@@ -288,14 +343,21 @@ IMPORTANT: You MUST end by calling recallReport. Even if nothing matches, call i
           hits?: RecallHit[];
           confidence?: number;
           reasoning?: string;
+          recommended_reads?: Array<{
+            slice_id: string;
+            priority?: "high" | "medium" | "low";
+            reason?: string;
+            note?: string;
+          }>;
         };
         console.log(
-          `[Recall] Found ${report.hits?.length ?? 0} hits, confidence=${(report.confidence ?? 0).toFixed(2)}`,
+          `[Recall] Found ${report.hits?.length ?? 0} hits, ${report.recommended_reads?.length ?? 0} recommended reads, confidence=${(report.confidence ?? 0).toFixed(2)}`,
         );
         return {
           hits: report.hits ?? [],
           confidence: report.confidence ?? 0.5,
           reasoning: report.reasoning ?? "",
+          recommendedReads: normalizeRecommendedReads(report.recommended_reads),
         };
       }
     }
@@ -311,6 +373,7 @@ IMPORTANT: You MUST end by calling recallReport. Even if nothing matches, call i
       reasoning: result.text
         ? `Model responded without calling recallReport: ${result.text.slice(0, 200)}`
         : "Model did not call recallReport",
+      recommendedReads: [],
     };
   } catch (err) {
     console.warn(
@@ -321,6 +384,7 @@ IMPORTANT: You MUST end by calling recallReport. Even if nothing matches, call i
       hits: [],
       confidence: 0,
       reasoning: `Recall search failed: ${err instanceof Error ? err.message : "unknown error"}`,
+      recommendedReads: [],
     };
   }
 }

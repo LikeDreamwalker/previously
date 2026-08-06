@@ -17,9 +17,17 @@ interface WebSearchRendererProps {
   streamingStage?: string;
 }
 
+interface WebSearchOutput {
+  answer?: string;
+  sources?: Array<{ title?: string; url?: string }>;
+  error?: string;
+  recommendation?: string;
+  suggestedReads?: Array<{ url: string; title?: string; reason?: string }>;
+}
+
 function resolveName(
   input: Record<string, unknown> | undefined,
-  output: { answer?: string; sources?: Array<{ title?: string; url?: string }>; error?: string } | undefined,
+  output: WebSearchOutput | undefined,
   running: boolean,
   t: ReturnType<typeof useTranslations>,
 ): string {
@@ -57,11 +65,19 @@ export function WebSearchRenderer({
   const query =
     typeof inp?.query === "string" ? inp.query : null;
 
-  const out = output as
-    | { answer?: string; sources?: Array<{ title?: string; url?: string }>; error?: string }
-    | undefined;
+  const out = output as WebSearchOutput | undefined;
   const sources = Array.isArray(out?.sources)
     ? out.sources.filter((s): s is { title: string; url: string } => typeof s?.url === "string")
+    : [];
+  const recommendation =
+    typeof out?.recommendation === "string" && out.recommendation.trim()
+      ? out.recommendation
+      : null;
+  const suggestedReads = Array.isArray(out?.suggestedReads)
+    ? out.suggestedReads.filter(
+        (s): s is { url: string; title: string; reason: string } =>
+          typeof s?.url === "string",
+      )
     : [];
 
   const displayName = resolveName(inp, out, state.running, t);
@@ -72,6 +88,14 @@ export function WebSearchRenderer({
     ) : (
       <div className="space-y-2">
         {out.answer ? <MarkdownRenderer content={out.answer} /> : null}
+        {recommendation && (
+          <div className="rounded-md border border-border/40 bg-muted/30 px-3 py-2">
+            <p className="mb-1 text-xs font-semibold text-foreground/80">
+              {t("webSearchRecommendation")}
+            </p>
+            <MarkdownRenderer content={recommendation} />
+          </div>
+        )}
         {sources.length > 0 ? (
           <ul
             className={
@@ -95,6 +119,30 @@ export function WebSearchRenderer({
             ))}
           </ul>
         ) : null}
+        {suggestedReads.length > 0 && (
+          <div>
+            <p className="mb-1 text-xs font-semibold text-foreground/80">
+              {t("webSearchSuggestedReads")}
+            </p>
+            <ul className="space-y-1">
+              {suggestedReads.map((s, i) => (
+                <li key={i} className="flex flex-col text-xs">
+                  <a
+                    href={s.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="truncate text-brand underline underline-offset-2"
+                  >
+                    {s.title || s.url}
+                  </a>
+                  {s.reason && (
+                    <span className="text-muted-foreground">{s.reason}</span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </div>
     )
   ) : undefined;

@@ -5,6 +5,7 @@ import { ListFilesRenderer } from "./tool-renderers/list-files";
 import { MemoryToolRenderer } from "./tool-renderers/memory-tool";
 import { RecallToolRenderer } from "./tool-renderers/recall";
 import { WebSearchRenderer } from "./tool-renderers/web-search";
+import { WebFetchRenderer } from "./tool-renderers/web-fetch";
 import { LoopToolRenderer } from "./tool-renderers/loop";
 import { ThinkDeepToolRenderer } from "./tool-renderers/think-deep";
 import { DefaultRenderer } from "./tool-renderers/default";
@@ -64,6 +65,15 @@ export function ToolRenderer({ toolName, state, input, output, streamingText, st
           state={renderState}
           streamingText={streamingText}
           streamingStage={streamingStage}
+        />
+      );
+    case "webFetch":
+      return (
+        <WebFetchRenderer
+          toolName={toolName}
+          input={input}
+          output={output}
+          state={renderState}
         />
       );
     case "recall":

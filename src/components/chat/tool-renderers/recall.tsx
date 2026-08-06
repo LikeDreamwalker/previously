@@ -3,6 +3,7 @@
 import type { ToolRenderState } from "@/lib/chat/tool-state";
 import { History } from "lucide-react";
 import { useTranslations } from "next-intl";
+import { cn } from "@/lib/utils";
 import { PhaseIndicator } from "../phase-indicator";
 
 interface RecallToolRendererProps {
@@ -23,10 +24,18 @@ interface RecallHit {
   key_turns?: number[];
 }
 
+interface RecommendedRead {
+  slice_id: string;
+  priority: "high" | "medium" | "low";
+  reason: string;
+  note?: string;
+}
+
 interface RecallOutput {
   hits?: RecallHit[];
   confidence?: number;
   reasoning?: string;
+  recommendedReads?: RecommendedRead[];
 }
 
 function resolveLabel(
@@ -72,22 +81,72 @@ export function RecallToolRenderer({
 
   const out = output as RecallOutput | undefined;
   const hits = Array.isArray(out?.hits) ? out.hits : [];
+  const recommendedReads = Array.isArray(out?.recommendedReads)
+    ? out.recommendedReads
+    : [];
   const confidence = typeof out?.confidence === "number" ? out.confidence : null;
   const reasoning = typeof out?.reasoning === "string" ? out.reasoning : "";
 
   const hasHits = hits.length > 0;
+  const hasRecommended = recommendedReads.length > 0;
   const isRunning = state.running;
 
   const label = resolveLabel(inp, out, isRunning, t);
 
-  // Expanded content — hits list only, no raw content
-  const expandedContent = hasHits ? (
+  // Priority → badge classes for the recommended-reads list
+  const priorityBadge: Record<RecommendedRead["priority"], string> = {
+    high: "bg-emerald-500/15 text-emerald-600",
+    medium: "bg-amber-500/15 text-amber-600",
+    low: "bg-muted text-muted-foreground",
+  };
+
+  // Expanded content — pointers + recommendations only, no raw content
+  const expandedContent = hasHits || hasRecommended ? (
     <div className="space-y-3">
       {/* Reasoning */}
       {reasoning && (
         <p className="text-xs leading-relaxed text-muted-foreground italic">
           {reasoning}
         </p>
+      )}
+
+      {/* Recommended reads — the recall agent's advisory output */}
+      {hasRecommended && (
+        <div>
+          <p className="mb-1.5 text-xs font-semibold text-foreground/80">
+            {t("recallRecommendedReads")}
+          </p>
+          <div className="space-y-1.5">
+            {recommendedReads.map((r, i) => (
+              <div
+                key={i}
+                className="flex items-start gap-2 rounded-md border border-border/30 px-2 py-1.5"
+              >
+                <span
+                  className={cn(
+                    "mt-px shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+                    priorityBadge[r.priority] ?? priorityBadge.medium,
+                  )}
+                >
+                  {t(`recallPriority${r.priority[0].toUpperCase()}${r.priority.slice(1)}`)}
+                </span>
+                <div className="min-w-0">
+                  <span className="font-mono text-xs text-muted-foreground">
+                    {r.slice_id}
+                  </span>
+                  <p className="text-xs leading-relaxed text-foreground/80">
+                    {r.reason}
+                  </p>
+                  {r.note && (
+                    <p className="text-xs italic text-muted-foreground">
+                      {r.note}
+                    </p>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
       )}
 
       {/* Hits — pointers only */}

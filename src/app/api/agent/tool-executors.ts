@@ -28,12 +28,24 @@ import {
 } from "@/lib/demo/demo-fs";
 
 import { searchViaFlash, type WebSearchResult } from "@/lib/search/flash-search";
+import { isPrivateHost, extractText } from "@/lib/search/fetch-utils";
 import { startLoop } from "@/app/api/loops/start-loop";
 import { readLoopRun, serializeLoop, writeLoopFile } from "@/lib/loops/store";
 import { isAIConfigured, canWrite, DEPLOY_GUIDE_URL } from "@/lib/capabilities";
 import type { LoopRun, LoopStep } from "@/lib/loops/types";
-import { runRecallSearch, type RecallHit } from "@/lib/episodic/flash/recall";
+import {
+  runRecallSearch,
+  type RecallHit,
+  type RecommendedRead,
+} from "@/lib/episodic/flash/recall";
 import { readStrands } from "@/lib/episodic";
+import {
+  splitTurns,
+  splitParagraphs,
+  segmentSearch,
+  textLines,
+  searchResultToString,
+} from "@/lib/retrieval/doc-segments";
 import { resolveWorkerModel, resolveMainModelFromConfig } from "@/lib/models/worker";
 import { createModel } from "@/lib/models/provider";
 import type { ModelConfig } from "@/lib/models/registry";
@@ -171,11 +183,22 @@ function domainError(e: unknown): string | null {
 
 // ── readSlice — read a time slice's core conversation ─────────────────
 
+/** Range filter for readSlice. Extends the classic turn filters (turns / last /
+ *  date) with the shared Document Segment Read protocol: keyword search
+ *  (`search`, hits degrade to the full slice) and line ranges (`lines`). */
+export type ReadSliceRange = {
+  type: "turns" | "last" | "date" | "search" | "lines";
+  indices?: number[];
+  count?: number;
+  after?: string;
+  keywords?: string[];
+  context?: number;
+  start?: number;
+  end?: number;
+};
+
 export async function readSliceExecute(
-  { sliceId, range }: {
-    sliceId: string;
-    range?: { type: "turns" | "last" | "date"; indices?: number[]; count?: number; after?: string };
-  },
+  { sliceId, range }: { sliceId: string; range?: ReadSliceRange },
   { context: ctx }: ExecuteOpts<ToolContext>,
 ): Promise<string> {
   "use step";
@@ -192,8 +215,29 @@ export async function readSliceExecute(
 
     // Apply range filter if requested
     if (range) {
+      // Keyword search — the Document Segment Read protocol. Matches return
+      // only the relevant turns; a miss degrades to the full slice with a note.
+      if (range.type === "search") {
+        const keywords = range.keywords ?? [];
+        const context = range.context ?? 1;
+        const segments = splitTurns(raw);
+        const hits = segmentSearch(segments, keywords, context, context);
+        return searchResultToString(sliceId, keywords, hits, raw);
+      }
+
+      // Line range — read the file like a code file, 1-indexed inclusive.
+      if (range.type === "lines") {
+        const { content, clamped } = textLines(raw, range.start ?? 1, range.end ?? 1);
+        if (content === "" && (range.start ?? 1) > (range.end ?? 1)) {
+          return `ERROR: Invalid line range ${range.start}-${range.end} in ${sliceId}.`;
+        }
+        const header = `Lines ${range.start}-${range.end} of ${sliceId}${clamped ? " (clamped)" : ""}:\n\n`;
+        return content === "" ? `${header}(empty range)` : header + content;
+      }
+
+      // Classic turn filters.
       const { frontmatter, turns } = parseTurns(raw);
-      const filtered = applyRange(turns, range);
+      const filtered = applyRange(turns, range as { type: "turns" | "last" | "date" });
       if (filtered.length === 0) {
         return `${frontmatter}\n\n_(No turns matched the requested range.)_`;
       }
@@ -365,13 +409,28 @@ export async function webSearchExecute(
   // before the result.
   await emitToolProgress(toolCallId, "webSearch", "Searching the web…", "running");
 
-  if (!isAIConfigured()) {
-    return { error: "Web search is not configured (DEEPSEEK_API_KEY missing)." };
+  // webSearch is a DEEPSEEK-ONLY infra call (see lib/search/flash-search.ts
+  // @security note). Gate on the key itself, not the generic isAIConfigured():
+  // a deployment with ANTHROPIC_API_KEY but no DEEPSEEK_API_KEY would pass the
+  // generic check and then fail deep inside the adapter.
+  if (!process.env.DEEPSEEK_API_KEY) {
+    return {
+      error:
+        "Web search requires a DEEPSEEK_API_KEY. It runs as a separate DeepSeek " +
+        "infrastructure call independent of the chat model you selected. Add " +
+        "DEEPSEEK_API_KEY to enable it, or swap in your own search adapter.",
+    };
   }
 
   // Soft 60s safety net. searchViaFlash errors (transient search failures)
   // still throw and get step retries — only a timeout returns an error result.
-  const timed = await withStepTimeout(() => searchViaFlash(query), 60_000);
+  const timed = await withStepTimeout(
+    () =>
+      searchViaFlash(query, (text) => {
+        void emitToolProgress(toolCallId, "webSearch", text, "running");
+      }),
+    60_000,
+  );
 
   if (!timed.ok || timed.result === undefined) {
     return {
@@ -393,15 +452,109 @@ export async function webSearchExecute(
   return result;
 }
 
+// ── webFetch — fetch a specific page's text content ────────────────────
+
+const WEB_FETCH_TIMEOUT_MS = 30_000;
+const WEB_FETCH_MAX_CHARS = 15_000;
+
+/**
+ * webFetch — read a specific URL's page text, server-side.
+ *
+ * The web complement of readSlice: the main agent points at one item (a URL
+ * instead of a slice id) and gets its raw content back for the model to
+ * digest. Used when the user pastes a link, or when a webSearch recommendation
+ * suggests a page is worth reading. Returns the extracted prose (scripts and
+ * styles stripped), truncated to keep context bounded.
+ *
+ * Optional `range` applies the shared Document Segment Read protocol: keyword
+ * search (matches → relevant paragraphs; miss → full text + note) or line
+ * ranges (1-indexed, like reading a code file).
+ *
+ * Security: only http(s) schemes and non-private hostnames are fetchable.
+ * The Vercel sandbox is the real boundary; this validation is defense-in-depth.
+ */
+export type WebFetchRange = {
+  type: "search" | "lines";
+  keywords?: string[];
+  context?: number;
+  start?: number;
+  end?: number;
+};
+
+export async function webFetchExecute(
+  { url, range }: { url: string; range?: WebFetchRange },
+  _opts: ExecuteOpts<ToolContext>,
+): Promise<string> {
+  "use step";
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return "ERROR: Invalid URL. Pass a full absolute URL, e.g. 'https://example.com/article'.";
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return "ERROR: Unsupported URL protocol. Only http:// and https:// are allowed.";
+  }
+  if (isPrivateHost(parsed.hostname)) {
+    return "ERROR: Cannot fetch local or private network addresses.";
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), WEB_FETCH_TIMEOUT_MS);
+  try {
+    const res = await fetch(parsed.toString(), {
+      signal: controller.signal,
+      redirect: "follow",
+    });
+    if (!res.ok) {
+      return `ERROR: HTTP ${res.status} ${res.statusText}`;
+    }
+    const text = await res.text();
+    const extracted = extractText(text);
+
+    // Document Segment Read protocol — applied before truncation so a matched
+    // subset or line range is returned in full, not capped by the 15K fallback.
+    if (range) {
+      if (range.type === "search") {
+        const keywords = range.keywords ?? [];
+        const context = range.context ?? 1;
+        const hits = segmentSearch(splitParagraphs(extracted), keywords, context, context);
+        return searchResultToString(parsed.hostname + parsed.pathname, keywords, hits, extracted);
+      }
+      if (range.type === "lines") {
+        const { content, clamped } = textLines(extracted, range.start ?? 1, range.end ?? 1);
+        if (content === "" && (range.start ?? 1) > (range.end ?? 1)) {
+          return `ERROR: Invalid line range ${range.start}-${range.end} for ${parsed.hostname}.`;
+        }
+        const header = `Lines ${range.start}-${range.end} of ${parsed.hostname}${clamped ? " (clamped)" : ""}:\n\n`;
+        return content === "" ? `${header}(empty range)` : header + content;
+      }
+    }
+
+    if (extracted.length > WEB_FETCH_MAX_CHARS) {
+      return (
+        extracted.slice(0, WEB_FETCH_MAX_CHARS) +
+        `\n\n(Truncated at ${WEB_FETCH_MAX_CHARS} characters)`
+      );
+    }
+    return extracted;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return `ERROR: Could not fetch URL: ${msg}`;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // ── recall �?semantic search across past conversation slices ─────────
 
 /**
- * Recall search tool — Flash acts as a semantic search engine over the
- * episodic memory. Flash explores the global timeline, traces strands,
- * and deep-reads candidate slices, then returns pointers (which slices,
- * which turns, why relevant). The executor passes those pointers straight
- * back to Pro, which then calls readSlice for any content it wants. Flash
- * never produces summaries. */
+ * Recall search tool — Flash acts as a summary-level search engine over the
+ * episodic memory. Flash reads the global timeline summaries, traces strands,
+ * and returns pointers (which slices, which turns, why relevant) PLUS a
+ * recommendation list of slices worth opening. Flash never reads slice bodies
+ * and never produces content summaries. Pro decides which (if any) slices to
+ * open with readSlice — the summaries may already be enough. */
 export async function recallExecute(
   { query }: { query: string },
   { context: ctx, toolCallId }: ExecuteOpts<ToolContext>,
@@ -409,6 +562,7 @@ export async function recallExecute(
   hits: RecallHit[];
   confidence: number;
   reasoning: string;
+  recommendedReads: RecommendedRead[];
 }> {
   "use step";
   await emitToolProgress(toolCallId, "recall", "Scanning memory slices…", "running");
@@ -430,6 +584,11 @@ export async function recallExecute(
         useGithub: ctx.useGithub,
         useDemo: ctx.useDemo,
         model: workerModel,
+        // Stream each sub-agent tool step ("Reading global timeline…",
+        // "Tracing strand: X…") into the typewriter subtitle as it happens.
+        onProgress: (text) => {
+          void emitToolProgress(toolCallId, "recall", text, "running");
+        },
       }),
     120_000,
   );
@@ -441,6 +600,7 @@ export async function recallExecute(
       reasoning: timed.ok
         ? "Recall search returned no result"
         : `Recall search timed out after ${timed.elapsedMs}ms`,
+      recommendedReads: [],
     };
   }
 
@@ -453,13 +613,14 @@ export async function recallExecute(
     "running",
   );
 
-  // Flash returns pointers only — the executor no longer reads raw content.
+  // Flash returns pointers + recommendations only — it never reads slice bodies.
   // Pro should call readSlice (optionally with range) to fetch content from
   // slices it actually wants to use, keeping context usage minimal.
   return {
     hits: result.hits,
     confidence: result.confidence,
     reasoning: result.reasoning,
+    recommendedReads: result.recommendedReads,
   };
 }
 

@@ -23,6 +23,7 @@ import {
   readAgentTimelineExecute,
   readPreviouslyExecute,
   webSearchExecute,
+  webFetchExecute,
   recallExecute,
   startLoopExecute,
   thinkDeepExecute,
@@ -87,7 +88,9 @@ export const conceptTools = {
       "Use this when you need to see the full detail of a specific time slice " +
       "that Flash surfaced in its recall summary. " +
       "Use the optional `range` parameter to fetch only specific turns instead " +
-      "of the entire slice — saves context.",
+      "of the entire slice — saves context. " +
+      "`search` matches keywords across the slice (misses return the full slice " +
+      "with a note); `lines` reads a 1-indexed line range like a code file.",
     inputSchema: z.object({
       sliceId: z
         .string()
@@ -95,10 +98,13 @@ export const conceptTools = {
       range: z
         .object({
           type: z
-            .enum(["turns", "last", "date"])
+            .enum(["turns", "last", "date", "search", "lines"])
             .describe(
               "turns = specific turn indices. last = most recent N turns. " +
-              "date = turns after a given timestamp.",
+              "date = turns after a given timestamp. " +
+              "search = keyword match, returns matching turns (+ context); " +
+              "if nothing matches, returns the full slice with a note. " +
+              "lines = 1-indexed line range of the raw file.",
             ),
           indices: z
             .array(z.number())
@@ -112,6 +118,22 @@ export const conceptTools = {
             .string()
             .optional()
             .describe("ISO 8601 timestamp. Only for type 'date'."),
+          keywords: z
+            .array(z.string())
+            .optional()
+            .describe("Case-insensitive keywords to match. Only for type 'search'."),
+          context: z
+            .number()
+            .optional()
+            .describe("Turns of context around each match (default 1). Only for type 'search'."),
+          start: z
+            .number()
+            .optional()
+            .describe("First line (1-indexed, inclusive). Only for type 'lines'."),
+          end: z
+            .number()
+            .optional()
+            .describe("Last line (1-indexed, inclusive). Only for type 'lines'."),
         })
         .optional()
         .describe(
@@ -226,9 +248,10 @@ export const chatTools = {
       "query. Use this when you need to recall what was discussed in previous " +
       "sessions, or when the user references something you need to look up in " +
       "their history. Returns POINTERS — which slices are relevant and why " +
-      "(slice ids, relevance, reasons) — not the conversation content itself. " +
-      "Call readSlice (optionally with a range) to fetch the actual turns from " +
-      "the slices you want to use.",
+      "(slice ids, relevance, reasons) — plus recommended reads with suggested " +
+      "priorities. It never returns conversation content. " +
+      "Decide whether to open slices with readSlice (optionally with a range) — " +
+      "the summaries may already be enough to answer.",
     inputSchema: z.object({
       query: z
         .string()
@@ -241,8 +264,11 @@ export const chatTools = {
     description:
       "Search the live web for current or external information — news, " +
       "releases, prices, docs, anything time-sensitive or beyond the user's " +
-      "memory. Returns a concise cited answer plus source links. " +
-      "Do not use it for things already in memory or that you reliably know.",
+      "memory. Returns a concise cited answer, source links, AND a " +
+      "recommendation on what to do with the results (which sources look " +
+      "strongest, what is uncertain, whether to fetch a specific page). " +
+      "Do not use it for things already in memory or that you reliably know. " +
+      "Read individual pages the search points to with webFetch.",
     inputSchema: z.object({
       query: z
         .string()
@@ -250,6 +276,51 @@ export const chatTools = {
     }),
     contextSchema: toolContextSchema,
     execute: webSearchExecute,
+  }),
+  webFetch: tool({
+    description:
+      "Fetch and return the raw text content of a specific URL. The page is " +
+      "fetched server-side; scripts and styles are stripped. Returns up to " +
+      "~15K characters of extracted prose. Use this to read a page the user " +
+      "pasted, or to dive into a source that webSearch suggested. Do NOT use " +
+      "for search — use webSearch to find things, webFetch to read a page. " +
+      "Optional `range`: `search` matches keywords across the page (misses " +
+      "return the full text with a note); `lines` reads a 1-indexed line range.",
+    inputSchema: z.object({
+      url: z
+        .string()
+        .describe("The full URL to fetch, e.g. 'https://example.com/article'."),
+      range: z
+        .object({
+          type: z
+            .enum(["search", "lines"])
+            .describe(
+              "search = keyword match, returns matching paragraphs (+ context); " +
+              "if nothing matches, returns the full page text with a note. " +
+              "lines = 1-indexed line range of the extracted text.",
+            ),
+          keywords: z
+            .array(z.string())
+            .optional()
+            .describe("Case-insensitive keywords to match. Only for type 'search'."),
+          context: z
+            .number()
+            .optional()
+            .describe("Paragraphs of context around each match (default 1). Only for type 'search'."),
+          start: z
+            .number()
+            .optional()
+            .describe("First line (1-indexed, inclusive). Only for type 'lines'."),
+          end: z
+            .number()
+            .optional()
+            .describe("Last line (1-indexed, inclusive). Only for type 'lines'."),
+        })
+        .optional()
+        .describe("Optional selective read. When omitted, returns the full extracted text."),
+    }),
+    contextSchema: toolContextSchema,
+    execute: webFetchExecute,
   }),
   startLoop: tool({
     description:
@@ -342,6 +413,7 @@ export function buildChatToolsContext(ctx: ToolContext): Record<keyof typeof cha
     readAgentTimeline: ctx,
     recall: ctx,
     webSearch: ctx,
+    webFetch: ctx,
     startLoop: ctx,
     thinkDeep: ctx,
     continueOutput: ctx,
