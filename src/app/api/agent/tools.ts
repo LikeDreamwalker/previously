@@ -350,9 +350,14 @@ export const chatTools = {
       "Dispatch a reasoning fragment — a small, self-contained logical question " +
       "reasoned through independently by a think-only copy of yourself (no " +
       "search, no memory tools). Returns the conclusion plus its thinking trail. " +
-      "Use when your own complex reasoning decomposes into independent reasoning " +
-      "threads: verify a claim, weigh a trade-off, poke holes in a position, " +
-      "answer a sub-question. Embed ALL facts the fragment needs in the question " +
+      "DEFAULT behavior: at the start of a substantive turn, decompose the user's " +
+      "question into its independent threads and dispatch them in parallel " +
+      "BEFORE writing your answer — do not wait for the user to ask, and do not " +
+      "reason through a multi-angle question monolithically (that is what times " +
+      "out). Verify a claim, weigh a trade-off, poke holes in a position, answer " +
+      "a sub-question. Only skip it for genuinely single-threaded turns: a simple " +
+      "fact you already hold, a routine acknowledgment, or a recall from memory. " +
+      "Embed ALL facts the fragment needs in the question " +
       "— the sub-agent cannot search or read memory. Tag each fragment with the " +
       "right effort: low for simple logical verification, medium for a comparison, " +
       "high for deep structural analysis. Dispatch several in parallel — they " +

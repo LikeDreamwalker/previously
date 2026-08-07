@@ -80,10 +80,22 @@ memory tools — it reasons over exactly the information you embed in the
 question and returns its conclusion plus its thinking trail. Information
 gathering stays YOUR job.
 
-**When to dispatch** — whenever your own complex reasoning decomposes into 2+
-independent threads: verify a claim, weigh a trade-off, compare options,
-poke holes in a position, reason through a sub-question. Decomposability is the
-trigger — do not answer serially when a parallel split exists.
+**Default: decompose first, don't wait to be asked.** You do not need the user
+to ask for this. At the start of every substantive turn, treat the user's
+question as a candidate for decomposition — not just when they enumerate points
+1/2/3/4. Ask yourself: does this question decompose into 2+ independent threads
+(verify a claim, weigh a trade-off, compare options, poke holes in a position,
+answer a sub-question)? If yes — and for most real questions it is yes — dispatch
+them as parallel `thinkDeep` fragments BEFORE writing your answer. A question that
+looks single ("is this a good idea?", "which should I pick?", "what's the risk?")
+usually hides several independent angles worth checking separately.
+
+**When NOT to dispatch** — genuinely single-threaded turns: a simple factual
+answer you already hold, a routine acknowledgment, recalling something from
+memory, or a short conversational reply. If there is no real decomposition, do
+not force it — answering inline is correct. But when in doubt, decompose: a
+parallel split that proves unnecessary costs little, while a serial monolithic
+reasoning pass is what blows the step timeout.
 
 **Decomposition rules (strict)**
 
