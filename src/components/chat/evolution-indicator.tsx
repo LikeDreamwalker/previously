@@ -20,6 +20,8 @@ export interface EvolutionState {
   };
   mutations?: PreviouslyMutation[];
   hasChanges?: boolean;
+  /** True when the whole document was reformatted this pass (format/version drift). */
+  reformatted?: boolean;
   error?: string;
 }
 
@@ -112,13 +114,14 @@ export function EvolutionIndicator({ state }: EvolutionIndicatorProps) {
   // ── Complete, no changes ─────────────────────────────────────────────────
 
   const hasChanges =
-    state.hasChanges &&
-    state.changes &&
-    (state.changes.added > 0 ||
-      state.changes.reinforced > 0 ||
-      state.changes.demoted > 0 ||
-      state.changes.removed > 0 ||
-      state.changes.superseded > 0);
+    !!state.hasChanges &&
+    (state.reformatted ||
+      !!state.changes &&
+        (state.changes.added > 0 ||
+          state.changes.reinforced > 0 ||
+          state.changes.demoted > 0 ||
+          state.changes.removed > 0 ||
+          state.changes.superseded > 0));
 
   if (!hasChanges) {
     return (
@@ -140,6 +143,7 @@ export function EvolutionIndicator({ state }: EvolutionIndicatorProps) {
     state.changes!.demoted > 0 && t("demoted", { count: state.changes!.demoted }),
     state.changes!.removed > 0 && t("removed", { count: state.changes!.removed }),
     state.changes!.superseded > 0 && t("superseded", { count: state.changes!.superseded }),
+    state.reformatted && t("reformatted"),
   ]
     .filter(Boolean)
     .join(" · ");
@@ -154,10 +158,10 @@ export function EvolutionIndicator({ state }: EvolutionIndicatorProps) {
           <span className="font-semibold">{t(`action_${m.action}`)}</span>
           <span className="mx-1.5">—</span>
           <span className="break-all">
-            {m.belief || m.belief_key || "(no text)"}
+            {m.belief || m.belief_key || t("noText")}
           </span>
           <span className="ml-2 opacity-60">
-            {t(`tier_${m.tier}`)} · {t(`subsection_${m.subsection}`)}
+            {t(`section_${m.section}`)} · {t(`subsection_${m.subsection}`)}
           </span>
           {m.note && (
             <span className="ml-2 opacity-50 italic">— {m.note}</span>

@@ -251,7 +251,10 @@ export const chatTools = {
       "(slice ids, relevance, reasons) — plus recommended reads with suggested " +
       "priorities. It never returns conversation content. " +
       "Decide whether to open slices with readSlice (optionally with a range) — " +
-      "the summaries may already be enough to answer.",
+      "the summaries may already be enough to answer. " +
+      "If the search returns NO relevant matches, do NOT call recall again for " +
+      "this topic — there is no past context to find; answer from the conversation " +
+      "and your knowledge.",
     inputSchema: z.object({
       query: z
         .string()

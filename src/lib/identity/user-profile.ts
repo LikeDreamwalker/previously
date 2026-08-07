@@ -22,30 +22,36 @@ function str(value: unknown): string | undefined {
 // ─── previously.md identity parser ───────────────────────────────────────
 
 /**
- * Parse the "User identity" section from a previously.md body.
+ * Parse the identity section from a previously.md body.
+ * v3: identity lives under the User profile section > `### Identity & background`.
+ * Legacy v2: `## User identity`.
  * Extracts structured fields from Chinese-format identity beliefs.
  *
  * Exported so the housekeeping step can derive the "who you're assisting"
  * profile from the already-loaded previously content (pure parse, no I/O).
  */
 export function parseIdentityFromPreviously(previouslyContent: string): UserProfile | null {
-  // Find the User identity section
-  const identityMatch = previouslyContent.match(
-    /## User identity[^\n]*\n([\s\S]*?)(?=\n## |\n*$)/,
+  // v3 first (identity under the User profile section), then the legacy v2 header.
+  let identityMatch = previouslyContent.match(
+    /### Identity & background[^\n]*\n([\s\S]*?)(?=\n### |\n## |\n*$)/,
   );
-  if (!identityMatch) return null;
-
-  const section = identityMatch[1].trim();
+  if (!identityMatch) {
+    identityMatch = previouslyContent.match(
+      /## User identity[^\n]*\n([\s\S]*?)(?=\n## |\n*$)/,
+    );
+  }
+  const section = identityMatch?.[1]?.trim();
   if (!section || section.includes("_No beliefs yet._")) return null;
 
   const profile: UserProfile = { name: "", body: "" };
   const bodyLines: string[] = [];
 
-  // Parse each belief line
+  // Parse each belief bullet. Meta lines (refs:/confidence:/evidence:/… and
+  // legacy annotations) do NOT start with "- " and are skipped.
   const lines = section.split("\n");
   for (const line of lines) {
     const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("(")) continue; // skip annotations
+    if (!trimmed.startsWith("- ")) continue;
 
     // Remove leading bullet
     const belief = trimmed.replace(/^-\s*/, "").trim();
@@ -55,6 +61,10 @@ export function parseIdentityFromPreviously(previouslyContent: string): UserProf
     const selfNameMatch = belief.match(/自称\s*(.+?)(?:，|,|可用|$)/);
     if (selfNameMatch) {
       profile.name = profile.name || selfNameMatch[1].trim();
+    }
+    const calledNameMatch = belief.match(/叫\s*(\S+?)(?:，|,|（|\(|$)/);
+    if (calledNameMatch) {
+      profile.name = profile.name || calledNameMatch[1].trim();
     }
 
     // Extract addressAs from "可用 X 称呼"

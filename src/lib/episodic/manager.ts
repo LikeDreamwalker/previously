@@ -21,7 +21,7 @@ import type {
   StrandIndex,
 } from "./types";
 import { fsReadFile, fsWriteFile, fsListFiles } from "./io-helpers";
-import { newPreviouslyTemplate } from "./previously-format";
+import { newPreviouslyTemplate, migrateToV3 } from "./previously-format";
 
 // ─── Environment detection ───────────────────────────────────────────────
 
@@ -622,152 +622,32 @@ export async function readAgentTimeline(sliceId: string): Promise<string> {
 
 // ─── Previously.md I/O ────────────────────────────────────────────────────
 
-/** Empty previously.md template for slices with no prior beliefs. */
+/** Empty previously.md template for slices with no prior beliefs (v3). */
 export function emptyPreviouslyTemplate(sliceId: string): string {
-  return `# Agent Beliefs
-
-_Active slice: ${sliceId} | Last updated: (initial)_
-
-## User identity (factual beliefs — user explicitly stated these)
-
-_No beliefs yet._
-
-## User patterns (pattern beliefs — agent observed these)
-
-_No beliefs yet._
-
-## Agent strategies (derived from beliefs above)
-
-_No beliefs yet._
-`;
-}
-
-/** Parse a previously.md date (YYYY/MM/DD/HHMM) to a UTC Date. */
-function parsePreviouslyDate(dateStr: string): Date | null {
-  const parts = dateStr.split("/");
-  if (parts.length !== 4) return null;
-  const year = parseInt(parts[0], 10);
-  const month = parseInt(parts[1], 10) - 1; // 0-indexed
-  const day = parseInt(parts[2], 10);
-  const hour = parseInt(parts[3].slice(0, 2), 10);
-  const minute = parseInt(parts[3].slice(2, 4), 10);
-  if (isNaN(year) || isNaN(month) || isNaN(day) || isNaN(hour) || isNaN(minute)) {
-    return null;
-  }
-  return new Date(Date.UTC(year, month, day, hour, minute));
+  return newPreviouslyTemplate(sliceId);
 }
 
 /**
- * Apply staleness decay and pruning to a previously.md body.
- *
- * Only modifies the "User patterns" section (confidence-based beliefs).
- * "User identity" (user-stated facts) is NEVER decayed.
- * "Agent strategies" (derived from patterns) is passed through unchanged.
- *
- * De-rate: if `最近` date > 14 days ago, drops confidence one level (高→中, 中→低).
- * Prune: if confidence becomes 低 AND observations ≤ 2, remove the belief entirely.
+ * Read the raw previously.md content for a slice (no migration).
+ * Returns "" if it doesn't exist yet. Internal — ensurePreviously uses it so
+ * it can still detect and persist legacy files.
  */
-export function applyPreviouslyDecay(content: string, newSliceId: string): string {
-  const FOURTEEN_DAYS_MS = 14 * 24 * 60 * 60 * 1000;
-  const now = Date.now();
-
-  const lines = content.split("\n");
-  const result: string[] = [];
-
-  // Track which section we're in
-  let inUserPatterns = false;
-  // Track the line index within the loop (for lookback when pruning)
-  let i = 0;
-  while (i < lines.length) {
-    const line = lines[i];
-
-    // Track sections
-    if (line.startsWith("## User patterns")) {
-      inUserPatterns = true;
-    } else if (line.startsWith("## ") && !line.startsWith("## User patterns")) {
-      inUserPatterns = false;
-    }
-
-    // Update the active slice header
-    if (/^_Active slice:/.test(line)) {
-      result.push(`_Active slice: ${newSliceId} | Last updated: (initial)_`);
-      i++;
-      continue;
-    }
-
-    // Apply decay to confidence-based beliefs in User patterns section only
-    // The annotation line is the one containing `置信度:`, which follows a
-    // belief bullet line (starting with `- `).
-    if (inUserPatterns && line.includes("置信度:")) {
-      const confMatch = line.match(/置信度: (高|中|低)/);
-      const lastSeenMatch = line.match(
-        /最近: (\d{4}\/\d{2}\/\d{2}\/\d{4})-[A-Za-z0-9_-]+/,
-      );
-      const obsMatch = line.match(/观察: (\d+)/);
-
-      if (confMatch) {
-        let confidence = confMatch[1];
-        const lastSeen = lastSeenMatch ? lastSeenMatch[1] : null;
-        const observations = obsMatch ? parseInt(obsMatch[1], 10) : 0;
-
-        // De-rate if stale
-        if (lastSeen) {
-          const lastSeenDate = parsePreviouslyDate(lastSeen);
-          if (lastSeenDate && now - lastSeenDate.getTime() > FOURTEEN_DAYS_MS) {
-            if (confidence === "高") {
-              confidence = "中";
-            } else if (confidence === "中") {
-              confidence = "低";
-            }
-          }
-        }
-
-        // Prune: low confidence + weak evidence → remove belief
-        if (confidence === "低" && observations <= 2) {
-          // Remove the preceding belief bullet line (if it exists)
-          if (
-            result.length > 0 &&
-            result[result.length - 1].trimStart().startsWith("- ")
-          ) {
-            result.pop();
-          }
-          // Skip this annotation line
-          i++;
-          // Also skip a trailing blank line after the annotation
-          if (i < lines.length && lines[i].trim() === "") {
-            i++;
-          }
-          continue;
-        }
-
-        // Update confidence in the annotation
-        const updatedLine = line.replace(
-          /置信度: (高|中|低)/,
-          `置信度: ${confidence}`,
-        );
-        result.push(updatedLine);
-        i++;
-        continue;
-      }
-    }
-
-    result.push(line);
-    i++;
-  }
-
-  return result.join("\n");
-}
-
-/**
- * Read the previously.md content for a slice.
- * Returns "" if it doesn't exist yet.
- */
-export async function readPreviously(sliceId: string): Promise<string> {
+async function readPreviouslyRaw(sliceId: string): Promise<string> {
   try {
     return await fsReadFile(sliceIdToPreviouslyPath(sliceId));
   } catch {
     return "";
   }
+}
+
+/**
+ * Read the previously.md content for a slice, always in the v3 format: legacy
+ * (v1/v2) content is migrated on the fly so the model and every consumer see
+ * one consistent structure. Returns "" if it doesn't exist yet.
+ */
+export async function readPreviously(sliceId: string): Promise<string> {
+  const raw = await readPreviouslyRaw(sliceId);
+  return raw ? migrateToV3(raw, sliceId) : "";
 }
 
 /**
@@ -782,8 +662,8 @@ export async function writePreviously(
 
 /**
  * Find the most recently frozen previously.md by scanning backward through
- * calendar days (up to 30). Returns the raw file content, or null if no
- * frozen previously.md exists within the lookback window.
+ * calendar days (up to 30). Returns the content migrated to the v3 format,
+ * or null if no frozen previously.md exists within the lookback window.
  */
 export async function findMostRecentPreviously(): Promise<string | null> {
   const now = new Date();
@@ -806,7 +686,7 @@ export async function findMostRecentPreviously(): Promise<string | null> {
         try {
           const prevPath = `${dir}/${sd.name}/previously.md`;
           const content = await fsReadFile(prevPath);
-          if (content.trim()) return content;
+          if (content.trim()) return migrateToV3(content);
         } catch {
           // No previously.md in this slice directory
         }
@@ -822,21 +702,30 @@ export async function findMostRecentPreviously(): Promise<string | null> {
 /**
  * Ensure a previously.md file exists for the given slice.
  *
- * If it already exists (e.g., recovered slice), returns its content.
- * Otherwise initializes by copying the most recent frozen previously.md
- * with staleness decay applied, or creating an empty template if no
- * frozen copy is found within the lookback window.
+ * If it already exists (e.g., recovered slice), returns its content — a
+ * legacy (v1/v2) file left over from before the v3 upgrade is migrated once
+ * and persisted, so evolution always works on the v3 structure. Otherwise
+ * initializes by copying the most recent frozen previously.md (migrated to
+ * v3), or creating an empty v3 template if no frozen copy is found within the
+ * lookback window.
  */
 export async function ensurePreviously(sliceId: string): Promise<string> {
-  const existing = await readPreviously(sliceId);
-  if (existing.trim()) return existing;
+  const existing = await readPreviouslyRaw(sliceId);
+  if (existing.trim()) {
+    const migrated = migrateToV3(existing, sliceId);
+    if (migrated !== existing) {
+      await writePreviously(sliceId, migrated);
+    }
+    return migrated;
+  }
 
-  // Find the most recent previously.md from past slices and copy it
-  // forward as-is. Decay is handled by the evolution workflow.
+  // Find the most recent previously.md from past slices and copy it forward,
+  // migrating it to the v3 structure if needed. Refinement is handled by the
+  // evolution workflow.
   const source = await findMostRecentPreviously();
 
   const content = source
-    ? source
+    ? migrateToV3(source, sliceId)
     : newPreviouslyTemplate(sliceId);
 
   await writePreviously(sliceId, content);

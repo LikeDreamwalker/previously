@@ -1,4 +1,11 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+vi.mock("../io-helpers", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../io-helpers")>();
+  return { ...actual, fsReadFile: vi.fn(), fsWriteFile: vi.fn(), fsListFiles: vi.fn() };
+});
+
+import { fsReadFile, fsWriteFile, fsListFiles } from "../io-helpers";
 import {
   parseSlice,
   serializeSlice,
@@ -8,8 +15,9 @@ import {
   sliceIdToTimelineDir,
   sliceIdToAgentPath,
   sliceIdToPreviouslyPath,
-  applyPreviouslyDecay,
   emptyPreviouslyTemplate,
+  readPreviously,
+  ensurePreviously,
 } from "../manager";
 import type { TimeSlice, Turn } from "../types";
 
@@ -416,217 +424,67 @@ describe("sliceIdToPreviouslyPath", () => {
 // ─── emptyPreviouslyTemplate ────────────────────────────────────────────
 
 describe("emptyPreviouslyTemplate", () => {
-  it("contains all three sections with placeholder text", () => {
+  it("is a v3 two-section template with the active slice header", () => {
     const tmpl = emptyPreviouslyTemplate("2026-07-24-1445");
-    expect(tmpl).toContain("# Agent Beliefs");
+    expect(tmpl).toContain("# Previously On");
     expect(tmpl).toContain("_Active slice: 2026-07-24-1445");
-    expect(tmpl).toContain("## User identity");
-    expect(tmpl).toContain("## User patterns");
-    expect(tmpl).toContain("## Agent strategies");
-    expect(tmpl).toContain("_No beliefs yet._");
+    expect(tmpl).toContain("## User profile");
+    expect(tmpl).toContain("## Self-model");
   });
 });
 
-// ─── applyPreviouslyDecay ───────────────────────────────────────────────
+// ─── readPreviously / ensurePreviously (v3 migration on read) ────────────
 
-describe("applyPreviouslyDecay", () => {
-  const newSliceId = "2026-07-24-1500";
+const LEGACY_V2_PREVIOUSLY = `# Previously On
 
-  it("de-rates 高→中 when last_seen is older than 14 days", () => {
-    // 15 days ago
-    const d = new Date();
-    d.setUTCDate(d.getUTCDate() - 15);
-    const y = d.getUTCFullYear();
-    const m = String(d.getUTCMonth() + 1).padStart(2, "0");
-    const day = String(d.getUTCDate()).padStart(2, "0");
-    const staleDate = `${y}/${m}/${day}/1200`;
+_Active slice: 2026-07-26-1539 | Updated: 2026-07-26T15:41:34.834Z_
 
-    const content = `# Agent Beliefs
+## 长期记忆
 
-_Active slice: 2026-07-09-1200 | Last updated: Turn a3fk2w_
+### User identity
 
-## User patterns (pattern beliefs — agent observed these)
-- 偏好简洁结构化的回答
-  (置信度: 高 | 首次: 2026/07/01/0500-a3fk2w | 最近: ${staleDate}-T2 | 观察: 6)
+- 用户名叫 LikeDreamwalker
+  evidence: [2026/07/26/1539-esXr7w] | confidence: medium | updated: 2026-07-26 | obs: 1
+
+## 短期记忆
 `;
-    const result = applyPreviouslyDecay(content, newSliceId);
-    expect(result).toContain("置信度: 中");
-    expect(result).not.toContain("置信度: 高");
+
+describe("readPreviously (v3 migration on read)", () => {
+  beforeEach(() => {
+    vi.mocked(fsReadFile).mockReset();
+    vi.mocked(fsWriteFile).mockReset();
+    vi.mocked(fsListFiles).mockReset();
   });
 
-  it("de-rates 中→低 when last_seen is older than 14 days", () => {
-    const d = new Date();
-    d.setUTCDate(d.getUTCDate() - 20);
-    const y = d.getUTCFullYear();
-    const m = String(d.getUTCMonth() + 1).padStart(2, "0");
-    const day = String(d.getUTCDate()).padStart(2, "0");
-    const staleDate = `${y}/${m}/${day}/1200`;
-
-    const content = `# Agent Beliefs
-
-_Active slice: 2026-07-04-1200 | Last updated: Turn a3fk2w_
-
-## User patterns (pattern beliefs — agent observed these)
-- 偏好结构化的回答
-  (置信度: 中 | 首次: 2026/06/01/0500-a3fk2w | 最近: ${staleDate}-T1 | 观察: 3)
-`;
-    const result = applyPreviouslyDecay(content, newSliceId);
-    expect(result).toContain("置信度: 低");
-    expect(result).not.toContain("置信度: 中");
+  it("migrates legacy v2 content to the v3 structure so the model never sees v2", async () => {
+    vi.mocked(fsReadFile).mockResolvedValue(LEGACY_V2_PREVIOUSLY);
+    const content = await readPreviously("2026-07-26-1539");
+    expect(content).toContain("## User profile");
+    expect(content).toContain("## Self-model");
+    expect(content).not.toContain("## 长期记忆");
+    expect(content).not.toContain("## 短期记忆");
+    expect(content).toContain("用户名叫 LikeDreamwalker");
   });
 
-  it("prunes belief when confidence is 低 AND observations ≤ 2", () => {
-    const d = new Date();
-    d.setUTCDate(d.getUTCDate() - 20);
-    const y = d.getUTCFullYear();
-    const m = String(d.getUTCMonth() + 1).padStart(2, "0");
-    const day = String(d.getUTCDate()).padStart(2, "0");
-    const staleDate = `${y}/${m}/${day}/1200`;
-
-    const content = `# Agent Beliefs
-
-_Active slice: 2026-07-04-1200 | Last updated: Turn a3fk2w_
-
-## User patterns (pattern beliefs — agent observed these)
-- 一个弱信念会被清除
-  (置信度: 低 | 首次: 2026/06/01/0500-a3fk2w | 最近: ${staleDate}-T1 | 观察: 1)
-- 另一个保留的信念
-  (置信度: 高 | 首次: 2026/07/01/0500-a3fk2w | 最近: 2026/07/23/1500-T2 | 观察: 8)
-`;
-    const result = applyPreviouslyDecay(content, newSliceId);
-    expect(result).not.toContain("一个弱信念会被清除");
-    expect(result).not.toContain("观察: 1");
-    expect(result).toContain("另一个保留的信念");
-    expect(result).toContain("置信度: 高");
+  it("returns an empty string when the file does not exist", async () => {
+    vi.mocked(fsReadFile).mockRejectedValue(new Error("ENOENT"));
+    await expect(readPreviously("2026-07-26-1539")).resolves.toBe("");
   });
 
-  it("does NOT prune when 低 but observations > 2", () => {
-    const d = new Date();
-    d.setUTCDate(d.getUTCDate() - 20);
-    const y = d.getUTCFullYear();
-    const m = String(d.getUTCMonth() + 1).padStart(2, "0");
-    const day = String(d.getUTCDate()).padStart(2, "0");
-    const staleDate = `${y}/${m}/${day}/1200`;
-
-    const content = `# Agent Beliefs
-
-_Active slice: 2026-07-04-1200 | Last updated: Turn a3fk2w_
-
-## User patterns (pattern beliefs — agent observed these)
-- 一个有较多观察的弱信念
-  (置信度: 低 | 首次: 2026/06/01/0500-a3fk2w | 最近: ${staleDate}-T1 | 观察: 5)
-`;
-    const result = applyPreviouslyDecay(content, newSliceId);
-    // Low but 5 observations — should survive
-    expect(result).toContain("一个有较多观察的弱信念");
-    expect(result).toContain("置信度: 低"); // already 低, can't de-rate further
+  it("persists the migration once when ensurePreviously finds a legacy file", async () => {
+    vi.mocked(fsReadFile).mockResolvedValue(LEGACY_V2_PREVIOUSLY);
+    vi.mocked(fsWriteFile).mockResolvedValue({ path: "", created: true });
+    const content = await ensurePreviously("2026-07-26-1539");
+    expect(content).toContain("## User profile");
+    expect(fsWriteFile).toHaveBeenCalledTimes(1);
   });
 
-  it("does NOT modify User identity section (factual, user-stated)", () => {
-    const d = new Date();
-    d.setUTCDate(d.getUTCDate() - 30);
-    const y = d.getUTCFullYear();
-    const m = String(d.getUTCMonth() + 1).padStart(2, "0");
-    const day = String(d.getUTCDate()).padStart(2, "0");
-    const staleDate = `${y}/${m}/${day}/1200`;
-
-    const content = `# Agent Beliefs
-
-_Active slice: 2026-06-24-1200 | Last updated: Turn a3fk2w_
-
-## User identity (factual beliefs — user explicitly stated these)
-- 自称 Alan Yuan，可用 Alan 称呼
-  (来源: ${staleDate}-T1，用户原话)
-
-## User patterns (pattern beliefs — agent observed these)
-- 偏好简洁
-  (置信度: 高 | 首次: ${staleDate}-T1 | 最近: ${staleDate}-T1 | 观察: 10)
-`;
-    const result = applyPreviouslyDecay(content, newSliceId);
-    // Identity belief survives untouched
-    expect(result).toContain("自称 Alan Yuan");
-    expect(result).toContain(`(来源: ${staleDate}-T1，用户原话)`);
-    // Pattern belief gets de-rated
-    expect(result).toContain("置信度: 中");
-  });
-
-  it("does NOT modify Agent strategies section", () => {
-    const content = `# Agent Beliefs
-
-_Active slice: 2026-07-09-1200 | Last updated: Turn a3fk2w_
-
-## Agent strategies (derived from beliefs above)
-- 给出选项而非单一答案，让用户选方向
-  (来源: User patterns — 迭代式节奏 + 2026/07/23/1445-T2 用户确认)
-`;
-    const result = applyPreviouslyDecay(content, newSliceId);
-    expect(result).toContain("给出选项而非单一答案");
-    expect(result).toContain("User patterns — 迭代式节奏");
-  });
-
-  it("leaves recent beliefs (less than 14 days) unchanged", () => {
-    const d = new Date();
-    d.setUTCDate(d.getUTCDate() - 3); // only 3 days ago
-    const y = d.getUTCFullYear();
-    const m = String(d.getUTCMonth() + 1).padStart(2, "0");
-    const day = String(d.getUTCDate()).padStart(2, "0");
-    const recentDate = `${y}/${m}/${day}/1200`;
-
-    const content = `# Agent Beliefs
-
-_Active slice: 2026-07-21-1200 | Last updated: Turn a3fk2w_
-
-## User patterns (pattern beliefs — agent observed these)
-- 偏好简洁结构化的回答
-  (置信度: 高 | 首次: 2026/07/14/1435-T2 | 最近: ${recentDate}-T2 | 观察: 6)
-`;
-    const result = applyPreviouslyDecay(content, newSliceId);
-    expect(result).toContain("置信度: 高");
-  });
-
-  it("updates the active slice header line", () => {
-    const content = `# Agent Beliefs
-
-_Active slice: 2026-07-09-1200 | Last updated: Turn a3fk2w_
-
-## User patterns (pattern beliefs — agent observed these)
-- 偏好简洁
-  (置信度: 高 | 首次: 2026/07/01/0500-a3fk2w | 最近: 2026/07/23/1500-T2 | 观察: 10)
-`;
-    const result = applyPreviouslyDecay(content, newSliceId);
-    expect(result).toContain("_Active slice: 2026-07-24-1500");
-    expect(result).toContain("Last updated: (initial)");
-    expect(result).not.toContain("2026-07-09-1200");
-  });
-
-  it("handles empty content gracefully", () => {
-    const result = applyPreviouslyDecay("", newSliceId);
-    expect(result).toBe("");
-  });
-
-  it("handles content with no beliefs (just headers)", () => {
-    const content = `# Agent Beliefs
-
-_Active slice: 2026-07-09-1200 | Last updated: Turn a3fk2w_
-
-## User identity (factual beliefs — user explicitly stated these)
-
-_No beliefs yet._
-
-## User patterns (pattern beliefs — agent observed these)
-
-_No beliefs yet._
-
-## Agent strategies (derived from beliefs above)
-
-_No beliefs yet._
-`;
-    const result = applyPreviouslyDecay(content, newSliceId);
-    expect(result).toContain("_Active slice: 2026-07-24-1500");
-    expect(result).toContain("_No beliefs yet._");
-    expect(result).toContain("## User identity");
-    expect(result).toContain("## User patterns");
-    expect(result).toContain("## Agent strategies");
+  it("does not rewrite already-v3 content in ensurePreviously", async () => {
+    const v3 = emptyPreviouslyTemplate("2026-07-26-1539");
+    vi.mocked(fsReadFile).mockResolvedValue(v3);
+    vi.mocked(fsWriteFile).mockResolvedValue({ path: "", created: true });
+    await ensurePreviously("2026-07-26-1539");
+    expect(fsWriteFile).not.toHaveBeenCalled();
   });
 });
 

@@ -77,6 +77,20 @@ export function normalizeRecommendedReads(
     }));
 }
 
+/**
+ * Drop any hit / recommended read whose slice is the current (ongoing)
+ * conversation. The current slice is where the query is being asked — it is
+ * NOT a past memory, so it must never surface as a recall result, regardless
+ * of how the model saw it (timeline entry, strand path, …).
+ */
+export function excludeCurrentSlice<T extends { slice_id: string }>(
+  items: T[],
+  currentSliceId: string,
+): T[] {
+  if (!currentSliceId) return items;
+  return items.filter((i) => i.slice_id !== currentSliceId);
+}
+
 export interface RecallSearchOutput {
   hits: RecallHit[];
   confidence: number;
@@ -87,6 +101,7 @@ export interface RecallSearchOutput {
 
 export interface RecallSearchInput {
   query: string;
+  /** The ongoing session's slice — must NEVER appear in recall results. */
   currentSliceId: string;
   owner: string;
   repo: string;
@@ -237,8 +252,7 @@ Guidelines:
 - Do NOT invent key_turns: without reading a slice you cannot know which turns matter, so leave key_turns empty.
 - If nothing is relevant, return an empty hits array. That's fine.
 - Focus on RECALLING context, not answering the question.
-
-The current session is NOT in the timeline — it only contains closed past slices.`;
+- The current session's slice is the ONGOING conversation, NOT a past memory — never return it as a hit or recommended read, even if it appears in the timeline or a strand path. You recall the PAST only.`;
 
 // ─── Public API ────────────────────────────────────────────────────────
 
@@ -265,7 +279,7 @@ IMPORTANT: After reading the global timeline, check which strands match your que
 
   const userPrompt = `Search query: "${query}"
 
-Current slice: ${currentSliceId}${strandsHint}
+Current slice: ${currentSliceId} — this is the ONGOING conversation, NOT a past memory. EXCLUDE it from hits and recommended_reads; only report past slices.${strandsHint}
 
 Follow this process:
 1. START — call readGlobalTimeline to see all available past conversations and their summaries.
@@ -347,15 +361,31 @@ IMPORTANT: You MUST end by calling recallReport. Even if nothing matches, call i
             note?: string;
           }>;
         };
-        console.log(
-          `[Recall] Found ${report.hits?.length ?? 0} hits, ${report.recommended_reads?.length ?? 0} recommended reads, confidence=${(report.confidence ?? 0).toFixed(2)}`,
+        const rawHits = report.hits ?? [];
+        const hits = excludeCurrentSlice(rawHits, currentSliceId);
+        const recommendedReads = excludeCurrentSlice(
+          normalizeRecommendedReads(report.recommended_reads),
+          currentSliceId,
         );
-        return {
-          hits: report.hits ?? [],
-          confidence: report.confidence ?? 0.5,
-          reasoning: report.reasoning ?? "",
-          recommendedReads: normalizeRecommendedReads(report.recommended_reads),
-        };
+        // If the model's only "evidence" was the current slice, the search
+        // genuinely found nothing from the past — zero the confidence rather
+        // than report a false hit with a confident score.
+        const droppedCurrent = rawHits.length - hits.length;
+        const confidence =
+          droppedCurrent > 0 && hits.length === 0
+            ? 0
+            : report.confidence ?? 0.5;
+        const reasoning =
+          droppedCurrent > 0
+            ? `${
+                report.reasoning ?? ""
+              } [Excluded current slice ${currentSliceId} — the ongoing conversation is not a past memory.]`.trim()
+            : report.reasoning ?? "";
+
+        console.log(
+          `[Recall] Found ${hits.length} hits (${droppedCurrent} current-slice excluded), ${recommendedReads.length} recommended reads, confidence=${confidence.toFixed(2)}`,
+        );
+        return { hits, confidence, reasoning, recommendedReads };
       }
     }
 

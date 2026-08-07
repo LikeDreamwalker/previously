@@ -1,27 +1,38 @@
 /**
  * Previously Updater — pure functions that apply Previously Agent mutations
- * to a previously.md body string.
+ * to a previously.md body string (v3 two-section archive).
  *
  * All functions are pure: string in, string out. No I/O, no LLM calls.
  *
- * Supports 7 mutation actions across the long/short-term split:
- *   - observe   : add a new belief
- *   - reinforce : bump obs count and update last-seen date
- *   - contradict: drop confidence, add contradiction note
- *   - discard   : remove the belief
- *   - expire    : remove an expired short-term belief
- *   - promote   : move belief from short-term → long-term
- *   - demote    : move belief from long-term → short-term
+ * Actions (across the profile / self_model sections, keyed by dimension):
+ *   - observe     : add a new entry
+ *   - reinforce   : bump obs count and update last-seen date
+ *   - contradict  : drop confidence, mark refuted (user correction)
+ *   - discard     : remove the entry
+ *   - expire      : remove an expired short-lived entry (current_state / boundaries)
+ *   - promote     : move a current_state entry to a stable dimension
+ *   - demote      : move a stable entry to current_state
+ *
+ * A `reformat` content, when provided, replaces the document wholesale (used
+ * for format/version drift). Bounds (profile ≤ 40, self_model ≤ 30) are
+ * enforced deterministically by evicting the weakest entries by
+ * confidence × recency.
  */
 
 import type { PreviouslyMutation } from "@/lib/episodic/flash/previously-agent";
 import {
   parsePreviously,
+  migrateToV3,
   serializePreviously,
   formatDate,
   formatExpiry,
   type PreviouslyBelief,
   type PreviouslyDocument,
+  type ProfileDimension,
+  type SelfModelDimension,
+  type Section,
+  PROFILE_DIMENSIONS,
+  SELF_MODEL_DIMENSIONS,
 } from "@/lib/episodic/previously-format";
 
 // ─── Main entry point ───────────────────────────────────────────────────
@@ -35,56 +46,65 @@ export interface ApplyResult {
     removed: number;
     superseded: number;
   };
+  /** True only when a provided `reformatContent` was actually applied (parsed as valid v3). */
+  reformatted: boolean;
 }
 
 /**
- * Apply a batch of PreviouslyAgent mutations to a previously.md body.
+ * Apply a batch of PreviouslyAgent mutations to a previously.md body,
+ * or replace it wholesale when `reformatContent` is provided.
  * Returns the updated content + a summary of changes.
  */
 export function applyPreviouslyAgentOutput(
   content: string,
   mutations: PreviouslyMutation[],
   currentSliceId: string,
+  reformatContent?: string,
 ): ApplyResult {
-  if (!mutations.length) {
-    // Still enforce limits — the document may have been externally modified.
-    const doc = parsePreviously(content);
-    if (doc) {
-      enforceLimits(doc);
+  const emptyChanges: ApplyResult["changes"] = {
+    added: 0, reinforced: 0, demoted: 0, removed: 0, superseded: 0,
+  };
+
+  // ── Reformat path: wholesale replacement. ─────────────────────────────
+  if (reformatContent && reformatContent.trim()) {
+    const parsed = parsePreviously(reformatContent);
+    if (parsed) {
+      parsed.sliceId = currentSliceId || parsed.sliceId;
+      parsed.updated = new Date().toISOString();
+      enforceLimits(parsed);
       return {
-        content: serializePreviously(doc),
-        changes: { added: 0, reinforced: 0, demoted: 0, removed: 0, superseded: 0 },
+        content: serializePreviously(parsed),
+        changes: emptyChanges,
+        reformatted: true,
       };
     }
-    return {
-      content,
-      changes: { added: 0, reinforced: 0, demoted: 0, removed: 0, superseded: 0 },
-    };
+    // Invalid reformat — fall through to incremental mutations rather than
+    // clobbering the archive with unparseable content.
   }
 
-  // Parse current content. If unparseable, start from template.
+  // ── Parse current content. Legacy v1/v2 content is migrated on the fly. ──
   let doc = parsePreviously(content);
   if (!doc) {
-    doc = {
-      sliceId: currentSliceId,
-      updated: new Date().toISOString(),
-      longTerm: { identity: [], patterns: [], strategies: [] },
-      shortTerm: { context: [] },
-    };
+    doc = parsePreviously(migrateToV3(content, currentSliceId));
+  }
+  if (!doc) {
+    return { content, changes: emptyChanges, reformatted: false };
+  }
+
+  const changes: ApplyResult["changes"] = { ...emptyChanges };
+
+  if (mutations.length === 0) {
+    // No-op pass: enforce limits without stamping a new `updated` timestamp,
+    // so an unchanged document round-trips byte-identically.
+    enforceLimits(doc);
+    return { content: serializePreviously(doc), changes, reformatted: false };
   }
 
   doc.updated = new Date().toISOString();
   if (currentSliceId) doc.sliceId = currentSliceId;
 
-  const changes: ApplyResult["changes"] = {
-    added: 0,
-    reinforced: 0,
-    demoted: 0,
-    removed: 0,
-    superseded: 0,
-  };
-
-  // Sanitize mutations: fill missing evidence (creates copies to avoid mutating caller's data)
+  // Sanitize: fill missing evidence refs with the current slice (the exchange
+  // under review is the default evidence source for new entries).
   const currentSlicePath = currentSliceId.replace(/-/g, "/");
   const sanitized = mutations.map((m) =>
     !m.evidence_slice || m.evidence_slice === "undefined"
@@ -92,70 +112,59 @@ export function applyPreviouslyAgentOutput(
       : m,
   );
 
-  // Use sanitized copies throughout
-  mutations = sanitized;
+  // Separate by type for ordered processing (remove → modify → add).
+  const expires = sanitized.filter((m) => m.action === "expire");
+  const discards = sanitized.filter((m) => m.action === "discard");
+  const contradicts = sanitized.filter((m) => m.action === "contradict");
+  const reinforces = sanitized.filter((m) => m.action === "reinforce");
+  const observes = sanitized.filter((m) => m.action === "observe");
+  const promotes = sanitized.filter((m) => m.action === "promote");
+  const demotes = sanitized.filter((m) => m.action === "demote");
 
-  // Separate mutations by type for ordered processing
-  const expires = mutations.filter((m) => m.action === "expire");
-  const discards = mutations.filter((m) => m.action === "discard");
-  const contradicts = mutations.filter((m) => m.action === "contradict");
-  const reinforces = mutations.filter((m) => m.action === "reinforce");
-  const observes = mutations.filter((m) => m.action === "observe");
-  const promotes = mutations.filter((m) => m.action === "promote");
-  const demotes = mutations.filter((m) => m.action === "demote");
-
-  // Process in order: remove first, then modify, then add
   for (const m of [...expires, ...discards]) {
-    const removed = applyRemove(doc, m);
-    changes.removed += removed;
+    changes.removed += applyRemove(doc, m);
   }
 
   for (const m of contradicts) {
-    const done = applyContradict(doc, m);
-    if (done) changes.demoted += 1; // contradiction = confidence demotion
+    if (applyContradict(doc, m)) changes.demoted += 1;
   }
 
   for (const m of reinforces) {
-    const done = applyReinforce(doc, m);
-    if (done) changes.reinforced += 1;
+    if (applyReinforce(doc, m)) changes.reinforced += 1;
   }
 
   for (const m of demotes) {
-    const done = applyDemote(doc, m);
-    if (done) changes.demoted += 1;
+    if (applyDemote(doc, m)) changes.demoted += 1;
   }
 
   for (const m of promotes) {
-    const done = applyPromote(doc, m);
-    if (done) changes.added += 1;
+    if (applyPromote(doc, m)) changes.added += 1;
   }
 
   for (const m of observes) {
-    const added = applyObserve(doc, m);
-    changes.added += added ? 1 : 0;
+    if (applyObserve(doc, m)) changes.added += 1;
   }
 
-  // Enforce quantity limits (R13)
+  // Enforce quantity limits (profile ≤ 40, self_model ≤ 30).
   enforceLimits(doc);
 
-  return {
-    content: serializePreviously(doc),
-    changes,
-  };
+  return { content: serializePreviously(doc), changes, reformatted: false };
 }
 
 // ─── Action helpers ─────────────────────────────────────────────────────
 
-/** Get the belief array for a given tier + subsection. */
+/** Get (creating if needed) the belief array for a section + subsection. */
 function getBeliefs(
   doc: PreviouslyDocument,
-  tier: "long" | "short",
-  subsection: "identity" | "patterns" | "strategies" | "context",
+  section: Section,
+  subsection: ProfileDimension | SelfModelDimension,
 ): PreviouslyBelief[] {
-  if (tier === "short" || subsection === "context") {
-    return doc.shortTerm.context;
-  }
-  return doc.longTerm[subsection];
+  const bucket = section === "profile" ? doc.profile : doc.selfModel;
+  const arr = (bucket as Record<string, PreviouslyBelief[]>)[subsection];
+  if (arr) return arr;
+  const created: PreviouslyBelief[] = [];
+  (bucket as Record<string, PreviouslyBelief[]>)[subsection] = created;
+  return created;
 }
 
 /** Find a belief by key phrase match. Returns [index, belief] or [-1, null]. */
@@ -168,20 +177,25 @@ function findBelief(
   return { index: idx, belief: beliefs[idx] };
 }
 
+/** Build the refs array from a mutation. */
+function buildRefs(m: PreviouslyMutation): string[] {
+  const refs: string[] = [];
+  if (m.evidence_slice) {
+    refs.push(m.evidence_turn ? `${m.evidence_slice}-${m.evidence_turn}` : m.evidence_slice);
+  }
+  return refs;
+}
+
 /** Build a new PreviouslyBelief from a mutation. */
 function makeBelief(m: PreviouslyMutation): PreviouslyBelief {
-  const isShort = m.tier === "short" || m.subsection === "context";
+  const shortLived = m.subsection === "current_state" || m.subsection === "boundaries";
   return {
     text: m.belief ?? "",
-    evidence: m.evidence_slice && m.evidence_turn
-      ? [`${m.evidence_slice}-${m.evidence_turn}`]
-      : (m.evidence_slice ? [m.evidence_slice] : []),
+    refs: buildRefs(m),
     updated: formatDate(),
-    confidence: m.new_confidence ?? (isShort ? undefined : "medium"),
+    confidence: m.new_confidence ?? "medium",
     obs: 1,
-    expires: isShort
-      ? (m.action === "demote" ? formatExpiry(3) : formatExpiry())
-      : undefined,
+    expires: shortLived ? formatExpiry() : undefined,
   };
 }
 
@@ -190,9 +204,9 @@ function makeBelief(m: PreviouslyMutation): PreviouslyBelief {
 function applyObserve(doc: PreviouslyDocument, m: PreviouslyMutation): boolean {
   if (!m.belief) return false;
 
-  const beliefs = getBeliefs(doc, m.tier, m.subsection);
+  const beliefs = getBeliefs(doc, m.section, m.subsection);
 
-  // Dedup: skip if belief text already exists
+  // Dedup: skip if belief text already exists.
   if (beliefs.some((b) => b.text === m.belief)) return false;
 
   const belief = makeBelief(m);
@@ -205,24 +219,20 @@ function applyObserve(doc: PreviouslyDocument, m: PreviouslyMutation): boolean {
 function applyReinforce(doc: PreviouslyDocument, m: PreviouslyMutation): boolean {
   if (!m.belief_key) return false;
 
-  const beliefs = getBeliefs(doc, m.tier, m.subsection);
-  const { index, belief } = findBelief(beliefs, m.belief_key);
+  const beliefs = getBeliefs(doc, m.section, m.subsection);
+  const { belief } = findBelief(beliefs, m.belief_key);
   if (!belief) return false;
 
-  // Bump obs
   belief.obs = (belief.obs ?? 0) + 1;
   belief.updated = formatDate();
 
-  // Add evidence if provided
-  if (m.evidence_slice && m.evidence_turn) {
-    const ref = `${m.evidence_slice}-${m.evidence_turn}`;
-    if (!belief.evidence.includes(ref)) {
-      belief.evidence.push(ref);
-    }
+  const ref = buildRefs(m)[0];
+  if (ref && !belief.refs.includes(ref)) {
+    belief.refs.push(ref);
   }
 
-  // Auto-promote confidence: medium→high at obs ≥ 5 (long-term only)
-  if (m.tier === "long" && belief.confidence === "medium" && belief.obs >= 5) {
+  // Auto-promote confidence: medium→high at obs ≥ 5.
+  if (belief.confidence === "medium" && (belief.obs ?? 0) >= 5) {
     belief.confidence = "high";
   }
 
@@ -234,22 +244,22 @@ function applyReinforce(doc: PreviouslyDocument, m: PreviouslyMutation): boolean
 function applyContradict(doc: PreviouslyDocument, m: PreviouslyMutation): boolean {
   if (!m.belief_key) return false;
 
-  const beliefs = getBeliefs(doc, m.tier, m.subsection);
+  const beliefs = getBeliefs(doc, m.section, m.subsection);
   const { belief } = findBelief(beliefs, m.belief_key);
   if (!belief) return false;
 
-  // Drop confidence one level
+  // Drop confidence one level (high → medium → low).
   if (belief.confidence === "high") {
     belief.confidence = "medium";
   } else if (belief.confidence === "medium") {
     belief.confidence = "low";
   }
-  // low stays low
   belief.updated = formatDate();
 
-  // Add contradiction note as a comment appended to the text
-  if (m.note) {
-    belief.text = `${belief.text} <!-- ⚠️ ${m.note} -->`;
+  // Record what refuted this entry (e.g. a user correction).
+  const reason = m.refuted_by ?? m.note;
+  if (reason) {
+    belief.refuted_by = reason;
   }
 
   return true;
@@ -260,7 +270,7 @@ function applyContradict(doc: PreviouslyDocument, m: PreviouslyMutation): boolea
 function applyRemove(doc: PreviouslyDocument, m: PreviouslyMutation): number {
   if (!m.belief_key) return 0;
 
-  const beliefs = getBeliefs(doc, m.tier, m.subsection);
+  const beliefs = getBeliefs(doc, m.section, m.subsection);
   const { index } = findBelief(beliefs, m.belief_key);
   if (index === -1) return 0;
 
@@ -268,148 +278,139 @@ function applyRemove(doc: PreviouslyDocument, m: PreviouslyMutation): number {
   return 1;
 }
 
-// ── applyPromote (short → long) ─────────────────────────────────────────
+// ── applyPromote (current_state → stable dimension) ─────────────────────
 
 /**
- * Promote a short-term belief to long-term.
- * R6: Short-term item referenced in 3+ slices → promote to long-term.
- * Source is always shortTerm.context. Destination is longTerm[m.subsection].
+ * Promote: move an entry from profile.current_state to a stable dimension
+ * when its nature changed (keeps recurring → it is a stable trait now).
  */
 function applyPromote(doc: PreviouslyDocument, m: PreviouslyMutation): boolean {
-  if (!m.belief_key || !m.belief) return false;
+  if (!m.belief_key) return false;
+  // Promote moves a user-profile current_state entry to a stable profile
+  // dimension. Self-model entries have no current_state — a promote there would
+  // misplace user context into the agent's operating model.
+  if (m.section !== "profile" || m.subsection === "current_state") return false;
 
-  // Remove from short-term
-  const stBeliefs = doc.shortTerm.context;
-  const { index, belief: oldBelief } = findBelief(stBeliefs, m.belief_key);
+  const st = doc.profile.current_state;
+  if (!st) return false;
+
+  const { index, belief: oldBelief } = findBelief(st, m.belief_key);
   if (!oldBelief) return false;
-  stBeliefs.splice(index, 1);
+  st.splice(index, 1);
 
-  // Determine destination subsection
-  const destSubsection = m.subsection === "context" ? "patterns" : m.subsection;
-  const ltBeliefs = doc.longTerm[destSubsection];
-
+  const dest = getBeliefs(doc, m.section, m.subsection);
   const newBelief: PreviouslyBelief = {
-    text: m.belief,
-    evidence: [...oldBelief.evidence],
+    text: m.belief ?? oldBelief.text,
+    refs: [...oldBelief.refs],
     confidence: m.new_confidence ?? "medium",
     updated: formatDate(),
-    obs: oldBelief.obs ?? 3,
+    obs: oldBelief.obs ?? 1,
   };
-  // Add new evidence
-  if (m.evidence_slice && m.evidence_turn) {
-    const ref = `${m.evidence_slice}-${m.evidence_turn}`;
-    if (!newBelief.evidence.includes(ref)) {
-      newBelief.evidence.push(ref);
-    }
-  }
-  ltBeliefs.push(newBelief);
+  const ref = buildRefs(m)[0];
+  if (ref && !newBelief.refs.includes(ref)) newBelief.refs.push(ref);
+
+  dest.push(newBelief);
   return true;
 }
 
-// ── applyDemote (long → short) ──────────────────────────────────────────
+// ── applyDemote (stable dimension → current_state) ──────────────────────
 
 /**
- * Demote a long-term belief to short-term.
- * R12: Long-term belief with confidence:low AND obs:1 → demote to short-term.
- * R7: Long-term item with no new evidence → demote confidence.
- *
- * Full demote (m.belief provided): search ALL long-term subsections for the
- * belief_key, then move to shortTerm.context.
- * Confidence-only (no m.belief): use m.subsection to locate the belief in
- * place and drop confidence.
+ * Demote: move a stable entry to profile.current_state when it is now just
+ * current context (carries a short expiry).
  */
-const LONG_TERM_SUBSECTIONS: Array<"identity" | "patterns" | "strategies"> = [
-  "identity", "patterns", "strategies",
-];
-
 function applyDemote(doc: PreviouslyDocument, m: PreviouslyMutation): boolean {
   if (!m.belief_key) return false;
+  // Demote moves a stable profile entry to profile.current_state. A self-model
+  // lesson must never land in the user's current state, and there is no
+  // self-model current_state bucket to demote into.
+  if (m.section !== "profile" || m.subsection === "current_state") return false;
 
-  // Full demote: search all long-term subsections, move to short-term
-  if (m.belief) {
-    for (const sub of LONG_TERM_SUBSECTIONS) {
-      const ltBeliefs = doc.longTerm[sub];
-      const { index, belief: oldBelief } = findBelief(ltBeliefs, m.belief_key);
-      if (!oldBelief) continue;
+  const src = getBeliefs(doc, m.section, m.subsection);
+  const { index, belief: oldBelief } = findBelief(src, m.belief_key);
+  if (!oldBelief) return false;
+  src.splice(index, 1);
 
-      ltBeliefs.splice(index, 1);
+  const st = getBeliefs(doc, "profile", "current_state");
+  const newBelief: PreviouslyBelief = {
+    text: m.belief ?? oldBelief.text,
+    refs: [...oldBelief.refs],
+    updated: formatDate(),
+    obs: oldBelief.obs,
+    expires: formatExpiry(7),
+  };
+  const ref = buildRefs(m)[0];
+  if (ref && !newBelief.refs.includes(ref)) newBelief.refs.push(ref);
 
-      const stBelief: PreviouslyBelief = {
-        text: m.belief,
-        evidence: [...oldBelief.evidence],
-        updated: formatDate(),
-        expires: formatExpiry(3), // short expiry for demoted items
-        obs: oldBelief.obs,
-      };
-      doc.shortTerm.context.push(stBelief);
-      return true;
-    }
-    return false;
-  }
-
-  // Confidence-only demote: use the subsection to find the belief in place
-  const beliefs = getBeliefs(doc, m.tier, m.subsection);
-  const { belief } = findBelief(beliefs, m.belief_key);
-  if (!belief || !belief.confidence) return false;
-
-  if (m.new_confidence) {
-    belief.confidence = m.new_confidence;
-  } else if (belief.confidence === "high") {
-    belief.confidence = "medium";
-  } else if (belief.confidence === "medium") {
-    belief.confidence = "low";
-  }
-  belief.updated = formatDate();
+  st.push(newBelief);
   return true;
 }
 
-// ─── Limit enforcement (R13) ───────────────────────────────────────────
+// ─── Limit enforcement (profile ≤ 40, self_model ≤ 30) ───────────────────
 
-const LIMITS: Record<string, number> = {
-  identity: 20,
-  patterns: 8,
-  strategies: 15,
-  context: 10,
+const LIMITS: Record<Section, number> = {
+  profile: 40,
+  self_model: 30,
 };
 
-function confidenceScore(c: "high" | "medium" | "low" | undefined): number {
-  switch (c) {
-    case "high": return 3;
-    case "medium": return 2;
-    case "low": return 1;
-    default: return 1;
+function beliefScore(b: PreviouslyBelief): number {
+  const cs = b.confidence === "high" ? 3 : b.confidence === "medium" ? 2 : 1;
+
+  // Expired short-lived entries are evicted first, regardless of confidence.
+  if (b.expires) {
+    const exp = new Date(b.expires).getTime();
+    if (!Number.isNaN(exp) && exp < Date.now()) {
+      return 0;
+    }
+  }
+
+  // `new Date("")`/`new Date("<garbage>")` return an Invalid Date without
+  // throwing, so `.getTime()` can be NaN — guard explicitly rather than with a
+  // try/catch that never fires. Unparseable dates fall back to the 30-day
+  // default so the score stays a finite number.
+  let daysSince = 30;
+  const updated = new Date(b.updated);
+  if (!Number.isNaN(updated.getTime())) {
+    daysSince = Math.max(0, (Date.now() - updated.getTime()) / (24 * 60 * 60 * 1000));
+  }
+  return cs * (1 / (daysSince + 1));
+}
+
+/**
+ * Evict the weakest entries across all dimensions of a section until the
+ * section total is under its limit. Weakest = lowest confidence × recency.
+ */
+function enforceTotalLimit(
+  section: Partial<Record<ProfileDimension | SelfModelDimension, PreviouslyBelief[]>>,
+  limit: number,
+): void {
+  const dims = Object.keys(section) as Array<ProfileDimension | SelfModelDimension>;
+  const total = dims.reduce((n, d) => n + (section[d]?.length ?? 0), 0);
+  if (total <= limit) return;
+
+  const all: Array<{ dim: ProfileDimension | SelfModelDimension; idx: number; score: number }> = [];
+  for (const dim of dims) {
+    const arr = section[dim] ?? [];
+    arr.forEach((b, idx) => all.push({ dim, idx, score: beliefScore(b) }));
+  }
+  all.sort((a, b) => a.score - b.score);
+
+  // Remove the lowest-scoring entries until under limit.
+  const toRemove = all.slice(0, total - limit);
+  const byDim = new Map<ProfileDimension | SelfModelDimension, number[]>();
+  for (const r of toRemove) {
+    const list = byDim.get(r.dim) ?? [];
+    list.push(r.idx);
+    byDim.set(r.dim, list);
+  }
+  for (const [dim, indices] of byDim) {
+    const arr = section[dim] ?? [];
+    indices.sort((a, b) => b - a); // remove highest index first
+    for (const idx of indices) arr.splice(idx, 1);
   }
 }
 
 function enforceLimits(doc: PreviouslyDocument): void {
-  enforceSectionLimit(doc.longTerm.identity, LIMITS.identity);
-  enforceSectionLimit(doc.longTerm.patterns, LIMITS.patterns);
-  enforceSectionLimit(doc.longTerm.strategies, LIMITS.strategies);
-  enforceSectionLimit(doc.shortTerm.context, LIMITS.context);
-}
-
-function enforceSectionLimit(beliefs: PreviouslyBelief[], limit: number): void {
-  if (beliefs.length <= limit) return;
-
-  // Sort by score ascending, remove lowest first
-  const scored = beliefs.map((b, i) => {
-    const cs = confidenceScore(b.confidence);
-    // recency: days since updated
-    let daysSince = 30;
-    try {
-      const updated = new Date(b.updated);
-      daysSince = Math.max(0, (Date.now() - updated.getTime()) / (24 * 60 * 60 * 1000));
-    } catch { /* use default */ }
-    const recency = 1 / (daysSince + 1);
-    return { index: i, score: cs * recency };
-  });
-
-  scored.sort((a, b) => a.score - b.score);
-
-  // Remove lowest-scoring items until under limit
-  const toRemove = scored.slice(0, beliefs.length - limit).map((s) => s.index);
-  // Remove in reverse order to preserve indices
-  for (const idx of toRemove.sort((a, b) => b - a)) {
-    beliefs.splice(idx, 1);
-  }
+  enforceTotalLimit(doc.profile, LIMITS.profile);
+  enforceTotalLimit(doc.selfModel, LIMITS.self_model);
 }

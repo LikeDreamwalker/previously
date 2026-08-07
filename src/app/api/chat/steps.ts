@@ -324,7 +324,9 @@ export async function finalizeTurn(
   // ── Begin batch: all writes below go into ONE git commit ──────────────
   startBatch();
 
-  // 1. Episodic persistence (the old onFinish branches).
+  // 1. Episodic persistence (the old onFinish branches). `outcome.text` is the
+  // agent's FULL assistant text for the turn (intermediate + final), so the
+  // stored slice keeps both ends; tool calls are not preserved.
   if (outcome.finishReason === "stop") {
     appendTurn(slice, {
       timestamp: new Date().toISOString(),

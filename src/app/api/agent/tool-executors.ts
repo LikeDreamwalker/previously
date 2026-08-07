@@ -39,6 +39,7 @@ import {
   type RecommendedRead,
 } from "@/lib/episodic/flash/recall";
 import { readStrands } from "@/lib/episodic";
+import { migrateToV3 } from "@/lib/episodic/previously-format";
 import {
   splitTurns,
   splitParagraphs,
@@ -382,10 +383,15 @@ export async function readPreviouslyExecute(
   }
   const path = `memory/episodic/slices/${parsed.y}/${parsed.m}/${parsed.d}/${parsed.hm}/previously.md`;
   try {
-    if (ctx.useDemo) return await readFileDemo(path);
-    return ctx.useGithub
-      ? await readFile(path, ctx.repo, ctx.owner)
-      : await readFileLocal(path);
+    // Migrate legacy (v1/v2) files on the fly so the model always reads the
+    // v3 structure (User profile + Self-model) that the system prompt
+    // describes — never the old 长期记忆/短期记忆 headers.
+    const raw = ctx.useDemo
+      ? await readFileDemo(path)
+      : ctx.useGithub
+        ? await readFile(path, ctx.repo, ctx.owner)
+        : await readFileLocal(path);
+    return raw.trim() ? migrateToV3(raw, sid) : raw;
   } catch (e) {
     const msg = domainError(e);
     if (msg === null) throw e;
@@ -577,6 +583,8 @@ export async function recallExecute(
   confidence: number;
   reasoning: string;
   recommendedReads: RecommendedRead[];
+  /** Set when no matches were found — a definitive signal that recall is exhausted for this query. */
+  note?: string;
 }> {
   "use step";
   await emitToolProgress(toolCallId, "recall", "Scanning memory slices…", "running");
@@ -631,11 +639,16 @@ export async function recallExecute(
     // Flash returns pointers + recommendations only — it never reads slice bodies.
     // Pro should call readSlice (optionally with range) to fetch content from
     // slices it actually wants to use, keeping context usage minimal.
+    const emptyNote =
+      result.hits.length === 0
+        ? "No relevant past conversations were found for this query. This is a definitive result — do NOT call recall again for this topic; answer from the conversation and your knowledge."
+        : undefined;
     return {
       hits: result.hits,
       confidence: result.confidence,
       reasoning: result.reasoning,
       recommendedReads: result.recommendedReads,
+      ...(emptyNote ? { note: emptyNote } : {}),
     };
   } catch (err) {
     // Triage: a deterministic recall failure returns as data so the model sees

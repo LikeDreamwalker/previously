@@ -32,7 +32,6 @@ export {
   writePreviously,
   findMostRecentPreviously,
   ensurePreviously,
-  applyPreviouslyDecay,
   emptyPreviouslyTemplate,
 } from "./manager";
 // NOTE: sliceIdToLegacyFilePath was removed in v0.5 — old flat-file format

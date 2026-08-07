@@ -63,6 +63,39 @@ export function extractFinalText(messages: ModelMessage[]): string {
 }
 
 /**
+ * All assistant text across the whole turn, in message order — the intermediate
+ * text ("let me look that up…") plus the final answer. Tool calls are dropped.
+ *
+ * This is what gets stored in the time slice as the agent turn: a faithful
+ * text-only snapshot of the turn, keeping both the leading and trailing parts
+ * while the tool calls in between are not preserved.
+ */
+export function extractAllAssistantText(messages: ModelMessage[]): string {
+  const parts: string[] = [];
+  for (const m of messages) {
+    if (m.role !== "assistant") continue;
+    if (typeof m.content === "string") {
+      if (m.content.trim()) parts.push(m.content.trim());
+      continue;
+    }
+    if (Array.isArray(m.content)) {
+      for (const p of m.content) {
+        if (
+          p &&
+          typeof p === "object" &&
+          (p as { type?: string }).type === "text" &&
+          typeof (p as { text?: unknown }).text === "string" &&
+          (p as { text: string }).text.trim()
+        ) {
+          parts.push((p as { text: string }).text.trim());
+        }
+      }
+    }
+  }
+  return parts.join("\n\n");
+}
+
+/**
  * Mechanically extract the agent's cognitive process from its message history
  * AND step results.
  *
@@ -304,11 +337,11 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
   const systemPrompt = [
     turnPriming,
     identityPrompt,
-    `## What I know about you (as of ${dateAnchor})`,
+    `## What I know about the user (inference model — ${dateAnchor})`,
     previouslyContent,
-    "The above is my current understanding of you. Tell me if anything is outdated or wrong and I'll update it.",
+    "The above is the current profile and operating model — distilled hypotheses, each carrying `refs` to its evidence. If any line seems outdated or contradicts what the user just said, cite its refs and say so; the correction flows into the archive.",
     strandsMenu
-      ? `## Memory topics\n\n${strandsMenu}\nWhen the user mentions these topics, use recall to search for related memories.`
+      ? `## Memory topics\n\n${strandsMenu}\nWhen the user mentions these topics, use recall to search for related memories. If a search finds nothing relevant, do not retry it — answer from what you have.`
       : "",
     input.useDemo
       ? `## Demo mode (read-only)\n\nYou are running in demo mode. You can browse sample data, recall past conversations, and search the live web — but **writes are not persisted**. No GitHub repo is connected; you are seeing pre-seeded sample memories.\n\nWhen the user asks to save anything, create memories, or start background tasks, tell them naturally:\n- This is demo mode and data cannot be saved\n- They need to deploy their own instance to unlock full read/write and background loop capabilities\n\nDeployment guide: ${DEPLOY_GUIDE_URL}\n\nIt's perfectly normal for users to explore in demo mode — help them understand what this product can do and what they'll get after deploying.`
@@ -372,7 +405,6 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
   let outcome: TurnOutcome;
   let streamError: unknown = null;
   try {
-    let allText = "";
     let allCognition = "";
     let finalFinishReason = "stop";
     let finalMessages: ModelMessage[] = [];
@@ -395,7 +427,6 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
         ...streamOpts,
       });
 
-      allText += extractFinalText(result.messages);
       allCognition += extractCognition(result.messages, result.steps);
       finalMessages = result.messages;
       finalFinishReason = result.finishReason;
@@ -433,15 +464,23 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
       allCognition += "\n";
     }
 
+    // The stored agent turn is ALL assistant text across the turn (intermediate
+    // text + final answer), in order. Tool calls are not preserved — see
+    // extractAllAssistantText.
     outcome = {
-      text: allText,
+      text: extractAllAssistantText(finalMessages),
       finishReason: finalFinishReason,
       startedLoops: extractStartedLoops(finalMessages),
       cognition: allCognition,
     };
   } catch (err) {
     streamError = err;
-    outcome = { text: "", finishReason: "error", startedLoops: [], cognition: "" };
+    outcome = {
+      text: "",
+      finishReason: "error",
+      startedLoops: [],
+      cognition: "",
+    };
   }
 
   // ── Post-turn persistence ──────────────────────────────────────────────

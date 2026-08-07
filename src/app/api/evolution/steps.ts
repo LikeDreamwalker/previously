@@ -155,6 +155,7 @@ export async function finalizeEvolution(
   // Run Previously Agent — always signal new_observation for auto-review
   let changes = { added: 0, reinforced: 0, demoted: 0, removed: 0, superseded: 0 };
   let mutations: Awaited<ReturnType<typeof runPreviouslyAgent>>["mutations"] = [];
+  let reformatted = false;
   let error: string | undefined;
 
   try {
@@ -198,20 +199,32 @@ export async function finalizeEvolution(
     });
 
     mutations = result.mutations;
+    const reformatContent = result.reformat;
 
     if (result.reasoning) {
       console.log(`[Evolution] reasoning: ${result.reasoning}`);
     }
 
-    if (result.mutations.length > 0) {
-      const applied = applyPreviouslyAgentOutput(previouslyContent, result.mutations, sliceId);
+    // Reformat (format/version drift) replaces the whole document; otherwise
+    // incremental mutations apply. Either may be present.
+    if (result.mutations.length > 0 || reformatContent) {
+      const applied = applyPreviouslyAgentOutput(
+        previouslyContent,
+        result.mutations,
+        sliceId,
+        reformatContent,
+      );
       await writePreviously(sliceId, applied.content);
       changes = applied.changes;
+      // Only report a reformat when the wholesale replacement actually applied
+      // (an unparseable reformat falls through to incremental mutations).
+      reformatted = applied.reformatted;
 
       console.log(
         `[Evolution] ${applied.changes.added} added, ` +
         `${applied.changes.reinforced} reinforced, ${applied.changes.demoted} demoted, ` +
-        `${applied.changes.removed} removed.`,
+        `${applied.changes.removed} removed.` +
+        (reformatted ? " (reformatted)" : ""),
       );
     }
   } catch (err) {
@@ -228,7 +241,8 @@ export async function finalizeEvolution(
       running: false,
       changes,
       mutations,
-      hasChanges: mutations.length > 0,
+      hasChanges: mutations.length > 0 || reformatted,
+      reformatted,
       error,
     },
   } as UIMessageChunk);

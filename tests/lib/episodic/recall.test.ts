@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { normalizeRecommendedReads } from "@/lib/episodic/flash/recall";
+import {
+  normalizeRecommendedReads,
+  excludeCurrentSlice,
+} from "@/lib/episodic/flash/recall";
 
 describe("normalizeRecommendedReads", () => {
   it("passes through well-formed reads", () => {
@@ -51,5 +54,39 @@ describe("normalizeRecommendedReads", () => {
 
   it("returns an empty array for undefined input", () => {
     expect(normalizeRecommendedReads(undefined)).toEqual([]);
+  });
+});
+
+describe("excludeCurrentSlice", () => {
+  it("drops the current slice from hits", () => {
+    const hits = [
+      { slice_id: "2026-07-24-1500", relevance: 0.9, reason: "past", key_turns: [2] },
+      { slice_id: "2026-08-05-1644", relevance: 0.8, reason: "current", key_turns: [0] },
+      { slice_id: "2026-06-10-0900", relevance: 0.5, reason: "past", key_turns: [] },
+    ];
+    const result = excludeCurrentSlice(hits, "2026-08-05-1644");
+    expect(result.map((h) => h.slice_id)).toEqual([
+      "2026-07-24-1500",
+      "2026-06-10-0900",
+    ]);
+  });
+
+  it("drops the current slice from recommended reads", () => {
+    const reads = [
+      { slice_id: "2026-08-05-1644", priority: "high", reason: "self-match" },
+      { slice_id: "2026-07-24-1500", priority: "medium", reason: "real match" },
+    ];
+    const result = excludeCurrentSlice(reads, "2026-08-05-1644");
+    expect(result.map((r) => r.slice_id)).toEqual(["2026-07-24-1500"]);
+  });
+
+  it("leaves results untouched when the current slice id is empty", () => {
+    const hits = [{ slice_id: "2026-07-24-1500", relevance: 0.9, reason: "x", key_turns: [] }];
+    expect(excludeCurrentSlice(hits, "")).toEqual(hits);
+  });
+
+  it("returns an empty array when every hit is the current slice", () => {
+    const hits = [{ slice_id: "2026-08-05-1644", relevance: 0.9, reason: "self", key_turns: [0] }];
+    expect(excludeCurrentSlice(hits, "2026-08-05-1644")).toEqual([]);
   });
 });
