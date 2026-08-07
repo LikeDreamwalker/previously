@@ -561,6 +561,53 @@ describe("applyPreviouslyAgentOutput", () => {
       expect(kept.length).toBe(40);
       expect(kept.some((b) => b.updated === "not-a-real-date")).toBe(false);
     });
+
+    it("caps current_state at 8 entries even when profile total is under 40", () => {
+      const currentState: PreviouslyBelief[] = Array.from({ length: 12 }, (_, i) => ({
+        text: `当前状态 ${i + 1}`,
+        refs: ["2026/08/01/a"],
+        confidence: "medium",
+        updated: "2026-08-01",
+        obs: 1,
+        expires: "2026-08-15",
+      }));
+      const content = serializePreviously({
+        sliceId: "2026-07-26-1226",
+        updated: "2026-07-26T12:00:00Z",
+        profile: { current_state: currentState },
+        selfModel: {},
+      });
+      const result = applyPreviouslyAgentOutput(content, [], "2026-07-26-1226");
+      const doc = parsePreviously(result.content);
+      expect(doc!.profile.current_state?.length ?? 0).toBe(8);
+    });
+
+    it("strips inline HTML comments from belief text", () => {
+      // The agent has been observed writing `<!-- ⚠️ ... -->` INSIDE a belief
+      // instead of using the structured refuted_by mechanism. Serialization
+      // must strip it so the entry round-trips cleanly.
+      const content = serializePreviously({
+        sliceId: "2026-07-26-1226",
+        updated: "2026-07-26T12:00:00Z",
+        profile: {
+          identity: [
+            {
+              text: "The user is interviewing at X. <!-- ⚠️ superseded -->",
+              refs: ["2026/07/24/1717-user-4"],
+              confidence: "medium",
+              updated: "2026-07-24",
+              obs: 1,
+            },
+          ],
+        },
+        selfModel: {},
+      });
+      const doc = parsePreviously(content);
+      expect(doc!.profile.identity?.[0]?.text).toBe(
+        "The user is interviewing at X.",
+      );
+      expect(content).not.toContain("<!--");
+    });
   });
 
   // ─── Legacy fallback ──────────────────────────────────────────────────

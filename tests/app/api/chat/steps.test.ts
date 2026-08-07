@@ -23,7 +23,7 @@ const episodic = vi.hoisted(() => ({
   generateGlobalTimeline: vi.fn(async () => "mock timeline"),
   readStrands: vi.fn(async () => ({})),
   analyzeTurn: vi.fn(async () => ({
-    messageTags: [],
+    messageTags: { reuse: [], create: [] },
     semanticHint: { strands: [], reason: "" },
   })),
 }));

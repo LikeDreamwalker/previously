@@ -39,7 +39,10 @@ describe("analyzeTurn", () => {
   it("parses message tags, semantic hint, intent, and close marking from the tool call", async () => {
     ai.generateText.mockResolvedValue(
       makeToolCall({
-        message_tags: ["rust", "loop"],
+        message_tags: {
+          reuse: ["rust"],
+          create: [{ tag: "loop", reason: "no existing topic covers loops" }],
+        },
         semantic_hint: { strands: ["rust"], reason: "user mentioned borrow-checker" },
         intent: { type: "code_debug", reason: "user is debugging a failing loop" },
         closed_marking: {
@@ -61,7 +64,10 @@ describe("analyzeTurn", () => {
       },
     });
 
-    expect(result.messageTags).toEqual(["rust", "loop"]);
+    expect(result.messageTags).toEqual({
+      reuse: ["rust"],
+      create: [{ tag: "loop", reason: "no existing topic covers loops" }],
+    });
     expect(result.semanticHint).toEqual({
       strands: ["rust"],
       reason: "user mentioned borrow-checker",
@@ -80,7 +86,10 @@ describe("analyzeTurn", () => {
 
   it("omits closed marking when no slice is closing", async () => {
     ai.generateText.mockResolvedValue(
-      makeToolCall({ message_tags: [], semantic_hint: { strands: [], reason: "" } }),
+      makeToolCall({
+        message_tags: { reuse: [], create: [] },
+        semantic_hint: { strands: [], reason: "" },
+      }),
     );
     const result = await analyzeTurn({ model, userMessage: "x", existingStrandNames: [] });
     expect(result.closedMarking).toBeUndefined();
@@ -89,12 +98,15 @@ describe("analyzeTurn", () => {
   it("returns an empty analysis when the model fails", async () => {
     ai.generateText.mockRejectedValue(new Error("boom"));
     const result = await analyzeTurn({ model, userMessage: "x", existingStrandNames: [] });
-    expect(result).toEqual({ messageTags: [], semanticHint: { strands: [], reason: "" } });
+    expect(result).toEqual({
+      messageTags: { reuse: [], create: [] },
+      semanticHint: { strands: [], reason: "" },
+    });
   });
 
   it("returns an empty analysis when the tool call is missing", async () => {
     ai.generateText.mockResolvedValue({ toolCalls: [] });
     const result = await analyzeTurn({ model, userMessage: "x", existingStrandNames: [] });
-    expect(result.messageTags).toEqual([]);
+    expect(result.messageTags).toEqual({ reuse: [], create: [] });
   });
 });
