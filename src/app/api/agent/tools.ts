@@ -25,9 +25,7 @@ import {
   webSearchExecute,
   webFetchExecute,
   recallExecute,
-  startLoopExecute,
   thinkDeepExecute,
-  continueOutputExecute,
   loopReportExecute,
   type ToolContext,
   type LoopToolContext,
@@ -45,6 +43,10 @@ const toolContextSchema = z.object({
     role: z.string(),
     content: z.string(),
   })),
+  // The turn's assembled system prompt, fanned out to thinkDeep so sub-agents
+  // share the exact same prefix as the main agent — prompt-cache hits across
+  // main + sub-agent calls within one turn. Optional: loop tool sets have none.
+  baseSystemPrompt: z.string().optional(),
   // The worker model config flows through the context for recall / loop calls.
   // Mirrors ModelConfig structurally so the AI SDK's inferred context type
   // stays assignable (passthrough/record would force an index signature).
@@ -235,9 +237,9 @@ export const conceptTools = {
 // The CHAT agent gets only the "pointed read" concept tools (read a slice /
 // belief / cognition it was given an id for) plus the delegation tools
 // (`recall` hands the actual search to the Flash recall engine; webSearch /
-// startLoop / continueOutput). The exploration tools (readTimeline /
-// listSlices / listStrands / readStrand) are the recall engine's job — the
-// main agent does not browse memory itself.
+// thinkDeep). startLoop is commented out (background loops disabled). The
+// exploration tools (readTimeline / listSlices / listStrands / readStrand) are
+// the recall engine's job — the main agent does not browse memory itself.
 export const chatTools = {
   readSlice: conceptTools.readSlice,
   readPreviously: conceptTools.readPreviously,
@@ -325,26 +327,30 @@ export const chatTools = {
     contextSchema: toolContextSchema,
     execute: webFetchExecute,
   }),
-  startLoop: tool({
-    description:
-      "Start a durable background loop that works a goal over multiple steps " +
-      "on its own and records its progress to memory/loops. Use this when the " +
-      "user explicitly asks to run something in the background or continuously, " +
-      "OR when you judge a task is large or long-running enough that it is " +
-      "better worked autonomously than answered inline. Tell the user you have " +
-      "started one.",
-    inputSchema: z.object({
-      goal: z
-        .string()
-        .describe("A clear, self-contained statement of what the loop should accomplish."),
-      tags: z
-        .array(z.string())
-        .optional()
-        .describe("Keyword tags for later recall, e.g. topic names."),
-    }),
-    contextSchema: toolContextSchema,
-    execute: startLoopExecute,
-  }),
+  // NOTE(startLoop-disabled): background loops are temporarily disabled — the
+  // loop capability is still being stabilized. The definition is commented out
+  // so the agent no longer sees the tool. Re-enable by uncommenting it here
+  // and restoring `startLoop` to buildChatToolsContext.
+  // startLoop: tool({
+  //   description:
+  //     "Start a durable background loop that works a goal over multiple steps " +
+  //     "on its own and records its progress to memory/loops. Use this when the " +
+  //     "user explicitly asks to run something in the background or continuously, " +
+  //     "OR when you judge a task is large or long-running enough that it is " +
+  //     "better worked autonomously than answered inline. Tell the user you have " +
+  //     "started one.",
+  //   inputSchema: z.object({
+  //     goal: z
+  //       .string()
+  //       .describe("A clear, self-contained statement of what the loop should accomplish."),
+  //     tags: z
+  //       .array(z.string())
+  //       .optional()
+  //       .describe("Keyword tags for later recall, e.g. topic names."),
+  //   }),
+  //   contextSchema: toolContextSchema,
+  //   execute: startLoopExecute,
+  // }),
   thinkDeep: tool({
     description:
       "Dispatch a reasoning fragment — a small, self-contained logical question " +
@@ -377,17 +383,6 @@ export const chatTools = {
     }),
     contextSchema: toolContextSchema,
     execute: thinkDeepExecute,
-  }),
-  continueOutput: tool({
-    description:
-      "Signal that your answer is not finished and you want to keep writing. " +
-      "Use this for LONG or COMPLEX responses: write a section, call this " +
-      "tool, then keep writing in the next step. The system keeps your " +
-      "partial text in context — pick up exactly where you left off, do not " +
-      "repeat. Do NOT call it once your answer is complete.",
-    inputSchema: z.object({}),
-    contextSchema: toolContextSchema,
-    execute: continueOutputExecute,
   }),
 };
 
@@ -422,9 +417,7 @@ export function buildChatToolsContext(ctx: ToolContext): Record<keyof typeof cha
     recall: ctx,
     webSearch: ctx,
     webFetch: ctx,
-    startLoop: ctx,
     thinkDeep: ctx,
-    continueOutput: ctx,
   };
 }
 

@@ -49,8 +49,8 @@ import {
 } from "@/lib/retrieval/doc-segments";
 import { resolveWorkerModel, resolveMainModelFromConfig } from "@/lib/models/worker";
 import { createModel } from "@/lib/models/provider";
+import { normalizeReasoningEffort } from "@/lib/models/effort-injector";
 import type { ModelConfig } from "@/lib/models/registry";
-import type { ProviderSdk } from "@/lib/models/providers";
 import { withStepTimeout } from "@/lib/chat/step-timeout";
 import { isTransientError, triageErrorMessage } from "@/lib/chat/tool-triage";
 import {
@@ -84,6 +84,13 @@ export interface ToolContext {
   sliceId: string;
   /** Recent conversation turns (last exchange + current user msg). */
   recentTurns: Array<{ role: string; content: string }>;
+  /**
+   * The turn's assembled system prompt (see turn-workflow.ts). thinkDeep reads
+   * it to reuse the main agent's exact prompt prefix, so sub-agent calls hit
+   * the provider's prompt cache warmed by the main agent's first step. Absent
+   * on the loop tool set (no thinkDeep there).
+   */
+  baseSystemPrompt?: string;
   /**
    * Resolved worker model for cheap internal calls (recall search, loops).
    * Set on the chat tool set; loops resolve it separately via their input.
@@ -150,20 +157,6 @@ function emitToolProgress(
     // getWritable() can throw outside a step context — never fail the tool.
     return Promise.resolve();
   }
-}
-
-// JSON-safe provider-options shape (isomorphic to @ai-sdk/provider's JSONObject).
-// Declared structurally here, matching agent.ts's buildProviderOptions, so
-// providerOptions stays assignable to the AI SDK's SharedV4ProviderOptions.
-type JsonValue =
-  | string
-  | number
-  | boolean
-  | null
-  | JsonObject
-  | JsonValue[];
-interface JsonObject {
-  [key: string]: JsonValue;
 }
 
 // ─── Concept tool executors (chat + loop) ────────────────────────────────
@@ -688,14 +681,29 @@ export async function startLoopExecute(
   }
 
   try {
-    const started = await startLoop({
-      goal,
-      tags: tags ?? [],
-      sliceId: ctx.sliceId,
-      workerModel: ctx.workerModel ?? (await resolveWorkerModel()),
-    });
+    // The workflow-initiation HTTP call can hang on a stuck Vercel Workflow API;
+    // a 30s soft timeout bounds the step without aborting the durable run (the
+    // run is idempotent — a retry re-fires startLoop safely).
+    const startedCall = await withStepTimeout(
+      async () =>
+        startLoop({
+          goal,
+          tags: tags ?? [],
+          sliceId: ctx.sliceId,
+          workerModel: ctx.workerModel ?? (await resolveWorkerModel()),
+        }),
+      30_000,
+    );
+    if (!startedCall.ok || startedCall.result === undefined) {
+      return {
+        ok: false,
+        error: `Starting the loop timed out after ${Math.round(startedCall.elapsedMs / 1000)}s. ` +
+          "The background run may still start on its own; try again in a moment.",
+      };
+    }
+    const started = startedCall.result;
     // NOTE: the slice.loops / slice.tags back-reference is written by the chat
-    // workflow's finalizeTurn step (which owns the slice by value) �?not here.
+    // workflow's finalizeTurn step (which owns the slice by value) — not here.
     return {
       ok: true,
       loopId: started.loopId,
@@ -794,9 +802,14 @@ function isTimeoutAbort(err: unknown): boolean {
     (err as { name?: unknown }).name === "AbortError"
   );
 }
-const SUB_AGENT_SYSTEM_PROMPT = `You are the same agent as the caller, working on ONE small reasoning fragment.
-
-Your ONLY job is to reason through the sub-question below to a clear conclusion,
+/**
+ * The think-only task assignment, appended AFTER the caller's full system
+ * prompt (when available) so sub-agents share the main agent's exact prefix —
+ * the provider's prompt cache, warmed by the main agent's first step, is hit by
+ * every sub-agent call in the same turn. When no baseSystemPrompt flows through
+ * the context (e.g. loops), SUB_AGENT_SYSTEM_PROMPT stands alone.
+ */
+const SUB_AGENT_FRAGMENT_MODE = `Your ONLY job is to reason through the sub-question below to a clear conclusion,
 then write that conclusion. You are THINK-ONLY: you have no search, no memory
 tools — every fact you need is already embedded in the question. Do not ask for
 information; reason with what you are given and state plainly anything you lack.
@@ -813,36 +826,15 @@ Writing discipline (critical):
 
 Answer in the language of the question.`;
 
-/** Provider options for a think-only fragment — thinking intensity per effort. */
-function subAgentProviderOptions(
-  sdk: ProviderSdk | undefined,
-  effort: "low" | "medium" | "high",
-): Record<string, JsonObject> | undefined {
-  switch (sdk) {
-    case "anthropic":
-      if (effort === "low") return undefined; // no extended thinking — fast direct answer
-      return {
-        anthropic: {
-          thinking: {
-            type: "enabled",
-            budgetTokens: effort === "high" ? 32_000 : 12_000,
-          },
-        },
-      };
-    case "openai":
-      return { openai: { reasoningEffort: effort } };
-    default:
-      // DeepSeek — thinking "disabled" explicit for low; enabled with effort
-      // otherwise. (The SDK validates type ∈ adaptive|enabled|disabled — "off"
-      // throws AI_InvalidArgumentError.)
-      if (effort === "low") return { deepseek: { thinking: { type: "disabled" } } };
-      return {
-        deepseek: {
-          thinking: { type: "enabled" },
-          reasoningEffort: effort === "high" ? "high" : "medium",
-        },
-      };
-  }
+/** Standalone system prompt when the turn supplies no baseSystemPrompt. */
+const SUB_AGENT_SYSTEM_PROMPT = `You are the same agent as the caller, working on ONE small reasoning fragment.
+
+${SUB_AGENT_FRAGMENT_MODE}`;
+
+/** System prompt for a think-only fragment — base prompt prefix + fragment task. */
+function buildSubAgentSystemPrompt(baseSystemPrompt: string | undefined): string {
+  if (!baseSystemPrompt) return SUB_AGENT_SYSTEM_PROMPT;
+  return `${baseSystemPrompt}\n\n## Reasoning fragment mode\n\n${SUB_AGENT_FRAGMENT_MODE}`;
 }
 
 export async function thinkDeepExecute(
@@ -850,7 +842,7 @@ export async function thinkDeepExecute(
     question: string;
     effort?: "low" | "medium" | "high";
   },
-  { context: _ctx, toolCallId }: ExecuteOpts<ToolContext>,
+  { context: ctx, toolCallId }: ExecuteOpts<ToolContext>,
 ): Promise<ThinkDeepResult> {
   "use step";
 
@@ -868,7 +860,16 @@ export async function thinkDeepExecute(
   const stepStartMs = Date.now();
 
   const modelConfig = await resolveMainModelFromConfig();
-  const providerOptions = subAgentProviderOptions(modelConfig.sdk, effort);
+  // Thinking is always requested for a reasoning fragment (disabled inside
+  // normalizeReasoningEffort when the effort is low) — the injector owns the
+  // provider-specific mapping.
+  const providerOptions = normalizeReasoningEffort(
+    modelConfig.sdk,
+    modelConfig.id,
+    true,
+    effort,
+  );
+  const system = buildSubAgentSystemPrompt(ctx.baseSystemPrompt);
   const dateAnchor = new Date().toISOString().slice(0, 10);
 
   const userPrompt = [
@@ -985,7 +986,7 @@ export async function thinkDeepExecute(
           // progressively — never lost, even mid-thought.
           const stream = await streamText({
             model: createModel(modelConfig),
-            system: SUB_AGENT_SYSTEM_PROMPT,
+            system,
             prompt: userPrompt,
             providerOptions,
             // The SDK timeout hook — aborts the stream cleanly at the deadline.
@@ -1058,24 +1059,6 @@ export async function thinkDeepExecute(
   }
 }
 
-// ─── continueOutput — the "not done yet" signal for long answers ──────────
-
-/**
- * continueOutput — a no-op that simply opens another agent step.
- *
- * The model calls it mid-response when an answer is long: the tool result
- * triggers the next LLM step, which sees the partial text (kept in context)
- * and keeps writing. Its only job is the side effect of a step boundary — it
- * reads and writes nothing.
- */
-export async function continueOutputExecute(
-  _input: Record<string, never>,
-  _opts: ExecuteOpts<ToolContext>,
-): Promise<{ continued: true }> {
-  "use step";
-  return { continued: true };
-}
-
 // ─── Loop-only executor: the checkpoint tool ─────────────────────────────
 
 /**
@@ -1100,32 +1083,47 @@ export async function loopReportExecute(
   }
 
   try {
-    const existing = await readLoopRun(ctx.filePath);
-    const priorSteps: LoopStep[] = existing?.steps ?? [];
-    const step: LoopStep = {
-      step: priorSteps.length + 1,
-      action,
-      result,
-      time: new Date().toISOString(),
-    };
-    const steps = [...priorSteps, step];
+    // The GitHub/local read-append-write can hang on a network partition; a 30s
+    // soft timeout bounds the checkpoint. The loop run file is the accumulator,
+    // so a timed-out checkpoint is safe to retry.
+    const io = await withStepTimeout(
+      async () => {
+        const existing = await readLoopRun(ctx.filePath);
+        const priorSteps: LoopStep[] = existing?.steps ?? [];
+        const step: LoopStep = {
+          step: priorSteps.length + 1,
+          action,
+          result,
+          time: new Date().toISOString(),
+        };
+        const steps = [...priorSteps, step];
 
-    const run: LoopRun = {
-      loopId: ctx.loopId,
-      goal: ctx.goal,
-      status: "running", // final status is stamped by the workflow's finalizeLoop
-      startedAt: ctx.startedAt,
-      updatedAt: new Date().toISOString(),
-      sliceOrigin: ctx.sliceOrigin,
-      tags: ctx.tags,
-      iterations: steps.length,
-      maxIterations: ctx.maxIterations,
-      lastError: existing?.lastError ?? "",
-      steps,
-    };
-    await writeLoopFile(ctx.filePath, serializeLoop(run));
+        const run: LoopRun = {
+          loopId: ctx.loopId,
+          goal: ctx.goal,
+          status: "running", // final status is stamped by the workflow's finalizeLoop
+          startedAt: ctx.startedAt,
+          updatedAt: new Date().toISOString(),
+          sliceOrigin: ctx.sliceOrigin,
+          tags: ctx.tags,
+          iterations: steps.length,
+          maxIterations: ctx.maxIterations,
+          lastError: existing?.lastError ?? "",
+          steps,
+        };
+        await writeLoopFile(ctx.filePath, serializeLoop(run));
+        return { steps, step };
+      },
+      30_000,
+    );
+    if (!io.ok || io.result === undefined) {
+      return {
+        error: `Checkpoint write timed out after ${Math.round(io.elapsedMs / 1000)}s — the loop step is not recorded and will be retried.`,
+      };
+    }
+    const { steps, step } = io.result;
 
-    // Live progress chunk �?best-effort: the memory-truth write above already
+    // Live progress chunk — best-effort: the memory-truth write above already
     // committed, so a stream failure must never fail the checkpoint.
     try {
       const writable = getWritable<UIMessageChunk>();

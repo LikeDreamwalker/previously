@@ -180,7 +180,10 @@ function buildStream(parts: readonly AnyPart[], isStreaming: boolean): StreamIte
       // agent-as-a-tool. Surface interrupted/error inline; done renders nothing
       // (the reply text is the completion signal).
       flushText();
-      const status = (p.data as { status?: string } | undefined)?.status;
+      const turnData = p.data as
+        | { status?: string; error?: string }
+        | undefined;
+      const status = turnData?.status;
       if (!status || status === "active" || status === "done") continue;
 
       const terminalPhase =
@@ -195,7 +198,9 @@ function buildStream(parts: readonly AnyPart[], isStreaming: boolean): StreamIte
           phase: terminalPhase,
           running: false,
           mode: "terminal",
-          summaries: [],
+          // The client-visible explanation for a terminal/model failure — the
+          // turn ended for a reason the user should see, not silently.
+          summaries: turnData?.error ? [turnData.error] : [],
         });
       }
     } else if (p.type?.startsWith("tool-")) {

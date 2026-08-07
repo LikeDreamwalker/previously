@@ -132,10 +132,9 @@ export async function loopWorkflow(input: LoopInput): Promise<LoopResult> {
       prompt: buildLoopPrompt(input),
       writable: getWritable<ModelCallStreamPart>(),
       stopWhen: [loopReportedDone, noProgress, isStepCount(stepBudget(input))],
-      // Layer 1: per-call token cap keeps each LLM step under the 300s Vercel
-      // limit (constructor cap is 8000; explicit here too). No `timeout` — the
-      // workflow sandbox lacks the AbortSignal global the SDK's timeout uses.
-      maxOutputTokens: 8_000,
+      // No `maxOutputTokens` (project-wide prohibition) and no `timeout` (the
+      // workflow sandbox lacks the AbortSignal global the SDK's timeout uses) —
+      // the loop worker is thinking-disabled and fast by construction.
       // finalizeLoop owns the stream tail (final data-loop chunk + close).
       sendFinish: false,
       preventClose: true,

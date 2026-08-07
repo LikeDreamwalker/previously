@@ -111,6 +111,13 @@ export interface TurnOutcome {
    * and tool calls with success/failure status. Written by finalizeTurn.
    */
   cognition: string;
+  /**
+   * Client-visible explanation for a non-stop finish (workflow timeout /
+   * terminal model error). Emitted in the terminal `data-turn-status` chunk so
+   * the client can show why the turn ended instead of failing silently.
+   * Absent for clean "stop" turns and for the partial-text "interrupted" case.
+   */
+  error?: string;
 }
 
 // ─── Turn status / persistent turn state (Layer 2, v0.6) ───────────────────
@@ -144,6 +151,10 @@ export type TurnStatus =
  */
 export function deriveTurnStatus(outcome: TurnOutcome): TurnStatus {
   if (outcome.finishReason === "stop") return "done";
+  // An explicit soft-timeout interruption is always "interrupted", even when
+  // the model produced no text before it was cut off (the client offers a
+  // "continue" path rather than treating it as a hard error).
+  if (outcome.finishReason === "interrupted") return "interrupted";
   if (outcome.text) return "interrupted";
   return "error";
 }

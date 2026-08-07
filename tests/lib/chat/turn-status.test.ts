@@ -32,4 +32,10 @@ describe("deriveTurnStatus", () => {
       "error",
     );
   });
+
+  it("maps an explicit interrupted finish to interrupted even with no text", () => {
+    expect(
+      deriveTurnStatus(outcome({ finishReason: "interrupted", text: "" })),
+    ).toBe("interrupted");
+  });
 });

@@ -34,6 +34,38 @@ export function ChatPage({ children }: ChatPageProps) {
   return <Inner>{children}</Inner>;
 }
 
+// ─── Reconnect persistence ────────────────────────────────────────────────
+// The durable workflow run's id is persisted so a reloaded or backgrounded tab
+// (phone lock / app switch) can re-attach to the SAME run's stream and replay
+// whatever it missed. Cleared when a turn completes cleanly. Guarded so a
+// private-mode / SSR environment (no localStorage) degrades to no-op.
+const RUN_ID_KEY = "previously:activeRunId";
+
+function readStoredRunId(): string | null {
+  if (typeof localStorage === "undefined") return null;
+  try {
+    return localStorage.getItem(RUN_ID_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredRunId(runId: string): void {
+  try {
+    localStorage.setItem(RUN_ID_KEY, runId);
+  } catch {
+    /* private mode — reconnection is best-effort */
+  }
+}
+
+function clearStoredRunId(): void {
+  try {
+    localStorage.removeItem(RUN_ID_KEY);
+  } catch {
+    /* private mode — reconnection is best-effort */
+  }
+}
+
 // ─── Gap calculator ──────────────────────────────────────────────────
 
 type GapInfo =
@@ -278,7 +310,17 @@ function Inner({ children }: { children: React.ReactNode }) {
     setDemoStreaming(false);
   }, []);
 
-  const { messages, sendMessage, status, stop, error } = useChat({
+  const {
+    messages,
+    sendMessage,
+    status,
+    stop,
+    error,
+    resumeStream,
+  } = useChat({
+    // `resume: false` — reconnection is MANUAL (see the reconnect effects
+    // below). Auto-resume on mount would 404 against a fresh page with no
+    // stored runId and surface a spurious error banner.
     resume: false,
     transport: new WorkflowChatTransport({
       api: "/api/chat",
@@ -298,11 +340,85 @@ function Inner({ children }: { children: React.ReactNode }) {
           loadedSliceIds: timelineSlices.map((s) => s.slice_id),
         },
       }),
-      onChatSendMessage: (_response) => {},
-      onChatEnd: () => {},
-      prepareReconnectToStreamRequest: (config) => config,
+      // Persist the durable run id + chat id the moment a turn starts, so a
+      // dropped/reloaded tab can re-attach to the same run's stream.
+      onChatSendMessage: (response, options) => {
+        const runId = response.headers.get("x-workflow-run-id");
+        if (runId) {
+          writeStoredRunId(runId);
+          try {
+            localStorage.setItem("previously:chatId", options.chatId);
+          } catch {
+            /* best-effort */
+          }
+        }
+      },
+      // A clean end means the run is finished — no reconnect needed.
+      onChatEnd: () => clearStoredRunId(),
+      // Point any reconnect at the durable run (not the random per-mount
+      // chatId) so a post-reload resume targets the real stream.
+      prepareReconnectToStreamRequest: (config) => {
+        const runId = readStoredRunId();
+        if (runId) {
+          return {
+            ...config,
+            api: `/api/chat/${encodeURIComponent(runId)}/stream`,
+          };
+        }
+        return config;
+      },
     }),
   });
+
+  // ── Reconnect on return to the foreground ────────────────────────────────
+  // When the phone locks / the tab is backgrounded mid-turn, the fetch dies
+  // (status → "error") even though the durable workflow keeps running. On
+  // return, re-attach to the run's stream to replay what was missed. Skip when
+  // the turn is still actively streaming or already finished.
+  const attemptReconnect = useCallback(() => {
+    if (!readStoredRunId()) return;
+    // Only reconnect when the previous stream actually DIED (status "error") —
+    // not while it's still streaming, finished, or a fresh POST is in flight.
+    if (status !== "error") return;
+    void resumeStream().catch((err) => {
+      // A 404 means the run already ended/expired — the turn is done, not an
+      // error worth surfacing. Anything else: leave the turn in "error" so the
+      // existing error banner shows it.
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!/404|Run not available|Failed to fetch/.test(msg)) {
+        console.warn("[chat] reconnect failed:", msg);
+      }
+    });
+  }, [status, resumeStream]);
+
+  useEffect(() => {
+    if (typeof document === "undefined" || typeof window === "undefined") return;
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") attemptReconnect();
+    };
+    const onFocus = () => attemptReconnect();
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("focus", onFocus);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [attemptReconnect]);
+
+  // ── Recover an interrupted turn on page reload ───────────────────────────
+  // A reloaded tab has empty React state but a persisted runId if the previous
+  // turn was cut off mid-stream — replay it so the user sees the partial result
+  // (and its terminal status) instead of a blank chat. No-op on fresh loads.
+  useEffect(() => {
+    if (!readStoredRunId()) return;
+    void resumeStream().catch((err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!/404|Run not available|Failed to fetch/.test(msg)) {
+        console.warn("[chat] reload reconnect failed:", msg);
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const isStreaming = status === "streaming" || demoStreaming;
   const isLoading = status === "submitted" || isStreaming;

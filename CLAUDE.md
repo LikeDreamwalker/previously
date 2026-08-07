@@ -205,3 +205,4 @@ Branch: `feature/v0.5.3-model-selection`
 - GitHub token is scoped to a single repository with contents read/write only
 - All path validation is server-side; client is untrusted
 - Base UI is the standard shadcn/ui primitive library (not Radix UI)
+- **`maxOutputTokens` is NEVER set** on any model call (agent, thinkDeep, loop, worker). It behaves inconsistently across providers — with DeepSeek thinking enabled the reasoning silently eats the shared cap and leaves empty/truncated output. Steps are bounded by the platform's 300s wall; on a kill the turn workflow continues the agent with a nudge (see `turn-workflow.ts`). Don't reintroduce it as a timeout or output guard.

@@ -434,7 +434,14 @@ export async function finalizeTurn(
   await writer.write({
     type: "data-turn-status",
     id: "turn-status-terminal",
-    data: { status, turnId, updatedAt: new Date().toISOString() },
+    data: {
+      status,
+      turnId,
+      updatedAt: new Date().toISOString(),
+      // Client-visible explanation for terminal/model failures — lets the UI
+      // say WHY the turn ended instead of failing silently.
+      ...(outcome.error ? { error: outcome.error } : {}),
+    },
   } as UIMessageChunk);
   await writer.write({ type: "finish-step" } as UIMessageChunk);
   await writer.write({ type: "finish" } as UIMessageChunk);
