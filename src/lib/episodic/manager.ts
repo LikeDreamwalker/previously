@@ -22,6 +22,7 @@ import type {
 } from "./types";
 import { fsReadFile, fsWriteFile, fsListFiles } from "./io-helpers";
 import { newPreviouslyTemplate, migrateToV3 } from "./previously-format";
+import { weaveTag } from "./strands";
 
 // ─── Environment detection ───────────────────────────────────────────────
 
@@ -557,19 +558,17 @@ export async function updateMonthlyIndex(slice: TimeSlice): Promise<void> {
 /**
  * Weave the slice's tags into the global strands.json (keyword→slice index).
  * Each tag on the slice is a strand; register the slice's relative path under it.
+ *
+ * Merge-first: each tag lands under an existing normalized-matching strand when
+ * one exists (never creating a near-duplicate); only a genuinely new tag creates
+ * a new key (stored normalized). See `weaveTag` in strands.ts.
  */
 export async function updateStrands(slice: TimeSlice): Promise<void> {
   const strands = await readStrands();
   const relativePath = extractRelativePath(slice);
 
   for (const tag of slice.tags) {
-    if (!strands[tag]) {
-      strands[tag] = [];
-    }
-    // Deduplicate: only add if not already present
-    if (!strands[tag].includes(relativePath)) {
-      strands[tag].push(relativePath);
-    }
+    weaveTag(strands, tag, relativePath);
   }
 
   const strandsPath = getStrandsPath();

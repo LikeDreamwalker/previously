@@ -139,10 +139,22 @@ export function formatExpiry(daysFromNow: number = DEFAULT_SHORT_TERM_EXPIRY_DAY
 
 // ─── Serialization ──────────────────────────────────────────────────────────
 
+/**
+ * Strip HTML comments from a belief text. The Previously Agent has been
+ * observed writing `<!-- ⚠️ ... -->` INSIDE a belief's text instead of using
+ * the structured `refuted_by` / `superseded_by` mechanism. Inline comments are
+ * also parse-hostile: a comment on the same line as a belief bullet ends up in
+ * the belief text and corrupts its meta line on re-parse. This is the defensive
+ * backstop — serialization never emits them.
+ */
+export function stripInlineComments(text: string): string {
+  return text.replace(/<!--[\s\S]*?-->/g, "").trim();
+}
+
 /** Serialize a single belief to its markdown representation. */
 export function serializeBelief(b: PreviouslyBelief): string {
   const lines: string[] = [];
-  lines.push(`- ${b.text}`);
+  lines.push(`- ${stripInlineComments(b.text)}`);
 
   const meta: string[] = [];
   if (b.refs.length > 0) {
@@ -336,7 +348,7 @@ export function parsePreviously(content: string): PreviouslyDocument | null {
     // A belief bullet.
     if (currentSection && currentDim && trimmed.startsWith("- ")) {
       const belief: PreviouslyBelief = {
-        text: trimmed.slice(2).trim(),
+        text: stripInlineComments(trimmed.slice(2).trim()),
         refs: [],
         updated: formatDate(),
       };

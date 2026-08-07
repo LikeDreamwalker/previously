@@ -264,6 +264,7 @@ Each entry is ONE line of text + an indented meta line:
 5. **Change in a stable trait** → the old entry is marked \`superseded_by\` (contradict + observe with a note), not physically deleted.
 6. **Short-lived entries** (current_state / boundaries) carry \`expires\`; expired ones → expire.
 7. **Promote/demote** move an entry between current_state and a stable dimension when its nature changes (keeps recurring → promote; now just current context → demote).
+7b. **Never write HTML comments in the document.** No \`<!-- ... -->\` anywhere in belief text or meta. A superseded/refuted claim is expressed STRUCTURALLY: \`contradict\` it (set \`refuted_by\` to the correction), or \`discard\` it — never by appending a note inside the entry text.
 8. **Bounds** (also enforced by code): profile ≤ 40 entries total, self_model ≤ 30 entries total. When over, the weakest (low confidence, stale) are evicted — prefer to evict the weakest yourself rather than adding to an overflowing section.
 9. **Staleness.** A stable entry (any dimension) whose \`updated\` date is roughly 2+ weeks older than the current slice has likely drifted from the user's present state: demote its confidence one level, or \`discard\` it if it is clearly no longer true. Entries past their \`expires\` date must be \`expire\`d. Do not let stale stable entries sit at full confidence indefinitely.
 10. **No new information** → call \`previouslyOutput\` with an empty mutations array IMMEDIATELY. Do NOT call any tools.

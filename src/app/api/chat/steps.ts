@@ -30,12 +30,16 @@ import {
   startBatch,
   flushBatch,
   analyzeTurn,
+  findMatchingStrand,
+  getStrandsPath,
+  serializeStrands,
   type TimeSlice,
   type StrandIndex,
   type SlicingSignal,
 } from "@/lib/episodic";
+import { consolidateStrands } from "@/lib/episodic/flash/strand-consolidator";
 import { checkTimeSilence } from "@/lib/episodic/slicer";
-import { fsReadFile } from "@/lib/episodic/io-helpers";
+import { fsReadFile, fsWriteFile } from "@/lib/episodic/io-helpers";
 import {
   buildAgentIdentityPrompt,
   parseIdentityFromPreviously,
@@ -209,6 +213,23 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
     await closeSlice(diskSlice, closeSignal);
     console.log(`[Episodic] Closed slice: ${diskSlice.slice_id} (${closeSignal})`);
     await generateGlobalTimeline();
+
+    // Strand consolidation (opportunistic, on slice close): prune single-use
+    // stale strands deterministically; when the index is large enough, ask the
+    // worker model for a from→to merge map to collapse semantic duplicates
+    // (typos / same-concept-two-names) that deterministic normalization can't
+    // catch. Writes land in the current batch → one commit with the close.
+    const strandsBefore = await readStrands();
+    const { strands: consolidated, pruned, merges, llmPassSkipped } =
+      await consolidateStrands(strandsBefore, input.workerModel);
+    if (pruned.length > 0 || merges.length > 0) {
+      await fsWriteFile(getStrandsPath(), serializeStrands(consolidated));
+      console.log(
+        `[Strands] Consolidation: pruned ${pruned.length}, merged ${merges.length}` +
+        (llmPassSkipped ? " (llm skipped)" : ""),
+      );
+    }
+
     slice = createSlice(lastUserMessage, clientTimezone, input.turnId);
   } else if (diskSlice && diskSlice.status === "active") {
     slice = diskSlice;
@@ -219,13 +240,32 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   }
 
   // ── 4. Apply the current message's tags to the active slice ──────────
-  if (analysis.messageTags.length > 0) {
-    for (const tag of analysis.messageTags) {
-      if (!slice.tags.includes(tag)) slice.tags.push(tag);
+  // Merge-first at the slice boundary too: `reuse` tags must resolve to an
+  // existing strand (a hallucinated name is dropped, never minted); `create`
+  // tags are folded into an existing strand via normalized-match before a new
+  // key is ever allowed. This keeps a slice's accumulated tags from inventing
+  // near-duplicate strands mid-slice (they'd otherwise hit strands.json before
+  // the close-time cleaning replaces them).
+  const appliedTags: string[] = [];
+  for (const tag of analysis.messageTags.reuse) {
+    const target = findMatchingStrand(existingStrands, tag);
+    if (!target) continue; // not an existing topic — don't mint from a reuse slot
+    if (!slice.tags.includes(target)) {
+      slice.tags.push(target);
+      appliedTags.push(target);
     }
-    console.log(`[FlashTags] Extracted: ${analysis.messageTags.join(", ")}`);
   }
-  await emitPhase("tags", false, analysis.messageTags);
+  for (const { tag } of analysis.messageTags.create) {
+    const target = findMatchingStrand(existingStrands, tag) ?? tag;
+    if (!slice.tags.includes(target)) {
+      slice.tags.push(target);
+      appliedTags.push(target);
+    }
+  }
+  if (appliedTags.length > 0) {
+    console.log(`[FlashTags] Applied: ${appliedTags.join(", ")}`);
+  }
+  await emitPhase("tags", false, appliedTags);
 
   // ── 5. Append user turn ───────────────────────────────────────────────
   const isNewSlice =

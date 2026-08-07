@@ -43,8 +43,20 @@ export const INTENT_TYPES = [
 ] as const;
 export type TurnIntent = (typeof INTENT_TYPES)[number];
 
+export interface NewTagProposal {
+  tag: string;
+  /** Why none of the existing topics covers this. */
+  reason: string;
+}
+
 export interface TurnAnalysis {
-  messageTags: string[];
+  /**
+   * Merge-first tags: `reuse` are existing strand names picked verbatim from
+   * the provided list; `create` are genuinely new durable topics (with a
+   * reason). The engineering layer folds `create` into existing strands via
+   * normalized-match before ever minting a new key.
+   */
+  messageTags: { reuse: string[]; create: NewTagProposal[] };
   semanticHint: SemanticHint;
   /** The user's intent — what they're trying to do this turn. */
   intent?: { type: TurnIntent; reason: string };
@@ -62,9 +74,33 @@ export interface AnalyzeTurnInput {
 
 const analyzeSchema = z.object({
   message_tags: z
-    .array(z.string())
-    .max(5)
-    .describe("0-5 keyword tags for the current message."),
+    .object({
+      reuse: z
+        .array(z.string())
+        .max(5)
+        .describe(
+          "Existing topic names (from the provided list) this message relates to, " +
+          "picked verbatim. Prefer reuse over create — merge, don't invent.",
+        ),
+      create: z
+        .array(
+          z.object({
+            tag: z
+              .string()
+              .describe(
+                "A NEW durable/general topic (e.g. work area, life area, project, company, " +
+                "financing, health, an emotional thread) ONLY when no existing topic " +
+                "covers this message. Never an ephemeral one-off event.",
+              ),
+            reason: z
+              .string()
+              .describe("One line: why none of the existing topics covers this."),
+          }),
+        )
+        .max(3)
+        .describe("Genuinely new topics only; empty when reuse suffices."),
+    })
+    .describe("Merge-first tags for the current message: reuse existing topics, create only when needed."),
   semantic_hint: z.object({
     strands: z
       .array(z.string())
@@ -128,9 +164,13 @@ Return closed_marking with:
 
 Message: "${input.userMessage.slice(0, 1000)}"
 
-Existing topics (reuse when semantically equivalent, in any language): ${existing}
+Existing topics (pick from these FIRST — they are the durable memory index): ${existing}
 
-Return message_tags: 0-5 lowercase keyword tags, 1-3 words each, substantive topics only (no greetings/filler).
+Return message_tags with TWO parts:
+- reuse: existing topic names from the list above that this message relates to. Pick VERBATIM from the list. Prefer reuse over create — the same concept must never gain a second name.
+- create: a NEW durable/general topic ONLY when no existing topic covers this message. Durable = a work/life area, a project, a company, financing, health, a recurring emotional thread. NEVER an ephemeral one-off event ("dreamt", "hungover", "today's errand"). Max 3, each with a one-line reason.
+
+Merge-first rule: reuse > create. If in doubt, reuse an existing topic rather than minting a new one.
 
 ## Task 2 — Semantic hint for the agent
 
@@ -144,7 +184,7 @@ Return intent: { type: "code_debug" | "code_write" | "explain" | "chat" | "revie
 }
 
 const EMPTY: TurnAnalysis = {
-  messageTags: [],
+  messageTags: { reuse: [], create: [] },
   semanticHint: { strands: [], reason: "" },
 };
 
@@ -172,7 +212,13 @@ export async function analyzeTurn(input: AnalyzeTurnInput): Promise<TurnAnalysis
 
     const d = parsed.data;
     return {
-      messageTags: d.message_tags.slice(0, 5),
+      messageTags: {
+        reuse: d.message_tags.reuse.slice(0, 5),
+        create: d.message_tags.create
+          .slice(0, 3)
+          .filter((c) => typeof c.tag === "string" && c.tag.trim().length > 0)
+          .map((c) => ({ tag: c.tag, reason: c.reason })),
+      },
       semanticHint: {
         strands: d.semantic_hint.strands
           .slice(0, 5)

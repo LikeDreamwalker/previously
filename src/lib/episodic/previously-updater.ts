@@ -347,11 +347,18 @@ function applyDemote(doc: PreviouslyDocument, m: PreviouslyMutation): boolean {
 }
 
 // ─── Limit enforcement (profile ≤ 40, self_model ≤ 30) ───────────────────
+// Additionally, current_state has its OWN tight cap: it is the short-lived
+// section and must not balloon with every turn's "what's happening now"
+// entries — otherwise the whole profile fills with expiring ephemera and the
+// stable dimensions get starved out.
 
 const LIMITS: Record<Section, number> = {
   profile: 40,
   self_model: 30,
 };
+
+/** Hard cap on current_state entries — evicted (weakest first) when exceeded. */
+export const CURRENT_STATE_LIMIT = 8;
 
 function beliefScore(b: PreviouslyBelief): number {
   const cs = b.confidence === "high" ? 3 : b.confidence === "medium" ? 2 : 1;
@@ -410,7 +417,30 @@ function enforceTotalLimit(
   }
 }
 
+/**
+ * Enforce a per-dimension cap (e.g. current_state ≤ 8) by evicting the
+ * weakest entries in that dimension, using the same score as the total limit.
+ */
+function enforceDimensionLimit(
+  section: Partial<Record<ProfileDimension | SelfModelDimension, PreviouslyBelief[]>>,
+  dim: ProfileDimension | SelfModelDimension,
+  limit: number,
+): void {
+  const arr = section[dim];
+  if (!arr || arr.length <= limit) return;
+
+  const scored = arr
+    .map((b, idx) => ({ idx, score: beliefScore(b) }))
+    .sort((a, b) => a.score - b.score);
+  const toRemove = scored.slice(0, arr.length - limit);
+  // Remove highest index first so splicing doesn't shift indices.
+  toRemove.sort((a, b) => b.idx - a.idx);
+  for (const { idx } of toRemove) arr.splice(idx, 1);
+}
+
 function enforceLimits(doc: PreviouslyDocument): void {
   enforceTotalLimit(doc.profile, LIMITS.profile);
   enforceTotalLimit(doc.selfModel, LIMITS.self_model);
+  // current_state must never crowd out the stable dimensions with ephemera.
+  enforceDimensionLimit(doc.profile, "current_state", CURRENT_STATE_LIMIT);
 }
