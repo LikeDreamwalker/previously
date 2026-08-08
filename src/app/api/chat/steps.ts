@@ -212,9 +212,14 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
     prevSlice = toPrevRef(diskSlice);
     await closeSlice(diskSlice, closeSignal);
     console.log(`[Episodic] Closed slice: ${diskSlice.slice_id} (${closeSignal})`);
-    // v0.7: signal the client that a slice closed — it fires the (per-slice)
-    // evolution run with the closed slice id + slice_closed signal.
-    await emitPhase("slice-closed", false, [diskSlice.slice_id]);
+    // v0.7: signal the client (which fires the per-slice evolution) only when
+    // the closed slice had substance. A slice that is just greetings ("你好" /
+    // "ok", no tags and ≤ 2 turns) shouldn't churn the card — the
+    // memory_worthy→tag gate already keeps trivial turns from minting tags.
+    const trivialSlice = diskSlice.tags.length === 0 && diskSlice.turns.length <= 2;
+    if (!trivialSlice) {
+      await emitPhase("slice-closed", false, [diskSlice.slice_id]);
+    }
     await generateGlobalTimeline();
 
     // Strand consolidation (opportunistic, on slice close): prune single-use

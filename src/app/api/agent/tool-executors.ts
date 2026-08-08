@@ -45,6 +45,7 @@ import {
   sliceLocalBanner,
   sliceIdLocalClock,
 } from "@/lib/episodic/time-localize";
+import { formatLocalTime } from "@/lib/turn-priming";
 import {
   splitTurns,
   splitParagraphs,
@@ -294,7 +295,7 @@ export async function listSlicesExecute(
 export async function readTimelineExecute(
   { year, month }: { year: number; month: number },
   { context: ctx }: ExecuteOpts<ToolContext>,
-): Promise<{ exists: boolean; month: string; slices: unknown[] }> {
+): Promise<{ exists: boolean; month: string; slices: unknown[]; timezoneNote?: string }> {
   "use step";
   const mm = String(month).padStart(2, "0");
   const path = `memory/episodic/slices/${year}/${mm}/_index.json`;
@@ -304,7 +305,26 @@ export async function readTimelineExecute(
       : ctx.useGithub
         ? await readFile(path, ctx.repo, ctx.owner)
         : await readFileLocal(path);
-    return JSON.parse(raw);
+    const data = JSON.parse(raw) as { exists: boolean; month: string; slices: unknown[] };
+
+    // Pre-render each slice's start in the user's local time so the agent never
+    // converts UTC itself (see time-localize.ts).
+    if (Array.isArray(data.slices) && ctx.timezone) {
+      const tz = ctx.timezone; // narrowed string — stable across the map closure
+      const slices = data.slices.map((s) => {
+        if (s && typeof s === "object" && "start" in s && typeof (s as { start?: unknown }).start === "string") {
+          const rec = s as Record<string, unknown>;
+          return { ...rec, localStart: formatLocalTime(rec.start as string, tz).local };
+        }
+        return s;
+      });
+      return {
+        ...data,
+        slices,
+        timezoneNote: `每个 slice 已附带 localStart（用户当地，${tz}）；start 为原始 UTC。`,
+      };
+    }
+    return data;
   } catch {
     return { exists: false, month: `${year}-${mm}`, slices: [] };
   }
@@ -315,7 +335,7 @@ export async function readTimelineExecute(
 export async function readStrandExecute(
   { strand }: { strand: string },
   { context: ctx }: ExecuteOpts<ToolContext>,
-): Promise<{ strand: string; slices: string[]; exists: boolean }> {
+): Promise<{ strand: string; slices: string[]; exists: boolean; timezoneNote?: string }> {
   "use step";
   const path = "memory/episodic/strands.json";
   try {
@@ -328,7 +348,12 @@ export async function readStrandExecute(
     if (!strands[strand]) {
       return { strand, slices: [], exists: false };
     }
-    return { strand, slices: strands[strand], exists: true };
+    // Slice paths are UTC-derived (HHMM is UTC). readSlice already annotates the
+    // user's local time on the content it returns — this note is a reminder.
+    const timezoneNote = ctx.timezone
+      ? `这些 slice 路径是 UTC 派生（HHMM 为 UTC）。需要具体当地时刻时用 readSlice 读取该切片，返回内容已标注本地时钟（${ctx.timezone}）。`
+      : undefined;
+    return { strand, slices: strands[strand], exists: true, timezoneNote };
   } catch {
     return { strand, slices: [], exists: false };
   }
