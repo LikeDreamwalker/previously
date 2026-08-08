@@ -268,19 +268,21 @@ export const chatTools = {
   }),
   suggestMemoryUpdate: tool({
     description:
-      "Call this when the user expresses a DURABLE preference, correction, or " +
-      "\"from now on I want you to…\" / \"I like it when you…\" — a statement about how " +
-      "you should behave or think going forward. It does NOT write memory itself; it " +
-      "surfaces a one-line summary so the user can confirm folding it into the " +
-      "previously card via evolution. Do NOT call it for routine conversation, " +
-      "recall requests, or transient questions.",
+      "Call this when the user expresses a DURABLE preference or correction " +
+      "(\"from now on I want you to…\" / \"I like it when you…\"), OR explicitly asks to " +
+      "update previously / run self-evolution (\"更新前情提要\" / \"自进化\" / \"update " +
+      "previously\" / \"run self-evolution\"). It does NOT write memory itself; it " +
+      "surfaces a one-line summary so the user can confirm running the evolution " +
+      "workflow. Do NOT call it for routine conversation, recall requests, or " +
+      "transient questions.",
     inputSchema: z.object({
       summary: z
         .string()
         .describe(
-          "One-line summary of the durable preference/correction, in English, " +
-          "third person where it describes the user ('User prefers…'), first person " +
-          "where it describes you ('Always summarize before answering').",
+          "One-line summary, in English — a durable preference/correction " +
+          "(third person about the user 'User prefers…', first person about yourself " +
+          "'Always summarize before answering'), or the explicit update request " +
+          "('User requested a previously card update').",
         ),
     }),
     contextSchema: toolContextSchema,

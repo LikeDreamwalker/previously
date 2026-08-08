@@ -156,6 +156,7 @@
       "thinkingDone": "Thought",
       "slicing": "Slicing time…",
       "sliced": "Time slice ready",
+      "slice-closed": "Slice closed",
       "scanning": "Scanning memory…",
       "scanned": "Memory scanned",
       "updatingPreviously": "Updating 前情提要…",

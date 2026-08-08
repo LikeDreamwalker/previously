@@ -156,6 +156,7 @@
       "thinkingDone": "思考完成",
       "slicing": "正在切片…",
       "sliced": "时间片就绪",
+      "slice-closed": "切片已关闭",
       "scanning": "正在扫描记忆…",
       "scanned": "记忆扫描完成",
       "updatingPreviously": "前情提要更新中…",
