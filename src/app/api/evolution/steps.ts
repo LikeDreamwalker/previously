@@ -17,6 +17,8 @@ import {
   tryLoadTodaySlice,
   readPreviously,
   writePreviously,
+  readCurrentPreviously,
+  writeCurrentPreviously,
   readAgentTimeline,
   sliceIdToFilePath,
 } from "@/lib/episodic";
@@ -85,8 +87,9 @@ export async function readEvolutionContext(input: {
 
     if (targetId) {
       sliceId = targetId;
-      // Read previously.md and agent.md — FULL content, no truncation
-      try { previouslyContent = await readPreviously(targetId); } catch { /* empty */ }
+      // Base on the LIVE card (what the conversation reads), not a per-slice
+      // copy — so a boundary or manual evolution always evolves the freshest state.
+      try { previouslyContent = await readCurrentPreviously(); } catch { /* empty */ }
       try { agentCognition = await readAgentTimeline(targetId); } catch { /* empty */ }
 
       // Extract recent turns — last 3 only (incremental), FULL content no
@@ -248,10 +251,10 @@ export async function finalizeEvolution(
     let result = await runOnce(base);
 
     // Optimistic concurrency guard: if a concurrent evolution (e.g. a manual
-    // confirm overlapping a slice-close) wrote the card while this pass was
+    // confirm overlapping a slice-close) wrote the LIVE card while this pass was
     // running, re-run against the fresh base so we never clobber its changes.
     if (result.updatedCard.trim()) {
-      const fresh = await readPreviously(sliceId).catch(() => base);
+      const fresh = await readCurrentPreviously().catch(() => base);
       if (fresh !== base) {
         console.warn("[Evolution] Card changed concurrently — re-running against the fresh card.");
         base = fresh;
@@ -268,6 +271,9 @@ export async function finalizeEvolution(
     // expiry, section caps, anti-conflict backstop).
     if (updatedCard.trim()) {
       const applied = applyCardUpdate(base, updatedCard, sliceId);
+      // The LIVE card — the next turn's conversation reads this (real-time).
+      await writeCurrentPreviously(applied.content);
+      // Historical snapshot for the closed slice.
       await writePreviously(sliceId, applied.content);
       changes = {
         added: applied.changed ? 1 : 0,

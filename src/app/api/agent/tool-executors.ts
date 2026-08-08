@@ -38,8 +38,8 @@ import {
   type RecallHit,
   type RecommendedRead,
 } from "@/lib/episodic/flash/recall";
-import { readStrands } from "@/lib/episodic";
-import { migrateToV3 } from "@/lib/episodic/previously-format";
+import { readStrands, CURRENT_PREVIOUSLY_PATH } from "@/lib/episodic";
+import { migrateToV3, isCardFormat } from "@/lib/episodic/previously-format";
 import {
   annotateSliceWithLocalTime,
   sliceLocalBanner,
@@ -411,7 +411,20 @@ export async function readPreviouslyExecute(
   { context: ctx }: ExecuteOpts<ToolContext>,
 ): Promise<string> {
   "use step";
-  const sid = sliceId ?? ctx.sliceId;
+
+  // No sliceId → the LIVE card (current-previously.md), the one the current
+  // conversation actually runs on (v0.7 real-time card). A per-slice arg reads
+  // that slice's historical snapshot.
+  if (!sliceId) {
+    const raw = ctx.useDemo
+      ? await readFileDemo(CURRENT_PREVIOUSLY_PATH)
+      : ctx.useGithub
+        ? await readFile(CURRENT_PREVIOUSLY_PATH, ctx.repo, ctx.owner)
+        : await readFileLocal(CURRENT_PREVIOUSLY_PATH);
+    return raw.trim() ? (isCardFormat(raw) ? raw : migrateToV3(raw, "current")) : raw;
+  }
+
+  const sid = sliceId;
   const parsed = parseSliceId(sid);
   if (!parsed) {
     return "ERROR: Invalid slice ID. Expected format: YYYY-MM-DD-HHMM.";

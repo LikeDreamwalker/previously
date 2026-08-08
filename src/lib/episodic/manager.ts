@@ -709,39 +709,62 @@ export async function findMostRecentPreviously(): Promise<string | null> {
 }
 
 /**
- * Ensure a previously.md file exists for the given slice.
+ * The LIVE previously card — the single source every turn injects into the
+ * system prompt, maintained by evolution (slice close + explicit trigger).
+ * Per-slice previously.md files remain as historical snapshots; this is the
+ * current one the conversation actually reads.
+ */
+export const CURRENT_PREVIOUSLY_PATH = "memory/episodic/current-previously.md";
+
+/** Read the live card. Returns "" if it doesn't exist yet. */
+export async function readCurrentPreviously(): Promise<string> {
+  try {
+    return await fsReadFile(CURRENT_PREVIOUSLY_PATH);
+  } catch {
+    return "";
+  }
+}
+
+/** Overwrite the live card. */
+export async function writeCurrentPreviously(content: string): Promise<void> {
+  await fsWriteFile(CURRENT_PREVIOUSLY_PATH, content);
+}
+
+/**
+ * Ensure the LIVE card exists and return it — every turn injects this.
  *
- * If it already exists (e.g., recovered slice), returns its content — a
- * legacy (v1/v2) file left over from before the v3 upgrade is migrated once
- * and persisted, so evolution always works on the v3 structure. Otherwise
- * initializes by copying the most recent frozen previously.md (migrated to
- * v3), or creating an empty v3 template if no frozen copy is found within the
- * lookback window.
+ * v0.7 "real-time card": the conversation reads the most recently evolved card,
+ * not a stale per-slice copy. Seeded once from the latest snapshot (or a fresh
+ * template), then maintained by evolution via `writeCurrentPreviously`. The
+ * per-slice copy is also seeded as a history snapshot for the timeline view;
+ * evolution overwrites it with the proper snapshot at slice close.
  */
 export async function ensurePreviously(sliceId: string): Promise<string> {
-  const existing = await readPreviouslyRaw(sliceId);
-  if (existing.trim()) {
-    // Normalize to the user-card (v4) structure — a legacy v1/v2/v3 file folds
-    // into the card once, then stays. The evolution agent refines from there.
-    const migrated = isCardFormat(existing) ? existing : migrateV3ToCard(existing, sliceId);
-    if (migrated !== existing) {
-      await writePreviously(sliceId, migrated);
-    }
-    return migrated;
+  // Live card — what the current conversation injects. Normalize a legacy
+  // (v1/v2/v3) card to the user-card structure once; seed from the latest
+  // snapshot or a template when it doesn't exist yet.
+  let current = await readCurrentPreviously();
+  if (current.trim() && !isCardFormat(current)) {
+    current = migrateV3ToCard(current, sliceId);
+    await writeCurrentPreviously(current);
+  } else if (!current.trim()) {
+    const source = await findMostRecentPreviously();
+    current = source
+      ? isCardFormat(source)
+        ? source
+        : migrateV3ToCard(source, sliceId)
+      : newCardTemplate(sliceId);
+    await writeCurrentPreviously(current);
   }
 
-  // Find the most recent previously.md from past slices and copy it forward
-  // into the card structure. Refinement is handled by the evolution workflow.
-  const source = await findMostRecentPreviously();
+  // Historical per-slice copy (what the timeline/history view shows if this
+  // slice is viewed before it closes + evolves). Seeded from the live card.
+  const existing = await readPreviouslyRaw(sliceId);
+  if (!existing.trim()) {
+    await writePreviously(sliceId, current);
+  }
 
-  const content = source
-    ? isCardFormat(source)
-      ? source
-      : migrateV3ToCard(source, sliceId)
-    : newCardTemplate(sliceId);
-
-  await writePreviously(sliceId, content);
-  return content;
+  return current;
 }
 
 // ─── Testing utilities ───────────────────────────────────────────────────

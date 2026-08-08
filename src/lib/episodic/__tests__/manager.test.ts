@@ -18,6 +18,8 @@ import {
   emptyPreviouslyTemplate,
   readPreviously,
   ensurePreviously,
+  readCurrentPreviously,
+  writeCurrentPreviously,
 } from "../manager";
 import type { TimeSlice, Turn } from "../types";
 
@@ -489,3 +491,39 @@ describe("readPreviously (v3 migration on read)", () => {
   });
 });
 
+
+// ─── Live current card (v0.7 real-time) ────────────────────────────────
+
+describe("live current card (current-previously.md)", () => {
+  const CARD_A = emptyPreviouslyTemplate("2026-08-09-1000");
+  const CARD_B = emptyPreviouslyTemplate("2026-08-09-1100");
+
+  beforeEach(() => {
+    vi.mocked(fsReadFile).mockReset();
+    vi.mocked(fsWriteFile).mockReset();
+    vi.mocked(fsListFiles).mockReset();
+  });
+
+  it("returns the LIVE card even when the per-slice copy is stale", async () => {
+    vi.mocked(fsReadFile)
+      .mockResolvedValueOnce(CARD_B) // readCurrentPreviously → live card
+      .mockResolvedValueOnce(CARD_A); // readPreviouslyRaw(slice) → stale copy
+    const content = await ensurePreviously("2026-08-09-1000");
+    expect(content).toBe(CARD_B);
+  });
+
+  it("seeds the live card from a template when neither exists", async () => {
+    vi.mocked(fsReadFile).mockRejectedValue(new Error("ENOENT"));
+    vi.mocked(fsWriteFile).mockResolvedValue({ path: "", created: true });
+    const content = await ensurePreviously("2026-08-09-1000");
+    expect(content).toContain("Format: user card");
+    // live card + per-slice seed
+    expect(fsWriteFile).toHaveBeenCalledTimes(2);
+  });
+
+  it("round-trips readCurrentPreviously / writeCurrentPreviously", async () => {
+    vi.mocked(fsReadFile).mockResolvedValue(CARD_A);
+    await writeCurrentPreviously(CARD_A);
+    expect(await readCurrentPreviously()).toBe(CARD_A);
+  });
+});

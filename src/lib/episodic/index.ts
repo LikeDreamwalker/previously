@@ -33,6 +33,9 @@ export {
   findMostRecentPreviously,
   ensurePreviously,
   emptyPreviouslyTemplate,
+  CURRENT_PREVIOUSLY_PATH,
+  readCurrentPreviously,
+  writeCurrentPreviously,
 } from "./manager";
 // NOTE: sliceIdToLegacyFilePath was removed in v0.5 — old flat-file format
 //       support dropped. Use sliceIdToTimelineDir / sliceIdToFilePath instead.
