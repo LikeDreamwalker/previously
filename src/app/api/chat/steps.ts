@@ -391,9 +391,11 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   // Progress streams to the client; the result is returned for the agent to
   // acknowledge. A trivial closed slice (greetings, no tags, ≤ 2 turns) is
   // skipped so a no-op boundary doesn't block on a wasted evolution.
+  // Demo mode is skipped entirely — it is a read-only preview and must never
+  // write the real card (the old /api/evolution route also returned skipped).
   let evolutionResult: EvolutionResult | undefined;
   const explicitUpdate = analysis.memoryUpdate;
-  if (closeSignal && diskSlice) {
+  if (!input.useDemo && closeSignal && diskSlice) {
     const trivialClose =
       diskSlice.tags.length === 0 && diskSlice.turns.length <= 2;
     if (!trivialClose) {
