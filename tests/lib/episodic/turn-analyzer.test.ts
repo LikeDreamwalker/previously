@@ -45,6 +45,7 @@ describe("analyzeTurn", () => {
         },
         semantic_hint: { strands: ["rust"], reason: "user mentioned borrow-checker" },
         intent: { type: "code_debug", reason: "user is debugging a failing loop" },
+        memory_worthy: true,
         closed_marking: {
           focus: "Rust loop tests",
           summary: "Debugged failures",
@@ -76,6 +77,7 @@ describe("analyzeTurn", () => {
       type: "code_debug",
       reason: "user is debugging a failing loop",
     });
+    expect(result.memoryWorthy).toBe(true);
     expect(result.closedMarking).toEqual({
       focus: "Rust loop tests",
       summary: "Debugged failures",
@@ -84,15 +86,31 @@ describe("analyzeTurn", () => {
     });
   });
 
+  it("passes through memory_worthy for a trivial turn", async () => {
+    ai.generateText.mockResolvedValue(
+      makeToolCall({
+        message_tags: { reuse: [], create: [] },
+        semantic_hint: { strands: [], reason: "" },
+        intent: { type: "chat", reason: "greeting" },
+        memory_worthy: false,
+      }),
+    );
+    const result = await analyzeTurn({ model, userMessage: "你好", existingStrandNames: [] });
+    expect(result.memoryWorthy).toBe(false);
+  });
+
   it("omits closed marking when no slice is closing", async () => {
     ai.generateText.mockResolvedValue(
       makeToolCall({
         message_tags: { reuse: [], create: [] },
         semantic_hint: { strands: [], reason: "" },
+        intent: { type: "chat", reason: "greeting" },
+        memory_worthy: false,
       }),
     );
     const result = await analyzeTurn({ model, userMessage: "x", existingStrandNames: [] });
     expect(result.closedMarking).toBeUndefined();
+    expect(result.memoryWorthy).toBe(false);
   });
 
   it("returns an empty analysis when the model fails", async () => {
@@ -101,6 +119,7 @@ describe("analyzeTurn", () => {
     expect(result).toEqual({
       messageTags: { reuse: [], create: [] },
       semanticHint: { strands: [], reason: "" },
+      memoryWorthy: true,
     });
   });
 

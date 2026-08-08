@@ -60,6 +60,12 @@ export interface TurnAnalysis {
   semanticHint: SemanticHint;
   /** The user's intent — what they're trying to do this turn. */
   intent?: { type: TurnIntent; reason: string };
+  /**
+   * Whether this turn holds durable information worth persisting. False for
+   * trivial turns (greetings / "继续" / thanks) — the engineering layer then
+   * skips tag extraction and strand writes.
+   */
+  memoryWorthy: boolean;
   closedMarking?: ClosedMarking;
 }
 
@@ -112,6 +118,12 @@ const analyzeSchema = z.object({
     type: z.enum(INTENT_TYPES).describe("The user's intent for this turn."),
     reason: z.string().describe("One line: what the user is trying to do."),
   }),
+  memory_worthy: z.boolean().describe(
+    "Whether this turn contains durable, persistable information (a new fact about the user, " +
+    "a preference, a correction, or a substantive exchange). Trivial turns — greetings, " +
+    "acknowledgments, 'continue', 'ok', thanks, small talk — are false. Controls whether tags " +
+    "are extracted and memory evolves.",
+  ),
   closed_marking: z
     .object({
       focus: z.string().describe("One sentence: what this session was about."),
@@ -142,7 +154,7 @@ function buildPrompt(input: AnalyzeTurnInput): string {
   const closingSection = input.closingSlice
     ? `
 
-## Task 4 — Mark the closed slice
+## Task 5 — Mark the closed slice
 
 A time slice just closed. Summarize it so future recall can understand it at a glance.
 
@@ -180,12 +192,21 @@ Return semantic_hint: { strands: [...], reason: "..." }
 ## Task 3 — Classify the user's intent
 
 What is the user trying to do? Pick the single best label and give a one-line reason.
-Return intent: { type: "code_debug" | "code_write" | "explain" | "chat" | "review" | "clarify", reason: "..." }${closingSection}`;
+Return intent: { type: "code_debug" | "code_write" | "explain" | "chat" | "review" | "clarify", reason: "..." }
+
+## Task 4 — Judge whether this turn is worth remembering
+
+Is this a substantive exchange that should update memory (a new fact about the user, a preference, a correction, or a real discussion)? Or is it trivial — a greeting, acknowledgment, "继续", "ok", thanks, or small talk?
+
+Return memory_worthy: true only when the turn contains durable information worth tagging and evolving. Trivial turns are false.${closingSection}`;
 }
 
 const EMPTY: TurnAnalysis = {
   messageTags: { reuse: [], create: [] },
   semanticHint: { strands: [], reason: "" },
+  // Conservative on failure: don't block tag extraction (empty tags are a
+  // no-op anyway), so an analyzer outage never silently freezes memory writes.
+  memoryWorthy: true,
 };
 
 export async function analyzeTurn(input: AnalyzeTurnInput): Promise<TurnAnalysis> {
@@ -228,6 +249,7 @@ export async function analyzeTurn(input: AnalyzeTurnInput): Promise<TurnAnalysis
       intent: d.intent
         ? { type: d.intent.type, reason: d.intent.reason }
         : undefined,
+      memoryWorthy: d.memory_worthy,
       closedMarking: d.closed_marking
         ? {
             focus: typeof d.closed_marking.focus === "string" ? d.closed_marking.focus.trim() : "",

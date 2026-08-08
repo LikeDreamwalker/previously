@@ -25,6 +25,7 @@ const episodic = vi.hoisted(() => ({
   analyzeTurn: vi.fn(async () => ({
     messageTags: { reuse: [], create: [] },
     semanticHint: { strands: [], reason: "" },
+    memoryWorthy: true,
   })),
 }));
 

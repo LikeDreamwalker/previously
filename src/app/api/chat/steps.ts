@@ -247,19 +247,24 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   // near-duplicate strands mid-slice (they'd otherwise hit strands.json before
   // the close-time cleaning replaces them).
   const appliedTags: string[] = [];
-  for (const tag of analysis.messageTags.reuse) {
-    const target = findMatchingStrand(existingStrands, tag);
-    if (!target) continue; // not an existing topic — don't mint from a reuse slot
-    if (!slice.tags.includes(target)) {
-      slice.tags.push(target);
-      appliedTags.push(target);
+  // Semantic gate: trivial turns (greetings, "继续", thanks, small talk) carry
+  // no durable info — skip tag extraction and strand weaving entirely, so
+  // strands.json stays clean instead of accruing one-off noise.
+  if (analysis.memoryWorthy) {
+    for (const tag of analysis.messageTags.reuse) {
+      const target = findMatchingStrand(existingStrands, tag);
+      if (!target) continue; // not an existing topic — don't mint from a reuse slot
+      if (!slice.tags.includes(target)) {
+        slice.tags.push(target);
+        appliedTags.push(target);
+      }
     }
-  }
-  for (const { tag } of analysis.messageTags.create) {
-    const target = findMatchingStrand(existingStrands, tag) ?? tag;
-    if (!slice.tags.includes(target)) {
-      slice.tags.push(target);
-      appliedTags.push(target);
+    for (const { tag } of analysis.messageTags.create) {
+      const target = findMatchingStrand(existingStrands, tag) ?? tag;
+      if (!slice.tags.includes(target)) {
+        slice.tags.push(target);
+        appliedTags.push(target);
+      }
     }
   }
   if (appliedTags.length > 0) {
