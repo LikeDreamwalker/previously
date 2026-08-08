@@ -9,23 +9,42 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { ModelSelector, type ModelDefaults } from "./model-selector";
 
 /**
- * Only "low" and "high" are meaningfully distinct for DeepSeek — "medium" is
- * silently mapped to "high" server-side (v0.6 reasoning semantics), so the
- * cycle offers just two levels. "medium" stays in the type for backward
- * compatibility with stored configs; it displays and cycles as "high".
+ * Effort tiers depend on the model family. DeepSeek's native tiers are "low"
+ * and "high" — "medium" is not meaningfully distinct (V4 Pro promotes it
+ * server-side), so the cycle offers just two levels there. Anthropic and
+ * OpenAI-compatible providers expose all three. "medium" stays in the type for
+ * stored configs / other providers; on DeepSeek a stored "medium" snaps to
+ * "high" (it has no native medium tier).
  */
-const EFFORT_LEVELS = ["low", "high"] as const;
 type EffortLevel = "low" | "medium" | "high";
+
+const FULL_EFFORT_LEVELS = ["low", "medium", "high"] as const;
+const DEEPSEEK_EFFORT_LEVELS = ["low", "high"] as const;
+
+/** Effort tiers available for a model id — DeepSeek collapses to low/high. */
+function effortLevelsFor(modelId: string): readonly EffortLevel[] {
+  return modelId.startsWith("deepseek")
+    ? DEEPSEEK_EFFORT_LEVELS
+    : FULL_EFFORT_LEVELS;
+}
 
 const EFFORT_LABELS: Record<EffortLevel, string> = {
   low: "Low",
-  medium: "High",
+  medium: "Medium",
   high: "High",
 };
 
-/** A stored "medium" is a high in disguise — normalize before cycling. */
-function normalizeEffort(level: EffortLevel): "low" | "high" {
-  return level === "low" ? "low" : "high";
+/** Stored effort may be outside the model's tier set — snap to a valid tier. */
+function normalizeEffort(level: EffortLevel, modelId: string): EffortLevel {
+  const levels = effortLevelsFor(modelId);
+  return (levels as readonly EffortLevel[]).includes(level)
+    ? level
+    : levels[levels.length - 1];
+}
+
+/** Display label for the model's effective tier (a DeepSeek "medium" → "High"). */
+function effortLabel(level: EffortLevel, modelId: string): string {
+  return EFFORT_LABELS[normalizeEffort(level, modelId)];
 }
 
 interface ChatInputProps {
@@ -135,10 +154,11 @@ export function ChatInput({
   };
 
   const cycleEffort = useCallback(() => {
-    const idx = EFFORT_LEVELS.indexOf(normalizeEffort(currentEffort));
-    const next = EFFORT_LEVELS[(idx + 1) % EFFORT_LEVELS.length];
+    const levels = effortLevelsFor(currentModelId);
+    const idx = levels.indexOf(normalizeEffort(currentEffort, currentModelId));
+    const next = levels[(idx + 1) % levels.length];
     onEffortChange(next);
-  }, [currentEffort, onEffortChange]);
+  }, [currentEffort, currentModelId, onEffortChange]);
 
   const hasContent = value.trim().length > 0 || images.length > 0;
 
@@ -260,13 +280,13 @@ export function ChatInput({
                 >
                   <Zap className="h-3 w-3" />
                   <span className="text-[10px] font-medium leading-none">
-                    {mounted ? EFFORT_LABELS[currentEffort] : "High"}
+                    {mounted ? effortLabel(currentEffort, currentModelId) : "High"}
                   </span>
                 </button>
               }
             />
             <TooltipContent side="top">
-              Thinking: {currentEffort} — click to cycle
+              Thinking: {effortLabel(currentEffort, currentModelId)} — click to cycle
             </TooltipContent>
           </Tooltip>
 

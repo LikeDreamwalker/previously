@@ -860,9 +860,8 @@ export async function thinkDeepExecute(
   const stepStartMs = Date.now();
 
   const modelConfig = await resolveMainModelFromConfig();
-  // Thinking is always requested for a reasoning fragment (disabled inside
-  // normalizeReasoningEffort when the effort is low) — the injector owns the
-  // provider-specific mapping.
+  // Thinking is always requested for a reasoning fragment; the injector owns
+  // the provider-specific effort mapping.
   const providerOptions = normalizeReasoningEffort(
     modelConfig.sdk,
     modelConfig.id,

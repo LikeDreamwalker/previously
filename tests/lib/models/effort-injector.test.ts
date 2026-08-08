@@ -26,18 +26,19 @@ describe("normalizeReasoningEffort — thinking OFF", () => {
 // ─── DeepSeek ─────────────────────────────────────────────────────────────
 
 describe("normalizeReasoningEffort — DeepSeek thinking ON", () => {
-  it("V4 Flash: low keeps thinking enabled with the model's default effort", () => {
-    // NEVER disable thinking for the agent — low means default strength.
+  it("V4 Flash: low sends the explicit preserved-low tier", () => {
     expect(
       normalizeReasoningEffort("deepseek", "deepseek-v4-flash", true, "low"),
-    ).toEqual({ deepseek: { thinking: { type: "enabled" } } });
+    ).toEqual({
+      deepseek: { thinking: { type: "enabled" }, reasoningEffort: "low" },
+    });
   });
 
-  it("V4 Flash: medium enables thinking with the preserved-low tier", () => {
+  it("V4 Flash: medium stays honest", () => {
     expect(
       normalizeReasoningEffort("deepseek", "deepseek-v4-flash", true, "medium"),
     ).toEqual({
-      deepseek: { thinking: { type: "enabled" }, reasoningEffort: "low" },
+      deepseek: { thinking: { type: "enabled" }, reasoningEffort: "medium" },
     });
   });
 
@@ -49,10 +50,12 @@ describe("normalizeReasoningEffort — DeepSeek thinking ON", () => {
     });
   });
 
-  it("V4 Pro: low keeps thinking enabled with default effort", () => {
+  it("V4 Pro: low sends the explicit value (server promotes it to high)", () => {
     expect(
       normalizeReasoningEffort("deepseek", "deepseek-v4-pro", true, "low"),
-    ).toEqual({ deepseek: { thinking: { type: "enabled" } } });
+    ).toEqual({
+      deepseek: { thinking: { type: "enabled" }, reasoningEffort: "low" },
+    });
   });
 
   it("V4 Pro: medium keeps the honest medium value (server promotes to high)", () => {
