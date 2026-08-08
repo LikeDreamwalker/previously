@@ -8,6 +8,7 @@ import { WebSearchRenderer } from "./tool-renderers/web-search";
 import { WebFetchRenderer } from "./tool-renderers/web-fetch";
 import { LoopToolRenderer } from "./tool-renderers/loop";
 import { ThinkDeepToolRenderer } from "./tool-renderers/think-deep";
+import { SuggestMemoryUpdateRenderer } from "./tool-renderers/suggest-memory-update";
 import { DefaultRenderer } from "./tool-renderers/default";
 
 interface ToolRendererProps {
@@ -122,6 +123,16 @@ export function ToolRenderer({ toolName, state, input, output, streamingText, st
           state={renderState}
           streamingText={streamingText}
           streamingStage={streamingStage}
+        />
+      );
+    case "suggestMemoryUpdate":
+      return (
+        <SuggestMemoryUpdateRenderer
+          input={input as { summary?: string } | undefined}
+          output={
+            output as { ok?: boolean; status?: string; summary?: string } | undefined
+          }
+          state={renderState}
         />
       );
     default:

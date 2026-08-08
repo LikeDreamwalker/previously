@@ -102,6 +102,16 @@
       "startLoop": "启动后台循环",
       "thinkDeep": "推理片段",
       "thinkQuestion": "问题",
+      "suggestMemoryUpdate": {
+        "title": "更新记忆？",
+        "summary": "记住：",
+        "confirm": "确认",
+        "cancel": "取消",
+        "running": "更新中…",
+        "confirmed": "记忆已更新",
+        "cancelled": "已跳过",
+        "detecting": "检查是否需要更新记忆…"
+      },
       "thinkEffort": "深度",
       "thinkEffortLow": "轻量",
       "thinkEffortMedium": "适中",

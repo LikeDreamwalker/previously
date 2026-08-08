@@ -193,46 +193,71 @@ export async function finalizeEvolution(
   let error: string | undefined;
 
   try {
-    const result = await runPreviouslyAgent({
-      signal,
-      note,
-      model: input.workerModel,
-      currentSliceId: sliceId,
-      // Deep mode — read the closed slice's conversation/agent.md for patterns.
-      closedSliceId: signal === "slice_closed" ? sliceId : undefined,
-      previouslyContent,
-      agentCognition,
-      recentTurns,
-      currentSliceTags,
-      readSliceFn: async (sid: string, range?) => {
-        const parsed = parseSliceId(sid);
-        if (!parsed) return `ERROR: Invalid slice ID.`;
-        const path = `memory/episodic/slices/${parsed.y}/${parsed.m}/${parsed.d}/${parsed.hm}/timeline/core.md`;
-        try {
-          let raw: string;
-          if (input.useDemo) raw = await readFileDemo(path);
-          else if (input.useGithub) raw = await readFile(path, input.repo, input.owner);
-          else raw = await readFileLocal(path);
-          if (range) {
-            const { frontmatter, turns } = parseTurns(raw);
-            if (range.type === "last") {
-              const n = range.count ?? 3;
-              const filtered = turns.slice(-n);
-              return frontmatter + "\n" + filtered.map((t) => `${t.header}\n${t.content}`).join("\n");
-            }
-            // For other range types, return full content (simplified)
-            return raw;
+    const readSliceFn = async (sid: string, range?: {
+      type: "turns" | "last" | "date";
+      indices?: number[];
+      count?: number;
+      after?: string;
+    }) => {
+      const parsed = parseSliceId(sid);
+      if (!parsed) return `ERROR: Invalid slice ID.`;
+      const path = `memory/episodic/slices/${parsed.y}/${parsed.m}/${parsed.d}/${parsed.hm}/timeline/core.md`;
+      try {
+        let raw: string;
+        if (input.useDemo) raw = await readFileDemo(path);
+        else if (input.useGithub) raw = await readFile(path, input.repo, input.owner);
+        else raw = await readFileLocal(path);
+        if (range) {
+          const { frontmatter, turns } = parseTurns(raw);
+          if (range.type === "last") {
+            const n = range.count ?? 3;
+            const filtered = turns.slice(-n);
+            return frontmatter + "\n" + filtered.map((t) => `${t.header}\n${t.content}`).join("\n");
           }
+          // For other range types, return full content (simplified)
           return raw;
-        } catch { return `(slice not found: ${sid})`; }
-      },
-      readAgentTimelineFn: async (sid: string) => {
-        try { return await readAgentTimeline(sid); } catch { return `(not found: ${sid})`; }
-      },
-      readPreviouslyFn: async (sid: string) => {
-        try { return await readPreviously(sid); } catch { return `(not found: ${sid})`; }
-      },
-    });
+        }
+        return raw;
+      } catch { return `(slice not found: ${sid})`; }
+    };
+    const readAgentTimelineFn = async (sid: string) => {
+      try { return await readAgentTimeline(sid); } catch { return `(not found: ${sid})`; }
+    };
+    const readPreviouslyFn = async (sid: string) => {
+      try { return await readPreviously(sid); } catch { return `(not found: ${sid})`; }
+    };
+
+    const runOnce = (base: string) =>
+      runPreviouslyAgent({
+        signal,
+        note,
+        model: input.workerModel,
+        currentSliceId: sliceId,
+        // Deep mode — read the closed slice's conversation/agent.md for patterns.
+        closedSliceId: signal === "slice_closed" ? sliceId : undefined,
+        previouslyContent: base,
+        agentCognition,
+        recentTurns,
+        currentSliceTags,
+        readSliceFn,
+        readAgentTimelineFn,
+        readPreviouslyFn,
+      });
+
+    let base = previouslyContent;
+    let result = await runOnce(base);
+
+    // Optimistic concurrency guard: if a concurrent evolution (e.g. a manual
+    // confirm overlapping a slice-close) wrote the card while this pass was
+    // running, re-run against the fresh base so we never clobber its changes.
+    if (result.updatedCard.trim()) {
+      const fresh = await readPreviously(sliceId).catch(() => base);
+      if (fresh !== base) {
+        console.warn("[Evolution] Card changed concurrently — re-running against the fresh card.");
+        base = fresh;
+        result = await runOnce(fresh);
+      }
+    }
 
     const updatedCard = result.updatedCard;
     if (result.reasoning) {
@@ -242,7 +267,7 @@ export async function finalizeEvolution(
     // Apply the agent's updated card with mechanical enforcement (7-day recent
     // expiry, section caps, anti-conflict backstop).
     if (updatedCard.trim()) {
-      const applied = applyCardUpdate(previouslyContent, updatedCard, sliceId);
+      const applied = applyCardUpdate(base, updatedCard, sliceId);
       await writePreviously(sliceId, applied.content);
       changes = {
         added: applied.changed ? 1 : 0,

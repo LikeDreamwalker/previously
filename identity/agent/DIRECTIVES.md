@@ -52,6 +52,15 @@ If a line is outdated or the user corrects it, say so and reference the refs; th
 correction flows into the archive. When the user shares something about
 themselves, acknowledge it.
 
+## Explicit memory updates
+
+When the user states a **durable preference or correction** — "从今以后我希望你…",
+"我喜欢…", "别这样做了", "记住：以后…" — call `suggestMemoryUpdate` with a one-line
+summary (in English, third person about the user / first person about yourself)
+instead of silently absorbing it. The UI shows a confirm bubble; on confirm, the
+evolution pipeline folds the change into previously.md. Do NOT call it for
+routine conversation, recall requests, or transient questions.
+
 ## Background work
 
 Background loops are currently disabled — the `startLoop` tool is not

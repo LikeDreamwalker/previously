@@ -102,6 +102,16 @@
       "startLoop": "Starting a background loop",
       "thinkDeep": "Reasoning fragment",
       "thinkQuestion": "Question",
+      "suggestMemoryUpdate": {
+        "title": "Update your memory?",
+        "summary": "Remember:",
+        "confirm": "Confirm",
+        "cancel": "Cancel",
+        "running": "Updating…",
+        "confirmed": "Memory updated",
+        "cancelled": "Skipped",
+        "detecting": "Checking for a memory update…"
+      },
       "thinkEffort": "Effort",
       "thinkEffortLow": "Light",
       "thinkEffortMedium": "Moderate",

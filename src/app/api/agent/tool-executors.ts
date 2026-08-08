@@ -393,9 +393,8 @@ export async function readPreviouslyExecute(
   }
   const path = `memory/episodic/slices/${parsed.y}/${parsed.m}/${parsed.d}/${parsed.hm}/previously.md`;
   try {
-    // Migrate legacy (v1/v2) files on the fly so the model always reads the
-    // v3 structure (User profile + Self-model) that the system prompt
-    // describes — never the old 长期记忆/短期记忆 headers.
+    // Legacy (v1/v2) files are migrated on the fly; the v4 user card is read
+    // as-is. Never exposes the old 长期记忆/短期记忆 headers.
     const raw = ctx.useDemo
       ? await readFileDemo(path)
       : ctx.useGithub
@@ -411,6 +410,27 @@ export async function readPreviouslyExecute(
     if (msg === null) throw e;
     return `ERROR: ${msg}. previously.md not available for this slice.`;
   }
+}
+
+// ── suggestMemoryUpdate — passive marker for an explicit memory update ──
+
+export interface SuggestMemoryUpdateInput {
+  /** One-line summary of the durable preference / correction the user expressed. */
+  summary: string;
+}
+
+/**
+ * Passive marker only — NO memory is written here. The model calls this when
+ * the user expresses a durable preference / correction ("从今以后我希望你…").
+ * The client renders a confirm bubble; on confirm it fires the evolution
+ * workflow with `signal: "user_correction"` to fold the change into the card.
+ */
+export async function suggestMemoryUpdateExecute(
+  { summary }: SuggestMemoryUpdateInput,
+  _opts: ExecuteOpts<ToolContext>,
+): Promise<{ ok: boolean; status: "pending"; summary: string }> {
+  "use step";
+  return { ok: true, status: "pending", summary: summary.trim() };
 }
 
 // ─── Chat-only executors ─────────────────────────────────────────────────
