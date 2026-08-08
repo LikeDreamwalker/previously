@@ -373,25 +373,40 @@ function Inner({ children }: { children: React.ReactNode }) {
   // (status → "error") even though the durable workflow keeps running. On
   // return, re-attach to the run's stream to replay what was missed. Skip when
   // the turn is still actively streaming or already finished.
+  // Reconnect with retry: a transient network error ("Failed to fetch") is
+  // retried a few times with backoff so a single blip doesn't force a refresh.
+  // A 404 / "Run not available" clears the stale runId (the run is done); any
+  // other error surfaces via the existing error banner.
+  const resumeWithRetry = useCallback(async (attempts = 3) => {
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      try {
+        await resumeStream();
+        return;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (/404|Run not available/.test(msg)) {
+          clearStoredRunId();
+          return;
+        }
+        if (!/Failed to fetch/.test(msg) || attempt === attempts - 1) {
+          if (!/Failed to fetch/.test(msg)) {
+            console.warn("[chat] reconnect failed:", msg);
+          }
+          return;
+        }
+        // Transient network error — wait with backoff, then retry.
+        await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+      }
+    }
+  }, [resumeStream]);
+
   const attemptReconnect = useCallback(() => {
     if (!readStoredRunId()) return;
     // Only reconnect when the previous stream actually DIED (status "error") —
     // not while it's still streaming, finished, or a fresh POST is in flight.
     if (status !== "error") return;
-    void resumeStream().catch((err) => {
-      // A 404 / "Run not available" means the run already ended/expired — the
-      // stored runId is stale, so clear it (otherwise every refresh keeps
-      // reconnecting to this dead run). A network error ("Failed to fetch")
-      // leaves it — the run may still be alive and retryable. Anything else is
-      // surfaced via the existing error banner.
-      const msg = err instanceof Error ? err.message : String(err);
-      if (/404|Run not available/.test(msg)) {
-        clearStoredRunId();
-      } else if (!/Failed to fetch/.test(msg)) {
-        console.warn("[chat] reconnect failed:", msg);
-      }
-    });
-  }, [status, resumeStream]);
+    void resumeWithRetry();
+  }, [status, resumeWithRetry]);
 
   useEffect(() => {
     if (typeof document === "undefined" || typeof window === "undefined") return;
@@ -413,17 +428,10 @@ function Inner({ children }: { children: React.ReactNode }) {
   // (and its terminal status) instead of a blank chat. No-op on fresh loads.
   useEffect(() => {
     if (!readStoredRunId()) return;
-    void resumeStream().catch((err) => {
-      // Same stale-runId handling as attemptReconnect: a dead run's id is
-      // cleared so a fresh refresh doesn't retry it; a transient network error
-      // keeps it (the run may still be active).
-      const msg = err instanceof Error ? err.message : String(err);
-      if (/404|Run not available/.test(msg)) {
-        clearStoredRunId();
-      } else if (!/Failed to fetch/.test(msg)) {
-        console.warn("[chat] reload reconnect failed:", msg);
-      }
-    });
+    // Same retry/clear logic as attemptReconnect — a dead run's id is cleared
+    // so a fresh refresh doesn't retry it; a transient network error is retried
+    // rather than forcing the user to refresh.
+    void resumeWithRetry();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
