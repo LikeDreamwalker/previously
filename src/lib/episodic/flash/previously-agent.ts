@@ -148,12 +148,13 @@ Current slice: \`${currentSliceId}\`${deepNote}
 
 ## What to do — edit the card IN PLACE
 
-Compare the input below against the current card. Update the card to incorporate anything NEW and durable, and remove anything stale. **Preserve every unchanged line verbatim** — this is an in-place edit, not a rewrite from scratch. Do not re-derive content from history; only react to what changed.
+Compare the input below against the current card. Update the card to incorporate anything NEW and durable, and remove anything stale. **Preserve what is still accurate and well-formed** — but the card must read as ONE clean, coherent description. If the current card is fragmented (space-joined fragments, non-English entries, broken structure), REWRITE those parts into canonical form — preserving the substance, improving the form. Do not gratuitously rewrite what is already accurate and well-formed; do not re-derive content from history.
 
 - New stable fact about the user → fold it into the Profile paragraph (or Identity head if it is a name/address fact).
 - Current situation that will fade → a Recent line with \`since: <today>\`.
 - A user correction / explicit preference → update the Profile paragraph and/or Self-model to reflect it.
-- Nothing new → output the card UNCHANGED (verbatim) with a short reasoning.
+- Fragmented or non-English content → rewrite it cleanly: the Profile as ONE flowing English paragraph, every entry in English.
+- Nothing new AND the card is already clean → output the card UNCHANGED (verbatim) with a short reasoning.
 
 ## Caps (hard — the updater enforces them too)
 
