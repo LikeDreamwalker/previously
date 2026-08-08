@@ -379,11 +379,15 @@ function Inner({ children }: { children: React.ReactNode }) {
     // not while it's still streaming, finished, or a fresh POST is in flight.
     if (status !== "error") return;
     void resumeStream().catch((err) => {
-      // A 404 means the run already ended/expired — the turn is done, not an
-      // error worth surfacing. Anything else: leave the turn in "error" so the
-      // existing error banner shows it.
+      // A 404 / "Run not available" means the run already ended/expired — the
+      // stored runId is stale, so clear it (otherwise every refresh keeps
+      // reconnecting to this dead run). A network error ("Failed to fetch")
+      // leaves it — the run may still be alive and retryable. Anything else is
+      // surfaced via the existing error banner.
       const msg = err instanceof Error ? err.message : String(err);
-      if (!/404|Run not available|Failed to fetch/.test(msg)) {
+      if (/404|Run not available/.test(msg)) {
+        clearStoredRunId();
+      } else if (!/Failed to fetch/.test(msg)) {
         console.warn("[chat] reconnect failed:", msg);
       }
     });
@@ -410,8 +414,13 @@ function Inner({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!readStoredRunId()) return;
     void resumeStream().catch((err) => {
+      // Same stale-runId handling as attemptReconnect: a dead run's id is
+      // cleared so a fresh refresh doesn't retry it; a transient network error
+      // keeps it (the run may still be active).
       const msg = err instanceof Error ? err.message : String(err);
-      if (!/404|Run not available|Failed to fetch/.test(msg)) {
+      if (/404|Run not available/.test(msg)) {
+        clearStoredRunId();
+      } else if (!/Failed to fetch/.test(msg)) {
         console.warn("[chat] reload reconnect failed:", msg);
       }
     });
