@@ -41,6 +41,11 @@ import {
 import { readStrands } from "@/lib/episodic";
 import { migrateToV3 } from "@/lib/episodic/previously-format";
 import {
+  annotateSliceWithLocalTime,
+  sliceLocalBanner,
+  sliceIdLocalClock,
+} from "@/lib/episodic/time-localize";
+import {
   splitTurns,
   splitParagraphs,
   segmentSearch,
@@ -96,6 +101,14 @@ export interface ToolContext {
    * Set on the chat tool set; loops resolve it separately via their input.
    */
   workerModel?: ModelConfig;
+  /**
+   * The user's IANA timezone (e.g. "Asia/Shanghai") — read tools use it to
+   * pre-render local-time annotations so the agent never converts UTC itself.
+   * Set on the chat tool set; absent on the loop tool set.
+   */
+  timezone?: string;
+  /** The turn's start instant (UTC ISO) — anchors local-time rendering. */
+  startedAtIso?: string;
 }
 
 /**
@@ -209,6 +222,7 @@ export async function readSliceExecute(
     else raw = await readFileLocal(path);
 
     // Apply range filter if requested
+    let content: string;
     if (range) {
       // Keyword search — the Document Segment Read protocol. Matches return
       // only the relevant turns; a miss degrades to the full slice with a note.
@@ -217,29 +231,32 @@ export async function readSliceExecute(
         const context = range.context ?? 1;
         const segments = splitTurns(raw);
         const hits = segmentSearch(segments, keywords, context, context);
-        return searchResultToString(sliceId, keywords, hits, raw);
-      }
-
-      // Line range — read the file like a code file, 1-indexed inclusive.
-      if (range.type === "lines") {
-        const { content, clamped } = textLines(raw, range.start ?? 1, range.end ?? 1);
-        if (content === "" && (range.start ?? 1) > (range.end ?? 1)) {
+        content = searchResultToString(sliceId, keywords, hits, raw);
+      } else if (range.type === "lines") {
+        // Line range — read the file like a code file, 1-indexed inclusive.
+        const { content: lineContent, clamped } = textLines(raw, range.start ?? 1, range.end ?? 1);
+        if (lineContent === "" && (range.start ?? 1) > (range.end ?? 1)) {
           return `ERROR: Invalid line range ${range.start}-${range.end} in ${sliceId}.`;
         }
         const header = `Lines ${range.start}-${range.end} of ${sliceId}${clamped ? " (clamped)" : ""}:\n\n`;
-        return content === "" ? `${header}(empty range)` : header + content;
+        content = lineContent === "" ? `${header}(empty range)` : header + lineContent;
+      } else {
+        // Classic turn filters.
+        const { frontmatter, turns } = parseTurns(raw);
+        const filtered = applyRange(turns, range as { type: "turns" | "last" | "date" });
+        content =
+          filtered.length === 0
+            ? `${frontmatter}\n\n_(No turns matched the requested range.)_`
+            : reassembleSlice(frontmatter, filtered);
       }
-
-      // Classic turn filters.
-      const { frontmatter, turns } = parseTurns(raw);
-      const filtered = applyRange(turns, range as { type: "turns" | "last" | "date" });
-      if (filtered.length === 0) {
-        return `${frontmatter}\n\n_(No turns matched the requested range.)_`;
-      }
-      return reassembleSlice(frontmatter, filtered);
+    } else {
+      content = raw;
     }
 
-    return raw;
+    // Pre-render the user's local time so the agent never converts UTC itself.
+    return ctx.timezone
+      ? annotateSliceWithLocalTime(content, ctx.timezone, sliceId)
+      : content;
   } catch (e) {
     const msg = domainError(e);
     if (msg === null) throw e;
@@ -384,7 +401,11 @@ export async function readPreviouslyExecute(
       : ctx.useGithub
         ? await readFile(path, ctx.repo, ctx.owner)
         : await readFileLocal(path);
-    return raw.trim() ? migrateToV3(raw, sid) : raw;
+    const content = raw.trim() ? migrateToV3(raw, sid) : raw;
+    if (!ctx.timezone || content === "") return content;
+    // Prepend the user-local time banner so the model knows when the snapshot
+    // was taken without converting the UTC Updated stamp itself.
+    return `${sliceLocalBanner(sid, ctx.timezone)}\n\n${content}`;
   } catch (e) {
     const msg = domainError(e);
     if (msg === null) throw e;
@@ -636,11 +657,21 @@ export async function recallExecute(
       result.hits.length === 0
         ? "No relevant past conversations were found for this query. This is a definitive result — do NOT call recall again for this topic; answer from the conversation and your knowledge."
         : undefined;
+
+    // Pre-render each hit's local clock (from its UTC-derived slice id) so the
+    // agent knows WHEN a past conversation happened without converting itself.
+    const annotateReason = (reason: string, sliceId: string) => {
+      const clock = ctx.timezone ? sliceIdLocalClock(sliceId, ctx.timezone) : null;
+      return clock ? `${reason}（本地 ${clock}）` : reason;
+    };
     return {
-      hits: result.hits,
+      hits: result.hits.map((h) => ({ ...h, reason: annotateReason(h.reason, h.slice_id) })),
       confidence: result.confidence,
       reasoning: result.reasoning,
-      recommendedReads: result.recommendedReads,
+      recommendedReads: result.recommendedReads.map((r) => ({
+        ...r,
+        reason: annotateReason(r.reason, r.slice_id),
+      })),
       ...(emptyNote ? { note: emptyNote } : {}),
     };
   } catch (err) {

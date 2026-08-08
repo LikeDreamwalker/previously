@@ -403,6 +403,9 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
       // their prefix so provider prompt-cache hits span main + sub calls.
       baseSystemPrompt: systemPrompt,
       workerModel: input.workerModel,
+      // Read tools pre-render user-local time from these (see time-localize.ts).
+      timezone: input.clientTimezone,
+      startedAtIso: input.startedAtIso,
     }),
     // Fire after every COMPLETED LLM step: keep the written text for a possible
     // timeout continuation. (The killed step itself never completes, so its
