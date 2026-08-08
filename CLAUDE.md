@@ -192,11 +192,13 @@ DEEPSEEK_API_KEY set?
           └─ YES → Production: full read/write, loops available.
 ```
 
-## Current Phase (v0.5.3)
+## Current Phase (v0.7)
 
-**Goal**: Model selection & the worker tier. Multi-provider chat model switching (models.dev catalog + provider dispatch), a configurable worker model for the housekeeping-class calls, and a per-turn priming/analyze pipeline (restored identity, time-aware brief, intent, slice marking) that makes recall and continuity first-class.
+**Goal**: Memory-layer redesign — previously.md becomes a compact **user card** (structured identity head + one rolling profile paragraph + 7-day recent items + a delta-only self-model list) edited in place; belief evolution fires **once per closed slice** (plus an explicit user-confirmed trigger) instead of every turn; all read tools pre-render the user's local time; trivial turns are semantically gated from tags/strands; and the model can surface a confirm bubble to fold a durable user preference into memory.
 
-Branch: `feature/v0.5.3-model-selection`
+Branch: `feature/v0.6-background-first`
+
+Key pieces: `src/lib/episodic/time-localize.ts` (server-side local-time annotation), the card format in `previously-format.ts` + `applyCardUpdate` in `previously-updater.ts`, the slice-close evolution trigger in `chat-page.tsx` / `evolution/*`, the `memory_worthy` semantic gate in `turn-analyzer.ts`, and the `suggestMemoryUpdate` tool + confirm bubble.
 
 ## Constraints
 
