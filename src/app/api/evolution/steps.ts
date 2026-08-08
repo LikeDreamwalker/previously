@@ -24,6 +24,15 @@ import { readFile } from "@/lib/tools/readFile";
 import { readFileLocal } from "@/lib/tools/local-fs";
 import { readFileDemo } from "@/lib/demo/demo-fs";
 import { parseSliceId, parseTurns, type ParsedTurn } from "@/lib/episodic/turn-parser";
+import matter from "gray-matter";
+import type { PreviouslySignal } from "@/lib/episodic/flash/previously-agent";
+
+const VALID_SIGNALS: PreviouslySignal[] = [
+  "new_observation",
+  "user_correction",
+  "slice_closed",
+  "self_reflection",
+];
 
 // ─── Shared types ──────────────────────────────────────────────────────────
 
@@ -44,6 +53,8 @@ export async function readEvolutionContext(input: {
   owner: string;
   useGithub: boolean;
   useDemo: boolean;
+  /** Target slice to evolve — a just-closed slice (v0.7), else the active one. */
+  sliceId?: string;
 }): Promise<EvolutionContext> {
   "use step";
 
@@ -57,7 +68,8 @@ export async function readEvolutionContext(input: {
   } as UIMessageChunk);
   writer.releaseLock();
 
-  // Find the current slice — scan today's directory
+  // Find the target slice — an explicit sliceId (a just-closed slice) wins;
+  // otherwise scan today's directory for the active slice.
   let sliceId = "unknown";
   let previouslyContent = "";
   let agentCognition = "";
@@ -65,17 +77,22 @@ export async function readEvolutionContext(input: {
   let currentSliceTags: string[] = [];
 
   try {
-    const slice = await tryLoadTodaySlice();
-    if (slice) {
-      sliceId = slice.slice_id;
-      currentSliceTags = slice.tags ?? [];
-      // Read previously.md and agent.md — FULL content, no truncation
-      try { previouslyContent = await readPreviously(sliceId); } catch { /* empty */ }
-      try { agentCognition = await readAgentTimeline(sliceId); } catch { /* empty */ }
+    let targetId = input.sliceId?.trim() ?? "";
+    if (!targetId) {
+      const active = await tryLoadTodaySlice();
+      targetId = active?.slice_id ?? "";
+    }
 
-      // Extract recent turns — last 3 only (incremental), FULL content no truncation
+    if (targetId) {
+      sliceId = targetId;
+      // Read previously.md and agent.md — FULL content, no truncation
+      try { previouslyContent = await readPreviously(targetId); } catch { /* empty */ }
+      try { agentCognition = await readAgentTimeline(targetId); } catch { /* empty */ }
+
+      // Extract recent turns — last 3 only (incremental), FULL content no
+      // truncation — plus the slice's frontmatter tags.
       try {
-        const corePath = sliceIdToFilePath(sliceId);
+        const corePath = sliceIdToFilePath(targetId);
         let raw: string;
         if (input.useDemo) raw = await readFileDemo(corePath);
         else if (input.useGithub) raw = await readFile(corePath, input.repo, input.owner);
@@ -86,8 +103,11 @@ export async function readEvolutionContext(input: {
           role: t.header.includes("(user)") ? "user" : "agent",
           content: t.content,
         }));
+        const fmTags = matter(raw).data?.tags;
+        if (Array.isArray(fmTags)) {
+          currentSliceTags = fmTags.filter((t): t is string => typeof t === "string");
+        }
       } catch { /* no core.md yet */ }
-
     } else {
       // No active slice — try most recent previously.md from any slice
       try {
@@ -112,6 +132,8 @@ export async function finalizeEvolution(
     useGithub: boolean;
     useDemo: boolean;
     workerModel: import("@/lib/models/registry").ModelConfig;
+    /** Previously Agent signal from the trigger (slice_closed / user_correction). */
+    signal?: string;
   },
   context: EvolutionContext,
 ): Promise<void> {
@@ -152,7 +174,20 @@ export async function finalizeEvolution(
   } as UIMessageChunk);
   writer0.releaseLock();
 
-  // Run Previously Agent — always signal new_observation for auto-review
+  // Run Previously Agent — the signal comes from the trigger (slice_closed /
+  // user_correction), defaulting to new_observation.
+  const signal: PreviouslySignal = VALID_SIGNALS.includes(
+    (input.signal ?? "") as PreviouslySignal,
+  )
+    ? (input.signal as PreviouslySignal)
+    : "new_observation";
+  const note =
+    signal === "slice_closed"
+      ? `Slice ${sliceId} closed — deep review of the whole conversation.`
+      : signal === "user_correction"
+        ? "User confirmed an explicit memory update."
+        : "Auto-review of latest conversation.";
+
   let changes = { added: 0, reinforced: 0, demoted: 0, removed: 0, superseded: 0 };
   let mutations: Awaited<ReturnType<typeof runPreviouslyAgent>>["mutations"] = [];
   let reformatted = false;
@@ -160,10 +195,12 @@ export async function finalizeEvolution(
 
   try {
     const result = await runPreviouslyAgent({
-      signal: "new_observation",
-      note: "Auto-review of latest conversation.",
+      signal,
+      note,
       model: input.workerModel,
       currentSliceId: sliceId,
+      // Deep mode — read the closed slice's conversation/agent.md for patterns.
+      closedSliceId: signal === "slice_closed" ? sliceId : undefined,
       previouslyContent,
       agentCognition,
       recentTurns,

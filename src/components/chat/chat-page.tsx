@@ -491,12 +491,11 @@ function Inner({ children }: { children: React.ReactNode }) {
     }
     setLastUserMessageAt(new Date().toISOString());
     sendMessage({ role: "user", parts: [{ type: "text", text: message }] });
-    if (!demoStreaming) {
-      fireEvolution();
-    }
+    // v0.7: evolution is no longer fired per turn — it runs once per closed
+    // slice (see the slice-closed watcher below) plus explicit user triggers.
   };
 
-  const fireEvolution = useCallback(async () => {
+  const fireEvolution = useCallback(async (opts?: { sliceId?: string; signal?: string }) => {
     if (evolutionRunningRef.current) return;
     const controller = new AbortController();
     evolutionAbortRef.current = controller;
@@ -507,6 +506,8 @@ function Inner({ children }: { children: React.ReactNode }) {
     try {
       const res = await fetch("/api/evolution", {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sliceId: opts?.sliceId, signal: opts?.signal }),
         signal: controller.signal,
       });
 
@@ -555,6 +556,27 @@ function Inner({ children }: { children: React.ReactNode }) {
       evolutionRunningRef.current = false;
     }
   }, []);
+
+  // v0.7: evolution fires once per CLOSED slice (not every turn). The
+  // housekeeping step emits a "slice-closed" data-phase part carrying the closed
+  // slice id; watch for it and trigger the evolution run, once per message.
+  const firedEvolutionForRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (demoStreaming) return;
+    const last = messages[messages.length - 1];
+    if (!last || last.role !== "assistant") return;
+    if (firedEvolutionForRef.current.has(last.id)) return;
+    const closed = last.parts.find(
+      (p) =>
+        p.type === "data-phase" &&
+        (p as { data?: { phase?: string; summaries?: string[] } }).data?.phase ===
+          "slice-closed",
+    );
+    if (!closed) return;
+    firedEvolutionForRef.current.add(last.id);
+    const sliceId = (closed as { data?: { summaries?: string[] } }).data?.summaries?.[0];
+    void fireEvolution({ sliceId, signal: "slice_closed" });
+  }, [messages, fireEvolution, demoStreaming]);
 
   const showingLive = selectedSliceId === "now";
 

@@ -1,10 +1,14 @@
 /**
  * POST /api/evolution — fire the self-evolution workflow.
  *
- * The client fires this in parallel with /api/chat on every user message.
- * The handler is intentionally thin: resolve the data source and start the
- * durable workflow run. No client body is needed — the evolution workflow
- * discovers the current slice and reads everything from files.
+ * The client fires this once per CLOSED slice (v0.7, via a "slice-closed"
+ * stream signal) and on explicit user confirmation. The handler is thin:
+ * resolve the data source and start the durable workflow run.
+ *
+ * Optional JSON body:
+ *   { sliceId?, signal? } — when sliceId is given, evolution reads THAT slice
+ *   (e.g. the slice that just closed) instead of the current active one;
+ *   signal selects the Previously Agent mode (defaults to "new_observation").
  */
 
 import { start } from "workflow/api";
@@ -15,7 +19,7 @@ import { resolveDataSource, isDemo } from "@/lib/data-source/resolve";
 import { resolveWorkerModel } from "@/lib/models/worker";
 import { createMixedStreamTransform } from "@/app/api/chat/mixed-stream-transform";
 
-export async function POST(): Promise<Response> {
+export async function POST(request: Request): Promise<Response> {
   const { owner, repo } = getRepoConfig();
   const dataSource = resolveDataSource();
   const useGithub = dataSource === "github";
@@ -39,6 +43,18 @@ export async function POST(): Promise<Response> {
     });
   }
 
+  // Optional body: { sliceId, signal } — sliceId targets a specific (e.g. just
+  // closed) slice; signal selects the Previously Agent mode.
+  let sliceId: string | undefined;
+  let signal: string | undefined;
+  try {
+    const body = (await request.json()) as { sliceId?: string; signal?: string };
+    sliceId = typeof body.sliceId === "string" && body.sliceId ? body.sliceId : undefined;
+    signal = typeof body.signal === "string" && body.signal ? body.signal : undefined;
+  } catch {
+    // No body (legacy trigger) — defaults apply.
+  }
+
   const workerModel = await resolveWorkerModel();
   const run = await start(evolutionWorkflow, [
     {
@@ -47,6 +63,8 @@ export async function POST(): Promise<Response> {
       useGithub,
       useDemo,
       workerModel,
+      sliceId,
+      signal,
     },
   ]);
 
