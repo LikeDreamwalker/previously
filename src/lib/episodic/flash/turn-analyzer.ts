@@ -49,6 +49,10 @@ export interface NewTagProposal {
   reason: string;
 }
 
+/** Best-fit card section for an explicit memory update. */
+export const CARD_SECTIONS = ["identity", "profile", "recent", "self_model"] as const;
+export type CardSection = (typeof CARD_SECTIONS)[number];
+
 export interface TurnAnalysis {
   /**
    * Merge-first tags: `reuse` are existing strand names picked verbatim from
@@ -66,6 +70,11 @@ export interface TurnAnalysis {
    * skips tag extraction and strand writes.
    */
   memoryWorthy: boolean;
+  /**
+   * Present only when the user EXPLICITLY asked to record/evolve ("记住：…",
+   * "自进化", "更新前情提要"). Carries the exact content to fold into the card.
+   */
+  memoryUpdate?: { content: string; section?: CardSection };
   closedMarking?: ClosedMarking;
 }
 
@@ -124,6 +133,25 @@ const analyzeSchema = z.object({
     "acknowledgments, 'continue', 'ok', thanks, small talk — are false. Controls whether tags " +
     "are extracted and memory evolves.",
   ),
+  memory_update: z
+    .object({
+      content: z.string().describe(
+        "The EXACT durable fact/preference the user asked to record, in English — third person " +
+        "about the user ('User prefers…'), first person about the agent ('Always summarize before " +
+        "answering').",
+      ),
+      section: z
+        .enum(CARD_SECTIONS)
+        .optional()
+        .describe(
+          "Best-fit card section: identity | profile | recent | self_model. Omit when unsure.",
+        ),
+    })
+    .optional()
+    .describe(
+      "Set ONLY when the user EXPLICITLY asked to record something or run self-evolution " +
+      "('记住：…', '自进化', '更新前情提要', 'record this'). Extract the exact content. Omit otherwise.",
+    ),
   closed_marking: z
     .object({
       focus: z.string().describe("One sentence: what this session was about."),
@@ -198,7 +226,9 @@ Return intent: { type: "code_debug" | "code_write" | "explain" | "chat" | "revie
 
 Is this a substantive exchange that should update memory (a new fact about the user, a preference, a correction, or a real discussion)? Or is it trivial — a greeting, acknowledgment, "继续", "ok", thanks, or small talk?
 
-Return memory_worthy: true only when the turn contains durable information worth tagging and evolving. Trivial turns are false.${closingSection}`;
+Return memory_worthy: true only when the turn contains durable information worth tagging and evolving. Trivial turns are false.
+
+If the user EXPLICITLY asked to record something or run self-evolution ("记住：…", "自进化", "更新前情提要", "record this") — regardless of memory_worthy — ALSO return memory_update with the exact content (English) + the best-fit card section. Omit memory_update otherwise.${closingSection}`;
 }
 
 const EMPTY: TurnAnalysis = {
@@ -250,6 +280,12 @@ export async function analyzeTurn(input: AnalyzeTurnInput): Promise<TurnAnalysis
         ? { type: d.intent.type, reason: d.intent.reason }
         : undefined,
       memoryWorthy: d.memory_worthy,
+      memoryUpdate: d.memory_update
+        ? {
+            content: d.memory_update.content,
+            section: d.memory_update.section,
+          }
+        : undefined,
       closedMarking: d.closed_marking
         ? {
             focus: typeof d.closed_marking.focus === "string" ? d.closed_marking.focus.trim() : "",

@@ -328,6 +328,7 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
     strandsMenu,
     turnPriming,
     identityPrompt,
+    evolutionResult,
   } = await housekeeping(input);
 
   // ── Assemble system prompt ──────────────────────────────────────────────
@@ -345,6 +346,9 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
     "The above is the current profile and operating model — distilled hypotheses, each carrying `refs` to its evidence. If any line seems outdated or contradicts what the user just said, cite its refs and say so; the correction flows into the archive.",
     strandsMenu
       ? `## Memory topics\n\n${strandsMenu}\nWhen the user mentions these topics, use recall to search for related memories. If a search finds nothing relevant, do not retry it — answer from what you have.`
+      : "",
+    evolutionResult?.ran
+      ? `[System] A self-evolution just completed — the previously card was updated${evolutionResult.changed ? "" : " (no change)"}. The latest card is provided above. Acknowledge this to the user if they asked for it.`
       : "",
     input.useDemo
       ? `## Demo mode (read-only)\n\nYou are running in demo mode. You can browse sample data, recall past conversations, and search the live web — but **writes are not persisted**. No GitHub repo is connected; you are seeing pre-seeded sample memories.\n\nWhen the user asks to save anything, create memories, or start background tasks, tell them naturally:\n- This is demo mode and data cannot be saved\n- They need to deploy their own instance to unlock full read/write and background loop capabilities\n\nDeployment guide: ${DEPLOY_GUIDE_URL}\n\nIt's perfectly normal for users to explore in demo mode — help them understand what this product can do and what they'll get after deploying.`

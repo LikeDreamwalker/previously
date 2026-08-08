@@ -99,6 +99,36 @@ describe("analyzeTurn", () => {
     expect(result.memoryWorthy).toBe(false);
   });
 
+  it("extracts an explicit memory update request", async () => {
+    ai.generateText.mockResolvedValue(
+      makeToolCall({
+        message_tags: { reuse: [], create: [] },
+        semantic_hint: { strands: [], reason: "" },
+        intent: { type: "chat", reason: "user asked to record a preference" },
+        memory_worthy: true,
+        memory_update: { content: "User prefers answers in Chinese from now on", section: "profile" },
+      }),
+    );
+    const result = await analyzeTurn({ model, userMessage: "记住：以后都用中文回答", existingStrandNames: [] });
+    expect(result.memoryUpdate).toEqual({
+      content: "User prefers answers in Chinese from now on",
+      section: "profile",
+    });
+  });
+
+  it("omits memory_update when the user did not explicitly ask", async () => {
+    ai.generateText.mockResolvedValue(
+      makeToolCall({
+        message_tags: { reuse: [], create: [] },
+        semantic_hint: { strands: [], reason: "" },
+        intent: { type: "chat", reason: "greeting" },
+        memory_worthy: false,
+      }),
+    );
+    const result = await analyzeTurn({ model, userMessage: "你好", existingStrandNames: [] });
+    expect(result.memoryUpdate).toBeUndefined();
+  });
+
   it("omits closed marking when no slice is closing", async () => {
     ai.generateText.mockResolvedValue(
       makeToolCall({

@@ -733,11 +733,12 @@ export async function writeCurrentPreviously(content: string): Promise<void> {
 /**
  * Ensure the LIVE card exists and return it — every turn injects this.
  *
- * v0.7 "real-time card": the conversation reads the most recently evolved card,
- * not a stale per-slice copy. Seeded once from the latest snapshot (or a fresh
- * template), then maintained by evolution via `writeCurrentPreviously`. The
- * per-slice copy is also seeded as a history snapshot for the timeline view;
- * evolution overwrites it with the proper snapshot at slice close.
+ * v0.7b synchronous design: the boundary turn evolves the live card BEFORE the
+ * new slice is created, then this copies the live card to the new slice's
+ * per-slice file — so the agent uses a freshly-evolved card, never a stale one.
+ * The live card is seeded once from the latest snapshot (or a template), then
+ * maintained by the inline evolution via `writeCurrentPreviously`. Closed
+ * slices keep the snapshot evolution wrote at close.
  */
 export async function ensurePreviously(sliceId: string): Promise<string> {
   // Live card — what the current conversation injects. Normalize a legacy
@@ -757,10 +758,11 @@ export async function ensurePreviously(sliceId: string): Promise<string> {
     await writeCurrentPreviously(current);
   }
 
-  // Historical per-slice copy (what the timeline/history view shows if this
-  // slice is viewed before it closes + evolves). Seeded from the live card.
+  // Copy the live card to this slice's per-slice file (the agent uses the new
+  // slice's card). Only writes when they differ — within a slice the live card
+  // is stable, so this is a single fresh write at slice creation, then silent.
   const existing = await readPreviouslyRaw(sliceId);
-  if (!existing.trim()) {
+  if (existing !== current) {
     await writePreviously(sliceId, current);
   }
 

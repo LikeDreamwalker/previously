@@ -69,6 +69,14 @@ export interface TurnInput {
   turnId: string;
 }
 
+/** Summary of a synchronous card evolution run (v0.7b — inline in housekeeping). */
+export interface EvolutionResult {
+  ran: boolean;
+  changed: boolean;
+  droppedRecent: number;
+  note: string;
+}
+
 /** Result of the housekeeping step — slice + prepared context for the agent. */
 export interface HousekeepingResult {
   slice: TimeSlice;
@@ -87,6 +95,8 @@ export interface HousekeepingResult {
    * section. Injected into the system prompt. See src/lib/identity.
    */
   identityPrompt: string;
+  /** Present when a synchronous card evolution ran this turn (slice close or explicit request). */
+  evolutionResult?: EvolutionResult;
 }
 
 /** A background loop the agent started during this turn (for slice writeback). */

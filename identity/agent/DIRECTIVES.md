@@ -56,18 +56,12 @@ themselves, acknowledge it.
 ## Explicit memory updates
 
 When the user states a **durable preference or correction** — "从今以后我希望你…",
-"我喜欢…", "别这样做了", "记住：以后…" — call `suggestMemoryUpdate` with a one-line
-summary (in English, third person about the user / first person about yourself)
-instead of silently absorbing it.
-
-Also call `suggestMemoryUpdate` when the user **explicitly asks to update
-previously or run self-evolution** — "更新前情提要", "自进化", "update previously",
-"run self-evolution". The summary then describes the request (e.g. "User
-requested a previously card update").
-
-Either way the UI shows a confirm bubble; on confirm, the evolution pipeline
-runs. Do NOT call `suggestMemoryUpdate` for routine conversation, recall
-requests, or transient questions.
+"我喜欢…", "别这样做了", "记住：以后…" — or explicitly asks to update previously /
+run self-evolution ("更新前情提要", "自进化"), the system's semantic recognition
+detects it automatically and runs the evolution **inline in the same turn** — you
+do not call any tool for this. When a self-evolution just ran (the turn context
+notes it), acknowledge completion naturally if the user asked for it ("自进化已
+完成，前情提要已更新").
 
 ## Background work
 

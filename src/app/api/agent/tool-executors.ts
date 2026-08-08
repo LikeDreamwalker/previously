@@ -450,27 +450,6 @@ export async function readPreviouslyExecute(
   }
 }
 
-// ── suggestMemoryUpdate — passive marker for an explicit memory update ──
-
-export interface SuggestMemoryUpdateInput {
-  /** One-line summary of the durable preference / correction the user expressed. */
-  summary: string;
-}
-
-/**
- * Passive marker only — NO memory is written here. The model calls this when
- * the user expresses a durable preference / correction ("从今以后我希望你…").
- * The client renders a confirm bubble; on confirm it fires the evolution
- * workflow with `signal: "user_correction"` to fold the change into the card.
- */
-export async function suggestMemoryUpdateExecute(
-  { summary }: SuggestMemoryUpdateInput,
-  _opts: ExecuteOpts<ToolContext>,
-): Promise<{ ok: boolean; status: "pending"; summary: string }> {
-  "use step";
-  return { ok: true, status: "pending", summary: summary.trim() };
-}
-
 // ─── Chat-only executors ─────────────────────────────────────────────────
 
 /**

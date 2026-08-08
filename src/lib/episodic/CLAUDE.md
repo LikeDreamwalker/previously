@@ -51,7 +51,7 @@ File storage is abstracted behind a local-filesystem vs. GitHub API switch, gate
 
 ### 4. Belief evolution (once per closed slice + explicit trigger)
 
-1. The evolution workflow fires once per CLOSED slice (the client watches a `slice-closed` data-phase) and on explicit user confirmation (`suggestMemoryUpdate` → `user_correction`) — not every turn.
+1. The evolution runs INLINE in the housekeeping step (v0.7b) — synchronously on a slice close and on an explicit user request (detected by `analyzeTurn`'s `memory_update`). Progress streams via `data-evolution` chunks; the result is noted for the agent to acknowledge.
 2. `readEvolutionContext` reads the TARGET slice's previously.md and agent.md (full content), plus its last 3 turns; on `slice_closed` the closed slice id is passed for a deep review.
 3. The Previously Agent (worker, thinking off) edits the user card IN PLACE and returns the full `updated_card`.
 4. `applyCardUpdate()` validates the card and enforces the mechanical rules (7-day recent expiry, section caps, anti-conflict backstop), then it is written back.

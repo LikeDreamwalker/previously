@@ -479,7 +479,8 @@ describe("readPreviously (v3 migration on read)", () => {
     // Legacy v2 folds into the user-card structure (v4), keeping the identity fact.
     expect(content).toContain("Format: user card");
     expect(content).toContain("用户名叫 LikeDreamwalker");
-    expect(fsWriteFile).toHaveBeenCalledTimes(1);
+    // live card migration + the fresh per-slice copy.
+    expect(fsWriteFile).toHaveBeenCalledTimes(2);
   });
 
   it("does not rewrite already-v3 content in ensurePreviously", async () => {
@@ -504,20 +505,23 @@ describe("live current card (current-previously.md)", () => {
     vi.mocked(fsListFiles).mockReset();
   });
 
-  it("returns the LIVE card even when the per-slice copy is stale", async () => {
+  it("returns the LIVE card and copies it to the per-slice file when they differ", async () => {
     vi.mocked(fsReadFile)
       .mockResolvedValueOnce(CARD_B) // readCurrentPreviously → live card
-      .mockResolvedValueOnce(CARD_A); // readPreviouslyRaw(slice) → stale copy
+      .mockResolvedValueOnce(CARD_A); // readPreviouslyRaw(slice) → old copy
+    vi.mocked(fsWriteFile).mockResolvedValue({ path: "", created: true });
     const content = await ensurePreviously("2026-08-09-1000");
     expect(content).toBe(CARD_B);
+    // The stale per-slice copy is overwritten with the fresh live card.
+    expect(fsWriteFile).toHaveBeenCalledTimes(1);
   });
 
-  it("seeds the live card from a template when neither exists", async () => {
+  it("seeds the live card from a template when it does not exist", async () => {
     vi.mocked(fsReadFile).mockRejectedValue(new Error("ENOENT"));
     vi.mocked(fsWriteFile).mockResolvedValue({ path: "", created: true });
     const content = await ensurePreviously("2026-08-09-1000");
     expect(content).toContain("Format: user card");
-    // live card + per-slice seed
+    // live card + per-slice copy (slice has none yet).
     expect(fsWriteFile).toHaveBeenCalledTimes(2);
   });
 

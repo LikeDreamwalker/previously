@@ -176,8 +176,6 @@ function Inner({ children }: { children: React.ReactNode }) {
 
   const [lastUserMessageAt, setLastUserMessageAt] = useState<string | null>(null);
   const [evolutionState, setEvolutionState] = useState<EvolutionState | null>(null);
-  const evolutionAbortRef = useRef<AbortController | null>(null);
-  const evolutionRunningRef = useRef(false);
 
   // ── Timeline state ──────────────────────────────────────────────────────
   const [timelineSlices, setTimelineSlices] = useState<SliceSummary[]>([]);
@@ -477,13 +475,6 @@ function Inner({ children }: { children: React.ReactNode }) {
     [lastAssistantId],
   );
 
-  // Abort in-flight evolution on unmount
-  useEffect(() => {
-    return () => {
-      if (evolutionRunningRef.current) return;
-    };
-  }, []);
-
   const handleSubmit = (message: string) => {
     if (selectedSliceId !== "now") {
       setSelectedSliceId("now");
@@ -491,92 +482,31 @@ function Inner({ children }: { children: React.ReactNode }) {
     }
     setLastUserMessageAt(new Date().toISOString());
     sendMessage({ role: "user", parts: [{ type: "text", text: message }] });
-    // v0.7: evolution is no longer fired per turn — it runs once per closed
-    // slice (see the slice-closed watcher below) plus explicit user triggers.
+    // v0.7b: self-evolution runs INLINE inside housekeeping (the turn's stream
+    // carries data-evolution chunks) — no separate evolution request here.
   };
 
-  const fireEvolution = useCallback(async (opts?: { sliceId?: string; signal?: string }) => {
-    if (evolutionRunningRef.current) return;
-    const controller = new AbortController();
-    evolutionAbortRef.current = controller;
-    evolutionRunningRef.current = true;
-
-    setEvolutionState({ running: true, step: "reading" });
-
-    try {
-      const res = await fetch("/api/evolution", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sliceId: opts?.sliceId, signal: opts?.signal }),
-        signal: controller.signal,
-      });
-
-      if (!res.ok || !res.body) {
-        setEvolutionState({
-          running: false,
-          error: `Server returned ${res.status}`,
-        });
-        return;
-      }
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed.startsWith("data: ")) continue;
-          try {
-            const chunk = JSON.parse(trimmed.slice(6)) as
-              | { type?: string; data?: EvolutionState }
-              | undefined;
-            if (chunk?.type === "data-evolution" && chunk.data) {
-              setEvolutionState(chunk.data);
-            }
-          } catch {
-            // Skip unparseable lines
-          }
-        }
-      }
-    } catch (err) {
-      if (err instanceof DOMException && err.name === "AbortError") return;
-      setEvolutionState({
-        running: false,
-        error: err instanceof Error ? err.message : "Evolution request failed",
-      });
-    } finally {
-      evolutionRunningRef.current = false;
-    }
-  }, []);
-
-  // v0.7: evolution fires once per CLOSED slice (not every turn). The
-  // housekeeping step emits a "slice-closed" data-phase part carrying the closed
-  // slice id; watch for it and trigger the evolution run, once per message.
-  const firedEvolutionForRef = useRef<Set<string>>(new Set());
+  // v0.7b: watch the turn stream for data-evolution chunks and drive the
+  // EvolutionIndicator from them — the synchronous inline run streams reading →
+  // reviewing → result while the turn is processing, so the user sees progress.
+  const lastEvolutionDataRef = useRef<string>("");
   useEffect(() => {
     if (demoStreaming) return;
     const last = messages[messages.length - 1];
     if (!last || last.role !== "assistant") return;
-    if (firedEvolutionForRef.current.has(last.id)) return;
-    const closed = last.parts.find(
-      (p) =>
-        p.type === "data-phase" &&
-        (p as { data?: { phase?: string; summaries?: string[] } }).data?.phase ===
-          "slice-closed",
-    );
-    if (!closed) return;
-    firedEvolutionForRef.current.add(last.id);
-    const sliceId = (closed as { data?: { summaries?: string[] } }).data?.summaries?.[0];
-    void fireEvolution({ sliceId, signal: "slice_closed" });
-  }, [messages, fireEvolution, demoStreaming]);
+    let found: EvolutionState | undefined;
+    for (const p of last.parts) {
+      if (p.type === "data-evolution") {
+        found = (p as { data?: EvolutionState }).data ?? found;
+      }
+    }
+    if (!found) return;
+    const key = JSON.stringify(found);
+    if (key !== lastEvolutionDataRef.current) {
+      lastEvolutionDataRef.current = key;
+      setEvolutionState(found);
+    }
+  }, [messages, demoStreaming]);
 
   const showingLive = selectedSliceId === "now";
 

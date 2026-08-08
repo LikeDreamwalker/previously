@@ -27,7 +27,6 @@ import {
   recallExecute,
   thinkDeepExecute,
   loopReportExecute,
-  suggestMemoryUpdateExecute,
   type ToolContext,
   type LoopToolContext,
 } from "./tool-executors";
@@ -266,28 +265,6 @@ export const chatTools = {
     contextSchema: toolContextSchema,
     execute: recallExecute,
   }),
-  suggestMemoryUpdate: tool({
-    description:
-      "Call this when the user expresses a DURABLE preference or correction " +
-      "(\"from now on I want you to…\" / \"I like it when you…\"), OR explicitly asks to " +
-      "update previously / run self-evolution (\"更新前情提要\" / \"自进化\" / \"update " +
-      "previously\" / \"run self-evolution\"). It does NOT write memory itself; it " +
-      "surfaces a one-line summary so the user can confirm running the evolution " +
-      "workflow. Do NOT call it for routine conversation, recall requests, or " +
-      "transient questions.",
-    inputSchema: z.object({
-      summary: z
-        .string()
-        .describe(
-          "One-line summary, in English — a durable preference/correction " +
-          "(third person about the user 'User prefers…', first person about yourself " +
-          "'Always summarize before answering'), or the explicit update request " +
-          "('User requested a previously card update').",
-        ),
-    }),
-    contextSchema: toolContextSchema,
-    execute: suggestMemoryUpdateExecute,
-  }),
   webSearch: tool({
     description:
       "Search the live web for current or external information — news, " +
@@ -441,7 +418,6 @@ export function buildChatToolsContext(ctx: ToolContext): Record<keyof typeof cha
     webSearch: ctx,
     webFetch: ctx,
     thinkDeep: ctx,
-    suggestMemoryUpdate: ctx,
   };
 }
 
