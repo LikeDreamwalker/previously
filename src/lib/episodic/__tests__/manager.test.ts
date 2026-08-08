@@ -424,12 +424,11 @@ describe("sliceIdToPreviouslyPath", () => {
 // ─── emptyPreviouslyTemplate ────────────────────────────────────────────
 
 describe("emptyPreviouslyTemplate", () => {
-  it("is a v3 two-section template with the active slice header", () => {
+  it("is a user-card (v4) template with the active slice header", () => {
     const tmpl = emptyPreviouslyTemplate("2026-07-24-1445");
     expect(tmpl).toContain("# Previously On");
     expect(tmpl).toContain("_Active slice: 2026-07-24-1445");
-    expect(tmpl).toContain("## User profile");
-    expect(tmpl).toContain("## Self-model");
+    expect(tmpl).toContain("Format: user card");
   });
 });
 
@@ -475,7 +474,9 @@ describe("readPreviously (v3 migration on read)", () => {
     vi.mocked(fsReadFile).mockResolvedValue(LEGACY_V2_PREVIOUSLY);
     vi.mocked(fsWriteFile).mockResolvedValue({ path: "", created: true });
     const content = await ensurePreviously("2026-07-26-1539");
-    expect(content).toContain("## User profile");
+    // Legacy v2 folds into the user-card structure (v4), keeping the identity fact.
+    expect(content).toContain("Format: user card");
+    expect(content).toContain("用户名叫 LikeDreamwalker");
     expect(fsWriteFile).toHaveBeenCalledTimes(1);
   });
 

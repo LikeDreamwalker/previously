@@ -31,10 +31,16 @@ function str(value: unknown): string | undefined {
  * profile from the already-loaded previously content (pure parse, no I/O).
  */
 export function parseIdentityFromPreviously(previouslyContent: string): UserProfile | null {
-  // v3 first (identity under the User profile section), then the legacy v2 header.
+  // v4 card first (## Identity top-level section), then v3 (identity under the
+  // User profile section), then the legacy v2 header.
   let identityMatch = previouslyContent.match(
-    /### Identity & background[^\n]*\n([\s\S]*?)(?=\n### |\n## |\n*$)/,
+    /## Identity[^\n]*\n([\s\S]*?)(?=\n## |\n*$)/,
   );
+  if (!identityMatch) {
+    identityMatch = previouslyContent.match(
+      /### Identity & background[^\n]*\n([\s\S]*?)(?=\n### |\n## |\n*$)/,
+    );
+  }
   if (!identityMatch) {
     identityMatch = previouslyContent.match(
       /## User identity[^\n]*\n([\s\S]*?)(?=\n## |\n*$)/,

@@ -7,8 +7,14 @@ import {
   migrateToV3,
   isV2Format,
   isV3Format,
+  serializeCard,
+  parseCard,
+  newCardTemplate,
+  migrateV3ToCard,
+  isCardFormat,
   type PreviouslyDocument,
   type PreviouslyBelief,
+  type CardDocument,
 } from "@/lib/episodic/previously-format";
 
 // ─── Helpers ────────────────────────────────────────────────────────────
@@ -229,5 +235,63 @@ describe("migrateToV3", () => {
   it("returns already-v3 content unchanged", () => {
     const v3 = newPreviouslyTemplate("2026-08-05-1644");
     expect(migrateToV3(v3)).toBe(v3);
+  });
+});
+
+// ─── User card (v4) ─────────────────────────────────────────────────────
+
+describe("user card format (v4)", () => {
+  function card(overrides: Partial<CardDocument> = {}): CardDocument {
+    return {
+      sliceId: "2026-08-08-1200",
+      updated: "2026-08-08T12:00:00.000Z",
+      identity: ["Name: Alex", "Address them as: Alex"],
+      profile: "Alex is an AI engineer who prefers concise answers.",
+      recent: [
+        { text: "Evaluating a Rust migration", refs: ["2026/08/05/1420"], since: "2026-08-05" },
+      ],
+      selfModel: ["Prefer explicit low effort for simple checks."],
+      ...overrides,
+    };
+  }
+
+  it("round-trips a populated card through serializeCard / parseCard", () => {
+    const serialized = serializeCard(card());
+    expect(isCardFormat(serialized)).toBe(true);
+    const parsed = parseCard(serialized)!;
+    expect(parsed.sliceId).toBe("2026-08-08-1200");
+    expect(parsed.identity).toEqual(["Name: Alex", "Address them as: Alex"]);
+    expect(parsed.profile).toContain("concise answers");
+    expect(parsed.recent[0]).toEqual({
+      text: "Evaluating a Rust migration",
+      refs: ["2026/08/05/1420"],
+      since: "2026-08-05",
+    });
+    expect(parsed.selfModel).toEqual(["Prefer explicit low effort for simple checks."]);
+  });
+
+  it("produces an empty template that parses back", () => {
+    const tpl = newCardTemplate("2026-08-08-1200");
+    expect(isCardFormat(tpl)).toBe(true);
+    const parsed = parseCard(tpl)!;
+    expect(parsed.identity).toEqual([]);
+    expect(parsed.profile).toBe("");
+    expect(parsed.recent).toEqual([]);
+    expect(parsed.selfModel).toEqual([]);
+  });
+
+  it("is distinct from v3 — migrateToV3 never downgrades a card", () => {
+    const serialized = serializeCard(card());
+    expect(isV3Format(serialized)).toBe(false);
+    expect(migrateToV3(serialized)).toBe(serialized);
+  });
+
+  it("migrates a v3 document into the card structure", () => {
+    const v3 = docWithIdentity("User is named Alex, an AI engineer");
+    const migrated = migrateV3ToCard(v3, "2026-08-08-1200");
+    expect(isCardFormat(migrated)).toBe(true);
+    const parsed = parseCard(migrated)!;
+    // identity bullet folded into the Identity head
+    expect(parsed.identity.join(" ")).toContain("named Alex");
   });
 });

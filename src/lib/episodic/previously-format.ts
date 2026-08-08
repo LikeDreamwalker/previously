@@ -489,6 +489,7 @@ function legacyItemsToBeliefs(items: Array<{ text: string; meta: string }>): Pre
  * Already-v3 content is returned unchanged.
  */
 export function migrateToV3(content: string, currentSliceId?: string): string {
+  if (isCardFormat(content)) return content; // v4 card — never downgrade to v3
   if (isV3Format(content)) return content;
 
   const sliceId =
@@ -543,4 +544,177 @@ export function migrateToV3(content: string, currentSliceId?: string): string {
   }
 
   return serializePreviously(doc);
+}
+
+// ─── User card format (v4) ──────────────────────────────────────────────────
+
+/**
+ * v4 "user card" — the compact successor to the v3 dimension archive.
+ *
+ * Structured identity head (machine-parsed) + ONE rolling profile paragraph
+ * (hard-capped, updated IN PLACE by the evolution agent) + a short 7-day
+ * recent-items list + a compact self-model list. The card is the stable,
+ * byte-identical-within-a-slice snapshot that keeps the main agent's prompt
+ * prefix cacheable; slices remain the lossless source of truth and every entry
+ * keeps its `refs` so the agent can drill down with readSlice.
+ */
+export const CARD_STAMP = "Format: user card";
+/** Recent-items older than this many days are dropped mechanically. */
+export const CARD_RECENT_EXPIRY_DAYS = 7;
+/** Hard caps — enforced by the card updater after every rewrite. */
+export const CARD_RECENT_MAX = 5;
+export const CARD_SELF_MODEL_MAX = 10;
+/** Hard ceiling for the Profile paragraph (~600 tokens worst case). */
+export const CARD_PROFILE_MAX_CHARS = 2400;
+
+export interface CardRecentItem {
+  text: string;
+  refs: string[];
+  /** ISO date the item was recorded — used for the 7-day expiry. */
+  since: string;
+}
+
+export interface CardDocument {
+  sliceId: string;
+  updated: string;
+  /** Structured identity head lines (Name: … / Address them as: … / Pronouns: …). */
+  identity: string[];
+  /** The rolling third-person profile paragraph. */
+  profile: string;
+  recent: CardRecentItem[];
+  selfModel: string[];
+}
+
+/** Detect the v4 user-card format — the stamp is authoritative (sections can be empty). */
+export function isCardFormat(content: string): boolean {
+  return (
+    content.includes(CARD_STAMP) ||
+    (content.includes("## Profile") && content.includes("## Identity"))
+  );
+}
+
+/** Create an empty user-card template. */
+export function newCardTemplate(sliceId: string): string {
+  return serializeCard({
+    sliceId,
+    updated: new Date().toISOString(),
+    identity: [],
+    profile: "",
+    recent: [],
+    selfModel: [],
+  });
+}
+
+/** Serialize a CardDocument to markdown. Empty sections are omitted. */
+export function serializeCard(doc: CardDocument): string {
+  const lines: string[] = ["# Previously On", ""];
+  lines.push(
+    `_Active slice: ${doc.sliceId} | ${CARD_STAMP} | Updated: ${doc.updated}_`,
+    "",
+  );
+
+  if (doc.identity.length > 0) {
+    lines.push("## Identity", "");
+    for (const line of doc.identity) lines.push(`- ${stripInlineComments(line)}`, "");
+  }
+  if (doc.profile.trim()) {
+    lines.push("## Profile", "", doc.profile.trim(), "");
+  }
+  if (doc.recent.length > 0) {
+    lines.push("## Recent", "");
+    for (const r of doc.recent) {
+      const refs = r.refs.length > 0 ? ` — refs: ${r.refs.map((x) => `[${x}]`).join(", ")}` : "";
+      lines.push(`- ${stripInlineComments(r.text)}${refs} | since: ${r.since}`, "");
+    }
+  }
+  if (doc.selfModel.length > 0) {
+    lines.push("## Self-model", "");
+    for (const s of doc.selfModel) lines.push(`- ${stripInlineComments(s)}`, "");
+  }
+
+  return lines.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd() + "\n";
+}
+
+/** Parse a serialized v4 user card into a CardDocument. Null for non-card content. */
+export function parseCard(content: string): CardDocument | null {
+  if (!isCardFormat(content)) return null;
+  const headerMatch = content.match(/_Active slice: ([^\s|]+).*?Updated: (.+?)_/);
+  const doc: CardDocument = {
+    sliceId: headerMatch?.[1]?.trim() ?? "",
+    updated: headerMatch?.[2]?.trim() ?? new Date().toISOString(),
+    identity: [],
+    profile: "",
+    recent: [],
+    selfModel: [],
+  };
+
+  let section: "identity" | "profile" | "recent" | "self_model" | null = null;
+  for (const rawLine of content.split("\n")) {
+    const trimmed = rawLine.trim();
+    if (trimmed === "## Identity") { section = "identity"; continue; }
+    if (trimmed === "## Profile") { section = "profile"; continue; }
+    if (trimmed === "## Recent") { section = "recent"; continue; }
+    if (trimmed === "## Self-model") { section = "self_model"; continue; }
+    if (trimmed.startsWith("## ")) { section = null; continue; }
+    if (!section) continue;
+
+    if (section === "profile") {
+      // Paragraph line — skip blank/header/stamp lines, keep flowing text.
+      if (trimmed && !trimmed.startsWith("_") && !trimmed.startsWith("#") && !trimmed.startsWith("<!--")) {
+        doc.profile = doc.profile ? `${doc.profile}\n${trimmed}` : trimmed;
+      }
+      continue;
+    }
+
+    if (trimmed.startsWith("- ")) {
+      const body = stripInlineComments(trimmed.slice(2).trim());
+      if (!body) continue;
+      if (section === "identity") doc.identity.push(body);
+      else if (section === "self_model") doc.selfModel.push(body);
+      else if (section === "recent") {
+        const item: CardRecentItem = { text: body, refs: [], since: formatDate() };
+        const sinceMatch = body.match(/\|\s*since:\s*(\d{4}-\d{2}-\d{2})/);
+        if (sinceMatch) { item.since = sinceMatch[1]; item.text = item.text.replace(/\|\s*since:\s*\d{4}-\d{2}-\d{2}/, "").trim(); }
+        const refsMatch = body.match(/—\s*refs:\s*(.*)$/);
+        if (refsMatch) { item.refs = parseRefList(refsMatch[1]); item.text = item.text.replace(/—\s*refs:.*$/, "").trim(); }
+        doc.recent.push(item);
+      }
+    }
+  }
+
+  return doc;
+}
+
+/**
+ * Best-effort fold of a v3 (or legacy) document into the card format. Identity
+ * → head; personality/communication/cognition/knowledge/values/work_style/goals
+ * → one Profile paragraph; current_state/boundaries → Recent; all self-model
+ * dimensions → the Self-model list. The evolution agent refines on later passes.
+ */
+export function migrateV3ToCard(content: string, currentSliceId?: string): string {
+  if (isCardFormat(content)) return content;
+  const v3 = migrateToV3(content, currentSliceId);
+  const doc = parsePreviously(v3);
+  const card: CardDocument = {
+    sliceId: doc?.sliceId || currentSliceId || "unknown",
+    updated: new Date().toISOString(),
+    identity: [],
+    profile: "",
+    recent: [],
+    selfModel: [],
+  };
+  if (doc) {
+    for (const b of doc.profile.identity ?? []) card.identity.push(b.text);
+    const sentences: string[] = [];
+    for (const dim of ["personality", "communication", "cognition", "knowledge", "values", "work_style", "goals"] as const) {
+      for (const b of doc.profile[dim] ?? []) sentences.push(b.text);
+    }
+    card.profile = sentences.join(" ");
+    for (const b of doc.profile.current_state ?? []) card.recent.push({ text: b.text, refs: b.refs, since: b.updated });
+    for (const b of doc.profile.boundaries ?? []) card.recent.push({ text: b.text, refs: b.refs, since: b.updated });
+    for (const dim of SELF_MODEL_DIMENSIONS) {
+      for (const b of doc.selfModel[dim] ?? []) card.selfModel.push(b.text);
+    }
+  }
+  return serializeCard(card);
 }

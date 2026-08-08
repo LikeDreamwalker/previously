@@ -12,7 +12,7 @@
 import { type UIMessageChunk } from "ai";
 import { getWritable } from "workflow";
 import { runPreviouslyAgent } from "@/lib/episodic/flash/previously-agent";
-import { applyPreviouslyAgentOutput } from "@/lib/episodic/previously-updater";
+import { applyCardUpdate } from "@/lib/episodic/previously-updater";
 import {
   tryLoadTodaySlice,
   readPreviously,
@@ -189,8 +189,7 @@ export async function finalizeEvolution(
         : "Auto-review of latest conversation.";
 
   let changes = { added: 0, reinforced: 0, demoted: 0, removed: 0, superseded: 0 };
-  let mutations: Awaited<ReturnType<typeof runPreviouslyAgent>>["mutations"] = [];
-  let reformatted = false;
+  let hasChanges = false;
   let error: string | undefined;
 
   try {
@@ -235,33 +234,26 @@ export async function finalizeEvolution(
       },
     });
 
-    mutations = result.mutations;
-    const reformatContent = result.reformat;
-
+    const updatedCard = result.updatedCard;
     if (result.reasoning) {
       console.log(`[Evolution] reasoning: ${result.reasoning}`);
     }
 
-    // Reformat (format/version drift) replaces the whole document; otherwise
-    // incremental mutations apply. Either may be present.
-    if (result.mutations.length > 0 || reformatContent) {
-      const applied = applyPreviouslyAgentOutput(
-        previouslyContent,
-        result.mutations,
-        sliceId,
-        reformatContent,
-      );
+    // Apply the agent's updated card with mechanical enforcement (7-day recent
+    // expiry, section caps, anti-conflict backstop).
+    if (updatedCard.trim()) {
+      const applied = applyCardUpdate(previouslyContent, updatedCard, sliceId);
       await writePreviously(sliceId, applied.content);
-      changes = applied.changes;
-      // Only report a reformat when the wholesale replacement actually applied
-      // (an unparseable reformat falls through to incremental mutations).
-      reformatted = applied.reformatted;
-
+      changes = {
+        added: applied.changed ? 1 : 0,
+        reinforced: 0,
+        demoted: 0,
+        removed: applied.droppedRecent,
+        superseded: 0,
+      };
+      hasChanges = applied.changed;
       console.log(
-        `[Evolution] ${applied.changes.added} added, ` +
-        `${applied.changes.reinforced} reinforced, ${applied.changes.demoted} demoted, ` +
-        `${applied.changes.removed} removed.` +
-        (reformatted ? " (reformatted)" : ""),
+        `[Evolution] card update: changed=${applied.changed}, droppedRecent=${applied.droppedRecent}`,
       );
     }
   } catch (err) {
@@ -277,9 +269,7 @@ export async function finalizeEvolution(
     data: {
       running: false,
       changes,
-      mutations,
-      hasChanges: mutations.length > 0 || reformatted,
-      reformatted,
+      hasChanges,
       error,
     },
   } as UIMessageChunk);

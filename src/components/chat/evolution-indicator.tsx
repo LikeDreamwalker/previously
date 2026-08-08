@@ -4,13 +4,13 @@ import { Brain } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { PhaseIndicator } from "./phase-indicator";
 import type { ToolRenderState } from "@/lib/chat/tool-state";
-import type { PreviouslyMutation } from "@/lib/episodic/flash/previously-agent";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
 export interface EvolutionState {
   running: boolean;
   step?: string;
+  /** Card update summary: added = card rewritten, removed = stale Recent dropped. */
   changes?: {
     added: number;
     reinforced: number;
@@ -18,24 +18,9 @@ export interface EvolutionState {
     removed: number;
     superseded: number;
   };
-  mutations?: PreviouslyMutation[];
   hasChanges?: boolean;
-  /** True when the whole document was reformatted this pass (format/version drift). */
-  reformatted?: boolean;
   error?: string;
 }
-
-// ─── Color constants ────────────────────────────────────────────────────
-
-const ACTION_COLORS: Record<PreviouslyMutation["action"], string> = {
-  observe: "bg-green-500/10 text-green-600 dark:text-green-400 border-green-500/20",
-  reinforce: "bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20",
-  contradict: "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20",
-  discard: "bg-red-500/10 text-red-600 dark:text-red-400 border-red-500/20",
-  expire: "bg-red-500/10 text-red-600 dark:text-red-400 border-red-500/20",
-  promote: "bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-500/20",
-  demote: "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20",
-};
 
 // ─── Component ──────────────────────────────────────────────────────────────
 
@@ -115,13 +100,12 @@ export function EvolutionIndicator({ state }: EvolutionIndicatorProps) {
 
   const hasChanges =
     !!state.hasChanges &&
-    (state.reformatted ||
-      !!state.changes &&
-        (state.changes.added > 0 ||
-          state.changes.reinforced > 0 ||
-          state.changes.demoted > 0 ||
-          state.changes.removed > 0 ||
-          state.changes.superseded > 0));
+    !!state.changes &&
+    (state.changes.added > 0 ||
+      state.changes.reinforced > 0 ||
+      state.changes.demoted > 0 ||
+      state.changes.removed > 0 ||
+      state.changes.superseded > 0);
 
   if (!hasChanges) {
     return (
@@ -137,39 +121,16 @@ export function EvolutionIndicator({ state }: EvolutionIndicatorProps) {
 
   // ── Complete, has changes ────────────────────────────────────────────────
 
+  const c = state.changes!;
   const summary = [
-    state.changes!.added > 0 && t("added", { count: state.changes!.added }),
-    state.changes!.reinforced > 0 && t("reinforced", { count: state.changes!.reinforced }),
-    state.changes!.demoted > 0 && t("demoted", { count: state.changes!.demoted }),
-    state.changes!.removed > 0 && t("removed", { count: state.changes!.removed }),
-    state.changes!.superseded > 0 && t("superseded", { count: state.changes!.superseded }),
-    state.reformatted && t("reformatted"),
+    c.added > 0 && t("added", { count: c.added }),
+    c.reinforced > 0 && t("reinforced", { count: c.reinforced }),
+    c.demoted > 0 && t("demoted", { count: c.demoted }),
+    c.removed > 0 && t("removed", { count: c.removed }),
+    c.superseded > 0 && t("superseded", { count: c.superseded }),
   ]
     .filter(Boolean)
     .join(" · ");
-
-  const expandedContent = state.mutations && state.mutations.length > 0 && (
-    <div className="flex flex-col gap-1.5 text-xs">
-      {state.mutations.map((m, i) => (
-        <div
-          key={i}
-          className={`rounded border px-2 py-1.5 ${ACTION_COLORS[m.action]}`}
-        >
-          <span className="font-semibold">{t(`action_${m.action}`)}</span>
-          <span className="mx-1.5">—</span>
-          <span className="break-all">
-            {m.belief || m.belief_key || t("noText")}
-          </span>
-          <span className="ml-2 opacity-60">
-            {t(`section_${m.section}`)} · {t(`subsection_${m.subsection}`)}
-          </span>
-          {m.note && (
-            <span className="ml-2 opacity-50 italic">— {m.note}</span>
-          )}
-        </div>
-      ))}
-    </div>
-  );
 
   return (
     <PhaseIndicator
@@ -177,7 +138,6 @@ export function EvolutionIndicator({ state }: EvolutionIndicatorProps) {
       icon={<Brain className="h-3.5 w-3.5" />}
       label={t("evolved", { summary })}
       state={COMPLETED_STATE}
-      expandedContent={expandedContent}
     />
   );
 }

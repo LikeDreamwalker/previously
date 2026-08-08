@@ -21,7 +21,12 @@ import type {
   StrandIndex,
 } from "./types";
 import { fsReadFile, fsWriteFile, fsListFiles } from "./io-helpers";
-import { newPreviouslyTemplate, migrateToV3 } from "./previously-format";
+import {
+  newCardTemplate,
+  migrateToV3,
+  migrateV3ToCard,
+  isCardFormat,
+} from "./previously-format";
 import { weaveTag } from "./strands";
 
 // ─── Environment detection ───────────────────────────────────────────────
@@ -623,7 +628,7 @@ export async function readAgentTimeline(sliceId: string): Promise<string> {
 
 /** Empty previously.md template for slices with no prior beliefs (v3). */
 export function emptyPreviouslyTemplate(sliceId: string): string {
-  return newPreviouslyTemplate(sliceId);
+  return newCardTemplate(sliceId);
 }
 
 /**
@@ -646,7 +651,10 @@ async function readPreviouslyRaw(sliceId: string): Promise<string> {
  */
 export async function readPreviously(sliceId: string): Promise<string> {
   const raw = await readPreviouslyRaw(sliceId);
-  return raw ? migrateToV3(raw, sliceId) : "";
+  if (!raw) return "";
+  // v4 card is read as-is (the current structure); legacy v1/v2/v3 content is
+  // migrated on the fly so old slices stay readable.
+  return isCardFormat(raw) ? raw : migrateToV3(raw, sliceId);
 }
 
 /**
@@ -685,7 +693,9 @@ export async function findMostRecentPreviously(): Promise<string | null> {
         try {
           const prevPath = `${dir}/${sd.name}/previously.md`;
           const content = await fsReadFile(prevPath);
-          if (content.trim()) return migrateToV3(content);
+          if (content.trim()) {
+            return isCardFormat(content) ? content : migrateToV3(content);
+          }
         } catch {
           // No previously.md in this slice directory
         }
@@ -711,21 +721,24 @@ export async function findMostRecentPreviously(): Promise<string | null> {
 export async function ensurePreviously(sliceId: string): Promise<string> {
   const existing = await readPreviouslyRaw(sliceId);
   if (existing.trim()) {
-    const migrated = migrateToV3(existing, sliceId);
+    // Normalize to the user-card (v4) structure — a legacy v1/v2/v3 file folds
+    // into the card once, then stays. The evolution agent refines from there.
+    const migrated = isCardFormat(existing) ? existing : migrateV3ToCard(existing, sliceId);
     if (migrated !== existing) {
       await writePreviously(sliceId, migrated);
     }
     return migrated;
   }
 
-  // Find the most recent previously.md from past slices and copy it forward,
-  // migrating it to the v3 structure if needed. Refinement is handled by the
-  // evolution workflow.
+  // Find the most recent previously.md from past slices and copy it forward
+  // into the card structure. Refinement is handled by the evolution workflow.
   const source = await findMostRecentPreviously();
 
   const content = source
-    ? migrateToV3(source, sliceId)
-    : newPreviouslyTemplate(sliceId);
+    ? isCardFormat(source)
+      ? source
+      : migrateV3ToCard(source, sliceId)
+    : newCardTemplate(sliceId);
 
   await writePreviously(sliceId, content);
   return content;
