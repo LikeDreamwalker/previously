@@ -20,6 +20,7 @@ import {
   type SliceContent,
 } from "@/lib/episodic/actions";
 import { getCached, setCache } from "@/lib/chat/slice-cache";
+import { dropTrailingAssistantMessages } from "@/lib/chat/reconnect";
 import { NumberTicker } from "@/components/ui/number-ticker";
 import { TextGenerateEffect } from "@/components/ui/text-generate-effect";
 import { saveUserConfig } from "@/lib/config/actions";
@@ -314,6 +315,16 @@ function Inner({
     setDemoStreaming(false);
   }, []);
 
+  // Refresh-resume goes through the SDK's own path: `resume: true` calls
+  // resumeStream() on mount, and prepareReconnectToStreamRequest redirects it
+  // to the durable run (`/api/chat/<runId>/stream?startIndex=0`), which rebuilds
+  // the interrupted turn on a fresh page. Snapshot the decision ONCE at mount —
+  // computing it from localStorage each render would flip false→true when a new
+  // turn stores its runId, and useChat's `resume` effect would re-fire
+  // resumeStream() mid-stream (a second writer → #185). Fresh visits (no run in
+  // flight) stay false so a reconnect never 404s on a brand-new page.
+  const [shouldResume] = useState(() => readStoredRunId() !== null);
+
   const {
     messages,
     sendMessage,
@@ -321,11 +332,17 @@ function Inner({
     stop,
     error,
     resumeStream,
+    setMessages,
   } = useChat({
-    // `resume: false` — reconnection is MANUAL (see the reconnect effects
-    // below). Auto-resume on mount would 404 against a fresh page with no
-    // stored runId and surface a spurious error banner.
-    resume: false,
+    resume: shouldResume,
+    // Clear a stale runId when a reconnect 404s ("Run not available") — the run
+    // is gone, so a future reload shouldn't keep retrying it.
+    onError: (err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/404|Run not available/.test(msg)) {
+        clearStoredRunId();
+      }
+    },
     transport: new WorkflowChatTransport({
       api: "/api/chat",
       prepareSendMessagesRequest: (config) => ({
@@ -379,32 +396,57 @@ function Inner({
   // (status → "error") even though the durable workflow keeps running. On
   // return, re-attach to the run's stream to replay what was missed. Skip when
   // the turn is still actively streaming or already finished.
-  // Reconnect with retry: a transient network error ("Failed to fetch") is
-  // retried a few times with backoff so a single blip doesn't force a refresh.
-  // A 404 / "Run not available" clears the stale runId (the run is done); any
-  // other error surfaces via the existing error banner.
-  const resumeWithRetry = useCallback(async (attempts = 3) => {
-    for (let attempt = 0; attempt < attempts; attempt++) {
+  //
+  // SINGLE-WRITER GUARD: the focus/visibility handler below is the ONLY manual
+  // reconnect now (refresh-resume is handled by the SDK's `resume: true` above;
+  // same-session drops by the transport's internal auto-reconnect). It fires
+  // only when status is "error" — the previous stream is already dead, so this
+  // resume can't race a live writer. The in-flight guard keeps even two rapid
+  // focus events from starting two resumeStream() calls, which would otherwise
+  // both write the same turn into the message list (duplicate ids → duplicate
+  // keys → React "Maximum update depth exceeded" #185). We also abort any
+  // still-active stream first and drop the partial turn so the startIndex-0
+  // replay rebuilds it cleanly instead of appending a second copy.
+  const reconnectInFlightRef = useRef(false);
+
+  const resetPartialTurn = useCallback(() => {
+    setMessages((prev) => dropTrailingAssistantMessages(prev));
+  }, [setMessages]);
+
+  const resumeWithRetry = useCallback(
+    async (attempts = 3) => {
+      if (reconnectInFlightRef.current) return;
+      reconnectInFlightRef.current = true;
       try {
-        await resumeStream();
-        return;
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (/404|Run not available/.test(msg)) {
-          clearStoredRunId();
-          return;
-        }
-        if (!/Failed to fetch/.test(msg) || attempt === attempts - 1) {
-          if (!/Failed to fetch/.test(msg)) {
-            console.warn("[chat] reconnect failed:", msg);
+        // Kill any in-flight SDK stream before starting our own.
+        await stop();
+        resetPartialTurn();
+        for (let attempt = 0; attempt < attempts; attempt++) {
+          try {
+            await resumeStream();
+            return;
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            if (/404|Run not available/.test(msg)) {
+              clearStoredRunId();
+              return;
+            }
+            if (!/Failed to fetch/.test(msg) || attempt === attempts - 1) {
+              if (!/Failed to fetch/.test(msg)) {
+                console.warn("[chat] reconnect failed:", msg);
+              }
+              return;
+            }
+            // Transient network error — wait with backoff, then retry.
+            await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
           }
-          return;
         }
-        // Transient network error — wait with backoff, then retry.
-        await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+      } finally {
+        reconnectInFlightRef.current = false;
       }
-    }
-  }, [resumeStream]);
+    },
+    [resumeStream, stop, resetPartialTurn],
+  );
 
   const attemptReconnect = useCallback(() => {
     if (!readStoredRunId()) return;
@@ -427,19 +469,6 @@ function Inner({
       window.removeEventListener("focus", onFocus);
     };
   }, [attemptReconnect]);
-
-  // ── Recover an interrupted turn on page reload ───────────────────────────
-  // A reloaded tab has empty React state but a persisted runId if the previous
-  // turn was cut off mid-stream — replay it so the user sees the partial result
-  // (and its terminal status) instead of a blank chat. No-op on fresh loads.
-  useEffect(() => {
-    if (!readStoredRunId()) return;
-    // Same retry/clear logic as attemptReconnect — a dead run's id is cleared
-    // so a fresh refresh doesn't retry it; a transient network error is retried
-    // rather than forcing the user to refresh.
-    void resumeWithRetry();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   const isStreaming = status === "streaming" || demoStreaming;
   const isLoading = status === "submitted" || isStreaming;
