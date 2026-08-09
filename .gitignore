@@ -60,6 +60,12 @@ memory/user/config.json
 coverage/
 .nyc_output/
 
+# ===== Generated screenshots (regenerable via scripts/screenshot.mjs) =====
+# Force-add specific shots (git add -f screenshots/foo.png) when they're used
+# in the README or docs.
+screenshots/
+test-results/
+
 # ===== Benchmark data (local only, large files) =====
 benchmark-data/
 
