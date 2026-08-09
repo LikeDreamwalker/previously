@@ -10,7 +10,7 @@ export default function DocNotFound() {
       </p>
       <Link
         href={`/docs/${DEFAULT_DOC_SLUG}`}
-        className="text-sm text-blue-500 hover:underline"
+        className="text-sm text-brand-600 dark:text-brand-400 hover:underline"
       >
         Back to the docs
       </Link>

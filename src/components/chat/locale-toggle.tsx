@@ -20,7 +20,7 @@ export function LocaleToggle() {
             type="button"
             onClick={() => router.replace(pathname, { locale: next })}
             aria-label={t("switchTooltip")}
-            className="h-7 w-7 rounded-full text-muted-foreground hover:text-foreground hover:bg-muted-foreground/10 transition-colors flex items-center justify-center text-[11px] font-semibold"
+            className="h-7 w-7 rounded-full text-muted-foreground hover:text-foreground hover:bg-brand/10 transition-colors flex items-center justify-center text-[11px] font-semibold"
           >
             {locale === "zh" ? "中" : "EN"}
           </button>

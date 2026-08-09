@@ -59,4 +59,49 @@ describe("parseIdentityFromPreviously", () => {
     expect(profile!.name).toBe("LikeDreamwalker");
     expect(profile!.body).not.toContain("evidence:");
   });
+
+  it("parses the card Identity head: name cuts at a parenthetical, aliases extracted", () => {
+    const cardContent = `# Previously On
+
+_Active slice: 2026-08-09-0435 | Format: user card | Updated: 2026-08-09T00:00:00Z_
+
+## Identity
+
+- Name: LikeDreamwalker (also written LikeDreamWalker)
+- Alias: Dream、阿布
+- Address them as: Dream
+- Pronouns: he/him
+
+## Profile
+
+The user is an AI engineer.
+`;
+    const profile = parseIdentityFromPreviously(cardContent);
+    expect(profile).not.toBeNull();
+    // The name must NOT swallow the parenthetical editorial note.
+    expect(profile!.name).toBe("LikeDreamwalker");
+    expect(profile!.addressAs).toBe("Dream");
+    expect(profile!.pronouns).toBe("he/him");
+    expect(profile!.aliases).toEqual(["Dream", "阿布"]);
+  });
+
+  it("parses the English Alias line form too", () => {
+    const cardContent = `# Previously On
+
+_Active slice: 2026-08-09-0435 | Format: user card | Updated: 2026-08-09T00:00:00Z_
+
+## Identity
+
+- Name: Alan Yuan
+- Also known as: Y, Al
+
+## Profile
+
+x
+`;
+    const profile = parseIdentityFromPreviously(cardContent);
+    expect(profile).not.toBeNull();
+    expect(profile!.name).toBe("Alan Yuan");
+    expect(profile!.aliases).toEqual(["Y", "Al"]);
+  });
 });

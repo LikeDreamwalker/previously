@@ -1,13 +1,13 @@
 "use client";
 
-import { memo, useMemo } from "react";
+import { memo, useMemo, useEffect, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
 import type { UIMessage } from "ai";
 import { AnimatePresence, motion } from "motion/react";
 import { MarkdownRenderer } from "./markdown";
 import { ThinkingSteps } from "./thinking";
 import { PhaseIndicator } from "./phase-indicator";
-import { ToolLayout } from "./tool-layout";
+import { HousekeepingCard } from "./housekeeping-card";
 import { MessageActions } from "./message-actions";
 import { ToolRenderer } from "./tool-renderer";
 import { Message, MessageContent, MessageFooter } from "@/components/ui/message";
@@ -15,15 +15,18 @@ import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import {
   Activity,
   AlertTriangle,
-  Calendar,
-  FileText,
-  GitBranch,
-  Tag,
   XCircle,
 } from "lucide-react";
 import { LoadingTip } from "./loading-tip";
 import { EvolutionIndicator, type EvolutionState } from "./evolution-indicator";
 import type { ToolRenderState } from "@/lib/chat/tool-state";
+import {
+  buildStream,
+  deriveAgentStage,
+  type AnyPart,
+  type StreamItem,
+  type AgentStage,
+} from "@/lib/chat/build-stream";
 
 interface ChatMessageProps {
   message: UIMessage;
@@ -33,41 +36,25 @@ interface ChatMessageProps {
   evolutionState?: EvolutionState | null;
 }
 
-// ── Unified stream: walk parts in natural order ────────────────────────
+// ── i18n key lookup for the live agent-stage pill ───────────────────────
 
-type AnyPart = {
-  type?: string;
-  toolCallId?: string;
-  toolName?: string;
-  state?: string;
-  input?: unknown;
-  output?: unknown;
-  text?: string;
-  data?: unknown;
+const STAGE_KEYS: Record<AgentStage, string> = {
+  recalling: "stageRecalling",
+  reasoning: "stageReasoning",
+  working: "stageWorking",
+  composing: "stageComposing",
 };
 
-type StreamItem =
-  | { kind: "reasoning"; text: string }
-  | { kind: "text"; content: string }
-  | {
-      kind: "tool";
-      toolCallId: string;
-      toolName: string;
-      state: string;
-      input?: unknown;
-      output?: unknown;
-      /** Live progress from `data-tool-progress` chunks — the streaming subtitle. */
-      streamingText?: string;
-      /** Progress stage ("reasoning" | "writing" | "running") — drives subtitle tone. */
-      streamingStage?: string;
-    }
-  | { kind: "phase"; phase: string; running?: boolean; mode?: string; summaries?: string[]; compact?: boolean };
+/** How long without a new stream part before the "still working" nudge shows. */
+const SILENT_MS = 10000;
+
+// ── Unified stream: walk parts in natural order ────────────────────────
 
 /**
  * Maps a running-phase i18n key to its done-state key. `slicing` is kept for
  * backward compatibility with messages streamed before the housekeeping phases
- * were granularized; the current phases (slice/tags/context/strands) all carry
- * a `compact: true` flag and render as ToolLayout bars.
+ * were granularized; the current phases (slice/tags/context/strands) merge into
+ * the HousekeepingCard instead.
  */
 const PHASE_DONE_KEYS: Record<string, string> = {
   slicing: "sliced",
@@ -75,14 +62,6 @@ const PHASE_DONE_KEYS: Record<string, string> = {
   tags: "tagged",
   context: "contextLoaded",
   strands: "strandsWoven",
-};
-
-/** Per-housekeeping-phase icons for the compact ToolLayout bars. */
-const COMPACT_PHASE_ICONS: Record<string, React.ReactNode> = {
-  slice: <Calendar className="h-3 w-3" />,
-  tags: <Tag className="h-3 w-3" />,
-  context: <FileText className="h-3 w-3" />,
-  strands: <GitBranch className="h-3 w-3" />,
 };
 
 /** Stable key for a stream item — used by AnimatePresence for enter/exit animation. */
@@ -94,151 +73,20 @@ function itemKey(item: StreamItem, index: number): string {
       return `text-${index}`;
     case "tool":
       return `tool-${item.toolCallId}`;
+    case "housekeeping":
+      return `housekeeping-${index}`;
     case "phase":
       return `phase-${item.phase}-${index}`;
   }
 }
 
-function buildStream(parts: readonly AnyPart[], isStreaming: boolean): StreamItem[] {
-  const items: StreamItem[] = [];
-  let textBuf: string[] = [];
-  // Progress chunks that arrived before their tool-* part (the tool-executor
-  // writes mid-step; the tool part can surface a tick later). Applied when the
-  // tool item is created.
-  const pendingProgress = new Map<string, string>();
-
-  const flushText = () => {
-    if (textBuf.length > 0) {
-      items.push({ kind: "text", content: textBuf.join("") });
-      textBuf = [];
-    }
-  };
-
-  for (const p of parts) {
-    if (p.type === "data-tool-progress") {
-      // Live streaming text for a tool card — route to the tool item by id.
-      // Does not create an item of its own and must not flush text.
-      const d = p.data as
-        | { toolCallId?: string; text?: string; stage?: string }
-        | undefined;
-      if (d?.toolCallId && typeof d.text === "string") {
-        const target = items.find(
-          (it): it is Extract<StreamItem, { kind: "tool" }> =>
-            it.kind === "tool" && it.toolCallId === d.toolCallId,
-        );
-        if (target) {
-          target.streamingText = d.text;
-          if (d.stage !== undefined) target.streamingStage = d.stage;
-        } else {
-          pendingProgress.set(d.toolCallId, d.text);
-        }
-      }
-      continue;
-    }
-
-    if (p.type === "reasoning") {
-      flushText();
-      const reasoningText = (p as { text: string }).text ?? "";
-      // Merge consecutive reasoning deltas
-      const last = items.length > 0 ? items[items.length - 1] : null;
-      if (last?.kind === "reasoning") {
-        last.text += reasoningText;
-      } else {
-        items.push({ kind: "reasoning", text: reasoningText });
-      }
-    } else if (p.type === "text") {
-      textBuf.push((p as { text: string }).text ?? "");
-    } else if (p.type === "data-phase") {
-      flushText();
-      const d = p.data as { phase?: string; running?: boolean; mode?: string; summaries?: string[]; compact?: boolean } | undefined;
-      if (d?.phase) {
-        // Merge with existing phase item of the same name — a phase emits
-        // { running: true } at start and { running: false, summaries: [...] } at end.
-        const existing = items.find(
-          (it): it is Extract<StreamItem, { kind: "phase" }> =>
-            it.kind === "phase" && it.phase === d.phase,
-        );
-        if (existing) {
-          existing.running = d.running ?? false;
-          if (d.mode !== undefined) existing.mode = d.mode;
-          if (d.summaries !== undefined) existing.summaries = d.summaries;
-          if (d.compact !== undefined) existing.compact = d.compact;
-        } else {
-          items.push({
-            kind: "phase",
-            phase: d.phase,
-            running: d.running ?? false,
-            mode: d.mode,
-            summaries: d.summaries,
-            compact: d.compact,
-          });
-        }
-      }
-    } else if (p.type === "data-turn-status") {
-      // Terminal status only (done / interrupted / error) — the mid-turn
-      // thinking/synthesizing lifecycle was removed when thinkDeep became an
-      // agent-as-a-tool. Surface interrupted/error inline; done renders nothing
-      // (the reply text is the completion signal).
-      flushText();
-      const turnData = p.data as
-        | { status?: string; error?: string }
-        | undefined;
-      const status = turnData?.status;
-      if (!status || status === "active" || status === "done") continue;
-
-      const terminalPhase =
-        status === "interrupted" ? "terminal-interrupted" : "terminal-error";
-      const existing = items.find(
-        (it): it is Extract<StreamItem, { kind: "phase" }> =>
-          it.kind === "phase" && it.phase === terminalPhase,
-      );
-      if (!existing) {
-        items.push({
-          kind: "phase",
-          phase: terminalPhase,
-          running: false,
-          mode: "terminal",
-          // The client-visible explanation for a terminal/model failure — the
-          // turn ended for a reason the user should see, not silently.
-          summaries: turnData?.error ? [turnData.error] : [],
-        });
-      }
-    } else if (p.type?.startsWith("tool-")) {
-      flushText();
-      const toolCallId = (p as { toolCallId?: string }).toolCallId ?? `anon-${items.length}`;
-      const toolName = (p as { toolName?: string }).toolName ?? p.type.replace("tool-", "");
-
-      // Merge tool parts sharing the same toolCallId into one StreamItem.
-      // The AI SDK emits separate parts for input-streaming → input-available →
-      // output-available; we fold them into a single card so it doesn't remount.
-      const existing = items.find(
-        (it): it is Extract<StreamItem, { kind: "tool" }> =>
-          it.kind === "tool" && it.toolCallId === toolCallId,
-      );
-      if (existing) {
-        existing.state = p.state ?? existing.state;
-        if (p.input !== undefined) existing.input = p.input;
-        if (p.output !== undefined) existing.output = p.output;
-      } else {
-        items.push({
-          kind: "tool",
-          toolCallId,
-          toolName,
-          state: (p as { state?: string }).state ?? "running",
-          input: p.input,
-          output: p.output,
-          streamingText: pendingProgress.get(toolCallId),
-        });
-        pendingProgress.delete(toolCallId);
-      }
-    }
-  }
-  flushText();
-
-  return items;
-}
-
-export const ChatMessage = memo(function ChatMessage({ message, onRegenerate, isStreaming, startedAt, evolutionState }: ChatMessageProps) {
+export const ChatMessage = memo(function ChatMessage({
+  message,
+  onRegenerate,
+  isStreaming,
+  startedAt,
+  evolutionState,
+}: ChatMessageProps) {
   const t = useTranslations("chat.phase");
   const isUser = message.role === "user";
   const isAssistant = message.role === "assistant";
@@ -251,6 +99,34 @@ export const ChatMessage = memo(function ChatMessage({ message, onRegenerate, is
     () => (isAssistant ? buildStream(parts, isStreaming ?? false) : []),
     [parts, isAssistant, isStreaming],
   );
+
+  // ── Live agent-stage pill ─────────────────────────────────────────────
+  // Derives what the agent is doing right now (recalling / reasoning /
+  // working / composing) from the part stream; shown only while streaming.
+  const stage = useMemo(
+    () => (isAssistant ? deriveAgentStage(parts) : null),
+    [parts, isAssistant],
+  );
+
+  // ── Silence heartbeat ─────────────────────────────────────────────────
+  // If the stream stalls (no new part for SILENT_MS), surface a "still
+  // working" nudge so a long step never reads as dead. Client-only; the
+  // server never needs to know.
+  const lastPartsRef = useRef(Date.now());
+  const [silent, setSilent] = useState(false);
+
+  useEffect(() => {
+    lastPartsRef.current = Date.now();
+    setSilent(false);
+  }, [message.parts]);
+
+  useEffect(() => {
+    if (!isAssistant || !isStreaming) return;
+    const id = window.setInterval(() => {
+      setSilent(Date.now() - lastPartsRef.current > SILENT_MS);
+    }, 2000);
+    return () => window.clearInterval(id);
+  }, [isAssistant, isStreaming]);
 
   // Full text for footer / actions
   const textContent = streamItems
@@ -289,6 +165,14 @@ export const ChatMessage = memo(function ChatMessage({ message, onRegenerate, is
           {/* Self-evolution indicator — per-bubble, same position as thinking/recall/phase */}
           <EvolutionIndicator state={evolutionState} />
 
+          {/* Live agent-stage pill — a small brand marker of what the agent is doing */}
+          {isStreaming && stage && (
+            <div className="mb-1.5 inline-flex items-center gap-1.5 rounded-full bg-brand-100 px-2 py-0.5 text-[11px] font-medium text-brand-700 dark:bg-brand-500/15 dark:text-brand-300">
+              <span className="size-1.5 animate-pulse rounded-full bg-brand-500" />
+              {t(STAGE_KEYS[stage])}
+            </div>
+          )}
+
           {hasContent && (
             <div className="space-y-1">
               <AnimatePresence>
@@ -318,34 +202,10 @@ export const ChatMessage = memo(function ChatMessage({ message, onRegenerate, is
                       />
                     );
                   }
+                  if (item.kind === "housekeeping") {
+                    return <HousekeepingCard key={key} steps={item.steps} />;
+                  }
                   if (item.kind === "phase") {
-                    // Housekeeping sub-steps — unobtrusive ToolLayout bars.
-                    if (item.compact) {
-                      const doneKey = PHASE_DONE_KEYS[item.phase];
-                      const label = item.running
-                        ? t(item.phase)
-                        : doneKey
-                          ? t(doneKey)
-                          : t(item.phase);
-                      const compactState: ToolRenderState = {
-                        running: item.running ?? false,
-                        inputStreaming: false,
-                        interrupted: false,
-                        denied: false,
-                        approvalRequested: false,
-                        isActiveApproval: false,
-                      };
-                      return (
-                        <ToolLayout
-                          key={key}
-                          name={label}
-                          summary={item.summaries?.join(", ") ?? ""}
-                          state={compactState}
-                          icon={COMPACT_PHASE_ICONS[item.phase]}
-                        />
-                      );
-                    }
-
                     // Terminal interrupted/error — prominent static card.
                     if (item.mode === "terminal") {
                       const isInterrupted = item.phase.includes("interrupted");
@@ -377,14 +237,15 @@ export const ChatMessage = memo(function ChatMessage({ message, onRegenerate, is
                       );
                     }
 
-                    // Regular phase — PhaseIndicator static.
+                    // Regular (non-compact) phase — PhaseIndicator static.
                     const doneKey = PHASE_DONE_KEYS[item.phase];
                     const label = item.running
                       ? t(item.phase)
                       : doneKey
                         ? t(doneKey)
                         : t(item.phase);
-                    const hasSummaries = item.summaries && item.summaries.length > 0;
+                    const hasSummaries =
+                      item.summaries && item.summaries.length > 0;
                     return (
                       <PhaseIndicator
                         key={key}
@@ -400,13 +261,13 @@ export const ChatMessage = memo(function ChatMessage({ message, onRegenerate, is
                           isActiveApproval: false,
                         }}
                         expandedContent={
-                          hasSummaries
-                            ? <div className="space-y-1 text-xs text-muted-foreground leading-relaxed">
-                                {item.summaries!.map((s, j) => (
-                                  <div key={j}>{s}</div>
-                                ))}
-                              </div>
-                            : undefined
+                          hasSummaries ? (
+                            <div className="space-y-1 text-xs leading-relaxed text-muted-foreground">
+                              {item.summaries!.map((s, j) => (
+                                <div key={j}>{s}</div>
+                              ))}
+                            </div>
+                          ) : undefined
                         }
                       />
                     );
@@ -438,6 +299,14 @@ export const ChatMessage = memo(function ChatMessage({ message, onRegenerate, is
           {isStreaming && isAssistant && (
             <div className="pt-1.5">
               <LoadingTip />
+            </div>
+          )}
+
+          {/* Silence heartbeat — only when the stream has gone quiet mid-turn */}
+          {isStreaming && silent && (
+            <div className="flex items-center gap-1.5 pt-1.5 text-xs text-muted-foreground/70">
+              <span className="size-1.5 animate-pulse rounded-full bg-brand-500/70" />
+              {t("stillWorking")}
             </div>
           )}
 

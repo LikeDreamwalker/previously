@@ -5,6 +5,7 @@ import { Globe } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { PhaseIndicator } from "../phase-indicator";
 import { MarkdownRenderer } from "../markdown";
+import { progressStageTone } from "@/lib/chat/build-stream";
 
 interface WebSearchRendererProps {
   toolName: string;
@@ -13,7 +14,7 @@ interface WebSearchRendererProps {
   state: ToolRenderState;
   /** Live progress from `data-tool-progress` — the streaming subtitle. */
   streamingText?: string;
-  /** Progress stage from `data-tool-progress` (unused — search status stays dim). */
+  /** Progress stage — "running" (searching) vs "done" (found N sources). */
   streamingStage?: string;
 }
 
@@ -57,7 +58,7 @@ export function WebSearchRenderer({
   output,
   state,
   streamingText,
-  streamingStage: _streamingStage,
+  streamingStage,
 }: WebSearchRendererProps) {
   const t = useTranslations("chat.tool");
 
@@ -156,10 +157,14 @@ export function WebSearchRenderer({
   return (
     <PhaseIndicator
       mode="streaming"
+      className={
+        state.running ? "bg-brand-50/50 dark:bg-brand-500/[0.06]" : undefined
+      }
       icon={<Globe className="h-3.5 w-3.5" />}
       label={displayName}
       state={displayState}
       streamingText={streamingText}
+      subtitleTone={progressStageTone(streamingStage)}
       expandedContent={expandedContent}
     />
   );

@@ -218,7 +218,7 @@ export function ChatInput({
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
-                  className="h-7 w-7 rounded-full text-muted-foreground hover:text-foreground hover:bg-muted-foreground/10 transition-colors flex items-center justify-center"
+                  className="h-7 w-7 rounded-full text-muted-foreground hover:text-foreground hover:bg-brand/10 transition-colors flex items-center justify-center"
                 >
                   <Paperclip className="h-3.5 w-3.5" />
                 </button>
@@ -276,7 +276,7 @@ export function ChatInput({
                   type="button"
                   onClick={cycleEffort}
                   disabled={isLoading || demoRunning}
-                  className="h-7 rounded-full text-muted-foreground hover:text-foreground hover:bg-muted-foreground/10 transition-colors flex items-center justify-center gap-1 px-2 disabled:opacity-30"
+                  className="h-7 rounded-full text-muted-foreground hover:text-foreground hover:bg-brand/10 transition-colors flex items-center justify-center gap-1 px-2 disabled:opacity-30"
                 >
                   <Zap className="h-3 w-3" />
                   <span className="text-[10px] font-medium leading-none">
@@ -296,7 +296,7 @@ export function ChatInput({
               render={
                 <Link
                   href="/settings"
-                  className="h-7 w-7 rounded-full text-muted-foreground hover:text-foreground hover:bg-muted-foreground/10 transition-colors flex items-center justify-center"
+                  className="h-7 w-7 rounded-full text-muted-foreground hover:text-foreground hover:bg-brand/10 transition-colors flex items-center justify-center"
                 >
                   <Settings className="h-3.5 w-3.5" />
                 </Link>
@@ -324,7 +324,7 @@ export function ChatInput({
               disabled={!hasContent}
               className={`h-8 w-8 rounded-full flex items-center justify-center transition-colors disabled:opacity-30 ${
                 hasContent
-                  ? "bg-[#0066ff] text-white hover:bg-[#0066ff]/90"
+                  ? "bg-brand text-white hover:bg-brand/90"
                   : "bg-primary text-primary-foreground"
               }`}
               title={t("sendTooltip")}

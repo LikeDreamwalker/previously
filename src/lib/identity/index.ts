@@ -32,6 +32,9 @@ export function buildAgentIdentityPrompt(profile: UserProfile | null): string {
   if (profile) {
     const lines: string[] = [];
     if (profile.name) lines.push(`Name: ${profile.name}`);
+    if (profile.aliases?.length) {
+      lines.push(`Aliases: ${profile.aliases.join(", ")}`);
+    }
     if (profile.addressAs) lines.push(`Address them as: ${profile.addressAs}`);
     if (profile.pronouns) lines.push(`Pronouns: ${profile.pronouns}`);
     if (profile.timezone) lines.push(`Timezone: ${profile.timezone}`);

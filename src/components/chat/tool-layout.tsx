@@ -146,7 +146,7 @@ export function ToolLayout({
     >
       {/* Shimmer bar — visible while model is deciding tool parameters */}
       {isInputStreaming && (
-        <div className="h-0.5 rounded-full bg-gradient-to-r from-transparent via-brand/30 to-transparent bg-[length:200%_100%] animate-shimmer" />
+        <div className="h-0.5 rounded-full bg-gradient-to-r from-transparent via-brand-500/30 to-transparent bg-[length:200%_100%] animate-shimmer" />
       )}
       <div
         className={cn(
@@ -278,7 +278,11 @@ export function ToolLayout({
             <div className="min-h-0">
               {shouldRenderExpandedContent && (
                 <div className="pt-1.5 pb-1">
-                  <Card size="sm">
+                  {/* ring-inset: the Card's ring is a box-shadow that the grid's
+                      overflow-hidden would otherwise clip on the left/right (the
+                      card is flush with the clip container). Drawing it inset
+                      keeps the border visible. */}
+                  <Card size="sm" className="ring-inset">
                     <CardContent className="max-h-80 overflow-auto text-xs">
                       {hasError && !hasRenderableContent(expandedContent) && (
                         <pre className="whitespace-pre-wrap break-all font-mono text-xs leading-relaxed text-red-400">

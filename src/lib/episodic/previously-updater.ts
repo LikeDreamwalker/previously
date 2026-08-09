@@ -14,6 +14,7 @@ import {
   parseCard,
   serializeCard,
   stripInlineComments,
+  stripTrailingParentheticals,
   CARD_RECENT_EXPIRY_DAYS,
   CARD_RECENT_MAX,
   CARD_SELF_MODEL_MAX,
@@ -93,8 +94,13 @@ export function applyCardUpdate(
     .filter((l) => l.length > 0 && !contradictsInvariant(l))
     .slice(0, CARD_SELF_MODEL_MAX);
 
-  // 5. Identity head: cap.
-  doc.identity = doc.identity.slice(0, 8);
+  // 5. Identity head: strip editorial parentheticals (the model appends
+  //    "also written X" / "又称 X" annotations to structured fields — they
+  //    corrupt the machine-parsed name; real aliases go in Alias), then cap.
+  doc.identity = doc.identity
+    .map((l) => stripTrailingParentheticals(l.trim()))
+    .filter((l) => l.length > 0)
+    .slice(0, 8);
 
   const content = serializeCard(doc);
   // `changed` = the card's SUBSTANCE changed (identity/profile/recent/self-model).

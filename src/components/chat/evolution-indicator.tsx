@@ -75,6 +75,7 @@ export function EvolutionIndicator({ state }: EvolutionIndicatorProps) {
     return (
       <PhaseIndicator
         mode="static"
+        className="bg-brand-100/40 dark:bg-brand-400/[0.07]"
         icon={<Brain className="h-3.5 w-3.5" />}
         label={t("evolving")}
         summary={subtitle}

@@ -50,7 +50,7 @@ function FileRow({ file }: { file: FileEntry }) {
         className="w-full flex items-center gap-3 rounded-md px-4 py-2 text-sm hover:bg-accent transition-colors text-left"
       >
         {file.type === "dir" ? (
-          <FolderOpen className="h-4 w-4 text-blue-500 shrink-0" />
+          <FolderOpen className="h-4 w-4 text-brand-600 dark:text-brand-400 shrink-0" />
         ) : (
           <File className="h-4 w-4 text-muted-foreground shrink-0" />
         )}

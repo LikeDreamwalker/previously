@@ -151,6 +151,24 @@ export function stripInlineComments(text: string): string {
   return text.replace(/<!--[\s\S]*?-->/g, "").trim();
 }
 
+/**
+ * Strip trailing parenthetical annotations from a structured identity line —
+ * e.g. "Name: Bob (also written Bobby)" → "Name: Bob". The Identity head is
+ * machine-parsed, so an editorial parenthetical the model appends (spelling
+ * variants, translations, "a.k.a." notes) corrupts the parsed name. Real
+ * aliases belong in the dedicated Alias field, not inside the Name.
+ */
+export function stripTrailingParentheticals(text: string): string {
+  let out = text;
+  // Loop: one pass per trailing group, bounded (nested parens are rare).
+  for (let i = 0; i < 3; i++) {
+    const next = out.replace(/\s*[（(][^）)]*[）)]\s*$/, "").trim();
+    if (next === out) break;
+    out = next;
+  }
+  return out;
+}
+
 /** Serialize a single belief to its markdown representation. */
 export function serializeBelief(b: PreviouslyBelief): string {
   const lines: string[] = [];

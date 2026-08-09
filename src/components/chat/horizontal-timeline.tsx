@@ -73,7 +73,7 @@ export function HorizontalTimeline({
                 onClick={() => onSelect(slice.slice_id)}
                 className={`flex shrink-0 flex-col items-center gap-0.5 w-14 py-1 rounded-md transition-colors ${
                   isSelected
-                    ? "text-foreground"
+                    ? "text-brand-600 dark:text-brand-400"
                     : "text-muted-foreground/50 hover:text-muted-foreground"
                 }`}
               >
@@ -81,7 +81,7 @@ export function HorizontalTimeline({
                 <span
                   className={`h-1.5 w-1.5 rounded-full transition-all ${
                     isSelected
-                      ? "bg-foreground scale-110 ring-1 ring-foreground/10"
+                      ? "bg-brand-500 scale-110 ring-1 ring-brand-500/20"
                       : "bg-muted-foreground/30 hover:bg-muted-foreground/50"
                   }`}
                 />
@@ -95,7 +95,7 @@ export function HorizontalTimeline({
           onClick={() => onSelect("now")}
           className={`flex shrink-0 flex-col items-center gap-0.5 w-14 py-1 rounded-md transition-colors ${
             selectedId === "now"
-              ? "text-foreground"
+              ? "text-brand-600 dark:text-brand-400"
               : "text-muted-foreground/50 hover:text-muted-foreground"
           }`}
         >
@@ -103,7 +103,7 @@ export function HorizontalTimeline({
           <span
             className={`h-2 w-2 rounded-full border transition-all ${
               selectedId === "now"
-                ? "bg-foreground border-foreground scale-110 ring-1 ring-foreground/10"
+                ? "bg-brand-500 border-brand-500 scale-110 ring-1 ring-brand-500/20"
                 : "bg-transparent border-muted-foreground/30 hover:border-muted-foreground/50"
             }`}
           />

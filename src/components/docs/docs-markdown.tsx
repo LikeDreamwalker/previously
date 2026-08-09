@@ -59,7 +59,7 @@ const components: Components = {
   a({ href, children }) {
     if (href && href.startsWith("/")) {
       return (
-        <Link href={href} className="text-blue-500 hover:underline">
+        <Link href={href} className="text-brand-600 dark:text-brand-400 hover:underline">
           {children}
         </Link>
       );
@@ -69,7 +69,7 @@ const components: Components = {
         href={href}
         target="_blank"
         rel="noopener noreferrer"
-        className="text-blue-500 hover:underline"
+        className="text-brand-600 dark:text-brand-400 hover:underline"
       >
         {children}
       </a>

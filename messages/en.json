@@ -101,6 +101,8 @@
       "sources": "{count} sources",
       "startLoop": "Starting a background loop",
       "thinkDeep": "Reasoning fragment",
+      "thinkDeepRunning": "Reasoning about \"{question}\"…",
+      "thinkDeepRunningBatch": "Reasoning about {count} questions…",
       "thinkQuestion": "Question",
       "thinkEffort": "Effort",
       "thinkEffortLow": "Light",
@@ -164,7 +166,14 @@
       "strands": "Weaving memory strands…",
       "strandsWoven": "Strands woven",
       "turnInterrupted": "Response interrupted",
-      "turnError": "Error occurred"
+      "turnError": "Error occurred",
+      "housekeeping": "Preparing…",
+      "housekeepingDone": "Context ready",
+      "stillWorking": "Still working…",
+      "stageRecalling": "Recalling…",
+      "stageReasoning": "Reasoning…",
+      "stageWorking": "Working…",
+      "stageComposing": "Composing…"
     },
     "turnStatus": {
       "active": "Thinking…",

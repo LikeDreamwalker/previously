@@ -525,7 +525,7 @@ export async function webSearchExecute(
     toolCallId,
     "webSearch",
     `Found ${result.sources.length} source${result.sources.length === 1 ? "" : "s"}`,
-    "running",
+    "done",
   );
   return result;
 }
@@ -668,7 +668,7 @@ export async function recallExecute(
           // Stream each sub-agent tool step ("Reading global timeline…",
           // "Tracing strand: X…") into the typewriter subtitle as it happens.
           onProgress: (text) => {
-            void emitToolProgress(toolCallId, "recall", text, "running");
+            void emitToolProgress(toolCallId, "recall", text, "thinking");
           },
         }),
       120_000,
@@ -691,7 +691,7 @@ export async function recallExecute(
       toolCallId,
       "recall",
       `Found ${result.hits.length} match${result.hits.length === 1 ? "" : "es"}`,
-      "running",
+      "done",
     );
 
     // Flash returns pointers + recommendations only — it never reads slice bodies.
@@ -1100,7 +1100,7 @@ async function runThinkDeepFragment(
     sentAny: false,
   };
 
-  const emitLine = (line: string, stage: "reasoning" | "writing") => {
+  const emitLine = (line: string, stage: "thinking" | "writing") => {
     if (!progressWriter) {
       try {
         progressWriter = getWritable<UIMessageChunk>().getWriter();
@@ -1122,7 +1122,7 @@ async function runThinkDeepFragment(
     if (!source) return;
     const now = Date.now();
     const line = source.slice(source.lastIndexOf("\n") + 1);
-    const stage: "reasoning" | "writing" = answer ? "writing" : "reasoning";
+    const stage: "thinking" | "writing" = answer ? "writing" : "thinking";
     if (!shouldEmitProgress(progressState, { line, stage }, now)) return;
     progressState = { lastWriteMs: now, lastLine: line, lastStage: stage, sentAny: true };
     emitLine(line, stage);
@@ -1134,7 +1134,7 @@ async function runThinkDeepFragment(
     const source = answer || reasoning;
     if (!source) return;
     const line = source.slice(source.lastIndexOf("\n") + 1);
-    const stage: "reasoning" | "writing" = answer ? "writing" : "reasoning";
+    const stage: "thinking" | "writing" = answer ? "writing" : "thinking";
     if (
       progressState.sentAny &&
       line === progressState.lastLine &&

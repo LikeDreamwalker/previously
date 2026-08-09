@@ -12,6 +12,8 @@ export interface UserProfile {
   timezone?: string;
   locale?: string;
   addressAs?: string;
+  /** Real nicknames/aliases the user goes by — NOT spelling variants of the name. */
+  aliases?: string[];
   body: string;
 }
 
@@ -79,10 +81,32 @@ export function parseIdentityFromPreviously(previouslyContent: string): UserProf
       profile.addressAs = profile.addressAs || addressMatch[1].trim();
     }
 
-    // Extract name from "Name: X" or "名字: X"
-    const nameMatch = belief.match(/(?:Name|名字|姓名)[：:]\s*(.+)/i);
+    // Extract addressAs from the card's "Address them as: X" line.
+    const addressLineMatch = belief.match(/Address them as[：:]\s*(.+)/i);
+    if (addressLineMatch) {
+      profile.addressAs = profile.addressAs || addressLineMatch[1].trim();
+    }
+
+    // Extract name from "Name: X" / "名字: X" / "姓名: X". Capture only up to
+    // the first parenthetical — the model has been observed appending editorial
+    // notes like "(also written …)" which are NOT part of the name (and the
+    // updater now strips them mechanically; this is the defensive parser cut).
+    const nameMatch = belief.match(/(?:Name|名字|姓名)[：:]\s*([^（()]+)/i);
     if (nameMatch) {
       profile.name = profile.name || nameMatch[1].trim();
+    }
+
+    // Extract alias/nickname from "Alias: X" / "别名：X" / "昵称：X" /
+    // "Also known as: X". Multiple aliases may be comma/顿号 separated.
+    const aliasMatch = belief.match(/(?:Alias|别名|昵称|Also known as)[：:]\s*(.+)/i);
+    if (aliasMatch) {
+      const aliases = aliasMatch[1]
+        .split(/[,，、]/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (aliases.length > 0) {
+        profile.aliases = [...(profile.aliases ?? []), ...aliases];
+      }
     }
 
     // Extract pronouns

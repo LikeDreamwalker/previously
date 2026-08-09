@@ -14,6 +14,8 @@ interface PhaseIndicatorProps {
   label: string;
   summary?: ReactNode;
   meta?: ReactNode;
+  /** Extra classes on the card container — used for brand-tier tint washes. */
+  className?: string;
   state: ToolRenderState;
   /** Only for streaming mode — the reasoning text that arrives in deltas. */
   streamingText?: string;
@@ -40,6 +42,7 @@ export function PhaseIndicator({
   label,
   summary,
   meta,
+  className,
   state,
   streamingText,
   subtitleTone = "thinking",
@@ -185,6 +188,7 @@ export function PhaseIndicator({
       className={cn(
         "rounded-lg px-3 py-2.5",
         canToggle && "cursor-pointer transition-colors hover:bg-muted/30",
+        className,
       )}
       onClick={canToggle ? handleToggle : undefined}
       onKeyDown={
@@ -304,12 +308,12 @@ export function PhaseIndicator({
                   >
                     {currentLine}
                     {isStreamingText && (
-                      <span className="ml-0.5 inline-block h-3 w-px animate-pulse bg-brand/60 align-middle" />
+                      <span className="ml-0.5 inline-block h-3 w-px animate-pulse bg-brand-500 align-middle" />
                     )}
                   </span>
                 </motion.div>
               ) : (
-                <span className="inline-block h-3 w-32 animate-pulse rounded bg-brand/10" />
+                <span className="inline-block h-3 w-32 animate-pulse rounded bg-brand-500/10" />
               )}
             </div>
           </motion.div>
@@ -332,7 +336,11 @@ export function PhaseIndicator({
           <div className="min-h-0">
             {shouldRenderExpandedContent && (
               <div className="pb-1 pt-1.5">
-                <Card size="sm">
+                {/* ring-inset: the Card's ring is a box-shadow that the grid's
+                    overflow-hidden would otherwise clip on the left/right (the
+                    card is flush with the clip container). Drawing it inset
+                    keeps the border visible. */}
+                <Card size="sm" className="ring-inset">
                   <CardContent className="max-h-80 overflow-auto text-sm">
                     {expandedContent}
                   </CardContent>

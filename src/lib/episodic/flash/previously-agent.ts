@@ -2,7 +2,7 @@
  * Previously Agent — the "brain" that maintains previously.md (v4 user card).
  *
  * The document is a compact USER CARD:
- *   1. Identity head     — structured, machine-parsed (Name / Address them as / Pronouns).
+ *   1. Identity head     — structured, machine-parsed (Name / Address them as / Pronouns / Alias).
  *   2. Profile paragraph — ONE rolling third-person description of the user,
  *      updated IN PLACE (preserve unchanged parts verbatim).
  *   3. Recent            — short-lived current-state lines, 7-day expiry.
@@ -94,7 +94,7 @@ const outputSchema = z.object({
     "The FULL updated previously.md user card. Preserve every unchanged line VERBATIM — only " +
     "add, edit, or remove what the new evidence warrants. Structure:\n" +
     "# Previously On\n_Active slice: {id} | Format: user card | Updated: {iso}_\n\n" +
-    "## Identity\n- Name: ... | - Address them as: ... | - Pronouns: ...\n\n" +
+    "## Identity\n- Name: ... | - Address them as: ... | - Pronouns: ... | - Alias: ... (real nicknames only — never spelling/casing variants of the Name, and never parenthetical notes)\n\n" +
     "## Profile\n{ONE flowing third-person paragraph about the user — ≤ ~400 tokens}\n\n" +
     "## Recent\n- {short current-state line} — refs: [...] | since: YYYY-MM-DD   (≤ 5 lines, newest first)\n\n" +
     "## Self-model\n- {compact operating lesson, DELTA from the standing rules}   (≤ 10 lines)\n\n" +
@@ -133,7 +133,7 @@ function buildPrompt(input: PreviouslyAgentInput): string {
 ## What the card is
 
 A compact, bounded snapshot of the user (and how you should operate), NOT an event log and NOT an additive archive:
-1. **Identity** — structured head: name, how to address them, pronouns.
+1. **Identity** — structured head: name, how to address them, pronouns, aliases.
 2. **Profile** — ONE rolling third-person paragraph describing the user (who they are, how they work, what they prefer). Updated IN PLACE.
 3. **Recent** — short-lived current-state lines ("user is evaluating X"), each carrying \`since\`; older than 7 days they are dropped.
 4. **Self-model** — compact operating lessons about how you handle things.
@@ -155,6 +155,14 @@ Compare the input below against the current card. Update the card to incorporate
 - A user correction / explicit preference → update the Profile paragraph and/or Self-model to reflect it.
 - Fragmented or non-English content → rewrite it cleanly: the Profile as ONE flowing English paragraph, every entry in English.
 - Nothing new AND the card is already clean → output the card UNCHANGED (verbatim) with a short reasoning.
+
+## Identity head — stable, minimal
+
+The Identity head is machine-parsed, so keep it minimal and STABLE:
+- **Never change the user's Name, how to address them, or their pronouns unless the user explicitly asks.** A name change is a user correction — you do not infer it. If the card already has a Name, preserve it exactly.
+- **Spelling and casing variants are NOT alternate names.** If the user's name appears with different casing or a typo, that is the SAME name. Do not record it as another version, and never add "(also written …)" / "又称 …" annotations inside any Identity field — those corrupt the machine-parsed value.
+- A genuine alias/nickname (a name the user actually goes by, distinct from their name) belongs in its own line: \`- Alias: <name>\`.
+- When a Name is absent and you must set one, use the user's primary name only — extraction always prefers \`Name:\`.
 
 ## Caps (hard — the updater enforces them too)
 

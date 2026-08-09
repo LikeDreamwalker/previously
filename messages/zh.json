@@ -101,6 +101,8 @@
       "sources": "{count} 个来源",
       "startLoop": "启动后台循环",
       "thinkDeep": "推理片段",
+      "thinkDeepRunning": "正在推理「{question}」…",
+      "thinkDeepRunningBatch": "正在推理 {count} 个问题…",
       "thinkQuestion": "问题",
       "thinkEffort": "深度",
       "thinkEffortLow": "轻量",
@@ -164,7 +166,14 @@
       "strands": "编织记忆线索…",
       "strandsWoven": "线索已编织",
       "turnInterrupted": "回答中断",
-      "turnError": "发生错误"
+      "turnError": "发生错误",
+      "housekeeping": "准备中…",
+      "housekeepingDone": "上下文就绪",
+      "stillWorking": "仍在处理…",
+      "stageRecalling": "回忆中…",
+      "stageReasoning": "推理中…",
+      "stageWorking": "处理中…",
+      "stageComposing": "撰写中…"
     },
     "turnStatus": {
       "active": "思考中…",

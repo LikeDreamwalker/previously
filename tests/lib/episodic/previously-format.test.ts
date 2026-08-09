@@ -12,6 +12,7 @@ import {
   newCardTemplate,
   migrateV3ToCard,
   isCardFormat,
+  stripTrailingParentheticals,
   type PreviouslyDocument,
   type PreviouslyBelief,
   type CardDocument,
@@ -293,5 +294,34 @@ describe("user card format (v4)", () => {
     const parsed = parseCard(migrated)!;
     // identity bullet folded into the Identity head
     expect(parsed.identity.join(" ")).toContain("named Alex");
+  });
+});
+
+// ─── stripTrailingParentheticals ─────────────────────────────────────────
+
+describe("stripTrailingParentheticals", () => {
+  it("strips an English editorial parenthetical from a Name line", () => {
+    expect(
+      stripTrailingParentheticals("Name: LikeDreamwalker (also written LikeDreamWalker)"),
+    ).toBe("Name: LikeDreamwalker");
+  });
+
+  it("strips a Chinese editorial parenthetical", () => {
+    expect(stripTrailingParentheticals("姓名：张三（又称三三）")).toBe("姓名：张三");
+  });
+
+  it("leaves a line without a trailing parenthetical untouched", () => {
+    expect(stripTrailingParentheticals("Name: Alex")).toBe("Name: Alex");
+    expect(stripTrailingParentheticals("Address them as: Alex")).toBe("Address them as: Alex");
+  });
+
+  it("keeps an Alias line intact (it is already a plain value)", () => {
+    expect(stripTrailingParentheticals("Alias: Dream")).toBe("Alias: Dream");
+  });
+
+  it("strips multiple stacked trailing groups", () => {
+    expect(
+      stripTrailingParentheticals("Name: Bob (also written Bobby) (a.k.a. B)"),
+    ).toBe("Name: Bob");
   });
 });

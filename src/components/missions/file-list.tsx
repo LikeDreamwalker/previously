@@ -12,7 +12,7 @@ interface FileEntry {
 
 const STATUS_COLORS: Record<string, string> = {
   done: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400",
-  "in-progress": "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400",
+  "in-progress": "bg-brand-100 text-brand-800 dark:bg-brand-900/30 dark:text-brand-400",
   pending: "bg-gray-100 text-gray-800 dark:bg-gray-900/30 dark:text-gray-400",
   blocked: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400",
 };
@@ -57,7 +57,7 @@ function FileRow({ file }: { file: FileEntry }) {
         className="w-full flex items-center gap-3 rounded-md px-4 py-2 text-sm hover:bg-accent transition-colors text-left"
       >
         {file.type === "dir" ? (
-          <FolderOpen className="h-4 w-4 text-blue-500 shrink-0" />
+          <FolderOpen className="h-4 w-4 text-brand-600 dark:text-brand-400 shrink-0" />
         ) : (
           <File className="h-4 w-4 text-muted-foreground shrink-0" />
         )}

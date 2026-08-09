@@ -5,6 +5,7 @@ import { AlertTriangle, Brain } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { PhaseIndicator } from "../phase-indicator";
 import { MarkdownRenderer } from "../markdown";
+import { progressStageTone } from "@/lib/chat/build-stream";
 
 interface FragmentInput {
   question?: string;
@@ -196,8 +197,22 @@ export function ThinkDeepToolRenderer({
     error: state.error ?? (failedOutput?.error ?? undefined),
   };
 
-  const subtitleTone: "thinking" | "answer" =
-    streamingStage === "writing" ? "answer" : "thinking";
+  const subtitleTone = progressStageTone(streamingStage);
+
+  // Running label mirrors recall/webSearch — "Reasoning about {question}…" so
+  // each thinkDeep call reads as an independent indicator with its question
+  // inline, instead of the generic "Reasoning fragment". A batch shows the
+  // fragment count; the streamed [i/N] subtitle keeps the per-fragment view.
+  const isRunning = displayState.running;
+  const firstQuestion =
+    (fragments?.length ?? 0) > 0
+      ? fragments![0]?.question ?? ""
+      : input?.question ?? "";
+  const label = isRunning
+    ? (fragments?.length ?? 0) > 1
+      ? t("thinkDeepRunningBatch", { count: fragments!.length })
+      : t("thinkDeepRunning", { question: firstQuestion || "…" })
+    : t("thinkDeep");
 
   // Batch: one block per fragment with the question as its header. Single
   // (legacy): reuse the original single-fragment layout.
@@ -241,8 +256,11 @@ export function ThinkDeepToolRenderer({
   return (
     <PhaseIndicator
       mode="streaming"
+      className={
+        displayState.running ? "bg-brand-50/50 dark:bg-brand-500/[0.06]" : undefined
+      }
       icon={<Brain className="h-3.5 w-3.5" />}
-      label={t("thinkDeep")}
+      label={label}
       state={displayState}
       streamingText={streamingText}
       subtitleTone={subtitleTone}

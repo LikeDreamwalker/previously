@@ -5,6 +5,7 @@ import { History } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { cn } from "@/lib/utils";
 import { PhaseIndicator } from "../phase-indicator";
+import { progressStageTone } from "@/lib/chat/build-stream";
 
 interface RecallToolRendererProps {
   toolName: string;
@@ -13,7 +14,7 @@ interface RecallToolRendererProps {
   state: ToolRenderState;
   /** Live progress from `data-tool-progress` — the streaming subtitle. */
   streamingText?: string;
-  /** Progress stage from `data-tool-progress` (unused — recall status stays dim). */
+  /** Progress stage — "running" (scanning) vs "thinking"/"done" (sub-agent steps / found). */
   streamingStage?: string;
 }
 
@@ -72,7 +73,7 @@ export function RecallToolRenderer({
   output,
   state,
   streamingText,
-  streamingStage: _streamingStage,
+  streamingStage,
 }: RecallToolRendererProps) {
   const t = useTranslations("chat.tool");
 
@@ -190,10 +191,14 @@ export function RecallToolRenderer({
   return (
     <PhaseIndicator
       mode="streaming"
+      className={
+        isRunning ? "bg-brand-50/50 dark:bg-brand-500/[0.06]" : undefined
+      }
       icon={<History className="h-3.5 w-3.5" />}
       label={label}
       state={state}
       streamingText={streamingText}
+      subtitleTone={progressStageTone(streamingStage)}
       expandedContent={expandedContent}
     />
   );

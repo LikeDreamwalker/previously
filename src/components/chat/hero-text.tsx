@@ -17,7 +17,7 @@ export function HeroText({
       {clickable ? (
         <div
           onClick={onNameClick}
-          className="relative mt-3 inline-flex cursor-pointer rounded-xl px-4 py-2 -mx-4 -my-2 hover:bg-muted-foreground/10 transition-colors duration-300"
+          className="relative mt-3 inline-flex cursor-pointer rounded-xl px-4 py-2 -mx-4 -my-2 hover:bg-brand/10 transition-colors duration-300"
         >
           <TextGenerateEffect
             words={name}
@@ -27,7 +27,7 @@ export function HeroText({
             staggerDelay={0.4}
           />
           <ArrowLeftRight
-            className="ml-1 h-3 w-3 text-muted-foreground -translate-y-px"
+            className="ml-1 h-3 w-3 text-brand-600 dark:text-brand-400 -translate-y-px"
             style={{
               opacity: 0,
               animation: "0.3s ease 2.5s forwards fade-in-icon",

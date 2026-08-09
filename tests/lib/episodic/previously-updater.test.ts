@@ -113,6 +113,23 @@ describe("applyCardUpdate", () => {
     expect(parsed.identity.length).toBeLessThanOrEqual(8);
   });
 
+  it("strips editorial parentheticals from identity head lines", () => {
+    const dirty = card({
+      identity: [
+        "Name: Alex (also written Alexee)",
+        "Name: Bob（又称哔哔）",
+        "Address them as: Alex",
+        "Pronouns: he/him",
+      ],
+    });
+    const res = applyCardUpdate(card(), dirty, "s", NOW);
+    const parsed = parseCard(res.content)!;
+    expect(parsed.identity).toContain("Name: Alex");
+    expect(parsed.identity).toContain("Name: Bob");
+    expect(parsed.identity).not.toContain("(also written");
+    expect(parsed.identity).not.toContain("（又称");
+  });
+
   it("falls back to the previous card when the updated card does not parse", () => {
     const prev = card();
     const res = applyCardUpdate(prev, "not a card at all", "s", NOW);

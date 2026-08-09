@@ -17,14 +17,21 @@
  */
 export const PROGRESS_THROTTLE_MS = 40;
 
+/**
+ * The tool progress stage ladder: `running` (tool started, spinner) →
+ * `thinking` (reasoning in progress, mono muted subtitle) → `writing` (the
+ * answer is being composed, brand-tinted subtitle) → `done` (settled, static).
+ */
+export type ToolProgressStage = "running" | "thinking" | "writing" | "done";
+
 /** Current state of the throttle — what was last emitted. */
 export interface ProgressWriteState {
   /** ms timestamp of the last emitted progress chunk (0 = none yet). */
   lastWriteMs: number;
   /** last emitted line text — used to detect line resets (newlines). */
   lastLine: string;
-  /** last emitted stage — a change (reasoning → writing) forces a send. */
-  lastStage: "reasoning" | "writing" | undefined;
+  /** last emitted stage — a change (thinking → writing) forces a send. */
+  lastStage: ToolProgressStage | undefined;
   /** whether any progress chunk has been emitted yet. */
   sentAny: boolean;
 }
@@ -33,8 +40,8 @@ export interface ProgressWriteState {
 export interface ProgressLine {
   /** The current single line (text after the last newline). */
   line: string;
-  /** "reasoning" while thinking, "writing" once the answer has begun. */
-  stage: "reasoning" | "writing";
+  /** "thinking" while reasoning, "writing" once the answer has begun. */
+  stage: ToolProgressStage;
 }
 
 /**

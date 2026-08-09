@@ -3,6 +3,7 @@ import {
   shouldEmitProgress,
   PROGRESS_THROTTLE_MS,
   type ProgressWriteState,
+  type ToolProgressStage,
 } from "@/lib/chat/progress-throttle";
 
 // The throttle is the server-side fix for a delivery bottleneck: the
@@ -10,13 +11,15 @@ import {
 // a queue that lands after the turn rendered. These tests pin the exact
 // decision rules: first line always goes out, stage changes and line resets
 // are never throttled, and steady growth is capped at PROGRESS_THROTTLE_MS.
+// The stage ladder is running → thinking → writing → done; every rung change
+// forces a send so the client's visual transition is never delayed.
 
 const T = PROGRESS_THROTTLE_MS;
 
 function emitted(
   state: ProgressWriteState,
   line: string,
-  stage: "reasoning" | "writing" = "reasoning",
+  stage: ToolProgressStage = "thinking",
   now: number = T,
 ): boolean {
   return shouldEmitProgress(state, { line, stage }, now);
@@ -42,10 +45,10 @@ describe("shouldEmitProgress", () => {
       sentAny: true,
       lastWriteMs: 0,
       lastLine: "The",
-      lastStage: "reasoning",
+      lastStage: "thinking",
     });
     // now = T - 1ms → inside the window, same stage, line grew → dropped.
-    expect(shouldEmitProgress(state, { line: "The us", stage: "reasoning" }, T - 1)).toBe(false);
+    expect(shouldEmitProgress(state, { line: "The us", stage: "thinking" }, T - 1)).toBe(false);
   });
 
   it("emits again once the window has elapsed", () => {
@@ -53,17 +56,17 @@ describe("shouldEmitProgress", () => {
       sentAny: true,
       lastWriteMs: 0,
       lastLine: "The",
-      lastStage: "reasoning",
+      lastStage: "thinking",
     });
-    expect(shouldEmitProgress(state, { line: "The us", stage: "reasoning" }, T)).toBe(true);
+    expect(shouldEmitProgress(state, { line: "The us", stage: "thinking" }, T)).toBe(true);
   });
 
-  it("emits immediately on a stage change (reasoning → writing)", () => {
+  it("emits immediately on a stage change (thinking → writing)", () => {
     const state = stateOf({
       sentAny: true,
       lastWriteMs: 0,
       lastLine: "The",
-      lastStage: "reasoning",
+      lastStage: "thinking",
     });
     // Still inside the window, but the color transition must not be delayed.
     expect(shouldEmitProgress(state, { line: "The", stage: "writing" }, 1)).toBe(true);
@@ -74,10 +77,10 @@ describe("shouldEmitProgress", () => {
       sentAny: true,
       lastWriteMs: 0,
       lastLine: "A long line before the newline",
-      lastStage: "reasoning",
+      lastStage: "thinking",
     });
     // Inside the window, but the new line is shorter — the box must re-render.
-    expect(shouldEmitProgress(state, { line: "Next", stage: "reasoning" }, 1)).toBe(true);
+    expect(shouldEmitProgress(state, { line: "Next", stage: "thinking" }, 1)).toBe(true);
   });
 
   it("does not treat equal-length growth as a reset", () => {
@@ -91,14 +94,31 @@ describe("shouldEmitProgress", () => {
     expect(shouldEmitProgress(state, { line: "wxyz", stage: "writing" }, 1)).toBe(false);
   });
 
+  it("emits immediately on every stage-ladder rung (running → thinking → writing → done)", () => {
+    const steps: Array<[ToolProgressStage, ToolProgressStage]> = [
+      ["running", "thinking"],
+      ["thinking", "writing"],
+      ["writing", "done"],
+    ];
+    for (const [from, to] of steps) {
+      const state = stateOf({
+        sentAny: true,
+        lastWriteMs: 0,
+        lastLine: "line",
+        lastStage: from,
+      });
+      expect(shouldEmitProgress(state, { line: "line", stage: to }, 1)).toBe(true);
+    }
+  });
+
   it("honors a custom throttle window", () => {
     const state = stateOf({
       sentAny: true,
       lastWriteMs: 0,
       lastLine: "a",
-      lastStage: "reasoning",
+      lastStage: "thinking",
     });
-    expect(shouldEmitProgress(state, { line: "ab", stage: "reasoning" }, 99, 100)).toBe(false);
-    expect(shouldEmitProgress(state, { line: "ab", stage: "reasoning" }, 100, 100)).toBe(true);
+    expect(shouldEmitProgress(state, { line: "ab", stage: "thinking" }, 99, 100)).toBe(false);
+    expect(shouldEmitProgress(state, { line: "ab", stage: "thinking" }, 100, 100)).toBe(true);
   });
 });
