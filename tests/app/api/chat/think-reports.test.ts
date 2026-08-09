@@ -25,22 +25,17 @@ function assistantToolCallMsg(
 }
 
 describe("extractThinkDeepReports", () => {
-  it("matches each tool-call question with its answer and reasoning", () => {
+  it("matches each batch fragment's question with its answer and reasoning", () => {
     const messages: ModelMessage[] = [
-      assistantToolCallMsg("t1", "thinkDeep", { question: "Verify claim A" }),
-      assistantToolCallMsg("t2", "thinkDeep", { question: "Weigh option B" }),
+      assistantToolCallMsg("t1", "thinkDeep", {
+        fragments: [{ question: "Verify claim A" }, { question: "Weigh option B" }],
+      }),
       toolResultMsg("t1", "thinkDeep", {
         value: {
-          ok: true,
-          answer: "## Conclusion\nA holds.",
-          reasoning: "Reasoning about A…",
-        },
-      }),
-      toolResultMsg("t2", "thinkDeep", {
-        value: {
-          ok: true,
-          answer: "## Conclusion\nB is risky.",
-          reasoning: "Reasoning about B…",
+          fragments: [
+            { question: "Verify claim A", ok: true, answer: "## Conclusion\nA holds.", reasoning: "Reasoning about A…" },
+            { question: "Weigh option B", ok: true, answer: "## Conclusion\nB is risky.", reasoning: "Reasoning about B…" },
+          ],
         },
       }),
     ];
@@ -58,25 +53,52 @@ describe("extractThinkDeepReports", () => {
     ]);
   });
 
-  it("skips failed dispatches with no output (ok: false, no answer/reasoning)", () => {
+  it("falls back to the call's question list by index when a result omits its question", () => {
     const messages: ModelMessage[] = [
-      assistantToolCallMsg("t1", "thinkDeep", { question: "Q1" }),
-      toolResultMsg("t1", "thinkDeep", { value: { ok: false, error: "failed" } }),
+      assistantToolCallMsg("t1", "thinkDeep", {
+        fragments: [{ question: "Q1" }, { question: "Q2" }],
+      }),
+      toolResultMsg("t1", "thinkDeep", {
+        value: {
+          fragments: [
+            { ok: true, answer: "answer one" },
+            { ok: true, answer: "answer two" },
+          ],
+        },
+      }),
+    ];
+    expect(extractThinkDeepReports(messages)).toEqual([
+      { question: "Q1", answer: "answer one", reasoning: "" },
+      { question: "Q2", answer: "answer two", reasoning: "" },
+    ]);
+  });
+
+  it("skips failed fragments with no output (ok: false, no answer/reasoning)", () => {
+    const messages: ModelMessage[] = [
+      assistantToolCallMsg("t1", "thinkDeep", { fragments: [{ question: "Q1" }] }),
+      toolResultMsg("t1", "thinkDeep", {
+        value: { fragments: [{ question: "Q1", ok: false, error: "failed" }] },
+      }),
     ];
     expect(extractThinkDeepReports(messages)).toEqual([]);
   });
 
   it("preserves an interrupted fragment's partial answer + reasoning (timeout shape)", () => {
     const messages: ModelMessage[] = [
-      assistantToolCallMsg("t1", "thinkDeep", { question: "Q1" }),
+      assistantToolCallMsg("t1", "thinkDeep", { fragments: [{ question: "Q1" }] }),
       toolResultMsg("t1", "thinkDeep", {
         value: {
-          ok: false,
-          status: "timeout",
-          error: "Reasoning fragment did not finish within 280s",
-          answer: "## Partial\nSo far…",
-          reasoning: "Thinking trail up to the cutoff…",
-          note: "You decide what to do next",
+          fragments: [
+            {
+              question: "Q1",
+              ok: false,
+              status: "timeout",
+              error: "Reasoning fragment did not finish within 280s",
+              answer: "## Partial\nSo far…",
+              reasoning: "Thinking trail up to the cutoff…",
+              note: "You decide what to do next",
+            },
+          ],
         },
       }),
     ];
@@ -91,13 +113,18 @@ describe("extractThinkDeepReports", () => {
 
   it("keeps a fragment that produced only reasoning (empty answer)", () => {
     const messages: ModelMessage[] = [
-      assistantToolCallMsg("t1", "thinkDeep", { question: "Q1" }),
+      assistantToolCallMsg("t1", "thinkDeep", { fragments: [{ question: "Q1" }] }),
       toolResultMsg("t1", "thinkDeep", {
         value: {
-          ok: false,
-          status: "timeout",
-          answer: "",
-          reasoning: "Thought it through but was cut before writing…",
+          fragments: [
+            {
+              question: "Q1",
+              ok: false,
+              status: "timeout",
+              answer: "",
+              reasoning: "Thought it through but was cut before writing…",
+            },
+          ],
         },
       }),
     ];
@@ -110,10 +137,12 @@ describe("extractThinkDeepReports", () => {
     ]);
   });
 
-  it("skips results with both empty answer and empty reasoning", () => {
+  it("skips fragments with both empty answer and empty reasoning", () => {
     const messages: ModelMessage[] = [
-      assistantToolCallMsg("t1", "thinkDeep", { question: "Q1" }),
-      toolResultMsg("t1", "thinkDeep", { value: { ok: true, answer: "   " } }),
+      assistantToolCallMsg("t1", "thinkDeep", { fragments: [{ question: "Q1" }] }),
+      toolResultMsg("t1", "thinkDeep", {
+        value: { fragments: [{ question: "Q1", ok: true, answer: "   " }] },
+      }),
     ];
     expect(extractThinkDeepReports(messages)).toEqual([]);
   });
@@ -126,18 +155,15 @@ describe("extractThinkDeepReports", () => {
     expect(extractThinkDeepReports(messages)).toEqual([]);
   });
 
-  it("uses an empty question when the tool-call has no matching question", () => {
+  it("handles the legacy single-fragment shape (robustness fallback)", () => {
     const messages: ModelMessage[] = [
+      assistantToolCallMsg("t1", "thinkDeep", { question: "Q1" }),
       toolResultMsg("t1", "thinkDeep", {
-        value: { ok: true, answer: "answer without a question" },
+        value: { ok: true, answer: "legacy answer", reasoning: "legacy reasoning" },
       }),
     ];
     expect(extractThinkDeepReports(messages)).toEqual([
-      {
-        question: "",
-        answer: "answer without a question",
-        reasoning: "",
-      },
+      { question: "Q1", answer: "legacy answer", reasoning: "legacy reasoning" },
     ]);
   });
 });

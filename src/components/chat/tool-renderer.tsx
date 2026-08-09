@@ -104,12 +104,28 @@ export function ToolRenderer({ toolName, state, input, output, streamingText, st
         <ThinkDeepToolRenderer
           input={
             input as
-              | { question?: string; effort?: "low" | "medium" | "high" }
+              | {
+                  fragments?: Array<{
+                    question?: string;
+                    effort?: "low" | "medium" | "high";
+                  }>;
+                  question?: string;
+                  effort?: "low" | "medium" | "high";
+                }
               | undefined
           }
           output={
             output as
               | {
+                  fragments?: Array<{
+                    ok?: boolean;
+                    status?: "completed" | "timeout" | "error";
+                    question?: string;
+                    answer?: string;
+                    reasoning?: string;
+                    error?: string;
+                    note?: string;
+                  }>;
                   ok?: boolean;
                   status?: "completed" | "timeout" | "error";
                   answer?: string;

@@ -10,6 +10,7 @@ import {
   type PrevSliceRef,
   type ContinuityInfo,
   type StrandIndex,
+  type EmotionalSignal,
 } from "@/lib/turn-priming";
 
 const NOW = "2026-08-02T06:32:00.000Z";
@@ -193,6 +194,7 @@ describe("buildTurnPriming", () => {
     strands: StrandIndex = { rust: ["2026/07/24/1500"] },
     semanticHint?: { strands: string[]; reason: string },
     intent?: { type: string; reason: string },
+    emotionalSignal?: EmotionalSignal,
   ) {
     return {
       message,
@@ -203,6 +205,7 @@ describe("buildTurnPriming", () => {
       excludeSliceId: "2026-08-02-1400",
       semanticHint,
       intent,
+      emotionalSignal,
     };
   }
 
@@ -272,5 +275,52 @@ describe("buildTurnPriming", () => {
   it("omits the intent line when no intent is present", () => {
     const block = buildTurnPriming(makeInput({ tier: "continuing" }, "帮我看看这个报错"));
     expect(block).not.toContain("Intent:");
+  });
+
+  it("emits the emotional register with support-first guidance for a strong signal", () => {
+    const block = buildTurnPriming(
+      makeInput(
+        { tier: "continuing" },
+        "今天真的太累了",
+        {},
+        undefined,
+        undefined,
+        { intensity: "strong", register: "emotional", note: "user is exhausted and venting" },
+      ),
+    );
+    expect(block).toContain(
+      "- Emotional register: strong · register: emotional — user is exhausted and venting.",
+    );
+    expect(block).toContain("lead with acknowledgment and empathy before any analysis");
+    expect(block).toContain("never read as fault-finding");
+  });
+
+  it("tells the agent to respond in kind for a playful register", () => {
+    const block = buildTurnPriming(
+      makeInput(
+        { tier: "continuing" },
+        "你又被我坑了吧哈哈",
+        {},
+        undefined,
+        undefined,
+        { intensity: "light", register: "humorous", note: "" },
+      ),
+    );
+    expect(block).toContain("- Emotional register: light · register: humorous.");
+    expect(block).toContain("respond in kind");
+  });
+
+  it("omits the emotional block for a neutral signal", () => {
+    const block = buildTurnPriming(
+      makeInput(
+        { tier: "continuing" },
+        "帮我看看这个报错",
+        {},
+        undefined,
+        undefined,
+        { intensity: "none", register: "neutral", note: "" },
+      ),
+    );
+    expect(block).not.toContain("Emotional register");
   });
 });

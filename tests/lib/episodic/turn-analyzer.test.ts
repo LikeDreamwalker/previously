@@ -46,6 +46,7 @@ describe("analyzeTurn", () => {
         semantic_hint: { strands: ["rust"], reason: "user mentioned borrow-checker" },
         intent: { type: "code_debug", reason: "user is debugging a failing loop" },
         memory_worthy: true,
+        emotional_signal: { intensity: "strong", register: "frustrated", note: "user is frustrated" },
         closed_marking: {
           focus: "Rust loop tests",
           summary: "Debugged failures",
@@ -78,6 +79,11 @@ describe("analyzeTurn", () => {
       reason: "user is debugging a failing loop",
     });
     expect(result.memoryWorthy).toBe(true);
+    expect(result.emotionalSignal).toEqual({
+      intensity: "strong",
+      register: "frustrated",
+      note: "user is frustrated",
+    });
     expect(result.closedMarking).toEqual({
       focus: "Rust loop tests",
       summary: "Debugged failures",
@@ -93,6 +99,7 @@ describe("analyzeTurn", () => {
         semantic_hint: { strands: [], reason: "" },
         intent: { type: "chat", reason: "greeting" },
         memory_worthy: false,
+        emotional_signal: { intensity: "none", register: "neutral", note: "" },
       }),
     );
     const result = await analyzeTurn({ model, userMessage: "你好", existingStrandNames: [] });
@@ -106,6 +113,7 @@ describe("analyzeTurn", () => {
         semantic_hint: { strands: [], reason: "" },
         intent: { type: "chat", reason: "user asked to record a preference" },
         memory_worthy: true,
+        emotional_signal: { intensity: "light", register: "excited", note: "user is happy" },
         memory_update: { content: "User prefers answers in Chinese from now on", section: "profile" },
       }),
     );
@@ -123,6 +131,7 @@ describe("analyzeTurn", () => {
         semantic_hint: { strands: [], reason: "" },
         intent: { type: "chat", reason: "greeting" },
         memory_worthy: false,
+        emotional_signal: { intensity: "none", register: "neutral", note: "" },
       }),
     );
     const result = await analyzeTurn({ model, userMessage: "你好", existingStrandNames: [] });
@@ -136,11 +145,30 @@ describe("analyzeTurn", () => {
         semantic_hint: { strands: [], reason: "" },
         intent: { type: "chat", reason: "greeting" },
         memory_worthy: false,
+        emotional_signal: { intensity: "none", register: "neutral", note: "" },
       }),
     );
     const result = await analyzeTurn({ model, userMessage: "x", existingStrandNames: [] });
     expect(result.closedMarking).toBeUndefined();
     expect(result.memoryWorthy).toBe(false);
+  });
+
+  it("parses the emotional register and normalizes a missing register to neutral", async () => {
+    ai.generateText.mockResolvedValue(
+      makeToolCall({
+        message_tags: { reuse: [], create: [] },
+        semantic_hint: { strands: [], reason: "" },
+        intent: { type: "chat", reason: "user is venting" },
+        memory_worthy: false,
+        emotional_signal: { intensity: "strong", note: "venting about a rough week" },
+      }),
+    );
+    const result = await analyzeTurn({ model, userMessage: "今天太难了", existingStrandNames: [] });
+    expect(result.emotionalSignal).toEqual({
+      intensity: "strong",
+      register: "neutral",
+      note: "venting about a rough week",
+    });
   });
 
   it("returns an empty analysis when the model fails", async () => {
@@ -150,6 +178,7 @@ describe("analyzeTurn", () => {
       messageTags: { reuse: [], create: [] },
       semanticHint: { strands: [], reason: "" },
       memoryWorthy: true,
+      emotionalSignal: { intensity: "none", register: "neutral", note: "" },
     });
   });
 

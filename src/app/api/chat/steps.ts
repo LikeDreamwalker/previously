@@ -473,6 +473,7 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
     excludeSliceId: slice.slice_id,
     semanticHint: analysis.semanticHint,
     intent: analysis.intent,
+    emotionalSignal: analysis.emotionalSignal,
   });
 
   // The agent's constitution (SOUL + who-you're-assisting + DIRECTIVES),

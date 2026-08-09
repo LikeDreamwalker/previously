@@ -271,7 +271,7 @@ function extractStartedLoops(messages: ModelMessage[]): StartedLoopRef[] {
 export function extractThinkDeepReports(
   messages: ModelMessage[],
 ): Array<{ question: string; answer: string; reasoning: string }> {
-  const questionByCallId = new Map<string, string>();
+  const questionsByCallId = new Map<string, string[]>();
   const results: Array<{ question: string; answer: string; reasoning: string }> =
     [];
 
@@ -282,15 +282,24 @@ export function extractThinkDeepReports(
         type?: string;
         toolCallId?: string;
         toolName?: string;
-        input?: { question?: unknown };
+        input?: { fragments?: Array<{ question?: unknown }> };
         output?: unknown;
       };
 
       if (p.type === "tool-call" && p.toolName === "thinkDeep") {
-        const q = p.input?.question;
-        if (typeof q === "string" && typeof p.toolCallId === "string") {
-          questionByCallId.set(p.toolCallId, q);
-        }
+        // The batch carries ALL fragments in one call — remember every question.
+        if (typeof p.toolCallId !== "string") continue;
+        const input = p.input as
+          | { fragments?: Array<{ question?: unknown }>; question?: unknown }
+          | undefined;
+        const qs = Array.isArray(input?.fragments)
+          ? input.fragments
+              .map((f) => (typeof f?.question === "string" ? f.question : ""))
+              .filter(Boolean)
+          : typeof input?.question === "string"
+            ? [input.question]
+            : [];
+        questionsByCallId.set(p.toolCallId, qs);
       }
 
       if (p.type === "tool-result" && p.toolName === "thinkDeep") {
@@ -298,13 +307,45 @@ export function extractThinkDeepReports(
         const raw = p.output as { value?: unknown } | undefined;
         const value = (
           raw && typeof raw === "object" && "value" in raw ? raw.value : raw
-        ) as { ok?: unknown; answer?: unknown; reasoning?: unknown } | undefined;
-        const question = questionByCallId.get(p.toolCallId) ?? "";
+        ) as
+          | {
+              fragments?: Array<{
+                question?: unknown;
+                answer?: unknown;
+                reasoning?: unknown;
+              }>;
+              answer?: unknown;
+              reasoning?: unknown;
+            }
+          | undefined;
+        const fallbackQuestions = questionsByCallId.get(p.toolCallId) ?? [];
+
+        // New batch shape: one entry per fragment, matched back by its own
+        // question (falling back to the call's question list by index).
+        if (Array.isArray(value?.fragments)) {
+          value.fragments.forEach((f, i) => {
+            const question =
+              typeof f.question === "string" && f.question.trim()
+                ? f.question
+                : (fallbackQuestions[i] ?? "");
+            const answer = typeof f.answer === "string" ? f.answer : "";
+            const reasoning =
+              typeof f.reasoning === "string" ? f.reasoning : "";
+            // Keep a fragment if it produced ANYTHING — the answer OR the
+            // thinking trail (an interrupted fragment's reasoning is still
+            // valuable).
+            if (answer.trim() || reasoning.trim()) {
+              results.push({ question, answer, reasoning });
+            }
+          });
+          continue;
+        }
+
+        // Legacy single-fragment shape — keep for robustness.
+        const question = fallbackQuestions[0] ?? "";
         const answer = typeof value?.answer === "string" ? value.answer : "";
         const reasoning =
           typeof value?.reasoning === "string" ? value.reasoning : "";
-        // Keep a fragment if it produced ANYTHING — the answer OR the thinking
-        // trail (an interrupted fragment's reasoning is still valuable).
         if (answer.trim() || reasoning.trim()) {
           results.push({ question, answer, reasoning });
         }
@@ -313,6 +354,59 @@ export function extractThinkDeepReports(
   }
 
   return results;
+}
+
+// ─── System prompt assembly (pure — cache-order matters) ─────────────────
+
+/**
+ * Assemble the turn's system prompt. Order is a CACHE decision, not just
+ * layout: the provider's prompt cache reuses the longest byte-identical
+ * PREFIX across requests. So the STABLE blocks come first (identity
+ * constitution, previously card — they barely change across turns), and the
+ * VARIABLE blocks last (the per-turn brief, strands menu, evolution notice,
+ * demo notice). A changing tail never invalidates the long cacheable head.
+ *
+ * The full assembled string is also fanned out to thinkDeep sub-agents as
+ * `baseSystemPrompt`, so their calls share the same prefix the main agent
+ * warmed.
+ */
+export function assembleSystemPrompt(opts: {
+  /** SOUL + "who you're assisting" + DIRECTIVES — stable across turns. */
+  identityPrompt: string;
+  /** The user card (previously.md) — changes only on evolution. */
+  previouslyContent: string;
+  /** The per-turn brief (timestamp / intent / continuity / semantic links). */
+  turnPriming: string;
+  /** Pre-built "## Memory topics…" block, or "" to omit. */
+  strandsBlock: string;
+  /** Pre-built "[System] A self-evolution…" notice, or "" to omit. */
+  evolutionNotice: string;
+  /** Pre-built "## Demo mode…" block, or "" to omit. */
+  demoNotice: string;
+  /** "YYYY-MM-DD" — anchors the card-freshness header. */
+  dateAnchor: string;
+}): string {
+  const {
+    identityPrompt,
+    previouslyContent,
+    turnPriming,
+    strandsBlock,
+    evolutionNotice,
+    demoNotice,
+    dateAnchor,
+  } = opts;
+  return [
+    identityPrompt,
+    `## What I know about the user (inference model — ${dateAnchor})`,
+    previouslyContent,
+    "The above is the current profile and operating model — distilled hypotheses, each carrying `refs` to its evidence. If any line seems outdated or contradicts what the user just said, cite its refs and say so; the correction flows into the archive.",
+    turnPriming,
+    strandsBlock,
+    evolutionNotice,
+    demoNotice,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 // ─── The workflow ────────────────────────────────────────────────────────
@@ -333,29 +427,30 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
 
   // ── Assemble system prompt ──────────────────────────────────────────────
 
-  // Order (situational → standing → beliefs): the turn brief first, then the
-  // identity block (SOUL + "who you're assisting" + DIRECTIVES — the memory
-  // access rules now live inside DIRECTIVES), then previously (rarely
-  // changes), then the strands menu, then the demo notice.
+  // Order (standing → beliefs → situational): the STABLE blocks first — the
+  // identity constitution (SOUL + "who you're assisting" + DIRECTIVES) then the
+  // previously card (changes only on evolution). Together they form the long
+  // cacheable prefix the provider's prompt cache reuses across turns instead of
+  // re-processing every turn. The VARIABLE blocks come last — the turn brief
+  // (timestamp / intent / continuity / semantic links), the strands menu, the
+  // evolution notice, the demo notice — so a changing tail never invalidates
+  // the stable prefix.
   const dateAnchor = input.startedAtIso.slice(0, 10);
-  const systemPrompt = [
-    turnPriming,
+  const systemPrompt = assembleSystemPrompt({
     identityPrompt,
-    `## What I know about the user (inference model — ${dateAnchor})`,
     previouslyContent,
-    "The above is the current profile and operating model — distilled hypotheses, each carrying `refs` to its evidence. If any line seems outdated or contradicts what the user just said, cite its refs and say so; the correction flows into the archive.",
-    strandsMenu
+    turnPriming,
+    strandsBlock: strandsMenu
       ? `## Memory topics\n\n${strandsMenu}\nWhen the user mentions these topics, use recall to search for related memories. If a search finds nothing relevant, do not retry it — answer from what you have.`
       : "",
-    evolutionResult?.ran
+    evolutionNotice: evolutionResult?.ran
       ? `[System] A self-evolution just completed — the previously card was updated${evolutionResult.changed ? "" : " (no change)"}. The latest card is provided above. Acknowledge this to the user if they asked for it.`
       : "",
-    input.useDemo
+    demoNotice: input.useDemo
       ? `## Demo mode (read-only)\n\nYou are running in demo mode. You can browse sample data, recall past conversations, and search the live web — but **writes are not persisted**. No GitHub repo is connected; you are seeing pre-seeded sample memories.\n\nWhen the user asks to save anything, create memories, or start background tasks, tell them naturally:\n- This is demo mode and data cannot be saved\n- They need to deploy their own instance to unlock full read/write and background loop capabilities\n\nDeployment guide: ${DEPLOY_GUIDE_URL}\n\nIt's perfectly normal for users to explore in demo mode — help them understand what this product can do and what they'll get after deploying.`
       : "",
-  ]
-    .filter(Boolean)
-    .join("\n\n");
+    dateAnchor,
+  });
 
   // ── Pro agent ──────────────────────────────────────────────────────────
 
@@ -407,6 +502,9 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
       // their prefix so provider prompt-cache hits span main + sub calls.
       baseSystemPrompt: systemPrompt,
       workerModel: input.workerModel,
+      // The turn's resolved main model — thinkDeep reuses it (shared context)
+      // instead of re-resolving config from GitHub on every fragment step.
+      mainModel: input.modelConfig,
       // Read tools pre-render user-local time from these (see time-localize.ts).
       timezone: input.clientTimezone,
       startedAtIso: input.startedAtIso,

@@ -29,6 +29,7 @@ const episodic = vi.hoisted(() => ({
     messageTags: { reuse: [], create: [] },
     semanticHint: { strands: [], reason: "" },
     memoryWorthy: true,
+    emotionalSignal: { intensity: "none", register: "neutral", note: "" },
   })),
 }));
 

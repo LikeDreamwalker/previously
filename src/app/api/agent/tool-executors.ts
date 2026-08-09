@@ -103,6 +103,13 @@ export interface ToolContext {
    */
   workerModel?: ModelConfig;
   /**
+   * The turn's resolved MAIN model — the same config injected for the main
+   * agent. thinkDeep uses it directly so each reasoning fragment skips the
+   * per-step `resolveMainModelFromConfig()` GitHub round-trip. Set on the chat
+   * tool set; absent on the loop tool set (no thinkDeep there).
+   */
+  mainModel?: ModelConfig;
+  /**
    * The user's IANA timezone (e.g. "Asia/Shanghai") — read tools use it to
    * pre-render local-time annotations so the agent never converts UTC itself.
    * Set on the chat tool set; absent on the loop tool set.
@@ -905,29 +912,129 @@ function buildSubAgentSystemPrompt(baseSystemPrompt: string | undefined): string
   return `${baseSystemPrompt}\n\n## Reasoning fragment mode\n\n${SUB_AGENT_FRAGMENT_MODE}`;
 }
 
-export async function thinkDeepExecute(
-  { question, effort = "low" }: {
-    question: string;
-    effort?: "low" | "medium" | "high";
-  },
+/** One fragment as the model supplies it in the batch call. */
+export interface ThinkDeepFragmentInput {
+  question: string;
+  effort?: "low" | "medium" | "high";
+}
+
+/** One fragment's structured result, tagged with its question. */
+export interface ThinkDeepFragmentResult extends ThinkDeepResult {
+  question: string;
+}
+
+/** Result of a thinkDeep batch — one entry per input fragment, in order. */
+export interface ThinkDeepBatchResult {
+  fragments: ThinkDeepFragmentResult[];
+}
+
+/**
+ * thinkDeep — a single reasoning step that runs ALL of the turn's fragments
+ * CONCURRENTLY (Promise.all inside this one step), so wall-clock is roughly the
+ * slowest fragment, not the sum.
+ *
+ * This fixes the serial-startup problem: each fragment used to be its own
+ * `"use step"` invocation, and the platform executed those invocations
+ * sequentially — one cold start + config fetch + model first-token after
+ * another. Bundling them into one step gives real parallelism: the fragments
+ * share the same function instance and fire their `streamText` calls together.
+ *
+ * Trade-off (deliberate): the whole batch is ONE durable, auto-retried step
+ * instead of per-fragment steps. A fragment that exceeds the wall is aborted by
+ * its own SDK timeout and returned partial (as before); the durability unit is
+ * now the batch, not the fragment. Fragments are think-only, bounded, and
+ * time-boxed, so this cost is acceptable.
+ */
+export async function thinkDeepBatchExecute(
+  { fragments }: { fragments: ThinkDeepFragmentInput[] },
   { context: ctx, toolCallId }: ExecuteOpts<ToolContext>,
-): Promise<ThinkDeepResult> {
+): Promise<ThinkDeepBatchResult> {
   "use step";
+
+  const list = Array.isArray(fragments) ? fragments : [];
+  if (list.length === 0) return { fragments: [] };
 
   if (!isAIConfigured()) {
     return {
-      ok: false,
-      status: "error",
-      error:
-        "AI is not configured (no API key). Set DEEPSEEK_API_KEY or another provider key.",
+      fragments: list.map((f) => ({
+        question: f.question,
+        ok: false,
+        status: "error" as const,
+        error:
+          "AI is not configured (no API key). Set DEEPSEEK_API_KEY or another provider key.",
+      })),
     };
   }
 
-  // Step start — the adaptive SDK timeout below guarantees the whole step
-  // returns around STEP_TOTAL_MS no matter how long the setup takes.
+  // The turn's main model arrives through the tools context (shared with the
+  // main agent — no per-fragment config resolution / GitHub round-trip). Falls
+  // back to resolving it only when the context lacks it (e.g. loop tools).
+  const modelConfig = ctx.mainModel ?? (await resolveMainModelFromConfig());
+
+  // Step start — every fragment's adaptive SDK timeout below is measured from
+  // this instant, so all fragments share the same wall and the batch returns
+  // around STEP_TOTAL_MS no matter how long setup took.
   const stepStartMs = Date.now();
 
-  const modelConfig = await resolveMainModelFromConfig();
+  const batch = await withStepTimeout(
+    async () =>
+      Promise.all(
+        list.map((f, i) =>
+          runThinkDeepFragment(f, i, list.length, {
+            modelConfig,
+            baseSystemPrompt: ctx.baseSystemPrompt,
+            toolCallId,
+            stepStartMs,
+          }),
+        ),
+      ),
+    // Backstop (fires ~3s after the last fragment's SDK abort): if an abort
+    // somehow doesn't surface, withStepTimeout still returns before the wall —
+    // the step never dies silently. Strictly under 300s (plus return overhead).
+    // No partial-value callback: each fragment's own withStepTimeout already
+    // captured its partial answer/reasoning; the batch backstop only signals
+    // that the whole batch was cut off.
+    STEP_TOTAL_MS + 3_000,
+  );
+
+  if (!batch.ok) {
+    // Whole-batch backstop fired — every in-flight fragment was cut off.
+    return {
+      fragments: list.map((f) => ({
+        question: f.question,
+        ok: false,
+        status: "timeout" as const,
+        error: `Reasoning batch did not finish within ${Math.round(batch.elapsedMs / 1000)}s and was interrupted.`,
+        note: SUB_AGENT_TIMEOUT_NOTE,
+      })),
+    };
+  }
+
+  return { fragments: batch.result ?? [] };
+}
+
+/**
+ * Run ONE think-only reasoning fragment — a single bounded `streamText` call
+ * (main model, thinking on) over exactly the facts embedded in its question.
+ * Runs INSIDE the batch step so multiple fragments fire concurrently. Progress
+ * lines are prefixed `[i/N] ` (single-fragment batches get no prefix).
+ */
+async function runThinkDeepFragment(
+  fragment: ThinkDeepFragmentInput,
+  index: number,
+  total: number,
+  opts: {
+    modelConfig: ModelConfig;
+    baseSystemPrompt?: string;
+    toolCallId: string;
+    stepStartMs: number;
+  },
+): Promise<ThinkDeepFragmentResult> {
+  const { question, effort = "low" } = fragment;
+  const { modelConfig, baseSystemPrompt, toolCallId, stepStartMs } = opts;
+
+  const prefix = total > 1 ? `[${index + 1}/${total}] ` : "";
+
   // Thinking is always requested for a reasoning fragment; the injector owns
   // the provider-specific effort mapping.
   const providerOptions = normalizeReasoningEffort(
@@ -936,7 +1043,7 @@ export async function thinkDeepExecute(
     true,
     effort,
   );
-  const system = buildSubAgentSystemPrompt(ctx.baseSystemPrompt);
+  const system = buildSubAgentSystemPrompt(baseSystemPrompt);
   const dateAnchor = new Date().toISOString().slice(0, 10);
 
   const userPrompt = [
@@ -958,9 +1065,8 @@ export async function thinkDeepExecute(
 
   // Adaptive SDK timeout — the PRIMARY hook: `streamText({ timeout })` runs
   // `AbortSignal.timeout()` (available in real Node) and ABORTS the stream
-  // cleanly at the deadline, surfacing as AbortError. Measured so the whole
-  // step returns around STEP_TOTAL_MS no matter how long setup took, staying
-  // safely under the 300s platform wall.
+  // cleanly at the deadline, surfacing as AbortError. Measured from step start
+  // so every fragment in the batch shares the same wall.
   const streamTimeoutMs = Math.max(
     30_000,
     STEP_TOTAL_MS - (Date.now() - stepStartMs),
@@ -1006,7 +1112,7 @@ export async function thinkDeepExecute(
       .write({
         type: "data-tool-progress",
         id: `tool-${toolCallId}`,
-        data: { toolCallId, toolName: "thinkDeep", text: line, stage },
+        data: { toolCallId, toolName: "thinkDeep", text: prefix + line, stage },
       })
       .catch(() => {});
   };
@@ -1093,6 +1199,7 @@ export async function thinkDeepExecute(
     if (!result.ok) {
       // Backstop fired (the SDK timeout didn't surface) — same structured return.
       return {
+        question,
         ok: false,
         status: "timeout",
         error: `Reasoning fragment did not finish within ${Math.round(result.elapsedMs / 1000)}s and was interrupted.`,
@@ -1102,12 +1209,19 @@ export async function thinkDeepExecute(
       };
     }
 
-    return { ok: true, status: "completed", answer: result.result ?? "", reasoning };
+    return {
+      question,
+      ok: true,
+      status: "completed",
+      answer: result.result ?? "",
+      reasoning,
+    };
   } catch (err) {
     if (isTimeoutAbort(err)) {
       // The SDK timeout hook aborted the stream — return the partial conclusion
       // and the thinking trail.
       return {
+        question,
         ok: false,
         status: "timeout",
         error: `Reasoning fragment did not finish within ${Math.round(streamTimeoutMs / 1000)}s and was interrupted.`,
@@ -1117,6 +1231,7 @@ export async function thinkDeepExecute(
       };
     }
     return {
+      question,
       ok: false,
       status: "error",
       error: err instanceof Error ? err.message : "Sub-agent failed",

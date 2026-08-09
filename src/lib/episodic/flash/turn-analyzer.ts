@@ -19,6 +19,7 @@ import { createModel } from "@/lib/models/provider";
 import { workerProviderOptions } from "@/lib/models/worker";
 import type { ModelConfig } from "@/lib/models/registry";
 import type { EmotionalTone, Turn } from "@/lib/episodic/types";
+import type { EmotionalSignal } from "@/lib/turn-priming";
 
 export interface SemanticHint {
   strands: string[];
@@ -70,6 +71,14 @@ export interface TurnAnalysis {
    * skips tag extraction and strand writes.
    */
   memoryWorthy: boolean;
+  /**
+   * The user's emotional register this turn — how emotionally weighted the
+   * message is and its dominant register (distress, humor, excitement, …).
+   * The main agent reads it from the turn brief to lead with support or match
+   * the user's register instead of staying purely analytical. Always present;
+   * defaults to neutral on analysis failure.
+   */
+  emotionalSignal: EmotionalSignal;
   /**
    * Present only when the user EXPLICITLY asked to record/evolve ("记住：…",
    * "自进化", "更新前情提要"). Carries the exact content to fold into the card.
@@ -152,6 +161,35 @@ const analyzeSchema = z.object({
       "Set ONLY when the user EXPLICITLY asked to record something or run self-evolution " +
       "('记住：…', '自进化', '更新前情提要', 'record this'). Extract the exact content. Omit otherwise.",
     ),
+  emotional_signal: z
+    .object({
+      intensity: z
+        .enum(["none", "light", "strong"])
+        .describe(
+          "How much emotional weight this message carries. none = purely informational. " +
+          "light = mild feeling (small talk, light humor, casual sharing). " +
+          "strong = the user is emotionally engaged — frustrated, upset, vulnerable, " +
+          "celebrating, seeking support, or sharing something personally significant.",
+        ),
+      register: z
+        .enum(["neutral", "emotional", "humorous", "frustrated", "excited"])
+        .optional()
+        .describe(
+          "The dominant emotional register, when one is present. emotional = sharing feelings / " +
+          "seeking support; humorous = joking, playful, sarcastic; frustrated = annoyed or distressed; " +
+          "excited = happy, proud, celebrating. Omit or 'neutral' when the message is emotionally neutral.",
+        ),
+      note: z
+        .string()
+        .describe(
+          "One short line: what the user is feeling and why — a hint for the agent's brief. Empty string when neutral.",
+        ),
+    })
+    .describe(
+      "The user's emotional register for the CURRENT message — how emotionally weighted it is and its " +
+      "dominant register. The agent uses this to lead with support or match register instead of staying " +
+      "purely analytical.",
+    ),
   closed_marking: z
     .object({
       focus: z.string().describe("One sentence: what this session was about."),
@@ -182,7 +220,7 @@ function buildPrompt(input: AnalyzeTurnInput): string {
   const closingSection = input.closingSlice
     ? `
 
-## Task 5 — Mark the closed slice
+## Task 6 — Mark the closed slice
 
 A time slice just closed. Summarize it so future recall can understand it at a glance.
 
@@ -228,7 +266,16 @@ Is this a substantive exchange that should update memory (a new fact about the u
 
 Return memory_worthy: true only when the turn contains durable information worth tagging and evolving. Trivial turns are false.
 
-If the user EXPLICITLY asked to record something or run self-evolution ("记住：…", "自进化", "更新前情提要", "record this") — regardless of memory_worthy — ALSO return memory_update with the exact content (English) + the best-fit card section. Omit memory_update otherwise.${closingSection}`;
+If the user EXPLICITLY asked to record something or run self-evolution ("记住：…", "自进化", "更新前情提要", "record this") — regardless of memory_worthy — ALSO return memory_update with the exact content (English) + the best-fit card section. Omit memory_update otherwise.
+
+## Task 5 — Read the emotional register
+
+What is the user's emotional state in this message, if any? The agent reads this to know when to lead with support or match the user's register instead of staying purely analytical.
+
+Return emotional_signal with:
+- intensity: none | light | strong — how much emotional weight the message carries (strong = frustrated, upset, vulnerable, celebrating, seeking support, a significant personal matter; light = light humor or casual sharing; none = purely informational)
+- register: neutral | emotional | humorous | frustrated | excited — the dominant register; humorous covers joking / playful / sarcastic. Omit or "neutral" when none.
+- note: one short line on what the user is feeling and why (empty when neutral).${closingSection}`;
 }
 
 const EMPTY: TurnAnalysis = {
@@ -237,6 +284,7 @@ const EMPTY: TurnAnalysis = {
   // Conservative on failure: don't block tag extraction (empty tags are a
   // no-op anyway), so an analyzer outage never silently freezes memory writes.
   memoryWorthy: true,
+  emotionalSignal: { intensity: "none", register: "neutral", note: "" },
 };
 
 export async function analyzeTurn(input: AnalyzeTurnInput): Promise<TurnAnalysis> {
@@ -280,6 +328,19 @@ export async function analyzeTurn(input: AnalyzeTurnInput): Promise<TurnAnalysis
         ? { type: d.intent.type, reason: d.intent.reason }
         : undefined,
       memoryWorthy: d.memory_worthy,
+      emotionalSignal: {
+        intensity: ["none", "light", "strong"].includes(d.emotional_signal.intensity)
+          ? (d.emotional_signal.intensity as EmotionalSignal["intensity"])
+          : "none",
+        register:
+          d.emotional_signal.register &&
+          ["neutral", "emotional", "humorous", "frustrated", "excited"].includes(
+            d.emotional_signal.register,
+          )
+            ? (d.emotional_signal.register as EmotionalSignal["register"])
+            : "neutral",
+        note: typeof d.emotional_signal.note === "string" ? d.emotional_signal.note : "",
+      },
       memoryUpdate: d.memory_update
         ? {
             content: d.memory_update.content,
