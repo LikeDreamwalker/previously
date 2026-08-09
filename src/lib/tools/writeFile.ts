@@ -1,5 +1,6 @@
 import { getOctokit } from "@/lib/github/client";
 import { isPathAllowed } from "@/lib/whitelist";
+import { invalidateReadCache } from "@/lib/tools/readFile";
 
 const MAX_FILE_SIZE_BYTES = 1_000_000; // 1MB limit for MVP
 
@@ -55,6 +56,10 @@ export async function writeFile(
       content: Buffer.from(content, "utf-8").toString("base64"),
       sha,
     });
+
+    // The file just changed on GitHub — drop it from the read cache so a
+    // subsequent read (same turn or next request) never serves stale content.
+    invalidateReadCache(path, repo, owner);
 
     return { path, created: !sha };
   } catch (error) {

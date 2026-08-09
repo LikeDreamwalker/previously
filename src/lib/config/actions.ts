@@ -11,7 +11,7 @@ import { writeFileLocal } from "@/lib/tools/local-fs";
 import { getRepoConfig, isDemo } from "@/lib/capabilities";
 import { resolveDataSource } from "@/lib/data-source/resolve";
 import { DEFAULTS, mergeConfigOverrides } from "./defaults";
-import { loadUserConfig } from "./loader";
+import { loadUserConfig, invalidateUserConfigCache } from "./loader";
 import type { UserConfig, UserConfigOverrides } from "./types";
 
 const CONFIG_PATH = "memory/user/config.json";
@@ -44,6 +44,12 @@ export async function saveUserConfig(
     } else {
       await writeFileLocal(CONFIG_PATH, json);
     }
+
+    // Drop the loader's parsed-config cache so the next read (and the RSC
+    // preload on the home page) reflects the just-saved values, not a stale
+    // copy for the rest of the 60s TTL. (writeFile already invalidates the
+    // underlying readFile cache; this clears the parsed layer above it.)
+    invalidateUserConfigCache();
 
     revalidatePath("/");
     return { ok: true };

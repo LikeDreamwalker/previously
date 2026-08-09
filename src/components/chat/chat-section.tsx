@@ -1,5 +1,6 @@
 "use client";
 
+import { memo } from "react";
 import type { UIMessage } from "ai";
 import { ChatMessage } from "./chat-message";
 import { LoadingTip } from "./loading-tip";
@@ -16,7 +17,7 @@ interface ChatSectionProps {
   isEvolutionTarget: (messageId: string) => boolean;
 }
 
-export function ChatSection({
+export const ChatSection = memo(function ChatSection({
   messages,
   isStreaming,
   isLoading,
@@ -66,4 +67,4 @@ export function ChatSection({
       )}
     </>
   );
-}
+});

@@ -64,6 +64,54 @@ const PHASE_DONE_KEYS: Record<string, string> = {
   strands: "strandsWoven",
 };
 
+// ── Stable PhaseIndicator props ──────────────────────────────────────────
+// Module-level constants so the stream items don't allocate a fresh state
+// object / JSX element on every render. Stable references let any future
+// memoization of these items actually bail, and reduce churn during the
+// reconnect replay burst (one render per replayed chunk).
+
+const PHASE_RUNNING_STATE: ToolRenderState = {
+  running: true,
+  inputStreaming: false,
+  interrupted: false,
+  denied: false,
+  approvalRequested: false,
+  isActiveApproval: false,
+};
+
+const PHASE_DONE_STATE: ToolRenderState = {
+  running: false,
+  inputStreaming: false,
+  interrupted: false,
+  denied: false,
+  approvalRequested: false,
+  isActiveApproval: false,
+};
+
+const TERMINAL_ERROR_STATE: ToolRenderState = {
+  running: false,
+  inputStreaming: false,
+  interrupted: false,
+  denied: false,
+  approvalRequested: false,
+  isActiveApproval: false,
+};
+
+const TERMINAL_INTERRUPTED_STATE: ToolRenderState = {
+  running: false,
+  inputStreaming: false,
+  interrupted: true,
+  denied: false,
+  approvalRequested: false,
+  isActiveApproval: false,
+};
+
+const PHASE_ICON = <Activity className="h-3.5 w-3.5" />;
+const TERMINAL_ERROR_ICON = <XCircle className="h-3.5 w-3.5 text-red-500" />;
+const TERMINAL_INTERRUPTED_ICON = (
+  <AlertTriangle className="h-3.5 w-3.5 text-yellow-500" />
+);
+
 /** Stable key for a stream item — used by AnimatePresence for enter/exit animation. */
 function itemKey(item: StreamItem, index: number): string {
   switch (item.kind) {
@@ -117,7 +165,10 @@ export const ChatMessage = memo(function ChatMessage({
 
   useEffect(() => {
     lastPartsRef.current = Date.now();
-    setSilent(false);
+    // Functional form so a `false` state is a no-op: during a reconnect replay
+    // this effect fires once per replayed chunk, and redundant setState calls
+    // would pile onto an already-heavy render burst.
+    setSilent((s) => (s ? false : s));
   }, [message.parts]);
 
   useEffect(() => {
@@ -214,25 +265,20 @@ export const ChatMessage = memo(function ChatMessage({
                           key={key}
                           mode="static"
                           icon={
-                            isInterrupted ? (
-                              <AlertTriangle className="h-3.5 w-3.5 text-yellow-500" />
-                            ) : (
-                              <XCircle className="h-3.5 w-3.5 text-red-500" />
-                            )
+                            isInterrupted
+                              ? TERMINAL_INTERRUPTED_ICON
+                              : TERMINAL_ERROR_ICON
                           }
                           label={
                             isInterrupted
                               ? t("turnInterrupted")
                               : t("turnError")
                           }
-                          state={{
-                            running: false,
-                            inputStreaming: false,
-                            interrupted: isInterrupted,
-                            denied: false,
-                            approvalRequested: false,
-                            isActiveApproval: false,
-                          }}
+                          state={
+                            isInterrupted
+                              ? TERMINAL_INTERRUPTED_STATE
+                              : TERMINAL_ERROR_STATE
+                          }
                         />
                       );
                     }
@@ -250,16 +296,11 @@ export const ChatMessage = memo(function ChatMessage({
                       <PhaseIndicator
                         key={key}
                         mode="static"
-                        icon={<Activity className="h-3.5 w-3.5" />}
+                        icon={PHASE_ICON}
                         label={label}
-                        state={{
-                          running: item.running ?? false,
-                          inputStreaming: false,
-                          interrupted: false,
-                          denied: false,
-                          approvalRequested: false,
-                          isActiveApproval: false,
-                        }}
+                        state={
+                          item.running ? PHASE_RUNNING_STATE : PHASE_DONE_STATE
+                        }
                         expandedContent={
                           hasSummaries ? (
                             <div className="space-y-1 text-xs leading-relaxed text-muted-foreground">

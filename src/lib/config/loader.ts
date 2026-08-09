@@ -32,6 +32,15 @@ let cached: UserConfig | null = null;
 let cacheTtl = 0;
 
 /**
+ * Drop the in-memory config cache. Called after a config WRITE so the next
+ * read reflects the just-saved values instead of serving stale for the TTL.
+ */
+export function invalidateUserConfigCache(): void {
+  cached = null;
+  cacheTtl = 0;
+}
+
+/**
  * Load the user config, merging any present fields onto defaults. Cached in
  * memory for 60 seconds so repeated reads within a single request stream don't
  * re-fetch from disk / GitHub.

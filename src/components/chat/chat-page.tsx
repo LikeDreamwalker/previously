@@ -22,16 +22,20 @@ import {
 import { getCached, setCache } from "@/lib/chat/slice-cache";
 import { NumberTicker } from "@/components/ui/number-ticker";
 import { TextGenerateEffect } from "@/components/ui/text-generate-effect";
-import { getUserConfig, saveUserConfig } from "@/lib/config/actions";
+import { saveUserConfig } from "@/lib/config/actions";
+import type { UserConfig } from "@/lib/config/types";
 import { useTranslations } from "next-intl";
 import { toast } from "sonner";
 
 interface ChatPageProps {
   children: React.ReactNode;
+  /** Server-preloaded user config (RSC) — seeds model/thinking/effort so the
+   *  chat starts on the real values instead of flashing defaults. */
+  initialConfig?: UserConfig;
 }
 
-export function ChatPage({ children }: ChatPageProps) {
-  return <Inner>{children}</Inner>;
+export function ChatPage({ children, initialConfig }: ChatPageProps) {
+  return <Inner initialConfig={initialConfig}>{children}</Inner>;
 }
 
 // ─── Reconnect persistence ────────────────────────────────────────────────
@@ -127,24 +131,26 @@ function NowPlaceholder({ gapAnchor }: { gapAnchor: string | null }) {
   );
 }
 
-function Inner({ children }: { children: React.ReactNode }) {
+function Inner({
+  children,
+  initialConfig,
+}: {
+  children: React.ReactNode;
+  initialConfig?: UserConfig;
+}) {
   // ── Model / thinking / effort — reactive, persisted to config.json ─────
   // The single source of truth is memory/user/config.json (cross-device, no
-  // localStorage). Defaults here are just the pre-load placeholder; the mount
-  // effect reconciles from the saved config.
-  const [selectedModel, setSelectedModel] = useState("deepseek-v4-flash");
-  const [thinking, setThinking] = useState(true);
-  const [effort, setEffort] = useState<"low" | "medium" | "high">("medium");
-
-  useEffect(() => {
-    getUserConfig()
-      .then((cfg) => {
-        setSelectedModel(cfg.model.provider);
-        setThinking(cfg.model.thinking);
-        setEffort(cfg.model.reasoningEffort);
-      })
-      .catch(() => {});
-  }, []);
+  // localStorage). The RSC page preloads it (initialConfig) so there's no
+  // default-flash + mount reconcile; saves still write back via server action.
+  const [selectedModel, setSelectedModel] = useState(
+    initialConfig?.model.provider ?? "deepseek-v4-flash",
+  );
+  const [thinking, setThinking] = useState(
+    initialConfig?.model.thinking ?? true,
+  );
+  const [effort, setEffort] = useState<"low" | "medium" | "high">(
+    initialConfig?.model.reasoningEffort ?? "medium",
+  );
 
   // Switching models applies that model's defaults (thinking + effort) so the
   // agent is configured sensibly for the newly selected model.

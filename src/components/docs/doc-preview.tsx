@@ -1,5 +1,3 @@
-"use client";
-
 import { DemoPlayground } from "./demo-playground";
 
 /**
