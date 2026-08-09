@@ -49,11 +49,11 @@ demo: strands-index
 
 ## 派生而来，而非手动编写
 
-Strands 没有单独的编写步骤。它们**完全派生自**每个切片 YAML frontmatter 中的 `tags` 数组。标签由 Flash（快速模型）在其统一的元数据更新中每轮维护——它读取对话、分类主题并写入标签。这些标签自动成为 strand。
+Strands 没有单独的编写步骤。它们**完全派生自**每个切片 YAML frontmatter 中的 `tags` 数组。标签由 worker 模型在其维护更新中每轮维护——它读取对话、分类主题并写入标签。这些标签自动成为 strand。
 
 这个循环是：
 
-1. **Flash 运行元数据维护** → 将 `tags` 写入当前活跃切片的 frontmatter
+1. **worker 运行元数据维护** → 将 `tags` 写入当前活跃切片的 frontmatter
 2. **切片被持久化**（在静默 30 分钟后关闭，或在对话中做快照）
 3. **`updateStrands(slice)` 运行** → 读取 `strands.json`，将每个标签作为键合并，追加切片的相对路径（去重后），写回
 
@@ -86,21 +86,21 @@ interface StrandIndex {
 
 ## Strands 还不是什么（尚未实现）
 
-截至 v0.1.0，strand 索引是**只写**的。它被构建和维护，但尚无任何回忆代码以编程方式读取 `strands.json` 来驱动 Flash 的回忆扫描。唯一将 strand 暴露给模型的路径是添加到 Pro 上下文中的一条提示提示：
+截至 v0.7，strand 索引是**只写**的。它被构建和维护，但尚无任何回忆代码以编程方式读取 `strands.json` 来驱动 worker 的回忆扫描。唯一将 strand 暴露给模型的路径是添加到主模型上下文中的一条提示：
 
-> "Use readMemory to explore `memory/episodic/strands.json` if deeper context is needed."
+> "Use readStrand to explore `memory/episodic/strands.json` if deeper context is needed."
 
-这意味着 strand 索引是准确且最新的，但尚未被自动查询。Pro 必须选择通过 `readMemory` 工具打开这个文件。系统信任 Pro 来导航索引、挑选相关的 strand，并沿着它们的路径找到实际的切片文件。
+这意味着 strand 索引是准确且最新的，但尚未被自动查询。主模型必须选择通过 `readStrand` 工具打开这个文件。系统信任主模型来导航索引、挑选相关的 strand，并沿着它们的路径找到实际的切片文件。
 
 一个更丰富的**一等公民 strand**——拥有自己的滚动摘要、自己的元数据，并直接集成到回忆管道中——是一个明确的未来里程碑。当前的 strand 仅是一个轻量、无损的索引：从关键词到切片路径的映射，仅此而已。
 
 ## 目前唯一的产物
 
-今天基于主题索引的唯一代码产物是 Flash 模型输出中的 `suggested_topics`（`flash.ts` 中），它没有下游消费者。Strands 是唯一的生产级语义索引。基于主题的索引——比关键词路径更丰富，拥有自己的摘要和元数据——已列入路线图作为未来的里程碑。
+今天基于主题索引的唯一代码产物是 worker 模型输出中的 `suggested_topics` 字段，它没有下游消费者。Strands 是唯一的生产级语义索引。基于主题的索引——比关键词路径更丰富，拥有自己的摘要和元数据——已列入路线图作为未来的里程碑。
 
 ## 相关文档
 
 - [Slices](/content/docs/zh/slices) — 情景记忆对应物：按时间发生了什么
 - [Timeline](/content/docs/zh/timeline) — 跨天和月的切片纵向视图
-- [Recall](/content/docs/zh/recall) — Flash 和 Pro 如何导航记忆
+- [Recall](/content/docs/zh/recall) — worker 和主模型如何导航记忆
 - [Memory Model](/content/docs/zh/memory-model) — 三层架构

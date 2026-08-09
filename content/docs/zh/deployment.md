@@ -60,7 +60,7 @@ pnpm dev
 本地开发时，在项目根目录创建 `.env.local`。Vercel 部署时，在项目设置的 **Settings → Environment Variables** 中添加这些变量。
 
 ```bash
-# 必填 — DeepSeek API 密钥（为 Flash 回忆和 Pro 推理提供能力）
+# 必填 — DeepSeek API 密钥（为主模型提供能力；worker 层级从同一提供者解析）
 DEEPSEEK_API_KEY=sk-...
 
 # 必填 — 你上一步创建的 GitHub token
@@ -70,17 +70,17 @@ GITHUB_TOKEN=github_pat_...
 GITHUB_REPO_OWNER=your-username
 GITHUB_REPO_NAME=your-repo-name
 
-# 可选 — 将记忆读取重定向到内置的演示角色
-# DEMO_MODE=true
+# 可选 — 只读的演示角色模式
+# STORAGE=demo
 ```
 
 | 变量 | 是否必填 | 说明 | 获取方式 |
 |---|---|---|---|
-| `DEEPSEEK_API_KEY` | 是 | 为 DeepSeek 的快回忆模型（Flash）和深度推理模型（Pro）提供认证。 | [platform.deepseek.com](https://platform.deepseek.com) —— 注册账号并生成 API 密钥。 |
+| `DEEPSEEK_API_KEY` | 是 | 为主模型提供 DeepSeek 认证（默认情况下，worker 层级也从同一提供者派生）。 | [platform.deepseek.com](https://platform.deepseek.com) —— 注册账号并生成 API 密钥。 |
 | `GITHUB_TOKEN` | 是 | 细粒度个人访问 token。所有 GitHub 读写操作都通过它进行。 | [上一步已创建](#创建-github-token)。 |
 | `GITHUB_REPO_OWNER` | 是 | 拥有记忆数据仓库的 GitHub 用户名或组织名。 | 你的 GitHub 用户名。 |
 | `GITHUB_REPO_NAME` | 是 | 存放记忆数据的仓库名。默认就是你自己的仓库，但也可以指向你拥有的任意仓库。 | 你在 GitHub 上的仓库名。 |
-| `DEMO_MODE` | 否 | 设为 `"true"` 可将记忆读取重定向到预置的演示角色。写入仍然会到真实的记忆目录中。适合评估场景。 | — |
+| `STORAGE` | 否 | 选择数据源：`local`（文件系统）、`github`（GitHub API）或 `demo`（只读的预置角色数据集）。未设置时自动检测。 | — |
 
 ## 同步上游更新
 

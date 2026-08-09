@@ -67,7 +67,7 @@ demo: strands-index
 
 ## 语义记忆，第二层：记忆节点
 
-**记忆节点** 是 `memory/nodes/` 下独立的结构化知识单元，由 Previously 自己（Pro 模型，通过 `writeFile`）在对话揭示出关于你的真正值得注意的信息时编写。与自动构建的关键词索引 strands 不同，nodes 是手动或代理撰写的知识单元，具有类型化 schema：
+**记忆节点** 是 `memory/nodes/` 下独立的结构化知识单元，由 Previously 自己（主模型，通过 `writeFile`）在对话揭示出关于你的真正值得注意的信息时编写。与自动构建的关键词索引 strands 不同，nodes 是手动或代理撰写的知识单元，具有类型化 schema：
 
 | 字段 | 用途 |
 |-------|---------|
@@ -158,8 +158,8 @@ Token 估算采用启发式方法（`ceil(chars / 4)`）——不是真正的 to
 
 召回遵循 Tulving 奠基的情景优先、语义其次的顺序：先扫描何时发生，再检索发生了什么。
 
-1. **Flash**（DeepSeek-chat）——扫描最近的 slice 摘要和 strand 索引，返回指向相关 slice 的指针。每轮元数据维护（tags、strands、summaries）通过 `runUnifiedFlash()` 折叠到这一轮往返中，该方法在 300ms 后重试一次，并回退到安全默认值。
-2. **Pro**（主模型）——调用 `readMemory` 工具读取完整的 slice 内容以进行深度召回。这是昂贵、彻底的传递，从原始时间线中重建上下文。
+1. **worker 扫描**（已解析的 worker 模型）——扫描最近的 slice 摘要，返回指向相关 slice 的指针。每轮元数据维护（tags、strands、summaries）通过 turn analyzer 折叠到这一轮往返中，该方法在 300ms 后重试一次，并回退到安全默认值。
+2. **主模型深度读取**（主模型）——调用 `readSlice` 工具读取完整的 slice 内容以进行深度召回。这是昂贵、彻底的传递，从原始时间线中重建上下文。
 
 这种分工让快速操作保持快速，同时将模型容量保留给需要它的工作。
 

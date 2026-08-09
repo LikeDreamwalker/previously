@@ -6,7 +6,7 @@ Every conversation is a timeline of slices — one burst of back-and-forth, one 
 
 A **slice** is the storage unit of episodic memory: a single conversation session captured as a `.md` file with YAML frontmatter. It is the L2 memory layer — L0 and L1 are baked into the build, L2 (slices) is fetched on demand at runtime. No database, no binary format. Plain Markdown in your repo.
 
-Each slice holds a contiguous burst of turns — the messages you and Previously exchanged in one sitting — alongside metadata maintained by **Flash** (the fast DeepSeek call that keeps metadata fresh after every turn).
+Each slice holds a contiguous burst of turns — the messages you and Previously exchanged in one sitting — alongside metadata maintained by the **worker model** (the cheap housekeeping call that keeps metadata fresh after every turn).
 
 ## Lifecycle
 
@@ -18,7 +18,7 @@ A slice has three states: **open**, **active**, and **closed**.
 | **Extend** | Each subsequent message calls `appendTurn()` — the turn is pushed onto the in-memory slice. The slice stays in memory across the session. Periodically (every N turns and on `beforeunload`) a checkpoint snapshot is written to disk via `saveSliceSnapshot()`. |
 | **Close** | After **30 minutes of silence** the slicer triggers. `closeSlice()` marks the slice `status: "closed"`, sets the `end` timestamp, writes the full `.md` to disk, updates the monthly index (`_index.json`), and weaves the slice's tags into the strand index (`strands.json`). The next message opens a fresh slice. |
 
-> **One rule, no exceptions.** The sole slicing trigger is time silence — 30 minutes (`TIME_SILENCE_THRESHOLD_MS = 1,800,000 ms`) since the last turn. Capacity checks and Flash continuity heuristics were prototyped and removed as premature optimization in M8. They are never emitted.
+> **One rule, no exceptions.** The sole slicing trigger is time silence — 30 minutes (`TIME_SILENCE_THRESHOLD_MS = 1,800,000 ms`) since the last turn. Capacity checks and worker continuity heuristics were prototyped and removed as premature optimization in M8. They are never emitted.
 
 On page refresh, `tryLoadTodaySlice()` scans today's directory, finds the most recent `.md` still marked `active`, and re-hydrates it — you pick up where you left off.
 
@@ -46,7 +46,7 @@ A calendar day is a **directory**. A directory can hold multiple slice files —
 
 ## YAML frontmatter
 
-Every slice file opens with `---` delimited YAML. These are the fields — everything is written by Flash at close or during maintenance:
+Every slice file opens with `---` delimited YAML. These are the fields — everything is written by the worker model at close or during maintenance:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
@@ -56,12 +56,12 @@ Every slice file opens with `---` delimited YAML. These are the fields — every
 | `start` | string | yes | UTC ISO 8601 timestamp of first turn |
 | `end` | string | no | UTC ISO 8601 timestamp of last turn (absent while active) |
 | `timezone` | string | yes | User's IANA timezone at time of interaction, e.g. `"Asia/Shanghai"` |
-| `summary` | string | yes | Flash-generated recap, 100 characters at most |
+| `summary` | string | yes | Worker-generated recap, 100 characters at most |
 | `open_loops` | string[] | yes | Unresolved questions or threads carried forward |
 | `decisions` | string[] | yes | Conclusions or action items from this slice |
 | `tags` | string[] | yes | Semantic keywords (these weave into the strand index) |
 | `related_slices` | string[] | yes | Relative paths of related slices, e.g. `["2026/06/22/1430"]` — may be empty |
-| `emotional_tone` | string | no | `"positive"`, `"neutral"`, `"negative"`, or `"mixed"` — assessed by Flash |
+| `emotional_tone` | string | no | `"positive"`, `"neutral"`, `"negative"`, or `"mixed"` — assessed by the worker model |
 
 Empty strings and `undefined` fields are stripped from the YAML. Empty arrays (`open_loops: []`) are serialized as-is — they appear as blank lists.
 
@@ -155,14 +155,14 @@ A **strand** is one keyword's entry — "the whole history of that thing" across
 demo: strands-index
 ```
 
-## How slicing works with Flash and Pro
+## How slicing works with the worker and main models
 
-The **Flash/Pro split** governs metadata and recall:
+The **worker/main split** governs metadata and recall:
 
-- **Flash** (DeepSeek-chat, fast) runs every turn. It maintains the slice's frontmatter — focus, summary, decisions, open loops, tags, emotional tone. It also scans recent closed-slice summaries for recall hits. If the unified Flash call fails, safe defaults apply (intent `"chat"`, no metadata updates).
-- **Pro** (the main model) performs deep recall by reading full slice bodies via the `readMemory` tool when Flash returns nothing or the question needs richer context.
+- **Worker scan** (the resolved worker model) runs every turn. It maintains the slice's frontmatter — focus, summary, decisions, open loops, tags, emotional tone. It also scans recent closed-slice summaries for recall hits. If the housekeeping call fails, safe defaults apply (intent `"chat"`, no metadata updates).
+- **Main deep read** (the main model) performs deep recall by reading full slice bodies via the `readSlice` tool when the worker returns nothing or the question needs richer context.
 
-When a slice closes, Flash freezes the metadata and the slice is sealed on disk.
+When a slice closes, the worker freezes the metadata and the slice is sealed on disk.
 
 ## Storage backend
 
@@ -184,14 +184,14 @@ When a slice closes, two auxiliary structures update:
 
 ## Design rationale
 
-- **Time-only slicing** keeps the system predictable. Capacity thresholds and Flash-based continuity heuristics added complexity without proven benefit at this stage — they were removed in M8.
+- **Time-only slicing** keeps the system predictable. Capacity thresholds and worker-based continuity heuristics added complexity without proven benefit at this stage — they were removed in M8.
 - **In-memory active slice with periodic snapshots** avoids excessive GitHub API writes. The slice lives in a module-level variable, snapshotted every N turns and on `beforeunload`, but never on *every* turn.
 - **YAML frontmatter + Markdown body** is the raw material of every documentation ecosystem. It renders in any Markdown viewer, diffs cleanly in git, and parsers exist in every language Gray-matter handles the TypeScript side.
 - **Episodic vs. semantic separation** mirrors Endel Tulving's 1972 theory. Slices are episodic (organized by *when*). Strands and memory nodes are semantic (organized by *what*). Recall scans *when* first, then retrieves *what*.
 
 ## Related
 
-- [Timeline](/en/docs/timeline) — the vertical UI that browses slices by date
+- [Timeline](/en/docs/timeline) — the horizontal date-dot strip that browses slices by date
 - [Strands](/en/docs/strands) — semantic tag index over the slice archive
-- [Recall](/en/docs/recall) — how Flash scans and Pro retrieves
+- [Recall](/en/docs/recall) — how the worker scans and the main model retrieves
 - [Memory System](/en/docs/memory-system) — the three-tier architecture

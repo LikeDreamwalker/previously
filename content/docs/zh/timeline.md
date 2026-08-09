@@ -1,151 +1,111 @@
 # 时间线
 
-时间线是 Previously 的主要交互界面——一条垂直滚动你的对话历史记录，从上到下阅读，实时聊天在最底部，向上滚动时过去便展现在你身后。
+时间线是 Previously 的主要交互界面——一条垂直滚动的对话历史，从上往下读，实时聊天在最底部，向上滚动，过去便展现在你身后。
 
 ## 不是聊天列表，也不是搜索栏
 
-时间线是大多数 AI 聊天产品采用的两种主流 UI 模式的明确替代方案。它**不是**需要你手动管理、重命名、删除和搜索的对话线程列表。它**不是**一个输入关键词、期望正确记忆浮现的搜索栏。这两种模式都给人类带来负担——它们假设你会自己整理记忆。
+时间线是大多数 AI 聊天产品采用的两种主流 UI 模式的明确替代方案。它**不是**需要你手动管理、重命名、删除和搜索的对话线程列表。它**不是**一个输入关键词、期望正确记忆浮现的搜索栏。这两种模式都把负担推给人类——它们假设你会自己整理记忆。
 
-Previously 摒弃了这一假设。取而代之的是，它呈现一条单一的垂直时间线——你的故事如同一部自传，最旧的在顶部，最新的在底部，实时对话发生在最底部边缘（README.md:50）。
+Previously 摒弃了这一假设。取而代之的是一条单一的垂直时间线——你的故事如同一部自传，最旧的在顶部，最新的在底部，实时对话发生在最底部边缘。
 
 > **关键要点：你不需要管理对话。你只需滚动你的人生。**
 
-## 三个区域，一个滚动器
+## 四个区域，一个滚动器
 
-页面是一个单一垂直堆叠的滚动表面，按顺序包含三个区域：服务端渲染的英雄区、记忆时间线（`TimelinePanel`）和实时聊天消息——全部位于一个 `MessageScroller` 内（src/components/chat/CLAUDE.md）。时间线位于消息**之上**，而非消息列表内部。它们是同一个滚动容器中的同级区域。向上滚动回顾过去。向下滚动继续你上次离开的位置。
+页面是一个单一垂直堆叠的滚动表面，从上到下四个区域：
 
-### 时间顺序排列
+1. **全屏 hero** — `"Previously on {你的名字}"`，带电影感的文字显现动画。演示模式下这里换成人格选择器，而不是你的名字。
+2. **吸附的横向时间线** — 一排紧凑的日期圆点，吸附在固定 AppHeader 下方。每个圆点是一个切片；最新在右，最右端是「现在」节点。可以横向滚动条，也可以用滚轮移动它。内容在下方滚动时它保持不动——任何时候都能跳到过去的任意一点。
+3. **聊天内容** — 选中「现在」时是实时对话；选中过去的圆点时是历史切片视图。
+4. **吸附的输入栏** — 固定在屏幕底部。
 
-数据从 hook 获取时是最新优先，显示时反转顺序。渲染位置的代码注释明确指出："Timeline — oldest at top → newest at bottom"（timeline-panel.tsx:142-143）。日期组和组内的 slice 均按最旧优先的顺序渲染。
+向上滚动回顾过去，向下滚动继续上次的进度。
 
 ```preview
 demo: slice-file
 ```
 
-## 按日期分组的 UI
+## 现在标记
 
-可见的时间线按精确日历日期分组 slice。辅助函数 `formatSliceDate`（time-slice-row.tsx:69-88）返回：
+在「已记录过去」与「实时当下」交界处，一个放大的动画 **「现在」** 词标记了交接点（i18n key `timeline.panel.now`）。用 `TextGenerateEffect` 渲染，`text-5xl sm:text-6xl`，细字重、居中。这是时间线的终点：它在此收束，把接力棒交给下方实时聊天。
 
-| 条件 | 标签 |
-|-----------|-------|
-| 同一天（diffDays 0） | "今天" |
-| 前一天（diffDays 1） | "昨天" |
-| 同一年，更早 | `Intl.DateTimeFormat` 显示月 + 日（例如 "6 月 14 日"） |
-| 跨年 | `Intl.DateTimeFormat` 显示年 + 月 + 日（例如 "2025 年 3 月 10 日"） |
+## 时间间隔标题卡（冷开场）
 
-这些标签是 `groupByDate`（timeline-panel.tsx:29-41）中的分组键。每个日期组渲染：
+当你离开一段时间后回来、聊天区还是空的，会出现一张电影感的时间间隔标题卡——一个把「最后记录时刻」切到「现在」的标签。
 
-- **`DateGroupHeader`**——一个动画头部，使用 `NumberTicker` 组件显示年、月、日。支持本地化：中文渲染为 "2025 Year 11 Month 21 Day" 并带有后缀标签；英文渲染为 "November 21 [2025]"，仅在跨年时显示年份（date-group-header.tsx）。
-- **`SliceTimeMarker`**——每个单独的 slice 行通过 `NumberTicker` 显示动画 HH:MM，使用 `d.getHours()` / `d.getMinutes()` 以查看者的浏览器时区渲染（time-slice-row.tsx:127-130）。
-
-## "现在"标记
-
-在时间线的最底部，一个大型动画 "Now" 文字标志着记录的过去交接给当前对话的位置（timeline-panel.tsx:191-221）。i18n 键为 `timeline.panel.now`。
-
-使用 `TextGenerateEffect` 渲染，尺寸为 `text-5xl sm:text-6xl`（响应式），细字重（`font-light`），位于居中块内，上下内边距较大（`pt-24 pb-20`）。这是时间线的终点：时间线向下延伸至此，然后交接给下方的实时聊天。
-
-## 时间间隔标题卡片（冷开场）
-
-当你离开一段时间后返回 Previously，且聊天仍为空时，一个电影感的时间间隔标题卡片会出现在 "Now" 标记上方——一个从最后记录时刻跨越到现在的标签（timeline-panel.tsx:194-212）。
-
-间隔由 `getGapInfo` 计算（timeline-panel.tsx:52-67），它根据最后一个 slice 的 `start` 与 `Date.now()` 之间的经过时间进行分类：
+间隔由 `getGapInfo`（chat-page.tsx）计算，把最后切片 `start` 与 `Date.now()` 之间经过的时间分桶：
 
 | 经过时间 | 渲染为 |
-|---------|------------|
-| < 5 分钟 | "片刻之后" |
+|-----------|-------|
+| < 5 分钟 | "Moments later"（片刻之后） |
 | 1–59 分钟 | "{N} 分钟后" |
 | 1–23 小时 | "{N} 小时后" |
 | 1–6 天 | "{N} 天后" |
 | 1–4 周 | "{N} 周后" |
 | ≥ 5 周 | "{N} 个月后" |
 
-**关键细节：没有"年"这个单位。** 大约两年的间隔渲染为 "24 个月后"，而不是 "2 年后"。间隔锚定在最后一个 slice 的 `start` 而非其 `end`；由此引入的 ≤30 分钟误差在小时/天粒度下是不可见的（timeline-panel.tsx:43-51, 92）。
+间隔只在挂载后计算（在 `useEffect` 内），避免墙钟在 SSR/水合时不匹配。只有当实时聊天还没有消息时才显示；一旦你开口，间隔卡就消失。i18n 标签在 `messages/{en,zh}.json` 的 `timeline.gap.*`，带正确的 ICU 复数。
 
-间隔卡片**仅在挂载后**计算（在 `useEffect` 内部），以避免 SSR/水合时因墙上时钟产生的不匹配（timeline-panel.tsx:90-98）。仅在 `chatEmpty` 为 true 时显示——即实时聊天还没有消息。一旦你开始说话，间隔卡片就会消失。
+## 横向时间条
 
-i18n 标签位于 `timeline.gap.*`（messages/en.json）：`moments`、`unit.minute`、`unit.hour`、`unit.day`、`unit.week`、`unit.month`，均通过 ICU 语法实现正确的复数形式。
+时间线现在是**横向**日期条（`src/components/chat/` 的 `HorizontalTimeline`），取代了旧的竖向日期分组面板。关键行为：
 
-## 分页："更早的记忆"
+- **圆点 = 切片** — 每个切片渲染一个日期标签、一个小圆点和时间标签。选中的圆点品牌色放大。
+- **现在节点** — 最右端的节点标记当下。选中它回到实时聊天。
+- **加载更早** — 左侧的 chevron 在还有更早切片时分页加载（每次 10 个）。
+- **滚轮滚动** — 垂直滚轮输入被转为横向滚动。
+- **吸附** — 条是 `position: sticky`，位于 AppHeader 下方（`top-12`），内容滚动时它不动。
 
-向上滚动可通过游标分页浏览历史记录。"更早的记忆"按钮（i18n 键 `timeline.panel.earlier`）位于时间线面板的顶部。点击它调用 `getMoreSlices(oldest.start, 10)`——加载比当前已加载的最旧 slice 更早的 10 个 slice（use-timeline.ts:42-66）。
+## 历史切片视图
 
-较新的 slice 出现在现有 slice 下方；**更旧的 slice 加载到上方**，保持最旧在顶部的原则（timeline-panel.tsx:120-140，注释 "older slices load in above"）。请求进行中时，按钮文本替换为加载旋转器。分页游标为已加载的最旧 slice 的 `start` 时间戳。
+选中过去的圆点，内容区切换为历史视图，时间线保持不动：
 
-## Slice 行：延迟加载与可展开
+- **前情提要栏** — Brain 图标 + "Previously On" 标签；点击打开包含该切片 `previously.md`（Agent 的紧凑用户卡片）的对话框。
+- **历史轮次** — 带时间戳的用户/Agent 往返，每一轮可通过「思考」popover 查看 Agent 当时的想法。
+- **未决事项 / 决策页脚** — 该切片的未决事项与决策，以带标签的胶囊显示。
 
-时间线中的每个 slice 渲染为 `TimeSliceRow`（time-slice-row.tsx:138-263）：
+## 切片与分页
 
-- **延迟内容加载**——完整的 slice 主体在挂载时通过 `getSliceContent(slice.slice_id)` 获取，加载期间显示旋转器
-- **默认视图**——显示第一个用户+助手的对话回合（`.slice(0, 2)`），通常是一条用户消息和助手的回复
-- **向下展开**——"查看更多"按钮在第一个对话回合下方显示后续轮次，保持时间顺序的阅读方向
-- **摘要说明**——slice 的 YAML `summary` 字段在对话回合内容下方渲染为斜体说明文字
-- **未完结事项与已决事项**——以计数形式显示（"3 进行中 · 2 已决定"），点击后可展开为带标签的胶囊
-- **字符计数**——超过 300 字符的单个对话回合会被截断，并显示"展开全部（{N} 字符）"按钮
-
-## 两个不同的按时间分组系统
-
-Previously 中存在两个独立的按时间分组系统，服务于不同的受众。不要混淆它们。
-
-### 1. 可见 UI（为你设计）
-
-屏幕上的时间线按**精确日历日期**分组——今天、昨天或本地化格式的日期——带有动画的年/月/日头部和 HH:MM slice 标记。这是你在页面上看到的内容。
-
-### 2. LLM 情景上下文（为代理设计）
-
-当路由为 Pro 组装系统提示时，它会通过 `buildTimelineEpisodicContext`（route.ts:147-216）构建一个 `## Episodic Memory Timeline` 部分。这是一个**注入到模型上下文中**的 Markdown 块，而非渲染在屏幕上。
-
-包含：
+每个切片是一次对话片段，以 Markdown 文件存储于：
 
 ```
-### Now — 当前会话
-- Slice: `{slice_id}` · {N} 个回合
-- 焦点：{focus}
-- 摘要：{summary}
-- 未完结事项：["..."]
-- 已决事项：["..."]
+memory/episodic/slices/YYYY/MM/DD/HHMM.md
 ```
 
-随后是：
+路径编码完整时间戳：年/月/日/小时-分钟。一个日历日是一个目录，可容纳多个切片。你开口时切片打开，沉默 30 分钟后自动关闭。没有容量上限、没有话题切换规则——切片纯粹由时间驱动。
 
+每个切片携带 YAML frontmatter 的结构化元数据（`focus`、`summary`、`open_loops`、`decisions`、`tags`、`emotional_tone`、`status`、`start`/`end` 时间戳），无需专有工具即可机器可读。
+
+## Agent 的情景上下文
+
+回合运行时，workflow 从时间线组装系统 prompt——当前切片位于「Now — Current Session」，任何回忆命中按年龄分桶（今天/本周、本月、几个月前、去年、更早），按相关度排序并设上限。这是**注入模型上下文的 Markdown**，不在屏幕上渲染。回忆由双层系统处理：worker 模型扫描摘要并返回指针；主模型通过 `readSlice` 深读真正重要的切片。
+
+```preview
+demo: strands-index
 ```
-### 召回结果
-Flash 发现以下可能相关的过往对话：
-```
 
-每个召回命中按时间和相关性分桶排序，上限为 12 条（`MAX_RECALL_HITS`，位于 route.ts:170）：
+## 两套时间分组系统
 
-| 分组标签 | 天数范围 | 代码范围 |
-|---|---|---|
-| "今天 / 本周" | ≤ 7 | `daysAgo <= 7` |
-| "本月" | ≤ 30 | `daysAgo <= 30` |
-| "几个月前" | ≤ 180 | `daysAgo <= 180` |
-| "去年" | ≤ 365 | `daysAgo <= 365` |
-| "更早" | > 365 | else |
+Previously 里有两套时间分组系统，服务不同对象。不要混淆它们。
 
-每条命中行显示 `slice_id`、相对时间标签（`formatRelativeTime`）、Flash 理由和相关性分数。当 Flash 未找到任何内容时，该部分会明确说明，并引导 Pro 前往 `memory/episodic/strands.json` 进行更深层的探索（route.ts:210-214）。
+### 1. 可见 UI（给你）
+
+屏幕上的时间线就是上面描述的横向圆点条——你在页面上看到的。
+
+### 2. LLM 情景上下文（给 Agent）
+
+回合组装系统 prompt 时，会构造一个 `## Episodic Memory Timeline` 区块，包含当前切片与任何回忆命中。这是 Agent 对你时间线的视图——按年龄分桶、按相关度排序、设上限 `MAX_RECALL_HITS`。
 
 ## 数据流
 
-时间线通过服务端操作（server actions）填充：
+时间线通过 server actions 填充：
 
-1. **初始加载**——`getEpisodicState()` 返回最近的 slice 作为 `active`、一个 `recent` slice 数组（包含摘要和元数据），以及一个 `hasMore` 布尔值
-2. **分页**——`getMoreSlices(before: ISO 时间戳, limit: 10)` 获取更旧的 slice；结果追加到 `slices` 数组的末尾（由于数组在"旧"端增长，因此渲染在上方）
-3. **DEMO_MODE**——当 `DEMO_MODE=true` 时，扫描深度扩展到 48 个月，而非正常的 1-2 个月（src/lib/episodic/CLAUDE.md:90）
-
-## 原子单位：Slice
-
-时间线上的每一行代表一个 **slice**——一个单独的对话片段，以 Markdown 文件形式存储在：
-
-```
-memory/episodic/slices/2025/11/21/0825.md
-```
-
-路径编码了完整的时间戳：年/月/日/时-分。一个日历日是一个目录，可能包含多个 slice。一个 slice 在你开始对话时打开，并在静默 30 分钟后自动关闭（README.md:52-56；src/lib/episodic/CLAUDE.md:5）。没有容量限制，也没有话题切换规则——切片纯粹由时间驱动。
-
-每个 slice 携带带有结构化元数据的 YAML frontmatter（`focus`、`summary`、`open_loops`、`decisions`、`tags`、`emotional_tone`、`status`、`start`/`end` 时间戳），使其无需专有工具即可被机器读取。
+1. **初始加载** — `getEpisodicState()` 返回最近的切片为 `active`、一组 `recent` 切片（带摘要与元数据）以及 `hasMore` 布尔值。
+2. **分页** — `getMoreSlices(before: ISO 时间戳, limit: 10)` 拉取更早的切片。
+3. **切片内容** — `getSliceContent(slice_id)` 在选中时懒加载切片完整内容，带内存缓存，回访即时。
 
 ## 相关
 
-- [记忆模型](/content/docs/en/memory-model)——slice 如何融入完整的情景 + 语义记忆架构
-- [召回](/content/docs/en/recall)——Flash 和 Pro 如何使用时间线进行上下文检索
-- [架构](/content/docs/en/architecture)——渲染时间线与实时消息的组件树
+- [记忆模型](/content/docs/zh/memory-model) — 切片如何融入完整的情景 + 语义记忆架构
+- [回忆](/content/docs/zh/recall) — worker 与主模型如何使用时间线做上下文检索
+- [架构](/content/docs/zh/architecture) — 渲染时间线与实时消息的组件树

@@ -6,7 +6,7 @@
 
 **切片（slice）**是情景记忆（episodic memory）的存储单元：一个以 `.md` 文件形式保存的独立对话会话，带有 YAML 前置元数据。它是 L2 记忆层——L0 和 L1 在构建时打包，L2（切片）在运行时按需获取。没有数据库，没有二进制格式。只有纯 Markdown 存放在你的仓库中。
 
-每个切片保存一段连续的对话轮次——你和 Previously 在一次交互中交换的消息——以及由 **Flash**（快速 DeepSeek 调用，在每一轮对话后保持元数据最新）维护的元数据。
+每个切片保存一段连续的对话轮次——你和 Previously 在一次交互中交换的消息——以及由 **worker 模型**（廉价的维护调用，在每一轮对话后保持元数据最新）维护的元数据。
 
 ## 生命周期
 
@@ -18,7 +18,7 @@
 | **扩展（Extend）** | 后续每条消息调用 `appendTurn()`——轮次被推入内存中的切片。切片在整个会话期间保留在内存中。定期（每 N 个轮次以及在 `beforeunload` 时）通过 `saveSliceSnapshot()` 将检查点快照写入磁盘。 |
 | **关闭（Close）** | 在 **30 分钟静默**后，切片器触发。`closeSlice()` 将切片标记为 `status: "closed"`，设置 `end` 时间戳，将完整的 `.md` 写入磁盘，更新月度索引（`_index.json`），并将切片的标签编织到主题索引（strands）`strands.json` 中。下一条消息将打开一个新的切片。 |
 
-> **一条规则，没有例外。** 唯一的切片触发因素是时间静默——自上一轮对话以来过去 30 分钟（`TIME_SILENCE_THRESHOLD_MS = 1,800,000 ms`）。容量检查和 Flash 连续性启发式逻辑曾在 M8 中原型验证后被移除。它们永远不会被重新引入。
+> **一条规则，没有例外。** 唯一的切片触发因素是时间静默——自上一轮对话以来过去 30 分钟（`TIME_SILENCE_THRESHOLD_MS = 1,800,000 ms`）。容量检查和 worker 连续性启发式逻辑曾在 M8 中原型验证后被移除。它们永远不会被重新引入。
 
 页面刷新时，`tryLoadTodaySlice()` 扫描今天的目录，找到最近一个仍标记为 `active` 的 `.md` 文件并重新加载——你可以从中断的地方继续。
 
@@ -46,7 +46,7 @@ memory/episodic/
 
 ## YAML 前置元数据
 
-每个切片文件以 `---` 分隔的 YAML 开头。以下是所有字段——全部由 Flash 在关闭或维护期间写入：
+每个切片文件以 `---` 分隔的 YAML 开头。以下是所有字段——全部由 worker 模型在关闭或维护期间写入：
 
 | 字段 | 类型 | 必需 | 描述 |
 |-------|------|----------|-------------|
@@ -56,12 +56,12 @@ memory/episodic/
 | `start` | string | 是 | 第一轮对话的 UTC ISO 8601 时间戳 |
 | `end` | string | 否 | 最后一轮对话的 UTC ISO 8601 时间戳（活跃时不存在） |
 | `timezone` | string | 是 | 交互时用户的 IANA 时区，例如 `"Asia/Shanghai"` |
-| `summary` | string | 是 | Flash 生成的摘要，最多 100 个字符 |
+| `summary` | string | 是 | worker 生成的摘要，最多 100 个字符 |
 | `open_loops` | string[] | 是 | 悬而未决的问题或需要继续的线程 |
 | `decisions` | string[] | 是 | 本切片的结论或行动项 |
 | `tags` | string[] | 是 | 语义关键词（这些会编织到主题索引中） |
 | `related_slices` | string[] | 是 | 相关切片的相对路径，例如 `["2026/06/22/1430"]`——可以为空 |
-| `emotional_tone` | string | 否 | `"positive"`、`"neutral"`、`"negative"` 或 `"mixed"`——由 Flash 评估 |
+| `emotional_tone` | string | 否 | `"positive"`、`"neutral"`、`"negative"` 或 `"mixed"`——由 worker 模型评估 |
 
 空字符串和 `undefined` 字段会从 YAML 中去除。空数组（`open_loops: []`）按原样序列化——它们会显示为空白列表。
 
@@ -155,14 +155,14 @@ qualification, property deeds, or something else?
 demo: strands-index
 ```
 
-## 切片如何与 Flash 和 Pro 协同工作
+## 切片如何与 worker 和主模型协同工作
 
-**Flash/Pro 分工**管控元数据和回忆：
+**worker/主模型分工**管控元数据和回忆：
 
-- **Flash**（DeepSeek-chat，快速）在每一轮对话中运行。它维护切片的前置元数据——focus、summary、decisions、open loops、tags、emotional_tone。它还扫描最近已关闭切片的摘要以进行回忆命中。如果统一的 Flash 调用失败，则使用安全默认值（intent 设为 `"chat"`，不更新元数据）。
-- **Pro**（主模型）在 Flash 未返回结果或问题需要更丰富上下文时，通过 `readMemory` 工具读取完整的切片正文执行深度回忆。
+- **worker 扫描**（已解析的 worker 模型）在每一轮对话中运行。它维护切片的前置元数据——focus、summary、decisions、open loops、tags、emotional_tone。它还扫描最近已关闭切片的摘要以进行回忆命中。如果维护调用失败，则使用安全默认值（intent 设为 `"chat"`，不更新元数据）。
+- **主模型深度读取**（主模型）在 worker 未返回结果或问题需要更丰富上下文时，通过 `readSlice` 工具读取完整的切片正文执行深度回忆。
 
-当一个切片关闭时，Flash 冻结元数据，切片在磁盘上密封。
+当一个切片关闭时，worker 冻结元数据，切片在磁盘上密封。
 
 ## 存储后端
 
@@ -184,14 +184,14 @@ demo: strands-index
 
 ## 设计原理
 
-- **仅基于时间的切片**使系统保持可预测。容量阈值和基于 Flash 的连续性启发式逻辑在当前阶段增加了复杂性而没有带来经过验证的好处——它们在 M8 中被移除。
+- **仅基于时间的切片**使系统保持可预测。容量阈值和基于 worker 的连续性启发式逻辑在当前阶段增加了复杂性而没有带来经过验证的好处——它们在 M8 中被移除。
 - **内存中的活跃切片配合定期快照**避免了过多的 GitHub API 写入。切片存在于模块级变量中，每 N 个轮次和在 `beforeunload` 时快照，但绝不在*每一轮*都写入。
 - **YAML 前置元数据 + Markdown 正文**是所有文档生态系统的原始素材。它在任何 Markdown 查看器中都能渲染，在 git 中差异清晰可见，并且解析器存在于每种语言中。Gray-matter 处理 TypeScript 端。
 - **情景与语义分离**呼应了 Endel Tulving 1972 年的理论。切片是情景性的（按*何时*组织）。主题（strands）和记忆节点（memory nodes）是语义性的（按*什么*组织）。回忆先扫描*何时*，再检索*什么*。
 
 ## 相关文档
 
-- [时间线（Timeline）](/zh/docs/timeline) —— 按日期浏览切片的垂直 UI
+- [时间线（Timeline）](/zh/docs/timeline) —— 按日期浏览切片的水平日期点条
 - [主题索引（Strands）](/zh/docs/strands) —— 切片档案的语义标签索引
-- [回忆（Recall）](/zh/docs/recall) —— Flash 扫描与 Pro 检索
+- [回忆（Recall）](/zh/docs/recall) —— worker 扫描与主模型检索
 - [记忆系统（Memory System）](/zh/docs/memory-system) —— 三层架构

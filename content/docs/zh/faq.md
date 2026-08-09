@@ -34,11 +34,11 @@
 export const TIME_SILENCE_THRESHOLD_MS = 30 * 60 * 1000;
 ```
 
-函数 `checkTimeSilence()` 将已过的毫秒数与阈值进行比较。没有容量限制、没有话题切换规则、也没有 Flash 连续性检查。容量检查和 Flash 连续性检查已在 M8 期间移除——仅基于时间的 slicing 是全部逻辑。
+函数 `checkTimeSilence()` 将已过的毫秒数与阈值进行比较。没有容量限制、没有话题切换规则、也没有 worker 连续性检查。容量检查和 worker 连续性检查已在 M8 期间移除——仅基于时间的 slicing 是全部逻辑。
 
 ## 它达到生产就绪了吗？
 
-没有。Previously 是实验性的 v0.1.0。README 带有"实验性"状态徽章，并明确说明"尚未准备好用于个人或生产用途"。`package.json` 版本为 `0.1.0`。
+没有。Previously 是实验性的（v0.7）。README 带有"实验性"状态徽章，并明确说明"尚未准备好用于个人或生产用途"。
 
 这是个人部署，而非 SaaS 产品。作者承诺长期维护，但项目处于活跃的早期开发阶段。预计会遇到粗糙的边缘、破坏性变更以及仍在路线图上的功能。
 
@@ -52,7 +52,7 @@ export const TIME_SILENCE_THRESHOLD_MS = 30 * 60 * 1000;
 
 两个成本中心：
 
-- **LLM API 使用费**——Previously 使用你自己的 API 密钥（DeepSeek 和/或 Anthropic）运行。两层架构（Flash 用于快速召回扫描，Pro 用于深度推理）是出于成本考虑：廉价模型处理常见情况，昂贵的推理保留给需要的时候。
+- **LLM API 使用费**——Previously 使用你自己的 API 密钥（DeepSeek 和/或 Anthropic）运行。两层架构（worker 模型用于快速召回扫描，主模型用于深度推理）是出于成本考虑：廉价模型处理常见情况，昂贵的推理保留给需要的时候。
 - **托管费用**——Vercel Pro（部署按钮指向 Vercel）。Vercel 的免费套餐可能覆盖轻度使用，但持续使用可能需要付费计划。GitHub 仓库存储基本上是免费的。
 
 Previously 不收取任何订阅费、按席位收费或使用加价。你提供基础设施和密钥；该项目是介于两者之间的编排层。

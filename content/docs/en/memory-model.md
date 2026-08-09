@@ -67,7 +67,7 @@ demo: strands-index
 
 ## Semantic Memory, Layer 2: Memory Nodes
 
-**Memory nodes** are separate structured knowledge units at `memory/nodes/`, authored by Previously itself (the Pro model, via `writeFile`) when a conversation reveals genuinely notable information about you. Unlike strands — which are an auto-built keyword index — nodes are hand- or agent-authored knowledge units with a typed schema:
+**Memory nodes** are separate structured knowledge units at `memory/nodes/`, authored by Previously itself (the main model, via `writeFile`) when a conversation reveals genuinely notable information about you. Unlike strands — which are an auto-built keyword index — nodes are hand- or agent-authored knowledge units with a typed schema:
 
 | Field | Purpose |
 |-------|---------|
@@ -158,8 +158,8 @@ Files are the interface.
 
 Recall follows the episodic-then-semantic order grounded in Tulving: scan WHEN first, then retrieve WHAT.
 
-1. **Flash** (DeepSeek-chat) — scans recent slice summaries and the strand index, returning pointers to relevant slices. Per-round metadata maintenance (tags, strands, summaries) is folded into this single round-trip via `runUnifiedFlash()`, which retries once after 300ms and falls back to safe defaults.
-2. **Pro** (the main model) — calls the `readMemory` tool to read full slice bodies for deep recall. This is the expensive, thorough pass that reconstructs context from the raw timeline.
+1. **Worker scan** (the resolved worker model) — scans recent slice summaries, returning pointers to relevant slices. Per-round metadata maintenance (tags, strands, summaries) is folded into this single round-trip — the turn analyzer — which retries once after 300ms and falls back to safe defaults.
+2. **Main deep read** (the main model) — calls the `readSlice` tool to read full slice bodies for deep recall. This is the expensive, thorough pass that reconstructs context from the raw timeline.
 
 This split keeps fast operations fast while reserving model capacity for the work that needs it.
 
