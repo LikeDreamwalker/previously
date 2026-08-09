@@ -178,12 +178,17 @@ export function PhaseIndicator({
 
   const isStreamingText = mode === "streaming" && isRunning && text.length > 0;
 
+  // NOTE: the motion.div deliberately has NO `layout` prop — framer-motion's
+  // FLIP projection could loop into "Maximum update depth exceeded" (#185)
+  // during streaming re-render bursts (reconnect replay / phase transitions).
+  // The expand/collapse animation is a CSS grid transition, not layout, so
+  // removing it is visually imperceptible.
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -6 }}
-      layout
       transition={{ duration: 0.25, ease: [0.25, 0.1, 0.25, 1.0] }}
       className={cn(
         "rounded-lg px-3 py-2.5",

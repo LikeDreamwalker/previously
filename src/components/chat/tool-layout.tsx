@@ -124,6 +124,11 @@ export function ToolLayout({
     icon ?? <StatusDot state={state} />
   );
 
+  // NOTE: the motion.div deliberately has NO `layout` prop — framer-motion's
+  // FLIP projection could loop into "Maximum update depth exceeded" (#185)
+  // during streaming re-render bursts. The expand/collapse animation is a CSS
+  // grid transition, not layout, so removing it is visually imperceptible.
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 6, scale: 0.97 }}
@@ -134,7 +139,6 @@ export function ToolLayout({
         x: shake ? [0, -3, 3, -3, 3, 0] : 0,
       }}
       exit={{ opacity: 0, y: -6, scale: 0.97 }}
-      layout
       transition={{
         opacity: { duration: 0.25, ease: [0.25, 0.1, 0.25, 1.0] },
         y: { duration: 0.25, ease: [0.25, 0.1, 0.25, 1.0] },
