@@ -102,7 +102,7 @@
       "startLoop": "启动后台循环",
       "thinkDeep": "推理片段",
       "thinkDeepRunning": "正在推理「{question}」…",
-      "thinkDeepRunningBatch": "正在推理 {count} 个问题…",
+      "thinkDeepDone": "推理完成「{question}」",
       "thinkQuestion": "问题",
       "thinkEffort": "深度",
       "thinkEffortLow": "轻量",

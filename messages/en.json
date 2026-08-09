@@ -102,7 +102,7 @@
       "startLoop": "Starting a background loop",
       "thinkDeep": "Reasoning fragment",
       "thinkDeepRunning": "Reasoning about \"{question}\"…",
-      "thinkDeepRunningBatch": "Reasoning about {count} questions…",
+      "thinkDeepDone": "Reasoned about \"{question}\"",
       "thinkQuestion": "Question",
       "thinkEffort": "Effort",
       "thinkEffortLow": "Light",

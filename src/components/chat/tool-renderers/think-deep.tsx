@@ -41,7 +41,7 @@ interface ThinkDeepToolRendererProps {
   state: ToolRenderState;
   /** Live reasoning/answer line from `data-tool-progress` — the streaming subtitle. */
   streamingText?: string;
-  /** Progress stage ("reasoning" | "writing") — drives subtitle tone (dim vs primary). */
+  /** Progress stage ("running" | "thinking" | "writing" | "done") — drives subtitle tone. */
   streamingStage?: string;
 }
 
@@ -162,12 +162,72 @@ function FragmentBody({
   );
 }
 
+/** One fragment's independent indicator card. */
+function FragmentCard({
+  question,
+  effort,
+  result,
+  isRunning,
+  streamingText,
+  subtitleTone,
+  index,
+}: {
+  question: string;
+  effort?: FragmentInput["effort"];
+  result?: FragmentOutput;
+  isRunning: boolean;
+  streamingText?: string;
+  subtitleTone: "thinking" | "answer";
+  index: number;
+}) {
+  const t = useTranslations("chat.tool");
+
+  const timedOut = result?.status === "timeout";
+  const failed = result?.ok === false && !timedOut;
+  const cardState: ToolRenderState = {
+    running: isRunning,
+    inputStreaming: false,
+    interrupted: isRunning ? false : timedOut,
+    denied: false,
+    approvalRequested: false,
+    isActiveApproval: false,
+    error: !isRunning && failed ? (result?.error ?? undefined) : undefined,
+  };
+
+  return (
+    <PhaseIndicator
+      key={index}
+      mode="streaming"
+      className={
+        isRunning ? "bg-brand-50/50 dark:bg-brand-500/[0.06]" : undefined
+      }
+      icon={<Brain className="h-3.5 w-3.5" />}
+      label={
+        isRunning
+          ? t("thinkDeepRunning", { question: question || "…" })
+          : t("thinkDeepDone", { question: question || "…" })
+      }
+      state={cardState}
+      streamingText={streamingText}
+      subtitleTone={subtitleTone}
+      expandedContent={
+        <FragmentBody
+          question={question}
+          effort={effort}
+          result={result}
+          showQuestion={false}
+        />
+      }
+    />
+  );
+}
+
 /**
- * thinkDeep reasoning-fragment card — PhaseIndicator in streaming mode. The
- * batch runs ALL fragments in one step; while they run, a single-line
- * typewriter subtitle streams the live `[i/N]`-prefixed reasoning tail
- * (`data-tool-progress`). On completion the subtitle fades and clicking expands
- * every fragment's answer + captured thinking trail, or its failure reason.
+ * thinkDeep renderer — one independent indicator card per thinkDeep call. Each
+ * call is its own sub-agent: the label carries its question ("Reasoning about
+ * …"), the live line streams its own reasoning, and on completion the card
+ * settles independently with the conclusion + thinking trail, or its
+ * timeout/failure reason.
  */
 export function ThinkDeepToolRenderer({
   input,
@@ -177,94 +237,62 @@ export function ThinkDeepToolRenderer({
   streamingStage,
 }: ThinkDeepToolRendererProps) {
   const t = useTranslations("chat.tool");
+  const isRunning = state.running;
+  const subtitleTone = progressStageTone(streamingStage);
 
+  // The fragment list to render. Batch: one card per input fragment. Legacy
+  // single: one card from the single-question fields.
   const fragments = Array.isArray(input?.fragments) ? input.fragments : null;
   const fragmentOutputs = Array.isArray(output?.fragments)
     ? output.fragments
     : null;
-
-  // Fold aggregate fragment outcomes into the SDK part state so PhaseIndicator
-  // renders the right visual: amber interrupted if any fragment timed out, red
-  // error if any failed.
-  const anyTimeout =
-    fragmentOutputs?.some((f) => f.status === "timeout") ?? false;
-  const failedOutput = fragmentOutputs?.find(
-    (f) => f.ok === false && f.status !== "timeout",
-  );
-  const displayState: ToolRenderState = {
-    ...state,
-    interrupted: state.interrupted || anyTimeout,
-    error: state.error ?? (failedOutput?.error ?? undefined),
-  };
-
-  const subtitleTone = progressStageTone(streamingStage);
-
-  // Running label mirrors recall/webSearch — "Reasoning about {question}…" so
-  // each thinkDeep call reads as an independent indicator with its question
-  // inline, instead of the generic "Reasoning fragment". A batch shows the
-  // fragment count; the streamed [i/N] subtitle keeps the per-fragment view.
-  const isRunning = displayState.running;
-  const firstQuestion =
-    (fragments?.length ?? 0) > 0
-      ? fragments![0]?.question ?? ""
-      : input?.question ?? "";
-  const label = isRunning
-    ? (fragments?.length ?? 0) > 1
-      ? t("thinkDeepRunningBatch", { count: fragments!.length })
-      : t("thinkDeepRunning", { question: firstQuestion || "…" })
-    : t("thinkDeep");
-
-  // Batch: one block per fragment with the question as its header. Single
-  // (legacy): reuse the original single-fragment layout.
-  const expandedContent = fragments ? (
-    <div className="space-y-3">
-      {fragments.map((f, i) => (
-        <div key={i} className="space-y-1">
-          {fragments.length > 1 && f.question && (
-            <div className="text-xs font-medium text-muted-foreground/90">
-              {f.question}
-            </div>
-          )}
-          <FragmentBody
-            question={f.question ?? ""}
-            effort={f.effort}
-            result={fragmentOutputs?.[i]}
-            showQuestion={fragments.length === 1}
-          />
-        </div>
-      ))}
-    </div>
-  ) : (
-    <FragmentBody
-      question={input?.question ?? ""}
-      effort={input?.effort}
-      result={
-        output
-          ? {
-              ok: output.ok,
-              status: output.status,
-              answer: output.answer,
-              reasoning: output.reasoning,
-              error: output.error,
-              note: output.note,
-            }
-          : undefined
-      }
-    />
-  );
+  const cards: Array<{
+    question: string;
+    effort?: FragmentInput["effort"];
+    result?: FragmentOutput;
+  }> = [];
+  if (fragments) {
+    for (let i = 0; i < fragments.length; i++) {
+      cards.push({
+        question: fragments[i]?.question ?? "",
+        effort: fragments[i]?.effort,
+        result: fragmentOutputs?.[i],
+      });
+    }
+  } else {
+    cards.push({
+      question: input?.question ?? "",
+      effort: input?.effort,
+      result: output
+        ? {
+            ok: output.ok,
+            status: output.status,
+            answer: output.answer,
+            reasoning: output.reasoning,
+            error: output.error,
+            note: output.note,
+          }
+        : undefined,
+    });
+  }
 
   return (
-    <PhaseIndicator
-      mode="streaming"
-      className={
-        displayState.running ? "bg-brand-50/50 dark:bg-brand-500/[0.06]" : undefined
-      }
-      icon={<Brain className="h-3.5 w-3.5" />}
-      label={label}
-      state={displayState}
-      streamingText={streamingText}
-      subtitleTone={subtitleTone}
-      expandedContent={expandedContent}
-    />
+    <div className="space-y-1">
+      {cards.map((card, i) => (
+        <FragmentCard
+          key={i}
+          index={i}
+          question={card.question}
+          effort={card.effort}
+          result={card.result}
+          isRunning={isRunning}
+          // Single-question calls stream their own line (no [i/N] prefix) on
+          // the only card. Legacy batch messages (old replays) render N cards;
+          // the live line shows on the first while the rest pulse.
+          streamingText={i === 0 ? streamingText : undefined}
+          subtitleTone={subtitleTone}
+        />
+      ))}
+    </div>
   );
 }

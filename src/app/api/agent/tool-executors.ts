@@ -923,101 +923,63 @@ export interface ThinkDeepFragmentResult extends ThinkDeepResult {
   question: string;
 }
 
-/** Result of a thinkDeep batch — one entry per input fragment, in order. */
-export interface ThinkDeepBatchResult {
-  fragments: ThinkDeepFragmentResult[];
-}
-
 /**
- * thinkDeep — a single reasoning step that runs ALL of the turn's fragments
- * CONCURRENTLY (Promise.all inside this one step), so wall-clock is roughly the
- * slowest fragment, not the sum.
+ * thinkDeep — ONE reasoning fragment, dispatched as its own sub-agent call.
  *
- * This fixes the serial-startup problem: each fragment used to be its own
- * `"use step"` invocation, and the platform executed those invocations
- * sequentially — one cold start + config fetch + model first-token after
- * another. Bundling them into one step gives real parallelism: the fragments
- * share the same function instance and fire their `streamText` calls together.
- *
- * Trade-off (deliberate): the whole batch is ONE durable, auto-retried step
- * instead of per-fragment steps. A fragment that exceeds the wall is aborted by
- * its own SDK timeout and returned partial (as before); the durability unit is
- * now the batch, not the fragment. Fragments are think-only, bounded, and
- * time-boxed, so this cost is acceptable.
+ * The model decomposes a hard turn into independent questions and issues one
+ * call per question, so every fragment reads as an independent sub-agent with
+ * its own progress line and result card. The turn's main model and the
+ * assembled system prompt arrive through the tools context — the same unified
+ * construction the main agent uses — so sub-agents never re-resolve config or
+ * rebuild context on their own.
  */
-export async function thinkDeepBatchExecute(
-  { fragments }: { fragments: ThinkDeepFragmentInput[] },
+export async function thinkDeepExecute(
+  { question, effort = "low" }: {
+    question: string;
+    effort?: "low" | "medium" | "high";
+  },
   { context: ctx, toolCallId }: ExecuteOpts<ToolContext>,
-): Promise<ThinkDeepBatchResult> {
+): Promise<ThinkDeepFragmentResult> {
   "use step";
-
-  const list = Array.isArray(fragments) ? fragments : [];
-  if (list.length === 0) return { fragments: [] };
 
   if (!isAIConfigured()) {
     return {
-      fragments: list.map((f) => ({
-        question: f.question,
-        ok: false,
-        status: "error" as const,
-        error:
-          "AI is not configured (no API key). Set DEEPSEEK_API_KEY or another provider key.",
-      })),
+      question,
+      ok: false,
+      status: "error",
+      error:
+        "AI is not configured (no API key). Set DEEPSEEK_API_KEY or another provider key.",
     };
   }
 
-  // The turn's main model arrives through the tools context (shared with the
-  // main agent — no per-fragment config resolution / GitHub round-trip). Falls
+  // The turn's main model flows through the tools context (shared with the
+  // main agent — no per-call config resolution / GitHub round-trip). Falls
   // back to resolving it only when the context lacks it (e.g. loop tools).
   const modelConfig = ctx.mainModel ?? (await resolveMainModelFromConfig());
 
-  // Step start — every fragment's adaptive SDK timeout below is measured from
-  // this instant, so all fragments share the same wall and the batch returns
-  // around STEP_TOTAL_MS no matter how long setup took.
+  // Step start — the fragment's adaptive SDK timeout is measured from here so
+  // the step returns around STEP_TOTAL_MS no matter how long setup took.
   const stepStartMs = Date.now();
 
-  const batch = await withStepTimeout(
-    async () =>
-      Promise.all(
-        list.map((f, i) =>
-          runThinkDeepFragment(f, i, list.length, {
-            modelConfig,
-            baseSystemPrompt: ctx.baseSystemPrompt,
-            toolCallId,
-            stepStartMs,
-          }),
-        ),
-      ),
-    // Backstop (fires ~3s after the last fragment's SDK abort): if an abort
-    // somehow doesn't surface, withStepTimeout still returns before the wall —
-    // the step never dies silently. Strictly under 300s (plus return overhead).
-    // No partial-value callback: each fragment's own withStepTimeout already
-    // captured its partial answer/reasoning; the batch backstop only signals
-    // that the whole batch was cut off.
-    STEP_TOTAL_MS + 3_000,
+  // Single fragment (index 0 of 1) → streams WITHOUT the [i/N] prefix.
+  return runThinkDeepFragment(
+    { question, effort },
+    0,
+    1,
+    {
+      modelConfig,
+      baseSystemPrompt: ctx.baseSystemPrompt,
+      toolCallId,
+      stepStartMs,
+    },
   );
-
-  if (!batch.ok) {
-    // Whole-batch backstop fired — every in-flight fragment was cut off.
-    return {
-      fragments: list.map((f) => ({
-        question: f.question,
-        ok: false,
-        status: "timeout" as const,
-        error: `Reasoning batch did not finish within ${Math.round(batch.elapsedMs / 1000)}s and was interrupted.`,
-        note: SUB_AGENT_TIMEOUT_NOTE,
-      })),
-    };
-  }
-
-  return { fragments: batch.result ?? [] };
 }
 
 /**
  * Run ONE think-only reasoning fragment — a single bounded `streamText` call
  * (main model, thinking on) over exactly the facts embedded in its question.
- * Runs INSIDE the batch step so multiple fragments fire concurrently. Progress
- * lines are prefixed `[i/N] ` (single-fragment batches get no prefix).
+ * Called once per thinkDeep call (index 0 of total 1), so its progress lines
+ * carry no `[i/N]` prefix.
  */
 async function runThinkDeepFragment(
   fragment: ThinkDeepFragmentInput,

@@ -25,7 +25,7 @@ import {
   webSearchExecute,
   webFetchExecute,
   recallExecute,
-  thinkDeepBatchExecute,
+  thinkDeepExecute,
   loopReportExecute,
   type ToolContext,
   type LoopToolContext,
@@ -361,45 +361,37 @@ export const chatTools = {
   // }),
   thinkDeep: tool({
     description:
-      "Decompose a hard question into independent reasoning fragments and run " +
-      "them ALL in ONE call. Each fragment is a small, self-contained logical " +
+      "Dispatch ONE reasoning fragment — a small, self-contained logical " +
       "question reasoned through independently by a think-only copy of yourself " +
       "(no search, no memory tools — embed every fact it needs in the question). " +
-      "Returns each conclusion plus its thinking trail. " +
+      "Returns the conclusion plus its thinking trail. " +
       "DEFAULT behavior: at the start of a substantive turn, decompose the user's " +
-      "question into its independent threads and pass them ALL in the `fragments` " +
-      "array of ONE call BEFORE writing your answer — do not wait to be asked, " +
-      "and do not reason through a multi-angle question monolithically (that is " +
-      "what times out). Verify a claim, weigh a trade-off, poke holes in a " +
-      "position, answer a sub-question. Only skip it for genuinely single-threaded " +
-      "turns: a simple fact you already hold, a routine acknowledgment, an " +
-      "emotionally-engaged support turn, or a recall from memory. Tag each " +
-      "fragment with the right effort: low for simple logical verification, " +
-      "medium for a comparison, high for deep structural analysis. The batch runs " +
-      "all fragments concurrently, so wall-clock is roughly the slowest one. A " +
-      "fragment may come back partial (`status: timeout`) — its `answer` and " +
-      "`reasoning` hold what it already produced; work with them, or gather the " +
-      "missing facts yourself and dispatch a finer fragment. Synthesize the " +
-      "fragments into your answer in your own voice.",
+      "question into its independent threads and dispatch each as its OWN " +
+      "thinkDeep call BEFORE writing your answer — do not wait for the user to " +
+      "ask, and do not reason through a multi-angle question monolithically " +
+      "(that is what times out). Verify a claim, weigh a trade-off, poke holes " +
+      "in a position, answer a sub-question. Only skip it for genuinely " +
+      "single-threaded turns: a simple fact you already hold, a routine " +
+      "acknowledgment, an emotionally-engaged support turn, or a recall from " +
+      "memory. Embed ALL facts the fragment needs in the question — the " +
+      "sub-agent cannot search or read memory. Tag each fragment with the right " +
+      "effort: low for simple logical verification, medium for a comparison, " +
+      "high for deep structural analysis. A fragment may come back partial " +
+      "(`status: timeout`) — its `answer` and `reasoning` hold what it already " +
+      "produced; work with them, or gather the missing facts yourself and " +
+      "dispatch a finer fragment. Synthesize the fragments into your answer in " +
+      "your own voice.",
     inputSchema: z.object({
-      fragments: z
-        .array(
-          z.object({
-            question: z
-              .string()
-              .describe("Self-contained sub-question for this reasoning fragment. Include all necessary context and facts — the sub-agent has no tools and cannot look anything up."),
-            effort: z
-              .enum(["low", "medium", "high"])
-              .optional()
-              .describe("Reasoning intensity: 'low' for simple logical verification (fast), 'medium' for a comparison, 'high' for deep analysis. Defaults to 'low'."),
-          }),
-        )
-        .min(1)
-        .max(6)
-        .describe("Every independent reasoning thread of the turn, passed ALL AT ONCE in this single array — the batch runs them concurrently."),
+      question: z
+        .string()
+        .describe("Self-contained sub-question for the reasoning fragment. Include all necessary context and facts — the sub-agent has no tools and cannot look anything up."),
+      effort: z
+        .enum(["low", "medium", "high"])
+        .optional()
+        .describe("Reasoning intensity: 'low' for simple logical verification (fast), 'medium' for a comparison, 'high' for deep analysis. Defaults to 'low'."),
     }),
     contextSchema: toolContextSchema,
-    execute: thinkDeepBatchExecute,
+    execute: thinkDeepExecute,
   }),
 };
 
