@@ -60,7 +60,7 @@ Create a `.env.local` file (see below) before starting. The app runs on `http://
 For local dev, create `.env.local` in the project root. For Vercel deployment, add these in your project settings under **Settings → Environment Variables**.
 
 ```bash
-# Required — DeepSeek API key (powers both Flash recall and Pro reasoning)
+# Required — DeepSeek API key (powers the main model; the worker tier resolves from the same provider)
 DEEPSEEK_API_KEY=sk-...
 
 # Required — the GitHub token you created above
@@ -70,17 +70,17 @@ GITHUB_TOKEN=github_pat_...
 GITHUB_REPO_OWNER=your-username
 GITHUB_REPO_NAME=your-repo-name
 
-# Optional — redirect memory reads to a bundled demo persona
-# DEMO_MODE=true
+# Optional — read-only demo persona mode
+# STORAGE=demo
 ```
 
 | Variable | Required | What it is | Where to get it |
 |---|---|---|---|
-| `DEEPSEEK_API_KEY` | Yes | Authenticates requests to DeepSeek for both the fast recall model (Flash) and the deep reasoning model (Pro). | [platform.deepseek.com](https://platform.deepseek.com) — create an account and generate an API key. |
+| `DEEPSEEK_API_KEY` | Yes | Authenticates requests to DeepSeek for the main model (and, by default, the worker tier derived from the same provider). | [platform.deepseek.com](https://platform.deepseek.com) — create an account and generate an API key. |
 | `GITHUB_TOKEN` | Yes | The fine-grained personal access token. Every GitHub read and write flows through it. | [Created above](#create-a-github-token) in the token setup steps. |
 | `GITHUB_REPO_OWNER` | Yes | Your GitHub username or organization that owns the repository holding memory data. | Your GitHub username. |
 | `GITHUB_REPO_NAME` | Yes | The repository name where memory data lives. By default this is your repo, but you can point it at any repo you own. | Your repo's name on GitHub. |
-| `DEMO_MODE` | No | Set to `"true"` to redirect memory reads to a pre-seeded demo persona. Writes still go to your real memory directory. Useful for evaluation. | — |
+| `STORAGE` | No | Selects the data source: `local` (filesystem), `github` (GitHub API), or `demo` (read-only pre-seeded persona dataset). Auto-detected when unset. | — |
 
 ## Syncing upstream updates
 

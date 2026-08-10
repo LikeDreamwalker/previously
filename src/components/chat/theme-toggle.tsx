@@ -31,7 +31,7 @@ export function ThemeToggle() {
             type="button"
             onClick={cycle}
             aria-label={t("toggleTooltip")}
-            className="h-7 w-7 rounded-full text-muted-foreground hover:text-foreground hover:bg-muted-foreground/10 transition-colors flex items-center justify-center"
+            className="h-7 w-7 rounded-full text-muted-foreground hover:text-foreground hover:bg-brand/10 transition-colors flex items-center justify-center"
           >
             {/* Stable icon pre-mount to avoid hydration mismatch */}
             {mounted ? <Icon className="h-3.5 w-3.5" /> : <Monitor className="h-3.5 w-3.5" />}

@@ -22,9 +22,9 @@ File storage is abstracted behind a local-filesystem vs. GitHub API switch, gate
 | `flash/recall.ts` | Worker-model recall mini-agent — searches past conversations and returns structured pointers |
 | `flash/turn-analyzer.ts` | The one housekeeping worker-model call: message tags + semantic hint + intent + (on close) slice marking |
 | `flash/global-timeline.ts` | Global timeline file aggregating all slice summaries |
-| `flash/previously-agent.ts` | Previously Agent (worker model) — maintains the belief system (previously.md) |
-| `previously-format.ts` | v2 long/short-term previously.md format definition, serialization, parsing, validation, v1-to-v2 migration |
-| `previously-updater.ts` | Pure functions to apply PreviouslyAgent mutations to previously.md (7 action types) |
+| `flash/previously-agent.ts` | Previously Agent (worker model) — rewrites the user card IN PLACE (outputs the full `updated_card`) |
+| `previously-format.ts` | previously.md format — v3 archive (read-only history) + v4 user card (Identity/Profile/Recent/Self-model); serialization, parsing, validation, legacy migration |
+| `previously-updater.ts` | `applyCardUpdate` — validates + mechanically enforces the agent's updated card (7-day recent expiry, section caps, anti-conflict backstop) |
 | `io-helpers.ts` | I/O wrappers delegating to demo-fs, GitHub API, or local FS |
 
 ## Key Flows
@@ -49,12 +49,12 @@ File storage is abstracted behind a local-filesystem vs. GitHub API switch, gate
 2. `getMoreSlices(before)` returns slices older than the given cursor, with cursor-based pagination.
 3. `getSliceContent(sliceId)` reads the full MD file, parses turns, and returns structured content for the detail view.
 
-### 4. Belief evolution (async, per turn)
+### 4. Belief evolution (once per closed slice + explicit trigger)
 
-1. The evolution workflow fires in parallel with the chat turn.
-2. `readEvolutionContext` reads the current slice's previously.md and agent.md (full content), plus the last 3 turns (incremental).
-3. The Previously Agent (Pro, thinking off) does a quick scan first — if nothing warrants changes, it reports empty mutations immediately without calling tools.
-4. If mutations are produced, they're applied via `applyPreviouslyAgentOutput()` and written back.
+1. The evolution runs INLINE in the housekeeping step (v0.7b) — synchronously on a slice close and on an explicit user request (detected by `analyzeTurn`'s `memory_update`). Progress streams via `data-evolution` chunks; the result is noted for the agent to acknowledge.
+2. `readEvolutionContext` reads the TARGET slice's previously.md and agent.md (full content), plus its last 3 turns; on `slice_closed` the closed slice id is passed for a deep review.
+3. The Previously Agent (worker, thinking off) edits the user card IN PLACE and returns the full `updated_card`.
+4. `applyCardUpdate()` validates the card and enforces the mechanical rules (7-day recent expiry, section caps, anti-conflict backstop), then it is written back.
 
 ## Core Types
 
@@ -81,7 +81,7 @@ memory/episodic/
             timeline/
               core.md           -- time slice body (YAML frontmatter + turns)
               agent.md          -- agent cognition log (mechanical extraction)
-            previously.md       -- belief system snapshot (Pro evolution)
+            previously.md       -- user-card snapshot (worker-model evolution)
         _index.json             -- monthly index of all slices in this month
   strands.json                  -- the strand index: strand (keyword) -> slice paths
   timeline.md                   -- global timeline (all slice summaries)
@@ -97,7 +97,7 @@ by Flash in the housekeeping step and woven into strands at snapshot time.
 
 - **Flash tag extraction in housekeeping**: A quick, non-thinking Flash call extracts tags from each user message. Existing tags are preferred to encourage cross-language semantic merging (e.g., "self-evolution" and "自我进化" reuse the same tag).
 - **Context continuity detection**: When a client has no assistant messages in its history but the recovered slice has agent turns, the slice is closed with `"context_lost"` — handling page refreshes and device switches gracefully.
-- **Core agent reads only**: The Pro agent never modifies previously.md or makes judgmental writes. Mechanical writes (slice tags, strands) happen in housekeeping and finalizeTurn. Belief evolution is a separate async workflow.
+- **Main agent reads only**: The main agent never modifies previously.md. The worker-model Previously Agent rewrites the card; mechanical writes (slice tags, strands) happen in housekeeping and finalizeTurn. Belief evolution is a separate workflow run.
 - **Time-based slicing with context-loss trigger**: The primary slicing triggers are context loss and 30 minutes of inactivity (`"time_silence"`). Turn count cap is a safety net (`"capacity"`).
 - **In-memory active slice with periodic snapshots**: The slice is held in a module-level variable. It is snapshotted to disk periodically (every N turns, `beforeunload`) but not on every turn -- avoids excessive GitHub API writes. `tryLoadTodaySlice()` recovers state on refresh.
 - **Gray-matter serialization**: Slices use `---` YAML frontmatter + markdown body, parsed via `gray-matter`. Turn headers follow the convention `## Turn {id} — ISO_TIMESTAMP (role)`.

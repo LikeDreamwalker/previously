@@ -1,22 +1,51 @@
 /**
  * Web search — provider adapters behind a neutral contract.
  *
- * The webSearch tool's interface (query in → answer + sources out) is OURS;
- * nothing DeepSeek- or Anthropic-shaped may leak out of this module. Today
- * there is one adapter: DeepSeek V4 Flash's native server-side search, reached
- * through DeepSeek's Anthropic-compatible endpoint (the OpenAI-compatible /v1
- * endpoint cannot express provider-executed tools). Future adapters (Claude
- * native webSearch, Tavily for keyless demo) drop in behind the same contract.
+ * The webSearch tool's interface (query in → answer + sources + recommendation
+ * out) is OURS; nothing DeepSeek- or Anthropic-shaped may leak out of this
+ * module. Today there is one adapter: DeepSeek V4 Flash's native server-side
+ * search, reached through DeepSeek's Anthropic-compatible endpoint (the
+ * OpenAI-compatible /v1 endpoint cannot express provider-executed tools).
+ * Future adapters (Claude native webSearch, Tavily for keyless demo) drop in
+ * behind the same contract and MUST also produce the `recommendation` field.
+ *
+ * DeepSeek adapter specifics (not the contract — just this adapter):
+ * - `web_search` is executed on DeepSeek's servers, which ingest the full
+ *   page content during inference; the caller only ever sees the model's
+ *   synthesized answer + citation URLs. No raw page content or snippets are
+ *   exposed — that's why the main agent also has the separate `webFetch` tool
+ *   to read a specific page on demand.
+ * - `webSearch_20260209` is the @ai-sdk/anthropic SDK's method name for the
+ *   provider-executed search tool, not our versioning — the SDK version is
+ *   the authority for when to update it.
+ *
+ * @security — provider coupling. webSearch is currently a DEEPSEEK-ONLY
+ * capability: this adapter always reaches `api.deepseek.com` and always needs
+ * a `DEEPSEEK_API_KEY`, INDEPENDENT of the user's chosen chat model. If a
+ * deployment's user selects Anthropic/OpenAI as the main model but omits
+ * `DEEPSEEK_API_KEY`, webSearch will error rather than silently degrade.
+ * A non-DeepSeek deployment must either (a) provide a `DEEPSEEK_API_KEY` for
+ * this infra call, or (b) add a new adapter behind the `WebSearchResult`
+ * contract (e.g. Claude native webSearch, Tavily) and dispatch on it here.
+ * Do NOT let a missing key crash the turn — `webSearchExecute` gates on it
+ * and returns a user-facing error string before any model call runs.
  *
  * Model roles: this is an INFRASTRUCTURE model call (like Flash recall in
  * lib/router/flash.ts) — the user-facing Pro model choice is not affected.
  */
 import { createAnthropic } from "@ai-sdk/anthropic";
-import { generateText } from "ai";
+import { generateText, tool, isStepCount } from "ai";
+import { z } from "zod";
 
 export interface WebSearchResult {
   answer: string;
   sources: Array<{ title: string; url: string }>;
+  /** VAR-style advice to the main agent: what the results suggest, which
+   *  sources look strongest, what's uncertain, and whether fetching a
+   *  specific page with webFetch would help. Part of the neutral contract. */
+  recommendation: string;
+  /** URLs the main agent might webFetch for deeper reading. */
+  suggestedReads: Array<{ url: string; title: string; reason: string }>;
 }
 
 /** Server-side search rounds Flash may use per query. */
@@ -59,13 +88,68 @@ const normalizingFetch: typeof fetch = async (url, init) => {
   });
 };
 
+// ─── Structured output schema: searchReport ───────────────────────
+
+/** The search report the research agent returns to the main agent. */
+const searchReportSchema = tool({
+  description:
+    "Report your search findings with a recommendation for the main agent. " +
+    "Call this ONCE after you have enough context from web_search rounds.",
+  inputSchema: z.object({
+    answer: z
+      .string()
+      .catch("")
+      .describe("Concise cited answer (2-5 paragraphs), grounded in what you actually found."),
+    recommendation: z
+      .string()
+      .catch("")
+      .describe(
+        "VAR-style advice to the main agent: what the results suggest, " +
+        "which sources look strongest, what is uncertain or conflicting, " +
+        "and whether fetching a specific page with webFetch would help. " +
+        "One short paragraph."
+      ),
+    suggested_reads: z
+      .array(
+        z.object({
+          url: z.string().catch("").describe("Full URL the main agent could webFetch."),
+          title: z.string().catch("").describe("Page title or short label."),
+          reason: z.string().catch("").describe("One line: why this page is worth reading."),
+        }),
+      )
+      .max(3)
+      .catch([])
+      .describe(
+        "Pages the main agent might open with webFetch for deeper reading. " +
+        "Leave empty if no single page adds value beyond your answer."
+      ),
+  }),
+});
+
+/** Total model steps for the search loop: search rounds + the final report. */
+const MAX_SEARCH_STEPS = 6;
+
 /**
  * Adapter #1: DeepSeek V4 Flash native search. Flash decides what to search
  * and how many rounds (up to MAX_SEARCHES_PER_QUERY), reads results on
  * DeepSeek's servers, and returns a cited digest — we run no search
  * infrastructure and need no extra API key.
+ *
+ * The research agent plays the VAR role: it searches (web_search is
+ * provider-executed on DeepSeek's side), then reports a cited answer + advice
+ * (searchReport, structured). It never fetches raw pages itself — deep reads
+ * are the main agent's webFetch job.
+ *
+ * Streaming: `onProgress` is fired as each tool starts (each web_search round,
+ * then the searchReport) so the caller can surface a live "Searching round N…"
+ * subtitle. This is SHELL streaming — the actual answer text is not streamed
+ * (it's produced inside the structured searchReport tool call), and the
+ * web_search execution itself is a DeepSeek-server black box.
  */
-export async function searchViaFlash(query: string): Promise<WebSearchResult> {
+export async function searchViaFlash(
+  query: string,
+  onProgress?: (text: string) => void,
+): Promise<WebSearchResult> {
   const provider = createAnthropic({
     baseURL: "https://api.deepseek.com/anthropic",
     apiKey: process.env.DEEPSEEK_API_KEY,
@@ -73,14 +157,36 @@ export async function searchViaFlash(query: string): Promise<WebSearchResult> {
   });
 
   const today = new Date().toISOString().slice(0, 10);
+  let searchRounds = 0;
   const result = await generateText({
     model: provider("deepseek-v4-flash"),
     tools: {
       web_search: provider.tools.webSearch_20260209({
         maxUses: MAX_SEARCHES_PER_QUERY,
       }),
+      searchReport: searchReportSchema,
     },
-    prompt: `Today is ${today}. Search the web to answer the query below. Be factual and concise; ground every claim in what you actually found and mention the source. Answer in the query's language.
+    toolChoice: "auto",
+    stopWhen: isStepCount(MAX_SEARCH_STEPS),
+    onToolExecutionStart: ({ toolCall }) => {
+      if (!onProgress) return;
+      if (toolCall.toolName === "web_search") {
+        searchRounds += 1;
+        onProgress(`Searching the web (round ${searchRounds})…`);
+      } else if (toolCall.toolName === "searchReport") {
+        onProgress("Compiling search report…");
+      }
+    },
+    prompt: `Today is ${today}. You are a research assistant: search the web and report back to the main agent.
+
+Role: the main agent is the referee; you are the video assistant (VAR). You do the searching and the watching, then you advise — you do not act on the results yourself, and you never read full pages (that is webFetch's job on the main agent's side).
+
+Process:
+1. Use web_search to find information relevant to the query. Search as many rounds as you need (up to ${MAX_SEARCHES_PER_QUERY}).
+2. When you have enough, call searchReport with:
+   - answer: the cited answer (ground every claim in what you actually found; mention the source; answer in the query's language).
+   - recommendation: what the main agent should do with these results — which sources look strongest, what is uncertain or conflicting, and whether fetching a specific page with webFetch would help.
+   - suggested_reads: 0-3 URLs the main agent might webFetch for deeper reading.
 
 Query: ${query}`,
   });
@@ -92,5 +198,43 @@ Query: ${query}`,
     )
     .map((s) => ({ title: s.title ?? s.url, url: s.url }));
 
-  return { answer: result.text, sources };
+  // Extract the searchReport tool call (structured report).
+  const toolCalls = (result.toolCalls ?? []) as Array<{
+    toolName: string;
+    input: unknown;
+  }>;
+  for (const tc of toolCalls) {
+    if (tc.toolName === "searchReport") {
+      const report = tc.input as {
+        answer?: string;
+        recommendation?: string;
+        suggested_reads?: Array<{ url?: string; title?: string; reason?: string }>;
+      };
+      return {
+        answer: report.answer ?? result.text ?? "",
+        recommendation: report.recommendation ?? "",
+        suggestedReads: (report.suggested_reads ?? [])
+          .filter((s) => typeof s?.url === "string" && s.url.length > 0)
+          .slice(0, 3)
+          .map((s) => ({
+            url: s.url as string,
+            title: typeof s.title === "string" ? s.title : s.url as string,
+            reason: typeof s.reason === "string" ? s.reason : "",
+          })),
+        sources,
+      };
+    }
+  }
+
+  // searchReport not called — fall back to the free-text answer.
+  console.warn(
+    "[WebSearch] searchReport not called. Final text:",
+    result.text?.slice(0, 200) ?? "(no text)",
+  );
+  return {
+    answer: result.text ?? "",
+    recommendation: "",
+    suggestedReads: [],
+    sources,
+  };
 }

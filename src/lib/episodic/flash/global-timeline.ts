@@ -75,6 +75,10 @@ export async function generateGlobalTimeline(): Promise<string> {
     try {
       const index = await readSliceIndex(y, m);
       for (const entry of index) {
+        // Only closed slices belong in the memory index. The active slice is
+        // the ONGOING conversation — recall must never see it as a past memory
+        // (it would self-match the very query being asked).
+        if (entry.status === "active") continue;
         const sliceId = entry.id?.includes("-")
           ? entry.id
           : `${entry.start.slice(0, 7)}/${entry.id}`;

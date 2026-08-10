@@ -1,385 +1,147 @@
 import { describe, it, expect } from "vitest";
-import { applyPreviouslyAgentOutput } from "@/lib/episodic/previously-updater";
-import type { PreviouslyMutation } from "@/lib/episodic/flash/previously-agent";
+import { applyCardUpdate } from "@/lib/episodic/previously-updater";
 import {
-  newPreviouslyTemplate,
-  serializePreviously,
+  serializeCard,
+  parseCard,
+  newCardTemplate,
+  type CardDocument,
 } from "@/lib/episodic/previously-format";
 
-// ─── Helpers ────────────────────────────────────────────────────────────
+const NOW = "2026-08-08T12:00:00.000Z";
 
-/** Build a doc with one identity belief and return its serialized form. */
-function docWithIdentity(text: string, confidence: "high" | "medium" | "low" = "medium"): string {
-  const sliceId = "2026-07-26-1226";
-  return serializePreviously({
-    sliceId,
-    updated: "2026-07-26T12:00:00Z",
-    longTerm: {
+function card(overrides: Partial<CardDocument> = {}): string {
+  return serializeCard({
+    sliceId: "2026-08-08-1200",
+    updated: NOW,
+    identity: ["Name: Alex", "Address them as: Alex"],
+    profile:
+      "Alex is an AI engineer who prefers concise answers and parallel decomposition of hard questions.",
+    recent: [
+      { text: "Evaluating a Rust migration", refs: ["2026/08/05/1420"], since: "2026-08-05" },
+      { text: "Testing thinkDeep streaming", refs: ["2026/08/07/0709"], since: "2026-08-07" },
+    ],
+    selfModel: ["Prefer explicit low effort for simple checks."],
+    ...overrides,
+  });
+}
+
+describe("applyCardUpdate", () => {
+  it("applies an updated card, stamps the slice id, and reports changed", () => {
+    const updated = card({ profile: "Alex is an AI engineer now evaluating Rust for the product." });
+    const res = applyCardUpdate(card(), updated, "2026-08-08-1200", NOW);
+    expect(res.changed).toBe(true);
+    const parsed = parseCard(res.content);
+    expect(parsed).not.toBeNull();
+    expect(parsed!.sliceId).toBe("2026-08-08-1200");
+    expect(parsed!.profile).toContain("now evaluating Rust");
+  });
+
+  it("drops recent items older than 7 days", () => {
+    const stale = card({
+      recent: [
+        { text: "Old plan", refs: [], since: "2026-07-20" }, // 19 days before NOW
+        { text: "Recent plan", refs: [], since: "2026-08-07" }, // 1 day before NOW
+      ],
+    });
+    const res = applyCardUpdate(card(), stale, "s", NOW);
+    expect(res.droppedRecent).toBe(1);
+    const parsed = parseCard(res.content)!;
+    expect(parsed.recent.map((r) => r.text)).toEqual(["Recent plan"]);
+  });
+
+  it("caps recent at 5, newest first", () => {
+    const many = card({
+      recent: Array.from({ length: 7 }, (_, i) => ({
+        text: `item ${i}`,
+        refs: [] as string[],
+        since: `2026-08-0${i + 1}`,
+      })),
+    });
+    const res = applyCardUpdate(card(), many, "s", NOW);
+    const parsed = parseCard(res.content)!;
+    expect(parsed.recent.length).toBeLessThanOrEqual(5);
+    // Newest (highest since) kept first.
+    expect(parsed.recent[0].since).toBe("2026-08-07");
+  });
+
+  it("caps the profile paragraph at the hard ceiling", () => {
+    const longProfile = "x".repeat(3000);
+    const res = applyCardUpdate(card(), card({ profile: longProfile }), "s", NOW);
+    const parsed = parseCard(res.content)!;
+    expect(parsed.profile.length).toBeLessThanOrEqual(2400);
+  });
+
+  it("drops self-model lines that contradict invariants without an overrides marker", () => {
+    const bad = card({
+      selfModel: [
+        "never use recall — it never helps",
+        "always double check the timezone before answering",
+      ],
+    });
+    const res = applyCardUpdate(card(), bad, "s", NOW);
+    const parsed = parseCard(res.content)!;
+    expect(parsed.selfModel).not.toContain("never use recall — it never helps");
+    expect(parsed.selfModel).toContain("always double check the timezone before answering");
+  });
+
+  it("keeps a self-model line that carries an explicit overrides marker", () => {
+    const override = card({
+      selfModel: ["never use recall unless the user asks — overrides: recall"],
+    });
+    const res = applyCardUpdate(card(), override, "s", NOW);
+    const parsed = parseCard(res.content)!;
+    expect(parsed.selfModel).toContain(
+      "never use recall unless the user asks — overrides: recall",
+    );
+  });
+
+  it("caps self-model at 10", () => {
+    const many = card({
+      selfModel: Array.from({ length: 15 }, (_, i) => `lesson ${i}`),
+    });
+    const res = applyCardUpdate(card(), many, "s", NOW);
+    const parsed = parseCard(res.content)!;
+    expect(parsed.selfModel.length).toBeLessThanOrEqual(10);
+  });
+
+  it("caps the identity head at 8 lines", () => {
+    const many = card({
+      identity: Array.from({ length: 12 }, (_, i) => `field ${i}`),
+    });
+    const res = applyCardUpdate(card(), many, "s", NOW);
+    const parsed = parseCard(res.content)!;
+    expect(parsed.identity.length).toBeLessThanOrEqual(8);
+  });
+
+  it("strips editorial parentheticals from identity head lines", () => {
+    const dirty = card({
       identity: [
-        {
-          text,
-          evidence: ["2026/07/24/1717-user-4"],
-          confidence,
-          updated: "2026-07-24",
-          obs: confidence === "high" ? 6 : confidence === "low" ? 1 : 3,
-        },
+        "Name: Alex (also written Alexee)",
+        "Name: Bob（又称哔哔）",
+        "Address them as: Alex",
+        "Pronouns: he/him",
       ],
-      patterns: [],
-      strategies: [],
-    },
-    shortTerm: { context: [] },
-  });
-}
-
-function docWithContext(text: string, expires?: string): string {
-  const sliceId = "2026-07-26-1226";
-  return serializePreviously({
-    sliceId,
-    updated: "2026-07-26T12:00:00Z",
-    longTerm: { identity: [], patterns: [], strategies: [] },
-    shortTerm: {
-      context: [
-        {
-          text,
-          evidence: ["2026/07/25/1859-arKZnw"],
-          updated: "2026-07-26",
-          expires: expires ?? "2026-08-02",
-          obs: 1,
-        },
-      ],
-    },
-  });
-}
-
-function mutation(m: Partial<PreviouslyMutation> = {}): PreviouslyMutation {
-  return {
-    action: "observe",
-    tier: "long",
-    subsection: "identity",
-    belief: "test belief",
-    evidence_slice: "2026/07/26/1226",
-    evidence_turn: "abc123",
-    ...m,
-  };
-}
-
-// ─── Empty mutations ────────────────────────────────────────────────────
-
-describe("applyPreviouslyAgentOutput", () => {
-  it("returns content unchanged when mutations array is empty", () => {
-    const content = newPreviouslyTemplate("2026-07-26-1226");
-    const result = applyPreviouslyAgentOutput(content, [], "2026-07-26-1226");
-    expect(result.content).toBe(content);
-    expect(result.changes.added).toBe(0);
+    });
+    const res = applyCardUpdate(card(), dirty, "s", NOW);
+    const parsed = parseCard(res.content)!;
+    expect(parsed.identity).toContain("Name: Alex");
+    expect(parsed.identity).toContain("Name: Bob");
+    expect(parsed.identity).not.toContain("(also written");
+    expect(parsed.identity).not.toContain("（又称");
   });
 
-  // ─── observe ──────────────────────────────────────────────────────────
-
-  describe("observe", () => {
-    it("adds a new long-term identity belief", () => {
-      const content = newPreviouslyTemplate("2026-07-26-1226");
-      const result = applyPreviouslyAgentOutput(content, [
-        mutation({
-          action: "observe",
-          tier: "long",
-          subsection: "identity",
-          belief: "用户是 Rust 工程师",
-        }),
-      ], "2026-07-26-1226");
-      expect(result.content).toContain("用户是 Rust 工程师");
-      expect(result.content).toContain("evidence:");
-      expect(result.content).toContain("confidence: medium");
-      expect(result.changes.added).toBe(1);
-    });
-
-    it("adds a new short-term context belief with expires", () => {
-      const content = newPreviouslyTemplate("2026-07-26-1226");
-      const result = applyPreviouslyAgentOutput(content, [
-        mutation({
-          action: "observe",
-          tier: "short",
-          subsection: "context",
-          belief: "用户正在装机",
-        }),
-      ], "2026-07-26-1226");
-      expect(result.content).toContain("用户正在装机");
-      expect(result.content).toContain("expires:");
-      // Short-term should not have confidence
-      const stSection = result.content.split("## 短期记忆")[1];
-      expect(stSection).not.toContain("confidence:");
-      expect(result.changes.added).toBe(1);
-    });
-
-    it("skips duplicate beliefs", () => {
-      const content = docWithIdentity("用户是 Rust 工程师");
-      const result = applyPreviouslyAgentOutput(content, [
-        mutation({
-          action: "observe",
-          tier: "long",
-          subsection: "identity",
-          belief: "用户是 Rust 工程师",
-        }),
-      ], "2026-07-26-1226");
-      // Should not duplicate
-      const count = (result.content.match(/用户是 Rust 工程师/g) ?? []).length;
-      expect(count).toBe(1);
-      expect(result.changes.added).toBe(0);
-    });
+  it("falls back to the previous card when the updated card does not parse", () => {
+    const prev = card();
+    const res = applyCardUpdate(prev, "not a card at all", "s", NOW);
+    expect(res.changed).toBe(false);
+    expect(res.content).toBe(prev);
   });
 
-  // ─── reinforce ────────────────────────────────────────────────────────
-
-  describe("reinforce", () => {
-    it("bumps obs count and updates date", () => {
-      const content = docWithIdentity("用户是 Rust 工程师");
-      const result = applyPreviouslyAgentOutput(content, [
-        mutation({
-          action: "reinforce",
-          tier: "long",
-          subsection: "identity",
-          belief_key: "Rust 工程师",
-          evidence_slice: "2026/07/26/1226",
-          evidence_turn: "xyz789",
-        }),
-      ], "2026-07-26-1226");
-      expect(result.content).toContain("obs: 4"); // was 3, now 4
-      expect(result.changes.reinforced).toBe(1);
-    });
-
-    it("promotes medium→high at obs >= 5", () => {
-      const content = docWithIdentity("用户是 Rust 工程师", "medium");
-      // Set obs to 4 so reinforce makes it 5
-      const doc = {
-        sliceId: "2026-07-26-1226",
-        updated: "2026-07-26T12:00:00Z",
-        longTerm: {
-          identity: [
-            {
-              text: "用户是 Rust 工程师",
-              evidence: ["2026/07/24/a"],
-              confidence: "medium" as const,
-              updated: "2026-07-24",
-              obs: 4,
-            },
-          ],
-          patterns: [],
-          strategies: [],
-        },
-        shortTerm: { context: [] },
-      };
-      const customContent = serializePreviously(doc);
-      const result = applyPreviouslyAgentOutput(customContent, [
-        mutation({
-          action: "reinforce",
-          tier: "long",
-          subsection: "identity",
-          belief_key: "Rust 工程师",
-        }),
-      ], "2026-07-26-1226");
-      expect(result.content).toContain("obs: 5");
-      expect(result.content).toContain("confidence: high");
-    });
-  });
-
-  // ─── contradict ───────────────────────────────────────────────────────
-
-  describe("contradict", () => {
-    it("drops confidence from high to medium", () => {
-      const content = docWithIdentity("用户喜欢 Python", "high");
-      const result = applyPreviouslyAgentOutput(content, [
-        mutation({
-          action: "contradict",
-          tier: "long",
-          subsection: "identity",
-          belief_key: "喜欢 Python",
-          note: "用户现在偏好 Rust",
-        }),
-      ], "2026-07-26-1226");
-      expect(result.content).toContain("confidence: medium");
-      expect(result.content).toContain("⚠️ 用户现在偏好 Rust");
-      expect(result.changes.demoted).toBe(1);
-    });
-  });
-
-  // ─── discard ──────────────────────────────────────────────────────────
-
-  describe("discard", () => {
-    it("removes a belief by key", () => {
-      const content = docWithIdentity("用户喜欢 Python");
-      const result = applyPreviouslyAgentOutput(content, [
-        mutation({
-          action: "discard",
-          tier: "long",
-          subsection: "identity",
-          belief_key: "喜欢 Python",
-        }),
-      ], "2026-07-26-1226");
-      expect(result.content).not.toContain("喜欢 Python");
-      expect(result.changes.removed).toBe(1);
-    });
-
-    it("handles unknown key gracefully", () => {
-      const content = docWithIdentity("用户喜欢 Python");
-      const result = applyPreviouslyAgentOutput(content, [
-        mutation({
-          action: "discard",
-          tier: "long",
-          subsection: "identity",
-          belief_key: "不存在的信念",
-        }),
-      ], "2026-07-26-1226");
-      expect(result.content).toContain("喜欢 Python");
-      expect(result.changes.removed).toBe(0);
-    });
-  });
-
-  // ─── expire ───────────────────────────────────────────────────────────
-
-  describe("expire", () => {
-    it("removes an expired short-term belief", () => {
-      const content = docWithContext("用户正在装机", "2026-07-20"); // already expired
-      const result = applyPreviouslyAgentOutput(content, [
-        mutation({
-          action: "expire",
-          tier: "short",
-          subsection: "context",
-          belief_key: "装机",
-        }),
-      ], "2026-07-26-1226");
-      expect(result.content).not.toContain("正在装机");
-      expect(result.changes.removed).toBe(1);
-    });
-  });
-
-  // ─── promote (short → long) ───────────────────────────────────────────
-
-  describe("promote", () => {
-    it("moves a belief from short-term to long-term", () => {
-      const content = docWithContext("用户装机时偏好详细调研");
-      const result = applyPreviouslyAgentOutput(content, [
-        mutation({
-          action: "promote",
-          tier: "long",
-          subsection: "patterns",
-          belief_key: "详细调研",
-          belief: "用户做技术决策前会充分调研",
-          new_confidence: "high",
-        }),
-      ], "2026-07-26-1226");
-      // Should be in long-term patterns now
-      const ltSection = result.content.split("## 长期记忆")[1].split("## 短期记忆")[0];
-      expect(ltSection).toContain("充分调研");
-      expect(ltSection).toContain("confidence: high");
-      // Should be removed from short-term
-      const stSection = result.content.split("## 短期记忆")[1];
-      expect(stSection).not.toContain("详细调研");
-      expect(result.changes.added).toBe(1);
-    });
-  });
-
-  // ─── demote (long → short) ────────────────────────────────────────────
-
-  describe("demote", () => {
-    it("moves long-term belief to short-term (full demote)", () => {
-      const content = docWithIdentity("用户喜欢 Python", "low");
-      const result = applyPreviouslyAgentOutput(content, [
-        mutation({
-          action: "demote",
-          tier: "short",
-          subsection: "context",
-          belief_key: "喜欢 Python",
-          belief: "用户之前偏好 Python，近期未再提及",
-          new_confidence: "low",
-        }),
-      ], "2026-07-26-1226");
-      // Should be removed from long-term identity
-      const ltSection = result.content.split("## 长期记忆")[1].split("## 短期记忆")[0];
-      expect(ltSection).not.toContain("喜欢 Python");
-      // Should be in short-term context
-      const stSection = result.content.split("## 短期记忆")[1];
-      expect(stSection).toContain("用户之前偏好 Python");
-      expect(stSection).toContain("expires:");
-      expect(result.changes.demoted).toBe(1);
-    });
-
-    it("drops confidence only (no belief text)", () => {
-      const content = docWithIdentity("用户喜欢 Python", "high");
-      const result = applyPreviouslyAgentOutput(content, [
-        {
-          action: "demote" as const,
-          tier: "long" as const,
-          subsection: "identity" as const,
-          belief_key: "喜欢 Python",
-          new_confidence: "medium" as const,
-        },
-      ], "2026-07-26-1226");
-      expect(result.content).toContain("confidence: medium");
-      expect(result.changes.demoted).toBe(1);
-    });
-  });
-
-  // ─── Quantity limits (R13) ────────────────────────────────────────────
-
-  describe("enforceLimits", () => {
-    it("trims patterns when over limit of 8", () => {
-      const sliceId = "2026-07-26-1226";
-      const patterns = Array.from({ length: 12 }, (_, i) => ({
-        text: `模式 ${i + 1}`,
-        evidence: ["2026/07/24/a"],
-        confidence: "medium" as const,
-        updated: "2026-07-20",
-        obs: 1,
-      }));
-      const doc = {
-        sliceId,
-        updated: "2026-07-26T12:00:00Z",
-        longTerm: { identity: [], patterns, strategies: [] },
-        shortTerm: { context: [] },
-      };
-      const content = serializePreviously(doc);
-      const result = applyPreviouslyAgentOutput(content, [], "2026-07-26-1226");
-      // Should have exactly 8 patterns
-      const parsed = result.content.split("### User patterns")[1].split("### Agent strategies")[0];
-      const bulletCount = (parsed.match(/^- /gm) ?? []).length;
-      expect(bulletCount).toBe(8);
-    });
-  });
-
-  // ─── Edge cases ───────────────────────────────────────────────────────
-
-  describe("edge cases", () => {
-    it("handles unparseable content by starting from template", () => {
-      const result = applyPreviouslyAgentOutput(
-        "not valid previously content",
-        [
-          mutation({
-            action: "observe",
-            tier: "long",
-            subsection: "identity",
-            belief: "用户是工程师",
-          }),
-        ],
-        "2026-07-26-1226",
-      );
-      expect(result.content).toContain("# Previously On");
-      expect(result.content).toContain("用户是工程师");
-      expect(result.changes.added).toBe(1);
-    });
-
-    it("handles undefined evidence_slice gracefully", () => {
-      const content = newPreviouslyTemplate("2026-07-26-1226");
-      const result = applyPreviouslyAgentOutput(content, [
-        {
-          action: "observe",
-          tier: "long",
-          subsection: "identity",
-          belief: "test",
-          evidence_slice: undefined as unknown as string,
-          evidence_turn: "abc",
-        } as PreviouslyMutation,
-      ], "2026-07-26-1226");
-      expect(result.changes.added).toBe(1);
-      expect(result.content).toContain("evidence:");
-    });
+  it("builds a card from scratch when the previous is empty", () => {
+    const fresh = newCardTemplate("2026-08-08-1200");
+    const updated = card({ profile: "A brand new profile." });
+    const res = applyCardUpdate(fresh, updated, "2026-08-08-1200", NOW);
+    const parsed = parseCard(res.content)!;
+    expect(parsed.profile).toBe("A brand new profile.");
   });
 });

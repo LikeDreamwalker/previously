@@ -10,92 +10,90 @@ Previously 完全通过环境变量进行配置——六个内置变量，零个
 
 | 变量 | 是否必需 | 是否内置 | 默认值 | 运行时效果 |
 |---|---|---|---|---|
-| `DEEPSEEK_API_KEY` | 是 | 是 | — | 同时驱动 Flash 和 Pro 两个层级。`@ai-sdk/deepseek` 提供者会自动从环境中读取该变量——没有源码文件直接引用 `process.env.DEEPSEEK_API_KEY`。 |
+| `DEEPSEEK_API_KEY` | 是 | 是 | — | 同时驱动 worker 和主模型两个层级。`@ai-sdk/deepseek` 提供者会自动从环境中读取该变量——没有源码文件直接引用 `process.env.DEEPSEEK_API_KEY`。 |
 | `GITHUB_TOKEN` | 见说明 | 是 | — | 该变量是否存在**就是后端开关**。设置后，应用使用 Octokit/GitHub API 后端；未设置时，应用回退到本地文件系统。本地开发时保留未设置或注释掉状态。空字符串 `GITHUB_TOKEN=` 现在能正确回退到本地文件系统。一个细粒度 PAT，权限为 Contents read/write，范围限定到单个仓库。 |
 | `GITHUB_REPO_OWNER` | 使用 GitHub 后端时必需 | 是 | `local` | 拥有 memory 仓库的 GitHub 用户名或组织。在多个模块中被读取，包括 chat 路由、flush 端点、episodic 管理器和身份/资料模块。 |
 | `GITHUB_REPO_NAME` | 使用 GitHub 后端时必需 | 是 | `local` | 存储 memory 数据的仓库名称。与 `GITHUB_REPO_OWNER` 的消费点相同。 |
-| `DEMO_MODE` | 否 | 是 | `false` | 设置为字符串 `"true"` 时，将所有 `memory/` 读取重定向到预先填充好的角色数据集 `memory/demo/personal_14/`。写入操作会被接收但**在两个后端上都不会持久化**——应用返回成功响应但丢弃数据。locale 布局还会渲染 `<DemoBanner />` 组件。 |
-| `DEMO_REF` | 否 | 是（在 `.env.example` 中未记录） | — | Git ref（分支、标签或 SHA），demo 模式下 GitHub 读取操作会固定使用该 ref。使得带 token 的 demo 部署可以从 demo 分支读取数据，而不是从有意保持空状态的 main 分支读取。仅在 `DEMO_MODE=true` 时生效。 |
-| `ANTHROPIC_API_KEY` | 否 | 仅路线图 | — | 出现在 `README.md` 中，`@ai-sdk/anthropic` 依赖也已安装，但**已发布的代码中没有任何地方读取 `process.env.ANTHROPIC_API_KEY`** 或实例化 Anthropic 提供者。多提供者支持在模型注册表中已有类型定义（`provider: "deepseek" | "anthropic" | "openai"`），但 `DEFAULT_MODELS` 只包含 DeepSeek 条目。在 v0.1.0 中设置此变量没有任何运行时效果。 |
+| `STORAGE` | 否 | 是 | 自动检测 | 选择数据源：`local`（文件系统）、`github`（GitHub API）或 `demo`（只读的预置角色数据集）。未设置时自动检测：存在 `GITHUB_TOKEN` → `github`；`NODE_ENV=development` → `local`；否则 → `demo`。在 `demo` 模式下，`memory/` 读取由预置的角色数据集提供（默认：Caleb，`personal_14`），写入会被接收但从不持久化——应用返回成功响应但丢弃数据。 |
+| `BENCHMARK_BASE_URL` | 否 | 否 | — | `demo` 模式使用的远程 benchmark-data 仓库基础 URL（例如 `https://raw.githubusercontent.com/previously-lab/benchmark-data/main`）。在 `demo` 模式下未设置时，读取会回退到磁盘上的本地 `../benchmark-data` 兄弟目录。 |
+| `ANTHROPIC_API_KEY` | 否 | 仅路线图 | — | 出现在 `README.md` 中，`@ai-sdk/anthropic` 依赖也已安装，但**已发布的代码中没有任何地方读取 `process.env.ANTHROPIC_API_KEY`** 或实例化 Anthropic 提供者。多提供者支持在模型注册表中已有类型定义（`provider: "deepseek" | "anthropic" | "openai"`），但 `DEFAULT_MODELS` 只包含 DeepSeek 条目。在 v0.7 中设置此变量没有任何运行时效果。 |
 
-> **关于 `GITHUB_TOKEN` 的说明：** 代码通过一个简单的表达式来决定后端——`const USE_GITHUB = !!process.env.GITHUB_TOKEN`——在七个模块中独立声明（chat 路由、flush 路由、episodic 管理器、用户资料、资料写入器、维护模块以及身份/资料端点）。没有专门的 `USE_GITHUB` 环境变量。存在 token = GitHub API，不存在 token = 本地文件系统。这是有意为之：最简单的切换方式，无需配置文件，没有额外的接口面。
+> **关于 `GITHUB_TOKEN` 的说明：** 当 `STORAGE` 未设置时，数据源在单一位置自动检测——`src/lib/data-source/resolve.ts`：存在 `GITHUB_TOKEN` → GitHub API；`NODE_ENV=development` → 本地文件系统；否则 → demo。没有专门的 `USE_GITHUB` 环境变量。这是有意为之：最简单的切换方式，无需配置文件，没有额外的接口面。
 
-## 后端切换：GitHub API vs 本地文件系统
+## 后端切换：GitHub API vs 本地文件系统 vs Demo
 
-存储后端是隐式的，有意这样设计。没有环境变量，没有配置开关——只取决于 `GITHUB_TOKEN` 是否存在：
+存储后端是隐式的，有意这样设计。当 `STORAGE` 未设置时，它会根据 `GITHUB_TOKEN` 和 `NODE_ENV` 自动检测；你也可以显式设置它：
 
 ```typescript
-const USE_GITHUB = !!process.env.GITHUB_TOKEN;
+resolveDataSource(); // "local" | "github" | "demo" —— STORAGE 覆盖，否则自动检测
 ```
 
 | 后端 | 何时选中 | 读取方式 | 写入方式 |
 |---|---|---|---|
-| **GitHub API** | 设置了 `GITHUB_TOKEN` | `octokit.rest.repos.getContent`，base64 解码。需要 `GITHUB_REPO_OWNER` 和 `GITHUB_REPO_NAME`。 | 在同一仓库上执行 `createOrUpdateFileContents`。 |
-| **本地文件系统** | 未设置 `GITHUB_TOKEN` | 从 `DATA_ROOT = join(process.cwd())` 执行 `fs.readFileSync`。从项目根目录读取物理文件。 | 向同一根目录执行 `fs.writeFileSync`。 |
+| **GitHub API** | `STORAGE=github`，或存在 `GITHUB_TOKEN` 时自动检测 | `octokit.rest.repos.getContent`，base64 解码。需要 `GITHUB_REPO_OWNER` 和 `GITHUB_REPO_NAME`。 | 在同一仓库上执行 `createOrUpdateFileContents`。 |
+| **本地文件系统** | `STORAGE=local`，或在开发环境中自动检测 | 从 `DATA_ROOT = join(process.cwd())` 执行 `fs.readFileSync`。从项目根目录读取物理文件。 | 向同一根目录执行 `fs.writeFileSync`。 |
+| **Demo（只读）** | `STORAGE=demo`，或否则自动检测 | 从预置的角色数据集读取——本地 `../benchmark-data/{persona}/...` 兄弟目录或 `BENCHMARK_BASE_URL` 远程地址。 | 空操作：返回成功，丢弃数据。 |
 
-两个后端执行相同的安全边界：
+各存储后端执行相同的安全边界：
 - **路径白名单**：仅 `memory/`、`tasks/` 和 `sessions/` 可读写；`src/` 对 agent 只读
 - **大小上限**：所有文件读取的 `MAX_FILE_SIZE_BYTES = 1_000_000`（1 MB）
 
 本地文件系统后端是你在开发时（`pnpm dev`）使用的后端。它读写磁盘上的真实文件——无需 GitHub，无需网络，没有速率限制。GitHub 后端是你部署到 Vercel 时使用的后端。代码路径在路由处理器处分叉（参见 `src/app/api/chat/route.ts` 第 ~434-475 行），但接口完全相同。
 
-## DEMO_MODE 行为
+## Demo 模式行为
 
-`DEMO_MODE=true` 将整个 memory 层切换到针对内置角色数据集的只读演示模式。以下是具体变化：
+`STORAGE=demo` 将整个 memory 层切换到针对预置角色数据集的只读演示模式。以下是具体变化：
 
-### 路径重定向
+### demo 读取来自哪里
 
-所有 `memory/` 读取路径都会经过 `resolveDemoPath`（`src/lib/demo/paths.ts`）重写：
+在 demo 模式下，每次 `memory/` 读取都由 benchmark-data 角色数据集提供，而不是仓库自身的 `memory/` 目录：
 
 ```
-memory/episodic/slices/...  →  memory/demo/personal_14/episodic/slices/...
-memory/nodes/some-node.md   →  memory/demo/personal_14/nodes/some-node.md
+memory/episodic/slices/...  →  {persona}/episodic/slices/...     （来自 benchmark-data）
+memory/nodes/some-node.md   →  {persona}/nodes/some-node.md     （来自 benchmark-data）
 ```
 
-重写操作仅对以 `memory/` 开头且尚未携带 `memory/demo/personal_14/` 前缀的路径触发（幂等）。配套的 `unresolveDemoPath` 会将映射反转回来，使调用方保持在原始命名空间中。
+默认角色是 `personal_14`（Caleb）。当 `BENCHMARK_BASE_URL` 未设置时，读取来自本地兄弟目录 `../benchmark-data/{persona}/...`；设置后，则来自远程基础 URL（例如 `https://raw.githubusercontent.com/previously-lab/benchmark-data/main/{persona}/...`）。demo 读取永远不会触及仓库真实的 `memory/` 目录。
 
 ### 写入：接收但不持久化
 
-DEMO_MODE 使写入在**两个**存储后端上都成为空操作：
+Demo 模式使写入成为空操作：
 
-- **本地文件系统**（`src/lib/tools/local-fs.ts` 第 52-54 行）：返回 `{ path, created: false }`，不写入磁盘
-- **GitHub API**（`src/lib/tools/writeFile.ts` 第 25-27 行）：返回相同的早期成功响应，从不调用 `createOrUpdateFileContents`
+- `writeFileDemo`（`src/lib/demo/demo-fs.ts`）返回 `{ path, created: false }`，在任何地方都不写入——本地和远程 demo 后端均是如此。
 
 agent 会看到写入成功。数据被静默丢弃。
 
-### GitHub 部署的 Demo Ref
+### 远程 demo 数据
 
-当以 `DEMO_MODE=true` 和 `GITHUB_TOKEN` 部署时，你还需要 `DEMO_REF`。没有它，GitHub API 会从仓库的默认分支（`main`）读取——而在 demo 场景中，该分支是有意保持空状态的。将 `DEMO_REF` 设置为 demo 数据集所在的分支、标签或 SHA：
+当部署没有本地 benchmark-data 检出目录的 demo 实例时，将 `BENCHMARK_BASE_URL` 设置为 benchmark-data 仓库的 raw URL：
 
 ```bash
-DEMO_MODE=true
-DEMO_REF=demo-branch-name
+STORAGE=demo
+BENCHMARK_BASE_URL=https://raw.githubusercontent.com/previously-lab/benchmark-data/main
 ```
 
-该 ref 在 `src/lib/tools/readFile.ts` 第 30 行被应用：`ref: ref ?? demoRef()`。`demoRef()` 辅助函数（`src/lib/demo/paths.ts`）返回 `process.env.DEMO_REF || undefined`——仅在 `DEMO_MODE` 为 true 时生效。
+设置该变量后，demo 读取会从该基础 URL 获取；未设置时，回退到本地 `../benchmark-data` 兄弟目录。
 
-> `DEMO_REF` 存在于代码中，但**在 `.env.example` 中没有记录**——这是 v0.1.0 中的一个文档缺口。
+### 角色选择器
 
-### UI 横幅
+在 demo 模式下，hero 区域变成角色选择器（`hero-section.tsx` 通过 `listDemoPersonas` 加载角色列表），你可以在预置角色之间切换。
 
-locale 布局（`src/app/[locale]/layout.tsx`）在 `DEMO_MODE=true` 时会条件性地渲染 `<DemoBanner />`。用户会看到一个视觉指示器，表明实例正在以 demo 模式运行。
+## 模型注册表与模型路由
 
-## 模型注册表与 DeepSeek 路由
-
-Previously 附带一个仅含 DeepSeek 的模型注册表。两个层级，同一个模型家族：
+Previously 附带一个由 models.dev 驱动的模型注册表。两个层级，同一个目录：
 
 | 层级 | 用途 | 模型 | 温度 | 工具模式 |
 |---|---|---|---|---|
-| **Flash** | 统一意图分类 + 召回扫描 + 元数据维护 | `deepseek-chat` | 0.1 | `toolChoice: 'required'` |
-| **Pro** | 深度推理、完整 slice 读取、响应生成 | `deepseek-chat`（默认，非 `deepseek-reasoner`） | SDK 默认 | 用户选择 |
+| **Worker** | 统一意图分类 + 召回扫描 + 元数据维护 | 已解析的 worker 模型（主提供者的廉价层级） | 低 | 结构化、非思考 |
+| **主模型** | 深度推理、完整 slice 读取、响应生成 | 用户选择的主模型 | SDK 默认 | 用户选择 |
 
-### Flash 是硬编码的
+### worker 是被解析出来的，而非硬编码
 
-Flash 调用在响应流打开**之前**运行。它调用一次 `generateText` 到 `deepseek-chat`（温度 0.1，`toolChoice: 'required'`），在单次往返中完成三项工作：意图分类、召回扫描和元数据维护。调用点在 `src/lib/router/flash.ts:124` 和 `src/lib/episodic/maintenance.ts:144`。Flash 没有配置项——它始终使用 `deepseek-chat`。
+worker 调用在响应流打开**之前**运行。它发起一次廉价的调用——turn analyzer——在单次往返中完成三项工作：意图分类、召回扫描和元数据维护。worker 模型由 `resolveWorkerModel()`（`src/lib/models/worker.ts`）解析：手动固定 → 同提供者的轻量模型 → 主模型本身。worker 调用始终廉价、结构化且非思考。
 
-### Pro 模型选择
+### 主模型选择
 
-Pro 模型按请求从客户端选择：
+主模型按请求从客户端选择：
 
 ```typescript
 const model = (body.model as string) ?? 'deepseek-chat';
@@ -157,8 +155,8 @@ defineRouting({
 
 | 你可能期望的变量 | 实际情况 |
 |---|---|
-| `USE_GITHUB` | 不存在。后端开关是 `!!process.env.GITHUB_TOKEN`——隐式、零配置、有意为之。 |
-| `LOG_LEVEL` | 未实现。v0.1.0 中日志功能较简单。 |
+| `USE_GITHUB` | 不存在。后端开关是 `STORAGE` 环境变量，并在 `src/lib/data-source/resolve.ts` 中自动检测——隐式、零配置、有意为之。 |
+| `LOG_LEVEL` | 未实现。日志功能较简单。 |
 | `DATABASE_URL` | 没有数据库。状态存储在 GitHub 文件中。 |
 | `PORT` | 应用不读取该变量；由 Next.js 处理。 |
 | `ANTHROPIC_API_KEY` | 依赖已安装，README 中提及，**但已发布的代码中没有读取它的地方**。属于路线图/储备性质。 |
@@ -167,4 +165,4 @@ defineRouting({
 
 - [部署](/docs/zh/deployment) —— 包含完整 `.env.local` 模板的部署指南
 - [情景记忆](/docs/zh/episodic-memory) —— slice 和 strand 的工作原理；配置使之可访问的数据
-- [召回](/docs/zh/recall) —— Flash 和 Pro 如何使用已配置的模型
+- [召回](/docs/zh/recall) —— worker 和主模型如何使用已配置的模型

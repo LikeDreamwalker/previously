@@ -83,6 +83,21 @@ describe("createMixedStreamTransform", () => {
     expect(await through(chunks)).toEqual(chunks);
   });
 
+  it("passes data-tool-progress chunks through unchanged", async () => {
+    const chunks = [
+      {
+        type: "data-tool-progress",
+        id: "tool-call_1",
+        data: {
+          toolCallId: "call_1",
+          toolName: "thinkDeep",
+          text: "Conclusion: the claim holds…",
+        },
+      },
+    ];
+    expect(await through(chunks)).toEqual(chunks);
+  });
+
   it("drops a raw model finish part (our steps own the finish chunk)", async () => {
     const out = await through([
       { type: "finish", finishReason: "stop", usage: { totalTokens: 3 } },

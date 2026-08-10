@@ -3,19 +3,32 @@
 import type { ToolRenderState } from "@/lib/chat/tool-state";
 import { Globe } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { ToolLayout } from "../tool-layout";
+import { PhaseIndicator } from "../phase-indicator";
 import { MarkdownRenderer } from "../markdown";
+import { progressStageTone } from "@/lib/chat/build-stream";
 
 interface WebSearchRendererProps {
   toolName: string;
   input?: unknown;
   output?: unknown;
   state: ToolRenderState;
+  /** Live progress from `data-tool-progress` — the streaming subtitle. */
+  streamingText?: string;
+  /** Progress stage — "running" (searching) vs "done" (found N sources). */
+  streamingStage?: string;
+}
+
+interface WebSearchOutput {
+  answer?: string;
+  sources?: Array<{ title?: string; url?: string }>;
+  error?: string;
+  recommendation?: string;
+  suggestedReads?: Array<{ url: string; title?: string; reason?: string }>;
 }
 
 function resolveName(
   input: Record<string, unknown> | undefined,
-  output: { answer?: string; sources?: Array<{ title?: string; url?: string }>; error?: string } | undefined,
+  output: WebSearchOutput | undefined,
   running: boolean,
   t: ReturnType<typeof useTranslations>,
 ): string {
@@ -34,14 +47,18 @@ function resolveName(
 }
 
 /**
- * webSearch tool: Globe icon, the query as the collapsed summary, and the
- * cited answer + source links in the expanded view.
+ * webSearch tool: Globe icon, the query as the label, and the cited answer +
+ * source links in the expanded view. PhaseIndicator in streaming mode — the
+ * running label plus a "Searching…" subtitle while it works; the subtitle fades
+ * on completion and clicking expands the sources.
  */
 export function WebSearchRenderer({
   toolName: _toolName,
   input,
   output,
   state,
+  streamingText,
+  streamingStage,
 }: WebSearchRendererProps) {
   const t = useTranslations("chat.tool");
 
@@ -49,21 +66,22 @@ export function WebSearchRenderer({
   const query =
     typeof inp?.query === "string" ? inp.query : null;
 
-  const out = output as
-    | { answer?: string; sources?: Array<{ title?: string; url?: string }>; error?: string }
-    | undefined;
+  const out = output as WebSearchOutput | undefined;
   const sources = Array.isArray(out?.sources)
     ? out.sources.filter((s): s is { title: string; url: string } => typeof s?.url === "string")
     : [];
+  const recommendation =
+    typeof out?.recommendation === "string" && out.recommendation.trim()
+      ? out.recommendation
+      : null;
+  const suggestedReads = Array.isArray(out?.suggestedReads)
+    ? out.suggestedReads.filter(
+        (s): s is { url: string; title: string; reason: string } =>
+          typeof s?.url === "string",
+      )
+    : [];
 
   const displayName = resolveName(inp, out, state.running, t);
-
-  const summary = query ? (
-    <span className="max-w-xs truncate text-xs text-muted-foreground">{query}</span>
-  ) : null;
-
-  const meta =
-    sources.length > 0 ? t("sources", { count: sources.length }) : undefined;
 
   const expandedContent = out ? (
     out.error ? (
@@ -71,6 +89,14 @@ export function WebSearchRenderer({
     ) : (
       <div className="space-y-2">
         {out.answer ? <MarkdownRenderer content={out.answer} /> : null}
+        {recommendation && (
+          <div className="rounded-md border border-border/40 bg-muted/30 px-3 py-2">
+            <p className="mb-1 text-xs font-semibold text-foreground/80">
+              {t("webSearchRecommendation")}
+            </p>
+            <MarkdownRenderer content={recommendation} />
+          </div>
+        )}
         {sources.length > 0 ? (
           <ul
             className={
@@ -94,17 +120,51 @@ export function WebSearchRenderer({
             ))}
           </ul>
         ) : null}
+        {suggestedReads.length > 0 && (
+          <div>
+            <p className="mb-1 text-xs font-semibold text-foreground/80">
+              {t("webSearchSuggestedReads")}
+            </p>
+            <ul className="space-y-1">
+              {suggestedReads.map((s, i) => (
+                <li key={i} className="flex flex-col text-xs">
+                  <a
+                    href={s.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="truncate text-brand underline underline-offset-2"
+                  >
+                    {s.title || s.url}
+                  </a>
+                  {s.reason && (
+                    <span className="text-muted-foreground">{s.reason}</span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </div>
     )
   ) : undefined;
 
+  // Surface a search failure through the PhaseIndicator error state.
+  const displayState: ToolRenderState = {
+    ...state,
+    error: state.error ?? (out?.error ?? undefined),
+  };
+
   return (
-    <ToolLayout
-      name={displayName}
+    <PhaseIndicator
+      mode="streaming"
+      className={
+        state.running ? "bg-brand-50/50 dark:bg-brand-500/[0.06]" : undefined
+      }
       icon={<Globe className="h-3.5 w-3.5" />}
-      summary={summary}
-      meta={meta}
-      state={state}
+      label={displayName}
+      state={displayState}
+      streamingText={streamingText}
+      subtitleTone={progressStageTone(streamingStage)}
       expandedContent={expandedContent}
     />
   );

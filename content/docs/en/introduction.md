@@ -4,7 +4,7 @@ Previously is a lightweight cloud agent whose defining feature is episodic memor
 
 ## What Previously Is
 
-Previously is not another assistant you chat with in disposable threads. It is a persistent cloud agent organized around a single idea: **one continuous relationship on one timeline.** You are the commander; Previously is your staff. You show up, you talk, you leave. When you come back — hours, days, or weeks later — the first thing you see is a vertical timeline of your past, not a list of chat threads. The agent figures out relevance by scanning *when* something happened, then retrieving *what* was said.
+Previously is not another assistant you chat with in disposable threads. It is a persistent cloud agent organized around a single idea: **one continuous relationship on one timeline.** You are the commander; Previously is your staff. You show up, you talk, you leave. When you come back — hours, days, or weeks later — the first thing you see is a timeline of your past, not a list of chat threads. The agent figures out relevance by scanning *when* something happened, then retrieving *what* was said.
 
 There are no conversations. There is no conversation management. There is one timeline.
 
@@ -32,14 +32,14 @@ demo: slice-file
 
 **Strand** — A keyword (like `health`, `work`, `housing`) that recurs across slices. The index `memory/episodic/strands.json` maps each keyword to every slice path that carries it. Strands are built at slice-close from the slice's tags. A slice = what happened; a strand = what it was about. Strands form the thin, lossless semantic layer over the timeline.
 
-**Recall** — The two-tier retrieval engine. **Flash** (DeepSeek-chat) scans recent closed-slice summaries in a single fast round-trip, returning up to five pointers with relevance scores. It handles intent classification and metadata maintenance in the same call. **Pro** (the main model, with thinking enabled) receives those pointers and reads the full slices via the `readMemory` tool — the expensive, thorough pass. Flash is expected to be imperfect; Pro does the deeper work when Flash returns nothing.
+**Recall** — The two-tier retrieval engine. A **worker** model (a cheap tier derived from the main model's provider) scans recent closed-slice summaries in a single fast round-trip, returning up to five pointers with relevance scores. It handles the semantic gate and metadata maintenance in the same call. The **main model** (the one you pick in the toolbar, thinking enabled) receives those pointers and reads the full slices via the `readSlice` tool — the expensive, thorough pass. The worker is expected to be imperfect; the main model does the deeper work when the scan returns nothing.
 
 | Term | Layer | Role | Speed |
 |------|-------|------|-------|
 | Slice | Episodic (when) | Records what happened | Storage, not retrieval |
 | Strand | Semantic (what) | Keywords across slices | Built at slice-close |
-| Flash recall | Retrieval tier 1 | Scan + pointers + maintenance | ~500 ms (typical) |
-| Pro recall | Retrieval tier 2 | Deep read + reasoning | Seconds (per tool call) |
+| Worker recall | Retrieval tier 1 | Scan + pointers + maintenance | ~500 ms (typical) |
+| Main recall | Retrieval tier 2 | Deep read + reasoning | Seconds (per tool call) |
 
 ## Research Grounding
 
@@ -47,9 +47,9 @@ The episodic / semantic split is not arbitrary. It is grounded in Endel Tulving'
 
 ## Status
 
-Previously is **EXPERIMENTAL** — early development, not yet ready for personal or production use. It is a one-person research project, but intended to be maintained long-term. What works today: streaming chat with tool-call visibility, time-slice storage with automatic 30-minute-silence slicing, Flash recall scan plus deep recall, per-round metadata maintenance, timeline UI with historical fade, memory nodes, GitHub file tools with path whitelist, multi-model support, and English-plus-Chinese internationalization.
+Previously is **EXPERIMENTAL** — early development, not yet ready for personal or production use. It is a one-person research project, but intended to be maintained long-term. What works today: streaming chat with visible thinking, recall, and tool calls; time-slice storage with automatic 30-minute-silence slicing; a two-tier recall pipeline (worker scan + main-model deep read); a compact user card that evolves once per closed slice; server-side local-time annotation; a semantic gate that keeps trivial turns out of memory; GitHub file tools with a path whitelist; multi-provider model support (DeepSeek, Anthropic, OpenAI-compatible); durable background runs via Vercel Workflow; and English-plus-Chinese internationalization.
 
-The strand index is built at slice-close and Pro can read it on demand, but the Flash scan does not yet automatically use the strand index — it scans recent slice summaries. A first-class strand with its own rolling summary and recall integration is a future milestone.
+The strand index is built at slice-close and the main model can read it on demand, but the worker scan still searches recent slice summaries first. A first-class strand with its own rolling summary and recall integration is a future milestone.
 
 ## Related
 

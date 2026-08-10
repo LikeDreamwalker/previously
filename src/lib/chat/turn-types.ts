@@ -69,6 +69,14 @@ export interface TurnInput {
   turnId: string;
 }
 
+/** Summary of a synchronous card evolution run (v0.7b — inline in housekeeping). */
+export interface EvolutionResult {
+  ran: boolean;
+  changed: boolean;
+  droppedRecent: number;
+  note: string;
+}
+
 /** Result of the housekeeping step — slice + prepared context for the agent. */
 export interface HousekeepingResult {
   slice: TimeSlice;
@@ -87,6 +95,8 @@ export interface HousekeepingResult {
    * section. Injected into the system prompt. See src/lib/identity.
    */
   identityPrompt: string;
+  /** Present when a synchronous card evolution ran this turn (slice close or explicit request). */
+  evolutionResult?: EvolutionResult;
 }
 
 /** A background loop the agent started during this turn (for slice writeback). */
@@ -111,4 +121,50 @@ export interface TurnOutcome {
    * and tool calls with success/failure status. Written by finalizeTurn.
    */
   cognition: string;
+  /**
+   * Client-visible explanation for a non-stop finish (workflow timeout /
+   * terminal model error). Emitted in the terminal `data-turn-status` chunk so
+   * the client can show why the turn ended instead of failing silently.
+   * Absent for clean "stop" turns and for the partial-text "interrupted" case.
+   */
+  error?: string;
+}
+
+// ─── Turn status / persistent turn state (Layer 2, v0.6) ───────────────────
+
+/**
+ * Turn-level lifecycle status, streamed to the client as `data-turn-status`
+ * chunks. No persistence layer — the agent's reply is already in the time
+ * slice; the client sees these chunks live or reconnects via the stored runId.
+ *
+ * Terminal-only lifecycle statuses. Mid-turn transitions (thinking /
+ * synthesizing around dispatched sub-agents) were removed when thinkDeep
+ * became an agent-as-a-tool: reasoning fragments now flow back inline through
+ * tool results, so there is no separate wait/integrate phase to announce.
+ *
+ * TODO(v0.6): client-side reconnection — when the chat transport detects a
+ * dropped connection, it should replay the stream from the last-seen index
+ * (already supported by WorkflowChatTransport) and derive the terminal status
+ * from the last assistant message. The run→turn mapping can live in
+ * localStorage alongside the runId, not on disk.
+ */
+export type TurnStatus =
+  | "active" // LLM is generating or tools are executing
+  | "done" // Final text delivered to client
+  | "interrupted" // Timeout or error, partial result available
+  | "error"; // Fatal error, no result
+
+/**
+ * Derive the terminal turn status from the agent's finish reason and output.
+ * Pure function — used by finalizeTurn to emit the terminal data-turn-status
+ * stream chunk. The client sees it live or reconnects via the stored runId.
+ */
+export function deriveTurnStatus(outcome: TurnOutcome): TurnStatus {
+  if (outcome.finishReason === "stop") return "done";
+  // An explicit soft-timeout interruption is always "interrupted", even when
+  // the model produced no text before it was cut off (the client offers a
+  // "continue" path rather than treating it as a hard error).
+  if (outcome.finishReason === "interrupted") return "interrupted";
+  if (outcome.text) return "interrupted";
+  return "error";
 }

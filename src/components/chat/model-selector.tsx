@@ -146,7 +146,7 @@ export function ModelSelector({
                 render={
                   <button
                     type="button"
-                    className="h-7 rounded-full text-muted-foreground hover:text-foreground hover:bg-muted-foreground/10 transition-colors flex items-center justify-center gap-1 px-2"
+                    className="h-7 rounded-full text-muted-foreground hover:text-foreground hover:bg-brand/10 transition-colors flex items-center justify-center gap-1 px-2"
                   >
                     <ProviderIcon
                       provider={current?.provider ?? ""}
@@ -214,7 +214,7 @@ export function ModelSelector({
                       type="button"
                       aria-label={t("advanced")}
                       onClick={() => setAdvancedOpen(true)}
-                      className="rounded p-1 text-muted-foreground hover:text-foreground hover:bg-muted-foreground/10 transition-colors"
+                      className="rounded p-1 text-muted-foreground hover:text-foreground hover:bg-brand/10 transition-colors"
                     >
                       <Settings2 className="h-3.5 w-3.5" />
                     </button>

@@ -30,7 +30,7 @@
     "gray-matter": "^4.0.3",
     "lucide-react": "^1.8.0",
     "motion": "^12.42.2",
-    "next": "16.2.3",
+    "next": "16.3.0",
     "next-intl": "^4.9.0",
     "octokit": "^5.0.5",
     "react": "19.2.5",
@@ -47,7 +47,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@next/eslint-plugin-next": "^16.2.3",
+    "@next/eslint-plugin-next": "^16.3.0",
     "@playwright/test": "^1.61.1",
     "@tailwindcss/postcss": "^4.2.2",
     "@types/node": "^25.5.2",
@@ -57,7 +57,7 @@
     "@typescript-eslint/parser": "^8.58.1",
     "@vitejs/plugin-react": "^5.0.0",
     "eslint": "^9.39.4",
-    "eslint-config-next": "16.2.3",
+    "eslint-config-next": "16.3.0",
     "eslint-plugin-react-hooks": "^7.0.1",
     "playwright": "^1.61.1",
     "tailwindcss": "^4.2.2",

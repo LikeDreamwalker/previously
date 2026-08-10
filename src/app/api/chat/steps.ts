@@ -30,12 +30,16 @@ import {
   startBatch,
   flushBatch,
   analyzeTurn,
+  findMatchingStrand,
+  getStrandsPath,
+  serializeStrands,
   type TimeSlice,
   type StrandIndex,
   type SlicingSignal,
 } from "@/lib/episodic";
+import { consolidateStrands } from "@/lib/episodic/flash/strand-consolidator";
 import { checkTimeSilence } from "@/lib/episodic/slicer";
-import { fsReadFile } from "@/lib/episodic/io-helpers";
+import { fsReadFile, fsWriteFile } from "@/lib/episodic/io-helpers";
 import {
   buildAgentIdentityPrompt,
   parseIdentityFromPreviously,
@@ -49,10 +53,122 @@ import type {
   TurnInput,
   HousekeepingResult,
   TurnOutcome,
+  EvolutionResult,
 } from "@/lib/chat/turn-types";
+import { deriveTurnStatus } from "@/lib/chat/turn-types";
+import {
+  runCardEvolution,
+  type CardEvolutionReaders,
+} from "@/app/api/evolution/run-card-evolution";
+import { readFile } from "@/lib/tools/readFile";
+import { readFileLocal } from "@/lib/tools/local-fs";
+import { readFileDemo } from "@/lib/demo/demo-fs";
+import { parseSliceId, parseTurns } from "@/lib/episodic/turn-parser";
 
 
 // ─── Private helpers ──────────────────────────────────────────────────────
+
+/**
+ * Emit a compact housekeeping phase (rendered as a ToolLayout card on the
+ * client). Each phase is a `data-phase` chunk with `compact: true` so
+ * buildStream renders it as an unobtrusive tool-style bar, not a prominent
+ * PhaseIndicator. Emit `running: true` before the work, `running: false`
+ * (with result summaries) after.
+ */
+async function emitPhase(
+  phase: string,
+  running: boolean,
+  summaries?: string[],
+): Promise<void> {
+  const writable = getWritable<UIMessageChunk>();
+  const writer = writable.getWriter();
+  await writer.write({
+    type: "data-phase" as `data-${string}`,
+    id: `phase-${phase}`,
+    data: { phase, running, compact: true, summaries },
+  } as UIMessageChunk);
+  writer.releaseLock();
+}
+
+/** Emit a data-evolution progress chunk so the client's EvolutionIndicator shows the inline run. */
+async function emitEvolutionProgress(
+  step: "reading" | "reviewing" | "applied",
+): Promise<void> {
+  const writable = getWritable<UIMessageChunk>();
+  const writer = writable.getWriter();
+  await writer.write({
+    type: "data-evolution" as `data-${string}`,
+    id: "evolution-progress",
+    data: { running: true, step },
+  } as UIMessageChunk);
+  writer.releaseLock();
+}
+
+/** Emit the terminal evolution-result chunk with the change summary. */
+async function emitEvolutionResult(result: EvolutionResult): Promise<void> {
+  const writable = getWritable<UIMessageChunk>();
+  const writer = writable.getWriter();
+  await writer.write({
+    type: "data-evolution" as `data-${string}`,
+    id: "evolution-result",
+    data: {
+      running: false,
+      changes: {
+        added: result.changed ? 1 : 0,
+        reinforced: 0,
+        demoted: 0,
+        removed: result.droppedRecent,
+        superseded: 0,
+      },
+      hasChanges: result.changed,
+    },
+  } as UIMessageChunk);
+  writer.releaseLock();
+}
+
+/**
+ * File readers for the inline card evolution — same storage backends the turn
+ * uses, so the Previously Agent can explore past slices / cognition / cards.
+ */
+function buildCardReaders(input: TurnInput): CardEvolutionReaders {
+  const readRaw = async (path: string): Promise<string> => {
+    if (input.useDemo) return readFileDemo(path);
+    if (input.useGithub) return readFile(path, input.repo, input.owner);
+    return readFileLocal(path);
+  };
+  return {
+    readSlice: async (sid, range) => {
+      const parsed = parseSliceId(sid);
+      if (!parsed) return `ERROR: Invalid slice ID.`;
+      const raw = await readRaw(
+        `memory/episodic/slices/${parsed.y}/${parsed.m}/${parsed.d}/${parsed.hm}/timeline/core.md`,
+      );
+      if (range && range.type === "last") {
+        const { turns } = parseTurns(raw);
+        const n = range.count ?? 3;
+        return turns
+          .slice(-n)
+          .map((t) => `${t.header}\n${t.content}`)
+          .join("\n");
+      }
+      return raw;
+    },
+    readAgentTimeline: async (sid) => {
+      const parsed = parseSliceId(sid);
+      if (!parsed) return `(invalid slice: ${sid})`;
+      return readRaw(
+        `memory/episodic/slices/${parsed.y}/${parsed.m}/${parsed.d}/${parsed.hm}/timeline/agent.md`,
+      ).catch(() => `(agent.md not found: ${sid})`);
+    },
+    readPreviously: async (sid) => {
+      const parsed = parseSliceId(sid);
+      if (!parsed) return `(invalid slice: ${sid})`;
+      return readRaw(
+        `memory/episodic/slices/${parsed.y}/${parsed.m}/${parsed.d}/${parsed.hm}/previously.md`,
+      ).catch(() => `(previously not found: ${sid})`);
+    },
+  };
+}
 
 /**
  * Detect when the client has lost conversational context (page refresh,
@@ -128,14 +244,8 @@ async function readMostRecentClosedSlice(): Promise<PrevSliceRef | null> {
 export async function housekeeping(input: TurnInput): Promise<HousekeepingResult> {
   "use step";
 
-  // ── Phase: UI spinner ──────────────────────────────────────────────────
-  const phaseWriter0 = getWritable<UIMessageChunk>().getWriter();
-  await phaseWriter0.write({
-    type: "data-phase" as `data-${string}`,
-    id: "phase-prepare",
-    data: { phase: "slicing", running: true },
-  } as UIMessageChunk);
-  phaseWriter0.releaseLock();
+  // ── Phase: slice — manage the time slice (recover/close/create) ─────
+  await emitPhase("slice", true);
 
   const { config, clientTimezone, lastUserMessage, modelMessages } = input;
   const silenceMs = config.slicing.timeSilenceMinutes * 60 * 1000;
@@ -167,6 +277,8 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   }
 
   // ── 2. One worker-model analyze: message tags + semantic hint + (on close) marking ──
+  // Phase: tags — one cheap worker-model pass extracts topics from the message.
+  await emitPhase("tags", true);
   const existingStrands = await readStrands();
   const analysis = await analyzeTurn({
     model: input.workerModel,
@@ -189,7 +301,31 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
     prevSlice = toPrevRef(diskSlice);
     await closeSlice(diskSlice, closeSignal);
     console.log(`[Episodic] Closed slice: ${diskSlice.slice_id} (${closeSignal})`);
+    // v0.7: signal the client (which fires the per-slice evolution) on EVERY
+    // slice close — this is the one evolution per slice boundary. Trivial
+    // slices are fine to check: the Previously Agent self-gates ("no new info →
+    // output the card verbatim") and the memory_worthy→tag gate already keeps
+    // trivial turns from minting tags. Always firing keeps the auto-evolution
+    // visibly alive instead of silently going quiet.
+    await emitPhase("slice-closed", false, [diskSlice.slice_id]);
     await generateGlobalTimeline();
+
+    // Strand consolidation (opportunistic, on slice close): prune single-use
+    // stale strands deterministically; when the index is large enough, ask the
+    // worker model for a from→to merge map to collapse semantic duplicates
+    // (typos / same-concept-two-names) that deterministic normalization can't
+    // catch. Writes land in the current batch → one commit with the close.
+    const strandsBefore = await readStrands();
+    const { strands: consolidated, pruned, merges, llmPassSkipped } =
+      await consolidateStrands(strandsBefore, input.workerModel);
+    if (pruned.length > 0 || merges.length > 0) {
+      await fsWriteFile(getStrandsPath(), serializeStrands(consolidated));
+      console.log(
+        `[Strands] Consolidation: pruned ${pruned.length}, merged ${merges.length}` +
+        (llmPassSkipped ? " (llm skipped)" : ""),
+      );
+    }
+
     slice = createSlice(lastUserMessage, clientTimezone, input.turnId);
   } else if (diskSlice && diskSlice.status === "active") {
     slice = diskSlice;
@@ -200,12 +336,37 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   }
 
   // ── 4. Apply the current message's tags to the active slice ──────────
-  if (analysis.messageTags.length > 0) {
-    for (const tag of analysis.messageTags) {
-      if (!slice.tags.includes(tag)) slice.tags.push(tag);
+  // Merge-first at the slice boundary too: `reuse` tags must resolve to an
+  // existing strand (a hallucinated name is dropped, never minted); `create`
+  // tags are folded into an existing strand via normalized-match before a new
+  // key is ever allowed. This keeps a slice's accumulated tags from inventing
+  // near-duplicate strands mid-slice (they'd otherwise hit strands.json before
+  // the close-time cleaning replaces them).
+  const appliedTags: string[] = [];
+  // Semantic gate: trivial turns (greetings, "继续", thanks, small talk) carry
+  // no durable info — skip tag extraction and strand weaving entirely, so
+  // strands.json stays clean instead of accruing one-off noise.
+  if (analysis.memoryWorthy) {
+    for (const tag of analysis.messageTags.reuse) {
+      const target = findMatchingStrand(existingStrands, tag);
+      if (!target) continue; // not an existing topic — don't mint from a reuse slot
+      if (!slice.tags.includes(target)) {
+        slice.tags.push(target);
+        appliedTags.push(target);
+      }
     }
-    console.log(`[FlashTags] Extracted: ${analysis.messageTags.join(", ")}`);
+    for (const { tag } of analysis.messageTags.create) {
+      const target = findMatchingStrand(existingStrands, tag) ?? tag;
+      if (!slice.tags.includes(target)) {
+        slice.tags.push(target);
+        appliedTags.push(target);
+      }
+    }
   }
+  if (appliedTags.length > 0) {
+    console.log(`[FlashTags] Applied: ${appliedTags.join(", ")}`);
+  }
+  await emitPhase("tags", false, appliedTags);
 
   // ── 5. Append user turn ───────────────────────────────────────────────
   const isNewSlice =
@@ -217,6 +378,58 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
       content: lastUserMessage,
       turnId: input.turnId,
     });
+  }
+  await emitPhase("slice", false, [slice.slice_id]);
+
+  // ── Phase: context — load the user profile (previously + identity) ───
+  await emitPhase("context", true);
+
+  // ── 4b. Synchronous card evolution (v0.7b) ─────────────────────────────
+  // Two triggers, both detected here: a slice closed this turn, or the user
+  // explicitly asked to record/evolve (analyzeTurn's memoryUpdate). The run is
+  // INLINE (blocking) so the new slice's card is the freshly-evolved one.
+  // Progress streams to the client; the result is returned for the agent to
+  // acknowledge. A trivial closed slice (greetings, no tags, ≤ 2 turns) is
+  // skipped so a no-op boundary doesn't block on a wasted evolution.
+  // Demo mode is skipped entirely — it is a read-only preview and must never
+  // write the real card (the old /api/evolution route also returned skipped).
+  let evolutionResult: EvolutionResult | undefined;
+  const explicitUpdate = analysis.memoryUpdate;
+  if (!input.useDemo && closeSignal && diskSlice) {
+    const trivialClose =
+      diskSlice.tags.length === 0 && diskSlice.turns.length <= 2;
+    if (!trivialClose) {
+      evolutionResult = await runCardEvolution({
+        model: input.workerModel,
+        sliceId: diskSlice.slice_id,
+        closedSliceId: diskSlice.slice_id,
+        recentTurns: diskSlice.turns.map((t) => ({ role: t.role, content: t.content })),
+        currentSliceTags: diskSlice.tags,
+        signal: "slice_closed",
+        focus: explicitUpdate?.content,
+        readers: buildCardReaders(input),
+        onProgress: emitEvolutionProgress,
+      });
+      await emitEvolutionResult(evolutionResult);
+      console.log(
+        `[Evolution] inline slice-close: changed=${evolutionResult.changed}, droppedRecent=${evolutionResult.droppedRecent}`,
+      );
+    }
+  } else if (explicitUpdate && slice) {
+    evolutionResult = await runCardEvolution({
+      model: input.workerModel,
+      sliceId: slice.slice_id,
+      recentTurns: input.recentTurns,
+      currentSliceTags: slice.tags,
+      focus: explicitUpdate.content,
+      signal: "new_observation",
+      readers: buildCardReaders(input),
+      onProgress: emitEvolutionProgress,
+    });
+    await emitEvolutionResult(evolutionResult);
+    console.log(
+      `[Evolution] inline user request: changed=${evolutionResult.changed}`,
+    );
   }
 
   // ── 4. Ensure previously.md (pure copy forward, no decay) ────────────
@@ -232,9 +445,11 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   // (which reads strands.json) and opening the UI stream.
   await flushBatch(`Turn ${input.turnId} — housekeeping`);
 
-  // ── 6. Build strands menu ────────────────────────────────────────────
+  // ── Phase: strands — weave the memory-topic index ────────────────────
+  await emitPhase("strands", true);
   const strands = await readStrands();
   const strandsMenu = buildStrandsMenu(strands);
+  await emitPhase("strands", false, [`${Object.keys(strands).length} strands`]);
 
   // ── 6b. Continuity + turn priming + identity ─────────────────────────
   // Continuity source: a slice we closed this call (its `end` is exact), else
@@ -258,6 +473,7 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
     excludeSliceId: slice.slice_id,
     semanticHint: analysis.semanticHint,
     intent: analysis.intent,
+    emotionalSignal: analysis.emotionalSignal,
   });
 
   // The agent's constitution (SOUL + who-you're-assisting + DIRECTIVES),
@@ -265,18 +481,22 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   const profile = parseIdentityFromPreviously(previouslyContent);
   const identityPrompt = buildAgentIdentityPrompt(profile);
 
+  await emitPhase("context", false, [`continuity: ${continuity.tier}`]);
+
   // ── 7. Open UI stream ────────────────────────────────────────────────
   const writer = getWritable<UIMessageChunk>().getWriter();
   await writer.write({ type: "start" } as UIMessageChunk);
   await writer.write({ type: "start-step" } as UIMessageChunk);
-  await writer.write({
-    type: "data-phase" as `data-${string}`,
-    id: "phase-prepare",
-    data: { phase: "slicing", running: false },
-  } as UIMessageChunk);
   writer.releaseLock();
 
-  return { slice, previouslyContent, strandsMenu, turnPriming, identityPrompt };
+  return {
+    slice,
+    previouslyContent,
+    strandsMenu,
+    turnPriming,
+    identityPrompt,
+    ...(evolutionResult ? { evolutionResult } : {}),
+  };
 }
 
 // ─── Step 2: Finalize turn ───────────────────────────────────────────────
@@ -301,7 +521,9 @@ export async function finalizeTurn(
   // ── Begin batch: all writes below go into ONE git commit ──────────────
   startBatch();
 
-  // 1. Episodic persistence (the old onFinish branches).
+  // 1. Episodic persistence (the old onFinish branches). `outcome.text` is the
+  // agent's FULL assistant text for the turn (intermediate + final), so the
+  // stored slice keeps both ends; tool calls are not preserved.
   if (outcome.finishReason === "stop") {
     appendTurn(slice, {
       timestamp: new Date().toISOString(),
@@ -359,9 +581,25 @@ export async function finalizeTurn(
   // Commit all queued writes as one commit before closing the stream.
   await flushBatch(`Turn ${turnId} — agent response`);
 
-  // 3. Close the UI stream.
+  // 3. Close the UI stream. Emit the terminal turn-status chunk just before
+  // the lifecycle tail so the client learns the outcome from the live stream.
+  // A reconnecting client replays the stream from the last-seen index and
+  // derives the status from the final assistant message.
+  const status = deriveTurnStatus(outcome);
   const writable = getWritable<UIMessageChunk>();
   const writer = writable.getWriter();
+  await writer.write({
+    type: "data-turn-status",
+    id: "turn-status-terminal",
+    data: {
+      status,
+      turnId,
+      updatedAt: new Date().toISOString(),
+      // Client-visible explanation for terminal/model failures — lets the UI
+      // say WHY the turn ended instead of failing silently.
+      ...(outcome.error ? { error: outcome.error } : {}),
+    },
+  } as UIMessageChunk);
   await writer.write({ type: "finish-step" } as UIMessageChunk);
   await writer.write({ type: "finish" } as UIMessageChunk);
   writer.releaseLock();

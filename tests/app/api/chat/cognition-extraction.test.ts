@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { extractCognition } from "@/app/api/chat/turn-workflow";
+import { extractCognition, extractAllAssistantText } from "@/app/api/chat/turn-workflow";
 import type { ModelMessage } from "ai";
 
 // ─── Types ──────────────────────────────────────────────────────────────
@@ -222,5 +222,62 @@ describe("extractCognition", () => {
     const tc2Idx = result.indexOf("`readMemory`");
     expect(tc1Idx).toBeGreaterThan(-1);
     expect(tc2Idx).toBeGreaterThan(tc1Idx);
+  });
+});
+
+// ─── extractAllAssistantText (full text snapshot for core.md) ───────────
+
+describe("extractAllAssistantText", () => {
+  function assistant(
+    parts: Array<{ type: string; text?: string; [key: string]: unknown }> | string,
+  ): ModelMessage {
+    return { role: "assistant", content: parts } as unknown as ModelMessage;
+  }
+
+  it("returns an empty string when there are no assistant messages", () => {
+    expect(extractAllAssistantText([])).toBe("");
+  });
+
+  it("keeps both the intermediate and final text, dropping tool calls in between", () => {
+    const messages: ModelMessage[] = [
+      assistant([{ type: "text", text: "让我先查一下什么是苹果。" }]),
+      assistant([
+        { type: "tool-call", toolCallId: "tc1", toolName: "webSearch", input: { query: "苹果" } },
+      ]),
+      assistant("苹果是一种水果，蔷薇科植物。"),
+    ];
+    const result = extractAllAssistantText(messages);
+    expect(result).toBe("让我先查一下什么是苹果。\n\n苹果是一种水果，蔷薇科植物。");
+    // Tool calls are not preserved.
+    expect(result).not.toContain("webSearch");
+  });
+
+  it("joins text parts in order within a single multi-part message", () => {
+    const messages: ModelMessage[] = [
+      assistant([
+        { type: "text", text: "让我查一下。" },
+        { type: "tool-call", toolCallId: "tc1", toolName: "recall", input: { query: "x" } },
+        { type: "text", text: "查到了，答案是 42。" },
+      ]),
+    ];
+    const result = extractAllAssistantText(messages);
+    expect(result).toBe("让我查一下。\n\n查到了，答案是 42。");
+  });
+
+  it("ignores user and tool messages", () => {
+    const messages: ModelMessage[] = [
+      { role: "user", content: "what is an apple" } as ModelMessage,
+      assistant("中间话"),
+      msg("tool", [
+        { type: "tool-result", toolCallId: "tc1", toolName: "recall", output: "x", isError: false },
+      ]),
+      assistant("最终回答"),
+    ];
+    expect(extractAllAssistantText(messages)).toBe("中间话\n\n最终回答");
+  });
+
+  it("skips empty text parts", () => {
+    expect(extractAllAssistantText([assistant("")])).toBe("");
+    expect(extractAllAssistantText([assistant([{ type: "text", text: "   " }])])).toBe("");
   });
 });

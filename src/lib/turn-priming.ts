@@ -16,6 +16,30 @@
 import type { StrandIndex } from "@/lib/episodic";
 export type { StrandIndex } from "@/lib/episodic";
 
+// ─── Emotional register ───────────────────────────────────────────────────
+
+/**
+ * The dominant emotional register of a user message. The analyzer's read feeds
+ * the turn brief so the agent can match the user (humor with humor, warmth for
+ * distress) instead of staying stiffly analytical.
+ */
+export type EmotionalRegister =
+  | "neutral"
+  | "emotional"
+  | "humorous"
+  | "frustrated"
+  | "excited";
+
+/** The worker analyzer's read on the user's emotional state this turn. */
+export interface EmotionalSignal {
+  /** How much emotional weight the message carries. */
+  intensity: "none" | "light" | "strong";
+  /** The dominant register (normalized to "neutral" when absent). */
+  register: EmotionalRegister;
+  /** One short line on what the user is feeling and why ("" when neutral). */
+  note: string;
+}
+
 // ─── Types ────────────────────────────────────────────────────────────────
 
 /** A closed (or closing) previous slice — the continuity reference point. */
@@ -73,6 +97,12 @@ export interface PrimingInput {
    * from the housekeeping analyze call. Omitted when the call produced none.
    */
   intent?: { type: string; reason: string };
+  /**
+   * The worker analyzer's read on the user's emotional register this turn.
+   * When non-neutral, the brief instructs the agent to lead with support or
+   * match the user's register instead of staying purely analytical.
+   */
+  emotionalSignal?: EmotionalSignal;
 }
 
 // ─── Constants / helpers ─────────────────────────────────────────────────
@@ -344,6 +374,29 @@ export function buildTurnPriming(input: PrimingInput): string {
   if (input.intent?.type) {
     const reason = input.intent.reason ? ` — ${input.intent.reason}` : "";
     parts.push(`- Intent: ${input.intent.type}${reason}.`);
+  }
+
+  // Emotional register — the analyzer's read on the user's state this turn.
+  // Rendered only when there is something to act on (non-neutral intensity or
+  // register): the guidance tells the agent to lead with support / match the
+  // user's register before analysis. A purely neutral turn stays silent.
+  const emo = input.emotionalSignal;
+  if (emo && (emo.intensity !== "none" || emo.register !== "neutral")) {
+    const reg =
+      emo.register && emo.register !== "neutral"
+        ? ` · register: ${emo.register}`
+        : "";
+    const hint = emo.note ? ` — ${emo.note}` : "";
+    parts.push(`- Emotional register: ${emo.intensity}${reg}${hint}.`);
+    if (emo.intensity === "strong") {
+      parts.push(
+        "The user is emotionally engaged — lead with acknowledgment and empathy before any analysis, and match their register (warmth for distress, genuine excitement for celebration). Analysis must serve the person, never read as fault-finding.",
+      );
+    } else {
+      parts.push(
+        "The user is in a light or playful register — respond in kind; keep any analysis light and match their tone rather than staying stiffly analytical.",
+      );
+    }
   }
 
   parts.push(`- Continuity: ${continuityLine(input.continuity)}`);

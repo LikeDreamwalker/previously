@@ -1,5 +1,6 @@
 "use client";
 
+import { memo } from "react";
 import type { UIMessage } from "ai";
 import { ChatMessage } from "./chat-message";
 import { LoadingTip } from "./loading-tip";
@@ -16,7 +17,7 @@ interface ChatSectionProps {
   isEvolutionTarget: (messageId: string) => boolean;
 }
 
-export function ChatSection({
+export const ChatSection = memo(function ChatSection({
   messages,
   isStreaming,
   isLoading,
@@ -31,9 +32,15 @@ export function ChatSection({
 
   return (
     <>
-      {messages.map((message) => (
+      {messages.map((message, index) => (
         <ChatMessage
-          key={message.id}
+          // Index-suffixed key: if a reconnect ever delivers a duplicated
+          // message id (the same turn written twice by concurrent streams),
+          // the key stays unique — React's duplicate-key reconciliation can
+          // otherwise loop into "Maximum update depth exceeded" (#185). The
+          // chat list is append-only, so id+index keys remain stable for the
+          // streaming in-place updates.
+          key={`${message.id}-${index}`}
           message={message}
           isStreaming={message.id === lastMessage?.id && isStreaming}
           startedAt={
@@ -66,4 +73,4 @@ export function ChatSection({
       )}
     </>
   );
-}
+});

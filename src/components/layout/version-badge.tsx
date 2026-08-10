@@ -53,7 +53,7 @@ export function VersionBadge() {
               <Link
                 href="https://github.com/previously-lab/agent/releases"
                 target="_blank"
-                className="flex items-center gap-1.5 text-blue-500 hover:underline w-full"
+                className="flex items-center gap-1.5 text-brand-600 dark:text-brand-400 hover:underline w-full"
               >
                 View release notes
                 <ExternalLink className="h-3 w-3" />
@@ -61,7 +61,7 @@ export function VersionBadge() {
               <Link
                 href={info.docsUrl}
                 target="_blank"
-                className="flex items-center gap-1.5 text-blue-500 hover:underline w-full"
+                className="flex items-center gap-1.5 text-brand-600 dark:text-brand-400 hover:underline w-full"
               >
                 How to sync
                 <ExternalLink className="h-3 w-3" />

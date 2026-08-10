@@ -18,13 +18,18 @@ const episodic = vi.hoisted(() => ({
   saveSliceSnapshot: vi.fn(async () => {}),
   ensureIndexEntries: vi.fn(async () => {}),
   readPreviously: vi.fn(async () => ""),
+  writePreviously: vi.fn(async () => {}),
+  readCurrentPreviously: vi.fn(async () => ""),
+  writeCurrentPreviously: vi.fn(async () => {}),
   writeAgentTimeline: vi.fn(async () => ({ path: "", created: false })),
   ensurePreviously: vi.fn(async (sliceId: string) => `# Previously On\n\n_Active slice: ${sliceId} | Updated: ..._\n`),
   generateGlobalTimeline: vi.fn(async () => "mock timeline"),
   readStrands: vi.fn(async () => ({})),
   analyzeTurn: vi.fn(async () => ({
-    messageTags: [],
+    messageTags: { reuse: [], create: [] },
     semanticHint: { strands: [], reason: "" },
+    memoryWorthy: true,
+    emotionalSignal: { intensity: "none", register: "neutral", note: "" },
   })),
 }));
 
@@ -152,7 +157,28 @@ describe("housekeeping step", () => {
     expect(episodic.saveSliceSnapshot).toHaveBeenCalledWith(slice);
     expect(episodic.ensureIndexEntries).toHaveBeenCalledWith(slice);
     expect(episodic.appendTurn).not.toHaveBeenCalled();
-    expect(workflowMock.written.map((c) => c.type)).toEqual(["data-phase", "start", "start-step", "data-phase"]);
+
+    // 8 compact housekeeping phases (slice/tags/context/strands × running+done)
+    // then the stream lifecycle chunks.
+    expect(workflowMock.written.map((c) => c.type)).toEqual([
+      ...Array(8).fill("data-phase"),
+      "start",
+      "start-step",
+    ]);
+    const phases = workflowMock.written
+      .filter((c) => c.type === "data-phase")
+      .map((c) => (c.data as { phase: string; running: boolean; compact?: boolean }));
+    expect(phases.map((p) => `${p.phase}:${p.running}`)).toEqual([
+      "slice:true",
+      "tags:true",
+      "tags:false",
+      "slice:false",
+      "context:true",
+      "strands:true",
+      "strands:false",
+      "context:false",
+    ]);
+    expect(phases.every((p) => p.compact === true)).toBe(true);
   });
 
   it("restores an active slice and appends the new user turn", async () => {

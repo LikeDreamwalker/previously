@@ -49,11 +49,11 @@ demo: strands-index
 
 ## Derived, Not Authored
 
-Strands have no separate authoring step. They are **derived entirely** from the `tags` array in each slice's YAML frontmatter. Tags are maintained per-round by Flash (the fast model) as part of its unified metadata update — it reads the conversation, classifies the topic, and writes the tags. Those tags become strands automatically.
+Strands have no separate authoring step. They are **derived entirely** from the `tags` array in each slice's YAML frontmatter. Tags are maintained per-round by the worker model as part of its housekeeping update — it reads the conversation, classifies the topic, and writes the tags. Those tags become strands automatically.
 
 The cycle is:
 
-1. **Flash runs metadata maintenance** → writes `tags` into the active slice's frontmatter
+1. **The worker runs metadata maintenance** → writes `tags` into the active slice's frontmatter
 2. **The slice is persisted** (either closed after 30 min of silence, or snapshotted mid-conversation)
 3. **`updateStrands(slice)` runs** → reads `strands.json`, merges each tag as a key, appends the slice's relative path (deduplicated), writes back
 
@@ -86,21 +86,21 @@ The read/write path goes through `fsReadFile`/`fsWriteFile` wrappers that transp
 
 ## What Strands Are Not (Yet)
 
-As of v0.1.0 the strand index is **write-only**. It is built and maintained, but no recall code programmatically reads `strands.json` to drive Flash's recall scan. The only path that surfaces strands to the model is a prompt hint added to the Pro context:
+As of v0.7 the strand index is **write-only**. It is built and maintained, but no recall code programmatically reads `strands.json` to drive the worker's recall scan. The only path that surfaces strands to the model is a prompt hint added to the main model's context:
 
-> "Use readMemory to explore `memory/episodic/strands.json` if deeper context is needed."
+> "Use readStrand to explore `memory/episodic/strands.json` if deeper context is needed."
 
-This means the strand index is accurate and up to date, but it is not yet queried automatically. Pro must choose to open the file via the `readMemory` tool. The system trusts Pro to navigate the index, pick relevant strands, and follow their paths to the actual slice files.
+This means the strand index is accurate and up to date, but it is not yet queried automatically. The main model must choose to open the file via the `readStrand` tool. The system trusts the main model to navigate the index, pick relevant strands, and follow their paths to the actual slice files.
 
 A richer **first-class strand** — one with its own rolling summary, its own metadata, and direct integration into the recall pipeline — is an explicit future milestone. The current strand is the thin, lossless index only: the map from keyword to slice paths, nothing more.
 
 ## The Only Current Artifact
 
-The only code artifact of topic-based indexing today is `suggested_topics` in the Flash model's output (`flash.ts`), which has no downstream consumer. Strands are the sole production semantic index. Topic-based indexing — richer than keyword paths, with its own summaries and metadata — is on the roadmap as a future milestone.
+The only code artifact of topic-based indexing today is a `suggested_topics` field in the worker model's output, which has no downstream consumer. Strands are the sole production semantic index. Topic-based indexing — richer than keyword paths, with its own summaries and metadata — is on the roadmap as a future milestone.
 
 ## Related
 
 - [Slices](/content/docs/en/slices) — the episodic counterpart: what happened, by time
 - [Timeline](/content/docs/en/timeline) — the vertical view of slices across days and months
-- [Recall](/content/docs/en/recall) — how Flash and Pro navigate memory
+- [Recall](/content/docs/en/recall) — how the worker and main model navigate memory
 - [Memory Model](/content/docs/en/memory-model) — the three-tier architecture

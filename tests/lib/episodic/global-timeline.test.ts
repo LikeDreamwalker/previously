@@ -186,6 +186,39 @@ describe("generateGlobalTimeline", () => {
     expect(matches).toHaveLength(1);
   });
 
+  it("excludes active slices — the ongoing conversation is not a past memory", async () => {
+    mockReadSliceIndex.mockReset();
+    mockReadSliceIndex.mockResolvedValue([
+      {
+        id: "2026-08-05-1644",
+        focus: "active session",
+        summary: "discussing apples right now",
+        tags: ["apple"],
+        status: "active",
+        start: "2026-08-05T16:44:00.000Z",
+        open_loops: [],
+        decisions: [],
+      },
+      {
+        id: "2026-07-24-1500",
+        focus: "past session",
+        summary: "shopping list",
+        tags: ["groceries"],
+        status: "closed",
+        start: "2026-07-24T15:00:00.000Z",
+        open_loops: [],
+        decisions: [],
+      },
+    ]);
+    mockFsWriteFile.mockReset();
+    mockFsWriteFile.mockResolvedValue({ path: "", created: false });
+
+    const result = await generateGlobalTimeline();
+    expect(result).toContain("## 2026-07-24-1500");
+    expect(result).not.toContain("## 2026-08-05-1644");
+    expect(result).not.toContain("discussing apples");
+  });
+
   it("sorts entries newest first", async () => {
     const older = {
       id: "2026-07-24-1400",

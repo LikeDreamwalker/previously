@@ -34,11 +34,11 @@ The threshold is hardcoded in `src/lib/episodic/slicer.ts`:
 export const TIME_SILENCE_THRESHOLD_MS = 30 * 60 * 1000;
 ```
 
-The function `checkTimeSilence()` compares elapsed milliseconds against that threshold. There is no capacity limit, no topic-shift rule, and no Flash continuity check. Capacity checks and Flash continuity checks were removed during M8 — time-only slicing is the entire story.
+The function `checkTimeSilence()` compares elapsed milliseconds against that threshold. There is no capacity limit, no topic-shift rule, and no worker continuity check. Capacity checks and worker continuity checks were removed during M8 — time-only slicing is the entire story.
 
 ## Is it production-ready?
 
-No. Previously is experimental v0.1.0. The README carries an "experimental" status badge and explicitly states it is "not yet ready for personal or production use." The `package.json` version is `0.1.0`.
+No. Previously is experimental (v0.7). The README carries an "experimental" status badge and explicitly states it is "not yet ready for personal or production use."
 
 It is a personal deployment, not a SaaS product. The author commits to long-term maintenance, but the project is in active early development. Expect rough edges, breaking changes, and features still on the roadmap.
 
@@ -52,7 +52,7 @@ The project's own convention (described in `CLAUDE.md`) co-locates code and data
 
 Two cost centers:
 
-- **LLM API usage** — Previously runs on your own API keys (DeepSeek and/or Anthropic). The two-tier architecture (Flash for fast recall scans, Pro for deep reasoning) is cost-motivated: cheap passes handle the common case, expensive reasoning is reserved for when it matters.
+- **LLM API usage** — Previously runs on your own API keys (DeepSeek and/or Anthropic). The two-tier architecture (a worker model for fast recall scans, the main model for deep reasoning) is cost-motivated: cheap passes handle the common case, expensive reasoning is reserved for when it matters.
 - **Hosting** — Vercel Pro (the deploy button targets Vercel). Vercel's free tier may cover light usage, but sustained use will likely need a paid plan. GitHub repo storage is effectively free.
 
 Previously charges no subscription, no per-seat fee, and no usage markup. You supply the infrastructure and the keys; the project is the orchestration layer in between.

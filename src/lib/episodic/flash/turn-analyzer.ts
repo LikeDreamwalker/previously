@@ -19,6 +19,7 @@ import { createModel } from "@/lib/models/provider";
 import { workerProviderOptions } from "@/lib/models/worker";
 import type { ModelConfig } from "@/lib/models/registry";
 import type { EmotionalTone, Turn } from "@/lib/episodic/types";
+import type { EmotionalSignal } from "@/lib/turn-priming";
 
 export interface SemanticHint {
   strands: string[];
@@ -43,11 +44,46 @@ export const INTENT_TYPES = [
 ] as const;
 export type TurnIntent = (typeof INTENT_TYPES)[number];
 
+export interface NewTagProposal {
+  tag: string;
+  /** Why none of the existing topics covers this. */
+  reason: string;
+}
+
+/** Best-fit card section for an explicit memory update. */
+export const CARD_SECTIONS = ["identity", "profile", "recent", "self_model"] as const;
+export type CardSection = (typeof CARD_SECTIONS)[number];
+
 export interface TurnAnalysis {
-  messageTags: string[];
+  /**
+   * Merge-first tags: `reuse` are existing strand names picked verbatim from
+   * the provided list; `create` are genuinely new durable topics (with a
+   * reason). The engineering layer folds `create` into existing strands via
+   * normalized-match before ever minting a new key.
+   */
+  messageTags: { reuse: string[]; create: NewTagProposal[] };
   semanticHint: SemanticHint;
   /** The user's intent — what they're trying to do this turn. */
   intent?: { type: TurnIntent; reason: string };
+  /**
+   * Whether this turn holds durable information worth persisting. False for
+   * trivial turns (greetings / "继续" / thanks) — the engineering layer then
+   * skips tag extraction and strand writes.
+   */
+  memoryWorthy: boolean;
+  /**
+   * The user's emotional register this turn — how emotionally weighted the
+   * message is and its dominant register (distress, humor, excitement, …).
+   * The main agent reads it from the turn brief to lead with support or match
+   * the user's register instead of staying purely analytical. Always present;
+   * defaults to neutral on analysis failure.
+   */
+  emotionalSignal: EmotionalSignal;
+  /**
+   * Present only when the user EXPLICITLY asked to record/evolve ("记住：…",
+   * "自进化", "更新前情提要"). Carries the exact content to fold into the card.
+   */
+  memoryUpdate?: { content: string; section?: CardSection };
   closedMarking?: ClosedMarking;
 }
 
@@ -62,9 +98,33 @@ export interface AnalyzeTurnInput {
 
 const analyzeSchema = z.object({
   message_tags: z
-    .array(z.string())
-    .max(5)
-    .describe("0-5 keyword tags for the current message."),
+    .object({
+      reuse: z
+        .array(z.string())
+        .max(5)
+        .describe(
+          "Existing topic names (from the provided list) this message relates to, " +
+          "picked verbatim. Prefer reuse over create — merge, don't invent.",
+        ),
+      create: z
+        .array(
+          z.object({
+            tag: z
+              .string()
+              .describe(
+                "A NEW durable/general topic (e.g. work area, life area, project, company, " +
+                "financing, health, an emotional thread) ONLY when no existing topic " +
+                "covers this message. Never an ephemeral one-off event.",
+              ),
+            reason: z
+              .string()
+              .describe("One line: why none of the existing topics covers this."),
+          }),
+        )
+        .max(3)
+        .describe("Genuinely new topics only; empty when reuse suffices."),
+    })
+    .describe("Merge-first tags for the current message: reuse existing topics, create only when needed."),
   semantic_hint: z.object({
     strands: z
       .array(z.string())
@@ -76,6 +136,60 @@ const analyzeSchema = z.object({
     type: z.enum(INTENT_TYPES).describe("The user's intent for this turn."),
     reason: z.string().describe("One line: what the user is trying to do."),
   }),
+  memory_worthy: z.boolean().describe(
+    "Whether this turn contains durable, persistable information (a new fact about the user, " +
+    "a preference, a correction, or a substantive exchange). Trivial turns — greetings, " +
+    "acknowledgments, 'continue', 'ok', thanks, small talk — are false. Controls whether tags " +
+    "are extracted and memory evolves.",
+  ),
+  memory_update: z
+    .object({
+      content: z.string().describe(
+        "The EXACT durable fact/preference the user asked to record, in English — third person " +
+        "about the user ('User prefers…'), first person about the agent ('Always summarize before " +
+        "answering').",
+      ),
+      section: z
+        .enum(CARD_SECTIONS)
+        .optional()
+        .describe(
+          "Best-fit card section: identity | profile | recent | self_model. Omit when unsure.",
+        ),
+    })
+    .optional()
+    .describe(
+      "Set ONLY when the user EXPLICITLY asked to record something or run self-evolution " +
+      "('记住：…', '自进化', '更新前情提要', 'record this'). Extract the exact content. Omit otherwise.",
+    ),
+  emotional_signal: z
+    .object({
+      intensity: z
+        .enum(["none", "light", "strong"])
+        .describe(
+          "How much emotional weight this message carries. none = purely informational. " +
+          "light = mild feeling (small talk, light humor, casual sharing). " +
+          "strong = the user is emotionally engaged — frustrated, upset, vulnerable, " +
+          "celebrating, seeking support, or sharing something personally significant.",
+        ),
+      register: z
+        .enum(["neutral", "emotional", "humorous", "frustrated", "excited"])
+        .optional()
+        .describe(
+          "The dominant emotional register, when one is present. emotional = sharing feelings / " +
+          "seeking support; humorous = joking, playful, sarcastic; frustrated = annoyed or distressed; " +
+          "excited = happy, proud, celebrating. Omit or 'neutral' when the message is emotionally neutral.",
+        ),
+      note: z
+        .string()
+        .describe(
+          "One short line: what the user is feeling and why — a hint for the agent's brief. Empty string when neutral.",
+        ),
+    })
+    .describe(
+      "The user's emotional register for the CURRENT message — how emotionally weighted it is and its " +
+      "dominant register. The agent uses this to lead with support or match register instead of staying " +
+      "purely analytical.",
+    ),
   closed_marking: z
     .object({
       focus: z.string().describe("One sentence: what this session was about."),
@@ -106,7 +220,7 @@ function buildPrompt(input: AnalyzeTurnInput): string {
   const closingSection = input.closingSlice
     ? `
 
-## Task 4 — Mark the closed slice
+## Task 6 — Mark the closed slice
 
 A time slice just closed. Summarize it so future recall can understand it at a glance.
 
@@ -128,9 +242,13 @@ Return closed_marking with:
 
 Message: "${input.userMessage.slice(0, 1000)}"
 
-Existing topics (reuse when semantically equivalent, in any language): ${existing}
+Existing topics (pick from these FIRST — they are the durable memory index): ${existing}
 
-Return message_tags: 0-5 lowercase keyword tags, 1-3 words each, substantive topics only (no greetings/filler).
+Return message_tags with TWO parts:
+- reuse: existing topic names from the list above that this message relates to. Pick VERBATIM from the list. Prefer reuse over create — the same concept must never gain a second name.
+- create: a NEW durable/general topic ONLY when no existing topic covers this message. Durable = a work/life area, a project, a company, financing, health, a recurring emotional thread. NEVER an ephemeral one-off event ("dreamt", "hungover", "today's errand"). Max 3, each with a one-line reason.
+
+Merge-first rule: reuse > create. If in doubt, reuse an existing topic rather than minting a new one.
 
 ## Task 2 — Semantic hint for the agent
 
@@ -140,12 +258,33 @@ Return semantic_hint: { strands: [...], reason: "..." }
 ## Task 3 — Classify the user's intent
 
 What is the user trying to do? Pick the single best label and give a one-line reason.
-Return intent: { type: "code_debug" | "code_write" | "explain" | "chat" | "review" | "clarify", reason: "..." }${closingSection}`;
+Return intent: { type: "code_debug" | "code_write" | "explain" | "chat" | "review" | "clarify", reason: "..." }
+
+## Task 4 — Judge whether this turn is worth remembering
+
+Is this a substantive exchange that should update memory (a new fact about the user, a preference, a correction, or a real discussion)? Or is it trivial — a greeting, acknowledgment, "继续", "ok", thanks, or small talk?
+
+Return memory_worthy: true only when the turn contains durable information worth tagging and evolving. Trivial turns are false.
+
+If the user EXPLICITLY asked to record something or run self-evolution ("记住：…", "自进化", "更新前情提要", "record this") — regardless of memory_worthy — ALSO return memory_update with the exact content (English) + the best-fit card section. Omit memory_update otherwise.
+
+## Task 5 — Read the emotional register
+
+What is the user's emotional state in this message, if any? The agent reads this to know when to lead with support or match the user's register instead of staying purely analytical.
+
+Return emotional_signal with:
+- intensity: none | light | strong — how much emotional weight the message carries (strong = frustrated, upset, vulnerable, celebrating, seeking support, a significant personal matter; light = light humor or casual sharing; none = purely informational)
+- register: neutral | emotional | humorous | frustrated | excited — the dominant register; humorous covers joking / playful / sarcastic. Omit or "neutral" when none.
+- note: one short line on what the user is feeling and why (empty when neutral).${closingSection}`;
 }
 
 const EMPTY: TurnAnalysis = {
-  messageTags: [],
+  messageTags: { reuse: [], create: [] },
   semanticHint: { strands: [], reason: "" },
+  // Conservative on failure: don't block tag extraction (empty tags are a
+  // no-op anyway), so an analyzer outage never silently freezes memory writes.
+  memoryWorthy: true,
+  emotionalSignal: { intensity: "none", register: "neutral", note: "" },
 };
 
 export async function analyzeTurn(input: AnalyzeTurnInput): Promise<TurnAnalysis> {
@@ -172,7 +311,13 @@ export async function analyzeTurn(input: AnalyzeTurnInput): Promise<TurnAnalysis
 
     const d = parsed.data;
     return {
-      messageTags: d.message_tags.slice(0, 5),
+      messageTags: {
+        reuse: d.message_tags.reuse.slice(0, 5),
+        create: d.message_tags.create
+          .slice(0, 3)
+          .filter((c) => typeof c.tag === "string" && c.tag.trim().length > 0)
+          .map((c) => ({ tag: c.tag, reason: c.reason })),
+      },
       semanticHint: {
         strands: d.semantic_hint.strands
           .slice(0, 5)
@@ -181,6 +326,26 @@ export async function analyzeTurn(input: AnalyzeTurnInput): Promise<TurnAnalysis
       },
       intent: d.intent
         ? { type: d.intent.type, reason: d.intent.reason }
+        : undefined,
+      memoryWorthy: d.memory_worthy,
+      emotionalSignal: {
+        intensity: ["none", "light", "strong"].includes(d.emotional_signal.intensity)
+          ? (d.emotional_signal.intensity as EmotionalSignal["intensity"])
+          : "none",
+        register:
+          d.emotional_signal.register &&
+          ["neutral", "emotional", "humorous", "frustrated", "excited"].includes(
+            d.emotional_signal.register,
+          )
+            ? (d.emotional_signal.register as EmotionalSignal["register"])
+            : "neutral",
+        note: typeof d.emotional_signal.note === "string" ? d.emotional_signal.note : "",
+      },
+      memoryUpdate: d.memory_update
+        ? {
+            content: d.memory_update.content,
+            section: d.memory_update.section,
+          }
         : undefined,
       closedMarking: d.closed_marking
         ? {

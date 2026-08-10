@@ -5,7 +5,7 @@ import { motion, AnimatePresence } from "motion/react";
 import { cn } from "@/lib/utils";
 import { Card, CardContent } from "@/components/ui/card";
 import type { ToolRenderState } from "@/lib/chat/tool-state";
-import { Loader2, ChevronDown } from "lucide-react";
+import { Loader2, ChevronDown, CircleX, OctagonPause } from "lucide-react";
 
 interface PhaseIndicatorProps {
   /** "streaming" = thinking (typewriter + auto-fade). "static" = recall (manual expand). */
@@ -14,9 +14,17 @@ interface PhaseIndicatorProps {
   label: string;
   summary?: ReactNode;
   meta?: ReactNode;
+  /** Extra classes on the card container — used for brand-tier tint washes. */
+  className?: string;
   state: ToolRenderState;
   /** Only for streaming mode — the reasoning text that arrives in deltas. */
   streamingText?: string;
+  /**
+   * Tone of the streaming subtitle — "thinking" (dim mono, default) vs
+   * "answer" (primary color, normal weight) so a tool that streams its
+   * thinking then its written answer visibly transitions between the two.
+   */
+  subtitleTone?: "thinking" | "answer";
   /** Card content when expanded. */
   expandedContent?: ReactNode;
 }
@@ -34,11 +42,16 @@ export function PhaseIndicator({
   label,
   summary,
   meta,
+  className,
   state,
   streamingText,
+  subtitleTone = "thinking",
   expandedContent,
 }: PhaseIndicatorProps) {
   const isRunning = state.running;
+  const isError = Boolean(state.error);
+  const isInterrupted = state.interrupted;
+  const isDenied = state.denied;
   const hasExpandedDetails = hasRenderableContent(expandedContent);
   const [isExpanded, setIsExpanded] = useState(false);
   const [shouldRenderExpandedContent, setShouldRenderExpandedContent] =
@@ -165,16 +178,22 @@ export function PhaseIndicator({
 
   const isStreamingText = mode === "streaming" && isRunning && text.length > 0;
 
+  // NOTE: the motion.div deliberately has NO `layout` prop — framer-motion's
+  // FLIP projection could loop into "Maximum update depth exceeded" (#185)
+  // during streaming re-render bursts (reconnect replay / phase transitions).
+  // The expand/collapse animation is a CSS grid transition, not layout, so
+  // removing it is visually imperceptible.
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -6 }}
-      layout
       transition={{ duration: 0.25, ease: [0.25, 0.1, 0.25, 1.0] }}
       className={cn(
         "rounded-lg px-3 py-2.5",
         canToggle && "cursor-pointer transition-colors hover:bg-muted/30",
+        className,
       )}
       onClick={canToggle ? handleToggle : undefined}
       onKeyDown={
@@ -195,17 +214,39 @@ export function PhaseIndicator({
     >
       {/* Header row */}
       <div className="flex min-w-0 items-center gap-2">
-        {/* Icon */}
-        <span className="flex size-4 shrink-0 items-center justify-center text-brand">
+        {/* Icon — spinner while running, then error/interrupted states, then the caller's icon */}
+        <span
+          className={cn(
+            "flex size-4 shrink-0 items-center justify-center",
+            isError || isDenied
+              ? "text-red-500"
+              : isInterrupted
+                ? "text-yellow-600"
+                : "text-brand",
+          )}
+        >
           {isRunning ? (
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : isError || isDenied ? (
+            <CircleX className="h-3.5 w-3.5" />
+          ) : isInterrupted ? (
+            <OctagonPause className="h-3.5 w-3.5" />
           ) : (
             icon
           )}
         </span>
 
         {/* Label */}
-        <span className="min-w-0 truncate text-sm font-semibold text-foreground/90">
+        <span
+          className={cn(
+            "min-w-0 truncate text-sm font-semibold",
+            isError || isDenied
+              ? "text-red-500"
+              : isInterrupted
+                ? "text-yellow-600"
+                : "text-foreground/90",
+          )}
+        >
           {label}
         </span>
 
@@ -262,15 +303,22 @@ export function PhaseIndicator({
                   className="overflow-x-auto whitespace-nowrap"
                   style={{ scrollbarWidth: "none" }}
                 >
-                  <span className="text-xs font-mono text-muted-foreground">
+                  <span
+                    className={cn(
+                      "text-xs",
+                      subtitleTone === "answer"
+                        ? "text-foreground"
+                        : "font-mono text-muted-foreground",
+                    )}
+                  >
                     {currentLine}
                     {isStreamingText && (
-                      <span className="ml-0.5 inline-block h-3 w-px animate-pulse bg-brand/60 align-middle" />
+                      <span className="ml-0.5 inline-block h-3 w-px animate-pulse bg-brand-500 align-middle" />
                     )}
                   </span>
                 </motion.div>
               ) : (
-                <span className="inline-block h-3 w-32 animate-pulse rounded bg-brand/10" />
+                <span className="inline-block h-3 w-32 animate-pulse rounded bg-brand-500/10" />
               )}
             </div>
           </motion.div>
@@ -282,6 +330,7 @@ export function PhaseIndicator({
         <div
           aria-hidden={!isExpanded}
           inert={!isExpanded}
+          onClick={(e) => e.stopPropagation()}
           className={cn(
             "grid overflow-hidden transition-[grid-template-rows,opacity,margin-top] motion-reduce:transition-none",
             isExpanded
@@ -292,7 +341,11 @@ export function PhaseIndicator({
           <div className="min-h-0">
             {shouldRenderExpandedContent && (
               <div className="pb-1 pt-1.5">
-                <Card size="sm">
+                {/* ring-inset: the Card's ring is a box-shadow that the grid's
+                    overflow-hidden would otherwise clip on the left/right (the
+                    card is flush with the clip container). Drawing it inset
+                    keeps the border visible. */}
+                <Card size="sm" className="ring-inset">
                   <CardContent className="max-h-80 overflow-auto text-sm">
                     {expandedContent}
                   </CardContent>

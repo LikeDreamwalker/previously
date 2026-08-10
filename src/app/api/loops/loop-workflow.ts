@@ -132,6 +132,9 @@ export async function loopWorkflow(input: LoopInput): Promise<LoopResult> {
       prompt: buildLoopPrompt(input),
       writable: getWritable<ModelCallStreamPart>(),
       stopWhen: [loopReportedDone, noProgress, isStepCount(stepBudget(input))],
+      // No `maxOutputTokens` (project-wide prohibition) and no `timeout` (the
+      // workflow sandbox lacks the AbortSignal global the SDK's timeout uses) —
+      // the loop worker is thinking-disabled and fast by construction.
       // finalizeLoop owns the stream tail (final data-loop chunk + close).
       sendFinish: false,
       preventClose: true,

@@ -11,10 +11,13 @@
  * "use step" tool executors bound in ./tools.
  */
 
-import { WorkflowAgent } from "@ai-sdk/workflow";
+import {
+  WorkflowAgent,
+  type WorkflowAgentOptions,
+} from "@ai-sdk/workflow";
 import { createModel } from "@/lib/models/provider";
 import type { ModelConfig } from "@/lib/models/registry";
-import type { ProviderSdk } from "@/lib/models/providers";
+import { normalizeReasoningEffort } from "@/lib/models/effort-injector";
 import { SOUL_MD } from "@/lib/identity/agent-prompt.generated";
 
 /**
@@ -34,62 +37,12 @@ import {
 } from "./tools";
 
 // ─── Provider-aware providerOptions ──────────────────────────────────────
-
-/**
- * Provider options accepted by WorkflowAgent's `providerOptions` prop
- * (Record<string, JSONObject>). Declared structurally here (isomorphic to the
- * @ai-sdk/provider JSONObject) to avoid importing the transitive package.
- * Each provider's reasoning/thinking shape differs, so the value is a loose
- * per-provider JSON object.
- */
-type JsonValue =
-  | string
-  | number
-  | boolean
-  | null
-  | JsonObject
-  | JsonValue[];
-interface JsonObject {
-  [key: string]: JsonValue;
-}
-type ChatProviderOptions = Record<string, JsonObject>;
-
-/**
- * Build the provider options for the chat agent's model. Each SDK's reasoning
- * shape differs:
- *   - deepseek: `thinking.type` + `reasoningEffort`
- *   - anthropic: `thinking.type` (enabled/disabled/adaptive)
- *   - openai (and OpenAI-compatible: Kimi, Qwen, ...): `reasoningEffort`
- * Unknown sdk falls back to the DeepSeek shape.
- */
-function buildProviderOptions(
-  sdk: ProviderSdk | undefined,
-  thinking: boolean,
-  effort: "low" | "medium" | "high",
-): ChatProviderOptions | undefined {
-  switch (sdk) {
-    case "anthropic":
-      return {
-        anthropic: {
-          thinking: { type: thinking ? "enabled" : "disabled" },
-        },
-      };
-    case "openai":
-      return {
-        openai: { reasoningEffort: thinking ? effort : "minimal" },
-      };
-    default:
-      // DeepSeek (default) — V4 defaults to thinking ENABLED, so "off" explicit.
-      return thinking
-        ? {
-            deepseek: {
-              thinking: { type: "enabled" },
-              reasoningEffort: effort,
-            },
-          }
-        : { deepseek: { thinking: { type: "disabled" } } };
-  }
-}
+//
+// Effort → providerOptions mapping is centralized in
+// src/lib/models/effort-injector.ts (`normalizeReasoningEffort`) so the chat
+// agent, thinkDeep sub-agents, and any future reasoning call share one
+// provider-specific translation. `ProviderOptions` is exported there too
+// (isomorphic to @ai-sdk/provider's JSONObject shape).
 
 export type ChatToolSet = typeof chatTools;
 export type LoopToolSet = typeof loopTools;
@@ -109,23 +62,31 @@ export function createChatAgent(opts: {
   thinking: boolean;
   reasoningEffort: "low" | "medium" | "high";
   toolsContext: ReturnType<typeof buildChatToolsContext>;
-  /** Safety cap to keep single LLM step under Vercel's 5‑minute limit. */
-  maxOutputTokens?: number;
+  /**
+   * Fires after each completed LLM step — the turn workflow accumulates the
+   * written text so a platform-killed step can be continued (续写) with the
+   * partial output it produced before being cut off.
+   */
+  onStepEnd?: WorkflowAgentOptions<ChatToolSet>["onStepEnd"];
 }): ChatAgent {
   const model = createModel(opts.model);
 
+  // NOTE: no `maxOutputTokens` — a project-wide prohibition. The step is bounded
+  // only by the platform's 300s wall; on a kill the turn workflow continues the
+  // agent with a nudge (see turn-workflow.ts) instead of truncating the model.
   return new WorkflowAgent({
     model,
-    maxOutputTokens: opts.maxOutputTokens,
     instructions:
       "You are the user's personal agent with layered episodic memory. Answer from the provided context; use the memory tools to recall details when needed.",
     tools: chatTools,
     toolsContext: opts.toolsContext,
-    providerOptions: buildProviderOptions(
+    providerOptions: normalizeReasoningEffort(
       opts.model.sdk,
+      opts.model.id,
       opts.thinking,
       opts.reasoningEffort,
     ),
+    ...(opts.onStepEnd ? { onStepEnd: opts.onStepEnd } : {}),
   });
 }
 

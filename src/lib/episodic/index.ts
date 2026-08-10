@@ -32,8 +32,10 @@ export {
   writePreviously,
   findMostRecentPreviously,
   ensurePreviously,
-  applyPreviouslyDecay,
   emptyPreviouslyTemplate,
+  CURRENT_PREVIOUSLY_PATH,
+  readCurrentPreviously,
+  writeCurrentPreviously,
 } from "./manager";
 // NOTE: sliceIdToLegacyFilePath was removed in v0.5 — old flat-file format
 //       support dropped. Use sliceIdToTimelineDir / sliceIdToFilePath instead.
@@ -66,6 +68,13 @@ export {
   formatEntry,
   buildTimelineContent,
 } from "./flash/global-timeline";
+
+export {
+  consolidateStrands,
+} from "./flash/strand-consolidator";
+export type {
+  ConsolidationResult,
+} from "./flash/strand-consolidator";
 export type {
   TimelineEntry,
 } from "./flash/global-timeline";
@@ -80,6 +89,18 @@ export {
   DEFAULT_MAX_TURNS_PER_SLICE,
   checkTimeSilence,
 } from "./slicer";
+
+export {
+  normalizeStrandKey,
+  findMatchingStrand,
+  weaveTag,
+  applyStrandMerges,
+  pruneStrands,
+  slicePathToMs,
+} from "./strands";
+export type {
+  PruneOptions,
+} from "./strands";
 
 export type {
   SliceStatus,

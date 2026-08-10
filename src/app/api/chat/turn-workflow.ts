@@ -23,7 +23,7 @@
 import { isStepCount, type ModelMessage } from "ai";
 import { getWritable } from "workflow";
 import type { ModelCallStreamPart } from "@ai-sdk/workflow";
-import { createChatAgent } from "@/app/api/agent/agent";
+import { createChatAgent, type ChatAgent } from "@/app/api/agent/agent";
 import { buildChatToolsContext } from "@/app/api/agent/tools";
 import type {
   TurnInput,
@@ -32,6 +32,10 @@ import type {
 } from "@/lib/chat/turn-types";
 import { DEPLOY_GUIDE_URL } from "@/lib/capabilities";
 import {
+  classifyWorkflowError,
+  errorMessage,
+} from "@/lib/chat/workflow-errors";
+import {
   housekeeping,
   finalizeTurn,
 } from "./steps";
@@ -39,7 +43,7 @@ import {
 // ─── Pure helpers (serializable data in, serializable data out) ──────────
 
 /** Final assistant text from the agent's message history. */
-function extractFinalText(messages: ModelMessage[]): string {
+export function extractFinalText(messages: ModelMessage[]): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
     if (m.role !== "assistant") continue;
@@ -59,6 +63,39 @@ function extractFinalText(messages: ModelMessage[]): string {
     return "";
   }
   return "";
+}
+
+/**
+ * All assistant text across the whole turn, in message order — the intermediate
+ * text ("let me look that up…") plus the final answer. Tool calls are dropped.
+ *
+ * This is what gets stored in the time slice as the agent turn: a faithful
+ * text-only snapshot of the turn, keeping both the leading and trailing parts
+ * while the tool calls in between are not preserved.
+ */
+export function extractAllAssistantText(messages: ModelMessage[]): string {
+  const parts: string[] = [];
+  for (const m of messages) {
+    if (m.role !== "assistant") continue;
+    if (typeof m.content === "string") {
+      if (m.content.trim()) parts.push(m.content.trim());
+      continue;
+    }
+    if (Array.isArray(m.content)) {
+      for (const p of m.content) {
+        if (
+          p &&
+          typeof p === "object" &&
+          (p as { type?: string }).type === "text" &&
+          typeof (p as { text?: unknown }).text === "string" &&
+          (p as { text: string }).text.trim()
+        ) {
+          parts.push((p as { text: string }).text.trim());
+        }
+      }
+    }
+  }
+  return parts.join("\n\n");
 }
 
 /**
@@ -219,6 +256,159 @@ function extractStartedLoops(messages: ModelMessage[]): StartedLoopRef[] {
   return refs;
 }
 
+/**
+ * The `question` + `report` pairs of every thinkDeep sub-agent in this turn —
+ * folded into the agent.md cognition body so sub-agent research survives in the
+ * agent's own timeline (the old `memory/thinking/` store is gone; reports now
+ * flow inline as tool results).
+ *
+ * The question lives in the assistant-side tool-call input, the report in the
+ * matching `role: "tool"` result (ModelMessage tool-result output is wrapped as
+ * { type: 'json', value }). Any result carrying a non-empty report counts —
+ * including interrupted (`ok: false`) ones, whose partial findings are worth
+ * preserving in the timeline just as they are in the main agent's reply.
+ */
+export function extractThinkDeepReports(
+  messages: ModelMessage[],
+): Array<{ question: string; answer: string; reasoning: string }> {
+  const questionsByCallId = new Map<string, string[]>();
+  const results: Array<{ question: string; answer: string; reasoning: string }> =
+    [];
+
+  for (const m of messages) {
+    const parts = Array.isArray(m.content) ? m.content : [];
+    for (const part of parts) {
+      const p = part as {
+        type?: string;
+        toolCallId?: string;
+        toolName?: string;
+        input?: { fragments?: Array<{ question?: unknown }> };
+        output?: unknown;
+      };
+
+      if (p.type === "tool-call" && p.toolName === "thinkDeep") {
+        // The batch carries ALL fragments in one call — remember every question.
+        if (typeof p.toolCallId !== "string") continue;
+        const input = p.input as
+          | { fragments?: Array<{ question?: unknown }>; question?: unknown }
+          | undefined;
+        const qs = Array.isArray(input?.fragments)
+          ? input.fragments
+              .map((f) => (typeof f?.question === "string" ? f.question : ""))
+              .filter(Boolean)
+          : typeof input?.question === "string"
+            ? [input.question]
+            : [];
+        questionsByCallId.set(p.toolCallId, qs);
+      }
+
+      if (p.type === "tool-result" && p.toolName === "thinkDeep") {
+        if (typeof p.toolCallId !== "string") continue;
+        const raw = p.output as { value?: unknown } | undefined;
+        const value = (
+          raw && typeof raw === "object" && "value" in raw ? raw.value : raw
+        ) as
+          | {
+              fragments?: Array<{
+                question?: unknown;
+                answer?: unknown;
+                reasoning?: unknown;
+              }>;
+              answer?: unknown;
+              reasoning?: unknown;
+            }
+          | undefined;
+        const fallbackQuestions = questionsByCallId.get(p.toolCallId) ?? [];
+
+        // New batch shape: one entry per fragment, matched back by its own
+        // question (falling back to the call's question list by index).
+        if (Array.isArray(value?.fragments)) {
+          value.fragments.forEach((f, i) => {
+            const question =
+              typeof f.question === "string" && f.question.trim()
+                ? f.question
+                : (fallbackQuestions[i] ?? "");
+            const answer = typeof f.answer === "string" ? f.answer : "";
+            const reasoning =
+              typeof f.reasoning === "string" ? f.reasoning : "";
+            // Keep a fragment if it produced ANYTHING — the answer OR the
+            // thinking trail (an interrupted fragment's reasoning is still
+            // valuable).
+            if (answer.trim() || reasoning.trim()) {
+              results.push({ question, answer, reasoning });
+            }
+          });
+          continue;
+        }
+
+        // Legacy single-fragment shape — keep for robustness.
+        const question = fallbackQuestions[0] ?? "";
+        const answer = typeof value?.answer === "string" ? value.answer : "";
+        const reasoning =
+          typeof value?.reasoning === "string" ? value.reasoning : "";
+        if (answer.trim() || reasoning.trim()) {
+          results.push({ question, answer, reasoning });
+        }
+      }
+    }
+  }
+
+  return results;
+}
+
+// ─── System prompt assembly (pure — cache-order matters) ─────────────────
+
+/**
+ * Assemble the turn's system prompt. Order is a CACHE decision, not just
+ * layout: the provider's prompt cache reuses the longest byte-identical
+ * PREFIX across requests. So the STABLE blocks come first (identity
+ * constitution, previously card — they barely change across turns), and the
+ * VARIABLE blocks last (the per-turn brief, strands menu, evolution notice,
+ * demo notice). A changing tail never invalidates the long cacheable head.
+ *
+ * The full assembled string is also fanned out to thinkDeep sub-agents as
+ * `baseSystemPrompt`, so their calls share the same prefix the main agent
+ * warmed.
+ */
+export function assembleSystemPrompt(opts: {
+  /** SOUL + "who you're assisting" + DIRECTIVES — stable across turns. */
+  identityPrompt: string;
+  /** The user card (previously.md) — changes only on evolution. */
+  previouslyContent: string;
+  /** The per-turn brief (timestamp / intent / continuity / semantic links). */
+  turnPriming: string;
+  /** Pre-built "## Memory topics…" block, or "" to omit. */
+  strandsBlock: string;
+  /** Pre-built "[System] A self-evolution…" notice, or "" to omit. */
+  evolutionNotice: string;
+  /** Pre-built "## Demo mode…" block, or "" to omit. */
+  demoNotice: string;
+  /** "YYYY-MM-DD" — anchors the card-freshness header. */
+  dateAnchor: string;
+}): string {
+  const {
+    identityPrompt,
+    previouslyContent,
+    turnPriming,
+    strandsBlock,
+    evolutionNotice,
+    demoNotice,
+    dateAnchor,
+  } = opts;
+  return [
+    identityPrompt,
+    `## What I know about the user (inference model — ${dateAnchor})`,
+    previouslyContent,
+    "The above is the current profile and operating model — distilled hypotheses, each carrying `refs` to its evidence. If any line seems outdated or contradicts what the user just said, cite its refs and say so; the correction flows into the archive.",
+    turnPriming,
+    strandsBlock,
+    evolutionNotice,
+    demoNotice,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
 // ─── The workflow ────────────────────────────────────────────────────────
 
 export async function turnWorkflow(input: TurnInput): Promise<void> {
@@ -232,50 +422,75 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
     strandsMenu,
     turnPriming,
     identityPrompt,
+    evolutionResult,
   } = await housekeeping(input);
 
   // ── Assemble system prompt ──────────────────────────────────────────────
 
-  // Order (situational → standing → beliefs): the turn brief first, then the
-  // identity block (SOUL + "who you're assisting" + DIRECTIVES — the memory
-  // access rules now live inside DIRECTIVES), then previously (rarely
-  // changes), then the strands menu, then the demo notice.
+  // Order (standing → beliefs → situational): the STABLE blocks first — the
+  // identity constitution (SOUL + "who you're assisting" + DIRECTIVES) then the
+  // previously card (changes only on evolution). Together they form the long
+  // cacheable prefix the provider's prompt cache reuses across turns instead of
+  // re-processing every turn. The VARIABLE blocks come last — the turn brief
+  // (timestamp / intent / continuity / semantic links), the strands menu, the
+  // evolution notice, the demo notice — so a changing tail never invalidates
+  // the stable prefix.
   const dateAnchor = input.startedAtIso.slice(0, 10);
-  const systemPrompt = [
-    turnPriming,
+  const systemPrompt = assembleSystemPrompt({
     identityPrompt,
-    `## What I know about you (as of ${dateAnchor})`,
     previouslyContent,
-    "The above is my current understanding of you. Tell me if anything is outdated or wrong and I'll update it.",
-    strandsMenu
-      ? `## Memory topics\n\n${strandsMenu}\nWhen the user mentions these topics, use recall to search for related memories.`
+    turnPriming,
+    strandsBlock: strandsMenu
+      ? `## Memory topics\n\n${strandsMenu}\nWhen the user mentions these topics, use recall to search for related memories. If a search finds nothing relevant, do not retry it — answer from what you have.`
       : "",
-    input.useDemo
+    evolutionNotice: evolutionResult?.ran
+      ? `[System] A self-evolution just completed — the previously card was updated${evolutionResult.changed ? "" : " (no change)"}. The latest card is provided above. Acknowledge this to the user if they asked for it.`
+      : "",
+    demoNotice: input.useDemo
       ? `## Demo mode (read-only)\n\nYou are running in demo mode. You can browse sample data, recall past conversations, and search the live web — but **writes are not persisted**. No GitHub repo is connected; you are seeing pre-seeded sample memories.\n\nWhen the user asks to save anything, create memories, or start background tasks, tell them naturally:\n- This is demo mode and data cannot be saved\n- They need to deploy their own instance to unlock full read/write and background loop capabilities\n\nDeployment guide: ${DEPLOY_GUIDE_URL}\n\nIt's perfectly normal for users to explore in demo mode — help them understand what this product can do and what they'll get after deploying.`
       : "",
-  ]
-    .filter(Boolean)
-    .join("\n\n");
+    dateAnchor,
+  });
 
   // ── Pro agent ──────────────────────────────────────────────────────────
 
   /**
-   * Safety cap on tokens per LLM call. Each `doStreamStep` inside the
-   * WorkflowAgent is a single Vercel Workflow step with a 5‑minute hard
-   * limit. 8000 tokens keeps even a slow thinking-model generation under
-   * that ceiling. When the model hits this cap mid-response, the
-   * continuation loop below feeds its output back so it can pick up
-   * where it left off — the user sees a single continuous stream.
+   * Hard cap on continuations to guard against infinite loops.
+   *
+   * NOTE: there is deliberately NO `timeout` and NO `maxOutputTokens` on
+   * agent.stream(). The workflow sandbox VM does not provision the
+   * `AbortSignal` global, so the SDK's timeout option would crash every turn
+   * (`ReferenceError: AbortSignal is not defined`). And `maxOutputTokens` is a
+   * project-wide prohibition: it behaves inconsistently across models — with
+   * DeepSeek thinking enabled, the reasoning silently eats the shared cap and
+   * leaves empty/truncated output. Both levers are gone by design; the step is
+   * bounded only by the platform's 300s wall.
+   *
+   * When a step IS platform-killed (or the model otherwise fails), the error
+   * reaches the catch block below where `classifyWorkflowError` decides:
+   *   - transient → rethrow (the workflow queue redelivers/retries)
+   *   - terminal / model → surface a client-visible explanation
+   *   - timeout / abort → bounded CONTINUATION: feed back the partial text
+   *     (accumulated via `onStepEnd`) plus a nudge and re-invoke agent.stream(),
+   *     so the agent picks up where it left off instead of dying silently.
+   * This is the same mechanism as the token-cap continuation loop below, just
+   * triggered from the failure path.
    */
-  const MAX_OUTPUT_TOKENS = 8_000;
-  /** Hard cap on continuations to guard against infinite loops. */
   const MAX_CONTINUATIONS = 5;
+  /** How many times a timed-out step may be re-invoked with a continuation nudge. */
+  const MAX_TIMEOUT_CONTINUATIONS = 2;
+  /** Continuation nudge for a step that was interrupted by the platform. */
+  const TIMEOUT_CONTINUE_NUDGE =
+    "You were interrupted by a timeout. Continue exactly where you left off — do not repeat what you already wrote, and keep your answer focused so it finishes quickly.";
+
+  // Partial assistant text from COMPLETED steps, accumulated for the timeout
+  // continuation so the re-invoked agent can pick up its own prior output.
+  let accumulatedPartialText = "";
 
   const agent = createChatAgent({
     model: input.modelConfig,
     thinking: input.thinking,
     reasoningEffort: input.reasoningEffort,
-    maxOutputTokens: MAX_OUTPUT_TOKENS,
     toolsContext: buildChatToolsContext({
       repo: input.repo,
       owner: input.owner,
@@ -283,37 +498,115 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
       useDemo: input.useDemo,
       sliceId: slice.slice_id,
       recentTurns: input.recentTurns,
+      // The full assembled system prompt — thinkDeep sub-agents reuse it as
+      // their prefix so provider prompt-cache hits span main + sub calls.
+      baseSystemPrompt: systemPrompt,
       workerModel: input.workerModel,
+      // The turn's resolved main model — thinkDeep reuses it (shared context)
+      // instead of re-resolving config from GitHub on every fragment step.
+      mainModel: input.modelConfig,
+      // Read tools pre-render user-local time from these (see time-localize.ts).
+      timezone: input.clientTimezone,
+      startedAtIso: input.startedAtIso,
     }),
+    // Fire after every COMPLETED LLM step: keep the written text for a possible
+    // timeout continuation. (The killed step itself never completes, so its
+    // in-flight partial is lost — the client already received it via the live
+    // stream, and the continuation works from the committed context.)
+    onStepEnd: ({ text }) => {
+      if (typeof text === "string" && text.trim()) {
+        accumulatedPartialText += text;
+      }
+    },
   });
+
+  /** Shared stream options (continuation-safe, see below). No maxOutputTokens. */
+  const streamOpts = {
+    writable: getWritable<ModelCallStreamPart>(),
+    stopWhen: isStepCount(20),
+    sendFinish: false,
+    preventClose: true,
+  } as const;
 
   let outcome: TurnOutcome;
   let streamError: unknown = null;
   try {
-    let allText = "";
     let allCognition = "";
     let finalFinishReason = "stop";
     let finalMessages: ModelMessage[] = [];
-    let finalSteps: unknown[] = [];
     let currentMessages = input.modelMessages;
-    let currentSystem: string | undefined = systemPrompt;
     let continuations = 0;
+    let timeoutContinuations = 0;
+    /** Client-visible explanation when the turn ends as a terminal error. */
+    let turnError: string | undefined;
 
+    // ── The agent loop ────────────────────────────────────────────────────
+    // Inline loop — NOT a nested closure: the workflow transform instruments
+    // awaits at the top level of the "use workflow" body, so `agent.stream`
+    // (self-managed steps) must stay here, exactly as the loop engine does.
+    //
+    // Tool calls (recall / webSearch / thinkDeep) are handled inline by the
+    // WorkflowAgent loop: the executor runs in its own step and the result
+    // (e.g. a sub-agent report) is fed straight back to the model on the next
+    // step. No separate dispatch / polling / integration pass exists.
     while (true) {
-      const result = await agent.stream({
-        messages: currentMessages,
-        ...(currentSystem ? { system: currentSystem } : {}),
-        writable: getWritable<ModelCallStreamPart>(),
-        stopWhen: isStepCount(20),
-        sendFinish: false,
-        preventClose: true,
-      });
+      let result: Awaited<ReturnType<ChatAgent["stream"]>>;
+      try {
+        result = await agent.stream({
+          messages: currentMessages,
+          system: systemPrompt,
+          ...streamOpts,
+        });
+      } catch (err) {
+        // ── Workflow-error classification → what to do ────────────────────
+        const classified = classifyWorkflowError(err);
+        if (classified.kind === "transient") {
+          // Infrastructure blip — let the workflow queue retry the run.
+          throw err;
+        }
+        if (classified.kind === "terminal" || classified.kind === "model") {
+          // Genuinely terminal — surface an explanation, end the turn.
+          finalFinishReason = "error";
+          turnError =
+            classified.userMessage ?? errorMessage(err, "The workflow run failed.");
+          break;
+        }
+        if (classified.kind === "abort") {
+          // Client cancelled (or the SDK aborted) — stop, don't re-invoke.
+          finalFinishReason = "interrupted";
+          break;
+        }
+        // timeout (a step was platform-killed / a deadline exceeded) or abort —
+        // the dominant failure mode. Bounded CONTINUATION: feed back the partial
+        // text accumulated from completed steps, nudge the model to finish, and
+        // re-invoke agent.stream() so it picks up where it left off.
+        if (++timeoutContinuations > MAX_TIMEOUT_CONTINUATIONS) {
+          finalFinishReason = "interrupted";
+          turnError =
+            "The response was interrupted repeatedly by step timeouts. You can send a new message or click continue to try again.";
+          break;
+        }
+        const partial = accumulatedPartialText.trim();
+        currentMessages = [
+          ...currentMessages,
+          ...(partial
+            ? [{ role: "assistant" as const, content: partial }]
+            : []),
+          { role: "user" as const, content: TIMEOUT_CONTINUE_NUDGE },
+        ];
+        // Loop back to re-invoke agent.stream() with the continuation.
+        continue;
+      }
 
-      allText += extractFinalText(result.messages);
       allCognition += extractCognition(result.messages, result.steps);
       finalMessages = result.messages;
-      finalSteps = result.steps;
       finalFinishReason = result.finishReason;
+
+      // This iteration's completed text is now committed into currentMessages
+      // (via the continuation feed below) — reset the accumulator so a LATER
+      // timeout only carries the partial from THAT failing call, not the whole
+      // turn's earlier output (which would be redundant in the continuation).
+      accumulatedPartialText = "";
 
       // Only loop when the model hit the token cap before it was done.
       if (result.finishReason !== "length") break;
@@ -330,18 +623,43 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
             "You were cut off mid-response. Continue exactly where you left off — do not repeat anything you already said.",
         },
       ];
-      currentSystem = systemPrompt;
     }
 
+    // ── Sub-agent reports (thinkDeep) — keep the full research in the timeline ──
+    // Extracted ONCE from the final messages (not inside extractCognition, which
+    // runs per continuation over the full message history — that would duplicate
+    // the reports across token-cap continuations).
+    const thinkDeepReports = extractThinkDeepReports(finalMessages);
+    if (thinkDeepReports.length > 0) {
+      allCognition += "\n### Reasoning fragments";
+      for (const { question, answer, reasoning } of thinkDeepReports) {
+        allCognition += `\n\n**Q**: ${question}`;
+        if (answer) allCognition += `\n\n${answer.slice(0, 2000)}`;
+        if (reasoning)
+          allCognition += `\n\n<reasoning>\n${reasoning.slice(0, 1000)}\n</reasoning>`;
+      }
+      allCognition += "\n";
+    }
+
+    // The stored agent turn is ALL assistant text across the turn (intermediate
+    // text + final answer), in order. Tool calls are not preserved — see
+    // extractAllAssistantText.
     outcome = {
-      text: allText,
+      text: extractAllAssistantText(finalMessages),
       finishReason: finalFinishReason,
       startedLoops: extractStartedLoops(finalMessages),
       cognition: allCognition,
+      error: turnError,
     };
   } catch (err) {
     streamError = err;
-    outcome = { text: "", finishReason: "error", startedLoops: [], cognition: "" };
+    outcome = {
+      text: "",
+      finishReason: "error",
+      startedLoops: [],
+      cognition: "",
+      error: errorMessage(err, "The workflow run failed."),
+    };
   }
 
   // ── Post-turn persistence ──────────────────────────────────────────────

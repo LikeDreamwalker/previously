@@ -124,6 +124,11 @@ export function ToolLayout({
     icon ?? <StatusDot state={state} />
   );
 
+  // NOTE: the motion.div deliberately has NO `layout` prop — framer-motion's
+  // FLIP projection could loop into "Maximum update depth exceeded" (#185)
+  // during streaming re-render bursts. The expand/collapse animation is a CSS
+  // grid transition, not layout, so removing it is visually imperceptible.
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 6, scale: 0.97 }}
@@ -134,7 +139,6 @@ export function ToolLayout({
         x: shake ? [0, -3, 3, -3, 3, 0] : 0,
       }}
       exit={{ opacity: 0, y: -6, scale: 0.97 }}
-      layout
       transition={{
         opacity: { duration: 0.25, ease: [0.25, 0.1, 0.25, 1.0] },
         y: { duration: 0.25, ease: [0.25, 0.1, 0.25, 1.0] },
@@ -146,7 +150,7 @@ export function ToolLayout({
     >
       {/* Shimmer bar — visible while model is deciding tool parameters */}
       {isInputStreaming && (
-        <div className="h-0.5 rounded-full bg-gradient-to-r from-transparent via-brand/30 to-transparent bg-[length:200%_100%] animate-shimmer" />
+        <div className="h-0.5 rounded-full bg-gradient-to-r from-transparent via-brand-500/30 to-transparent bg-[length:200%_100%] animate-shimmer" />
       )}
       <div
         className={cn(
@@ -278,7 +282,11 @@ export function ToolLayout({
             <div className="min-h-0">
               {shouldRenderExpandedContent && (
                 <div className="pt-1.5 pb-1">
-                  <Card size="sm">
+                  {/* ring-inset: the Card's ring is a box-shadow that the grid's
+                      overflow-hidden would otherwise clip on the left/right (the
+                      card is flush with the clip container). Drawing it inset
+                      keeps the border visible. */}
+                  <Card size="sm" className="ring-inset">
                     <CardContent className="max-h-80 overflow-auto text-xs">
                       {hasError && !hasRenderableContent(expandedContent) && (
                         <pre className="whitespace-pre-wrap break-all font-mono text-xs leading-relaxed text-red-400">

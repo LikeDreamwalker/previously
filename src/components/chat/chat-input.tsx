@@ -8,14 +8,44 @@ import { Link } from "@/i18n/navigation";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ModelSelector, type ModelDefaults } from "./model-selector";
 
-const EFFORT_LEVELS = ["low", "medium", "high"] as const;
-type EffortLevel = (typeof EFFORT_LEVELS)[number];
+/**
+ * Effort tiers depend on the model family. DeepSeek's native tiers are "low"
+ * and "high" — "medium" is not meaningfully distinct (V4 Pro promotes it
+ * server-side), so the cycle offers just two levels there. Anthropic and
+ * OpenAI-compatible providers expose all three. "medium" stays in the type for
+ * stored configs / other providers; on DeepSeek a stored "medium" snaps to
+ * "high" (it has no native medium tier).
+ */
+type EffortLevel = "low" | "medium" | "high";
+
+const FULL_EFFORT_LEVELS = ["low", "medium", "high"] as const;
+const DEEPSEEK_EFFORT_LEVELS = ["low", "high"] as const;
+
+/** Effort tiers available for a model id — DeepSeek collapses to low/high. */
+function effortLevelsFor(modelId: string): readonly EffortLevel[] {
+  return modelId.startsWith("deepseek")
+    ? DEEPSEEK_EFFORT_LEVELS
+    : FULL_EFFORT_LEVELS;
+}
 
 const EFFORT_LABELS: Record<EffortLevel, string> = {
   low: "Low",
-  medium: "Med",
+  medium: "Medium",
   high: "High",
 };
+
+/** Stored effort may be outside the model's tier set — snap to a valid tier. */
+function normalizeEffort(level: EffortLevel, modelId: string): EffortLevel {
+  const levels = effortLevelsFor(modelId);
+  return (levels as readonly EffortLevel[]).includes(level)
+    ? level
+    : levels[levels.length - 1];
+}
+
+/** Display label for the model's effective tier (a DeepSeek "medium" → "High"). */
+function effortLabel(level: EffortLevel, modelId: string): string {
+  return EFFORT_LABELS[normalizeEffort(level, modelId)];
+}
 
 interface ChatInputProps {
   onSubmit: (message: string) => void;
@@ -124,10 +154,11 @@ export function ChatInput({
   };
 
   const cycleEffort = useCallback(() => {
-    const idx = EFFORT_LEVELS.indexOf(currentEffort);
-    const next = EFFORT_LEVELS[(idx + 1) % EFFORT_LEVELS.length];
+    const levels = effortLevelsFor(currentModelId);
+    const idx = levels.indexOf(normalizeEffort(currentEffort, currentModelId));
+    const next = levels[(idx + 1) % levels.length];
     onEffortChange(next);
-  }, [currentEffort, onEffortChange]);
+  }, [currentEffort, currentModelId, onEffortChange]);
 
   const hasContent = value.trim().length > 0 || images.length > 0;
 
@@ -187,7 +218,7 @@ export function ChatInput({
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
-                  className="h-7 w-7 rounded-full text-muted-foreground hover:text-foreground hover:bg-muted-foreground/10 transition-colors flex items-center justify-center"
+                  className="h-7 w-7 rounded-full text-muted-foreground hover:text-foreground hover:bg-brand/10 transition-colors flex items-center justify-center"
                 >
                   <Paperclip className="h-3.5 w-3.5" />
                 </button>
@@ -245,17 +276,17 @@ export function ChatInput({
                   type="button"
                   onClick={cycleEffort}
                   disabled={isLoading || demoRunning}
-                  className="h-7 rounded-full text-muted-foreground hover:text-foreground hover:bg-muted-foreground/10 transition-colors flex items-center justify-center gap-1 px-2 disabled:opacity-30"
+                  className="h-7 rounded-full text-muted-foreground hover:text-foreground hover:bg-brand/10 transition-colors flex items-center justify-center gap-1 px-2 disabled:opacity-30"
                 >
                   <Zap className="h-3 w-3" />
                   <span className="text-[10px] font-medium leading-none">
-                    {mounted ? EFFORT_LABELS[currentEffort] : "Med"}
+                    {mounted ? effortLabel(currentEffort, currentModelId) : "High"}
                   </span>
                 </button>
               }
             />
             <TooltipContent side="top">
-              Thinking: {currentEffort} — click to cycle
+              Thinking: {effortLabel(currentEffort, currentModelId)} — click to cycle
             </TooltipContent>
           </Tooltip>
 
@@ -265,7 +296,7 @@ export function ChatInput({
               render={
                 <Link
                   href="/settings"
-                  className="h-7 w-7 rounded-full text-muted-foreground hover:text-foreground hover:bg-muted-foreground/10 transition-colors flex items-center justify-center"
+                  className="h-7 w-7 rounded-full text-muted-foreground hover:text-foreground hover:bg-brand/10 transition-colors flex items-center justify-center"
                 >
                   <Settings className="h-3.5 w-3.5" />
                 </Link>
@@ -293,7 +324,7 @@ export function ChatInput({
               disabled={!hasContent}
               className={`h-8 w-8 rounded-full flex items-center justify-center transition-colors disabled:opacity-30 ${
                 hasContent
-                  ? "bg-[#0066ff] text-white hover:bg-[#0066ff]/90"
+                  ? "bg-brand text-white hover:bg-brand/90"
                   : "bg-primary text-primary-foreground"
               }`}
               title={t("sendTooltip")}

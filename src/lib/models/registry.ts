@@ -68,7 +68,10 @@ export const ALL_MODELS: ModelConfig[] = [
     envKey: "DEEPSEEK_API_KEY",
     capabilities: { thinking: true, vision: false, maxTokens: 393216 },
     defaultThinking: true,
-    defaultEffort: "medium",
+    // DeepSeek exposes only low/high as meaningful tiers (V4 Pro promotes
+    // low/medium to high server-side) — the UI cycles between these two, so
+    // the stored default must live inside that set.
+    defaultEffort: "high",
   },
   // ── Anthropic (curated from @ai-sdk/anthropic's AnthropicModelId union) ─
   {
@@ -118,7 +121,9 @@ const MODEL_OVERRIDES: Record<
   Partial<Pick<ModelConfig, "defaultThinking" | "defaultEffort">>
 > = {
   "deepseek-v4-flash": { defaultEffort: "low" },
-  "deepseek-v4-pro": { defaultEffort: "medium" },
+  // Pro's medium is promoted to high server-side, so pin it inside the
+  // low/high UI set rather than an unreachable middle tier.
+  "deepseek-v4-pro": { defaultEffort: "high" },
 };
 
 /** Curated override for a known model id, if any. */

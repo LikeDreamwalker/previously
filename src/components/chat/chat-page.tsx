@@ -20,17 +20,55 @@ import {
   type SliceContent,
 } from "@/lib/episodic/actions";
 import { getCached, setCache } from "@/lib/chat/slice-cache";
+import { dropTrailingAssistantMessages } from "@/lib/chat/reconnect";
 import { NumberTicker } from "@/components/ui/number-ticker";
 import { TextGenerateEffect } from "@/components/ui/text-generate-effect";
-import { getUserConfig, saveUserConfig } from "@/lib/config/actions";
+import { saveUserConfig } from "@/lib/config/actions";
+import type { UserConfig } from "@/lib/config/types";
 import { useTranslations } from "next-intl";
+import { toast } from "sonner";
 
 interface ChatPageProps {
   children: React.ReactNode;
+  /** Server-preloaded user config (RSC) — seeds model/thinking/effort so the
+   *  chat starts on the real values instead of flashing defaults. */
+  initialConfig?: UserConfig;
 }
 
-export function ChatPage({ children }: ChatPageProps) {
-  return <Inner>{children}</Inner>;
+export function ChatPage({ children, initialConfig }: ChatPageProps) {
+  return <Inner initialConfig={initialConfig}>{children}</Inner>;
+}
+
+// ─── Reconnect persistence ────────────────────────────────────────────────
+// The durable workflow run's id is persisted so a reloaded or backgrounded tab
+// (phone lock / app switch) can re-attach to the SAME run's stream and replay
+// whatever it missed. Cleared when a turn completes cleanly. Guarded so a
+// private-mode / SSR environment (no localStorage) degrades to no-op.
+const RUN_ID_KEY = "previously:activeRunId";
+
+function readStoredRunId(): string | null {
+  if (typeof localStorage === "undefined") return null;
+  try {
+    return localStorage.getItem(RUN_ID_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredRunId(runId: string): void {
+  try {
+    localStorage.setItem(RUN_ID_KEY, runId);
+  } catch {
+    /* private mode — reconnection is best-effort */
+  }
+}
+
+function clearStoredRunId(): void {
+  try {
+    localStorage.removeItem(RUN_ID_KEY);
+  } catch {
+    /* private mode — reconnection is best-effort */
+  }
 }
 
 // ─── Gap calculator ──────────────────────────────────────────────────
@@ -94,24 +132,26 @@ function NowPlaceholder({ gapAnchor }: { gapAnchor: string | null }) {
   );
 }
 
-function Inner({ children }: { children: React.ReactNode }) {
+function Inner({
+  children,
+  initialConfig,
+}: {
+  children: React.ReactNode;
+  initialConfig?: UserConfig;
+}) {
   // ── Model / thinking / effort — reactive, persisted to config.json ─────
   // The single source of truth is memory/user/config.json (cross-device, no
-  // localStorage). Defaults here are just the pre-load placeholder; the mount
-  // effect reconciles from the saved config.
-  const [selectedModel, setSelectedModel] = useState("deepseek-v4-flash");
-  const [thinking, setThinking] = useState(true);
-  const [effort, setEffort] = useState<"low" | "medium" | "high">("medium");
-
-  useEffect(() => {
-    getUserConfig()
-      .then((cfg) => {
-        setSelectedModel(cfg.model.provider);
-        setThinking(cfg.model.thinking);
-        setEffort(cfg.model.reasoningEffort);
-      })
-      .catch(() => {});
-  }, []);
+  // localStorage). The RSC page preloads it (initialConfig) so there's no
+  // default-flash + mount reconcile; saves still write back via server action.
+  const [selectedModel, setSelectedModel] = useState(
+    initialConfig?.model.provider ?? "deepseek-v4-flash",
+  );
+  const [thinking, setThinking] = useState(
+    initialConfig?.model.thinking ?? true,
+  );
+  const [effort, setEffort] = useState<"low" | "medium" | "high">(
+    initialConfig?.model.reasoningEffort ?? "medium",
+  );
 
   // Switching models applies that model's defaults (thinking + effort) so the
   // agent is configured sensibly for the newly selected model.
@@ -143,8 +183,6 @@ function Inner({ children }: { children: React.ReactNode }) {
 
   const [lastUserMessageAt, setLastUserMessageAt] = useState<string | null>(null);
   const [evolutionState, setEvolutionState] = useState<EvolutionState | null>(null);
-  const evolutionAbortRef = useRef<AbortController | null>(null);
-  const evolutionRunningRef = useRef(false);
 
   // ── Timeline state ──────────────────────────────────────────────────────
   const [timelineSlices, setTimelineSlices] = useState<SliceSummary[]>([]);
@@ -277,8 +315,34 @@ function Inner({ children }: { children: React.ReactNode }) {
     setDemoStreaming(false);
   }, []);
 
-  const { messages, sendMessage, status, stop, error } = useChat({
-    resume: false,
+  // Refresh-resume goes through the SDK's own path: `resume: true` calls
+  // resumeStream() on mount, and prepareReconnectToStreamRequest redirects it
+  // to the durable run (`/api/chat/<runId>/stream?startIndex=0`), which rebuilds
+  // the interrupted turn on a fresh page. Snapshot the decision ONCE at mount —
+  // computing it from localStorage each render would flip false→true when a new
+  // turn stores its runId, and useChat's `resume` effect would re-fire
+  // resumeStream() mid-stream (a second writer → #185). Fresh visits (no run in
+  // flight) stay false so a reconnect never 404s on a brand-new page.
+  const [shouldResume] = useState(() => readStoredRunId() !== null);
+
+  const {
+    messages,
+    sendMessage,
+    status,
+    stop,
+    error,
+    resumeStream,
+    setMessages,
+  } = useChat({
+    resume: shouldResume,
+    // Clear a stale runId when a reconnect 404s ("Run not available") — the run
+    // is gone, so a future reload shouldn't keep retrying it.
+    onError: (err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/404|Run not available/.test(msg)) {
+        clearStoredRunId();
+      }
+    },
     transport: new WorkflowChatTransport({
       api: "/api/chat",
       prepareSendMessagesRequest: (config) => ({
@@ -297,11 +361,114 @@ function Inner({ children }: { children: React.ReactNode }) {
           loadedSliceIds: timelineSlices.map((s) => s.slice_id),
         },
       }),
-      onChatSendMessage: (_response) => {},
-      onChatEnd: () => {},
-      prepareReconnectToStreamRequest: (config) => config,
+      // Persist the durable run id + chat id the moment a turn starts, so a
+      // dropped/reloaded tab can re-attach to the same run's stream.
+      onChatSendMessage: (response, options) => {
+        const runId = response.headers.get("x-workflow-run-id");
+        if (runId) {
+          writeStoredRunId(runId);
+          try {
+            localStorage.setItem("previously:chatId", options.chatId);
+          } catch {
+            /* best-effort */
+          }
+        }
+      },
+      // A clean end means the run is finished — no reconnect needed.
+      onChatEnd: () => clearStoredRunId(),
+      // Point any reconnect at the durable run (not the random per-mount
+      // chatId) so a post-reload resume targets the real stream.
+      prepareReconnectToStreamRequest: (config) => {
+        const runId = readStoredRunId();
+        if (runId) {
+          return {
+            ...config,
+            api: `/api/chat/${encodeURIComponent(runId)}/stream`,
+          };
+        }
+        return config;
+      },
     }),
   });
+
+  // ── Reconnect on return to the foreground ────────────────────────────────
+  // When the phone locks / the tab is backgrounded mid-turn, the fetch dies
+  // (status → "error") even though the durable workflow keeps running. On
+  // return, re-attach to the run's stream to replay what was missed. Skip when
+  // the turn is still actively streaming or already finished.
+  //
+  // SINGLE-WRITER GUARD: the focus/visibility handler below is the ONLY manual
+  // reconnect now (refresh-resume is handled by the SDK's `resume: true` above;
+  // same-session drops by the transport's internal auto-reconnect). It fires
+  // only when status is "error" — the previous stream is already dead, so this
+  // resume can't race a live writer. The in-flight guard keeps even two rapid
+  // focus events from starting two resumeStream() calls, which would otherwise
+  // both write the same turn into the message list (duplicate ids → duplicate
+  // keys → React "Maximum update depth exceeded" #185). We also abort any
+  // still-active stream first and drop the partial turn so the startIndex-0
+  // replay rebuilds it cleanly instead of appending a second copy.
+  const reconnectInFlightRef = useRef(false);
+
+  const resetPartialTurn = useCallback(() => {
+    setMessages((prev) => dropTrailingAssistantMessages(prev));
+  }, [setMessages]);
+
+  const resumeWithRetry = useCallback(
+    async (attempts = 3) => {
+      if (reconnectInFlightRef.current) return;
+      reconnectInFlightRef.current = true;
+      try {
+        // Kill any in-flight SDK stream before starting our own.
+        await stop();
+        resetPartialTurn();
+        for (let attempt = 0; attempt < attempts; attempt++) {
+          try {
+            await resumeStream();
+            return;
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            if (/404|Run not available/.test(msg)) {
+              clearStoredRunId();
+              return;
+            }
+            if (!/Failed to fetch/.test(msg) || attempt === attempts - 1) {
+              if (!/Failed to fetch/.test(msg)) {
+                console.warn("[chat] reconnect failed:", msg);
+              }
+              return;
+            }
+            // Transient network error — wait with backoff, then retry.
+            await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+          }
+        }
+      } finally {
+        reconnectInFlightRef.current = false;
+      }
+    },
+    [resumeStream, stop, resetPartialTurn],
+  );
+
+  const attemptReconnect = useCallback(() => {
+    if (!readStoredRunId()) return;
+    // Only reconnect when the previous stream actually DIED (status "error") —
+    // not while it's still streaming, finished, or a fresh POST is in flight.
+    if (status !== "error") return;
+    void resumeWithRetry();
+  }, [status, resumeWithRetry]);
+
+  useEffect(() => {
+    if (typeof document === "undefined" || typeof window === "undefined") return;
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") attemptReconnect();
+    };
+    const onFocus = () => attemptReconnect();
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("focus", onFocus);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [attemptReconnect]);
 
   const isStreaming = status === "streaming" || demoStreaming;
   const isLoading = status === "submitted" || isStreaming;
@@ -310,6 +477,41 @@ function Inner({ children }: { children: React.ReactNode }) {
     if (demoMessages.length > 0) return demoMessages;
     return messages;
   }, [messages, demoMessages]);
+
+  // ── Background-completion toast ──────────────────────────────────────────
+  // A turn that finishes while the tab is backgrounded is exactly the
+  // "I come after you're done" moment — nudge the user back. The turn lifecycle
+  // itself renders inline in the bubble (chat-message's buildStream), so this
+  // only fires the notification.
+  const t = useTranslations("chat");
+  const backgroundToastShownRef = useRef(false);
+
+  useEffect(() => {
+    if (status === "submitted" || status === "streaming") {
+      backgroundToastShownRef.current = false;
+    }
+  }, [status]);
+
+  useEffect(() => {
+    const last = allMessages[allMessages.length - 1];
+    if (!last || last.role !== "assistant") return;
+    const parts = (last.parts ?? []) as Array<{
+      type?: string;
+      data?: { status?: string };
+    }>;
+    for (const part of parts) {
+      if (part.type !== "data-turn-status") continue;
+      if (part.data?.status !== "done") continue;
+      if (
+        !backgroundToastShownRef.current &&
+        typeof document !== "undefined" &&
+        document.hidden
+      ) {
+        backgroundToastShownRef.current = true;
+        toast.success(t("turnStatus.backgroundDone"));
+      }
+    }
+  }, [allMessages, t]);
 
   // Pre-compute the last assistant message ID so isEvolutionTarget doesn't
   // copy and reverse the entire messages array on every render per message.
@@ -325,13 +527,6 @@ function Inner({ children }: { children: React.ReactNode }) {
     [lastAssistantId],
   );
 
-  // Abort in-flight evolution on unmount
-  useEffect(() => {
-    return () => {
-      if (evolutionRunningRef.current) return;
-    };
-  }, []);
-
   const handleSubmit = (message: string) => {
     if (selectedSliceId !== "now") {
       setSelectedSliceId("now");
@@ -339,70 +534,31 @@ function Inner({ children }: { children: React.ReactNode }) {
     }
     setLastUserMessageAt(new Date().toISOString());
     sendMessage({ role: "user", parts: [{ type: "text", text: message }] });
-    if (!demoStreaming) {
-      fireEvolution();
-    }
+    // v0.7b: self-evolution runs INLINE inside housekeeping (the turn's stream
+    // carries data-evolution chunks) — no separate evolution request here.
   };
 
-  const fireEvolution = useCallback(async () => {
-    if (evolutionRunningRef.current) return;
-    const controller = new AbortController();
-    evolutionAbortRef.current = controller;
-    evolutionRunningRef.current = true;
-
-    setEvolutionState({ running: true, step: "reading" });
-
-    try {
-      const res = await fetch("/api/evolution", {
-        method: "POST",
-        signal: controller.signal,
-      });
-
-      if (!res.ok || !res.body) {
-        setEvolutionState({
-          running: false,
-          error: `Server returned ${res.status}`,
-        });
-        return;
+  // v0.7b: watch the turn stream for data-evolution chunks and drive the
+  // EvolutionIndicator from them — the synchronous inline run streams reading →
+  // reviewing → result while the turn is processing, so the user sees progress.
+  const lastEvolutionDataRef = useRef<string>("");
+  useEffect(() => {
+    if (demoStreaming) return;
+    const last = messages[messages.length - 1];
+    if (!last || last.role !== "assistant") return;
+    let found: EvolutionState | undefined;
+    for (const p of last.parts) {
+      if (p.type === "data-evolution") {
+        found = (p as { data?: EvolutionState }).data ?? found;
       }
-
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? "";
-
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed.startsWith("data: ")) continue;
-          try {
-            const chunk = JSON.parse(trimmed.slice(6)) as
-              | { type?: string; data?: EvolutionState }
-              | undefined;
-            if (chunk?.type === "data-evolution" && chunk.data) {
-              setEvolutionState(chunk.data);
-            }
-          } catch {
-            // Skip unparseable lines
-          }
-        }
-      }
-    } catch (err) {
-      if (err instanceof DOMException && err.name === "AbortError") return;
-      setEvolutionState({
-        running: false,
-        error: err instanceof Error ? err.message : "Evolution request failed",
-      });
-    } finally {
-      evolutionRunningRef.current = false;
     }
-  }, []);
+    if (!found) return;
+    const key = JSON.stringify(found);
+    if (key !== lastEvolutionDataRef.current) {
+      lastEvolutionDataRef.current = key;
+      setEvolutionState(found);
+    }
+  }, [messages, demoStreaming]);
 
   const showingLive = selectedSliceId === "now";
 

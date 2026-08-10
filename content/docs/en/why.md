@@ -38,11 +38,11 @@ demo: slice-file
 
 ### A full agent, not just a memory tool
 
-Previously reads, writes, reasons, and acts. Memory is what makes interaction feel continuous, but it is not the only capability. The agent runs tools against your GitHub repository, uses a multi-model architecture (DeepSeek V4 Flash for fast recall and metadata maintenance, DeepSeek V4 Pro for deep reasoning and response generation), and operates within a whitelist security boundary that restricts agent writes to `memory/`, `tasks/`, and `sessions/` — the `src/` directory is read-only.
+Previously reads, writes, reasons, and acts. Memory is what makes interaction feel continuous, but it is not the only capability. The agent runs tools against your GitHub repository, uses a two-tier model architecture (a cheap worker model for fast recall and metadata maintenance, the main model you pick in the toolbar for deep reasoning and response generation), and operates within a whitelist security boundary that restricts agent writes to `memory/`, `tasks/`, and `sessions/` — the `src/` directory is read-only.
 
 ### Memory is the hard problem
 
-Storing conversations is trivial. Retrieving the *right* memory at the *right* moment with the *right* depth is the genuinely hard part — and that is where the effort goes. The architecture reflects this priority: a single Flash round-trip per request combines intent classification, recall scanning, and metadata maintenance. The complexity budget goes to the core store-index-recall loop, not to configuration knobs or edge cases.
+Storing conversations is trivial. Retrieving the *right* memory at the *right* moment with the *right* depth is the genuinely hard part — and that is where the effort goes. The architecture reflects this priority: a single worker-model call per request combines recall scanning, the semantic gate, and metadata maintenance. The complexity budget goes to the core store-index-recall loop, not to configuration knobs or edge cases.
 
 ### Your memory belongs to you
 
@@ -52,7 +52,7 @@ The whitelist security layer enforces this ownership. Agent tools can write only
 
 ### Simplicity over sophistication
 
-One slicing rule governs when a conversation burst becomes a new slice: 30 minutes of silence. Earlier iterations had capacity checks and Flash continuity checks; those were removed. A single hard-coded threshold — that is the whole rule. One Flash call per request handles recall, intent routing, and metadata maintenance in a single round-trip, with one retry (300 ms) and a fallback to safe defaults.
+One slicing rule governs when a conversation burst becomes a new slice: 30 minutes of silence. Earlier iterations had capacity checks and continuity checks; those were removed. A single hard-coded threshold — that is the whole rule. One worker-model call per request handles recall, the semantic gate, and metadata maintenance in a single round-trip, with a retry and a fallback to safe defaults.
 
 Simplicity is a deliberate choice: every configurable knob, every edge-case handler, every stored flag is a tax on future reasoning. Previously pays that tax only where it earns out — in the core loop.
 
@@ -63,19 +63,19 @@ The architecture maps directly to cognitive science. Endel Tulving's 1972 distin
 - **Slices** are episodic — "what happened" organized by when.
 - **Strands and memory nodes** are semantic — "what it was about." A strand is a keyword woven across every slice that carries it; `memory/episodic/strands.json` maps each strand to its slice paths. (Experimental: strands are written at slice-close but not yet scanned at recall time.)
 
-Recall follows this layered pattern. **Flash** (the fast, lightweight, intentionally fallible model) scans recent slice summaries and returns pointers with relevance scores — a quick conditioned reflex. **Pro** (the main model) receives those pointers and decides which slices to read in full via `readMemory` — deliberate, deep, and resourceful. If Flash finds nothing, Pro explores the slice directory directly.
+Recall follows this layered pattern. The **worker model** (the fast, lightweight, intentionally fallible tier) scans recent slice summaries and returns pointers with relevance scores — a quick conditioned reflex. The **main model** receives those pointers and decides which slices to read in full via `readSlice` — deliberate, deep, and resourceful. If the scan finds nothing, the main model explores the slice directory directly.
 
 Context-dependent memory research (Godden & Baddeley, 1975; Smith & Vela, 2001) shows that recall improves when retrieval context matches encoding context. The timeline preserves temporal context, and recall uses it.
 
 ```preview
-demo: recall-phase
+demo: thinking-steps
 ```
 
-*Flash recall and deep recall are shipped for the live demo at `previously-demo.ldwid.com` (read-only, memory writes disabled, resets on refresh). Richer strand-based recall — scanning `strands.json` actively at query time — is an explicit future milestone.*
+*Two-tier recall is shipped for the live demo at `previously-demo.ldwid.com` (read-only, memory writes disabled, resets on refresh). Richer strand-based recall — scanning `strands.json` actively at query time — is an explicit future milestone.*
 
 ## Status
 
-Previously is **experimental**. It is a one-person research project, not yet ready for personal or production use. Everything described here reflects design intent and working code as of v0.1.0 — features marked as roadmap are actively evolving, not finalized guarantees.
+Previously is **experimental**. It is a one-person research project, not yet ready for personal or production use. Everything described here reflects design intent and working code as of v0.7 — features marked as roadmap are actively evolving, not finalized guarantees.
 
 ## Related
 
