@@ -66,6 +66,7 @@ The thinking, the recall, and the input bar — each piece is its own card.
 
 <p align="center">
   <img alt="The agent's internal reasoning" src="public/screenshots/thinking-steps.png" width="480">
+  <br>
   <img alt="The chat input with model selector" src="public/screenshots/chat-input.png" width="260">
 </p>
 
@@ -73,6 +74,7 @@ Light or dark, desktop or phone — it adapts.
 
 <p align="center">
   <img alt="Previously in light mode" src="public/screenshots/chat-light.png" width="390">
+  <br>
   <img alt="Previously on mobile" src="public/screenshots/chat-mobile-dark.png" width="180">
 </p>
 

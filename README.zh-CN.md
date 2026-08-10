@@ -66,6 +66,7 @@ Previously 用**时间切片**取代聊天线程：一种按人类记忆真实�
 
 <p align="center">
   <img alt="Agent 的内部思考" src="public/screenshots/thinking-steps.png" width="480">
+  <br>
   <img alt="带模型选择器的聊天输入栏" src="public/screenshots/chat-input.png" width="260">
 </p>
 
@@ -73,6 +74,7 @@ Previously 用**时间切片**取代聊天线程：一种按人类记忆真实�
 
 <p align="center">
   <img alt="Previously 亮色模式" src="public/screenshots/chat-light.png" width="390">
+  <br>
   <img alt="Previously 移动端" src="public/screenshots/chat-mobile-dark.png" width="180">
 </p>
 
