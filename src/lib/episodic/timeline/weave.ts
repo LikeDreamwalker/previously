@@ -39,16 +39,20 @@ export const WEAVE_FRESH_MS = 5 * 60 * 1000;
 
 // ─── Strand resolution ─────────────────────────────────────────────────
 
-/** tags that exist in the strand index → the slice's strand set. */
-async function resolveStrands(tags: string[]): Promise<string[]> {
-  if (tags.length === 0) return [];
+/** The strand index, read ONCE per weave (not once per slice). */
+async function readStrandIndex(): Promise<Set<string>> {
   try {
     const raw = await fsReadFile(STRANDS_PATH);
     const strands = JSON.parse(raw) as Record<string, unknown>;
-    return tags.filter((t) => strands[t] !== undefined);
+    return new Set(Object.keys(strands));
   } catch {
-    return [];
+    return new Set();
   }
+}
+
+/** tags that exist in the strand index → the slice's strand set. */
+function resolveStrands(tags: string[], strandNames: Set<string>): string[] {
+  return tags.filter((t) => strandNames.has(t));
 }
 
 // ─── Migration: build the projected map from legacy monthly _index.json ─
@@ -176,9 +180,10 @@ export async function weaveTimeline(
     if (!actual.has(rel)) removed += 1;
   }
 
-  // 4. Resolve strand membership (one strands.json read) + sort chronologically.
+  // 4. Resolve strand membership (strands.json read once) + sort chronologically.
+  const strandNames = await readStrandIndex();
   for (const entry of entries) {
-    entry.strands = await resolveStrands(entry.tags);
+    entry.strands = resolveStrands(entry.tags, strandNames);
   }
   entries.sort((a, b) => a.id.localeCompare(b.id));
 
