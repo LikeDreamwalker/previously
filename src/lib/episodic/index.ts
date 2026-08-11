@@ -65,8 +65,6 @@ export type {
 export {
   generateGlobalTimeline,
   updateGlobalTimeline,
-  formatEntry,
-  buildTimelineContent,
 } from "./flash/global-timeline";
 
 export {
@@ -75,9 +73,29 @@ export {
 export type {
   ConsolidationResult,
 } from "./flash/strand-consolidator";
+// ─── v0.8 timeline (first-class derived index) ─────────────────────────
+export {
+  weaveTimeline,
+  readTimelineMd,
+  WEAVE_FRESH_MS,
+} from "./timeline/weave";
+export {
+  renderTimelineMd,
+  buildTimelineBrief,
+  groupByEraAndDay,
+  sliceLine,
+} from "./timeline/render";
+export {
+  readTimelineIndex,
+  sliceEntryFromDisk,
+  TIMELINE_INDEX_PATH,
+  TIMELINE_MD_PATH,
+} from "./timeline/store";
 export type {
-  TimelineEntry,
-} from "./flash/global-timeline";
+  TimelineIndex,
+  TimelineSliceEntry,
+  TimelineWeaveResult,
+} from "./timeline/types";
 
 export {
   startBatch,
@@ -98,6 +116,12 @@ export {
   pruneStrands,
   slicePathToMs,
 } from "./strands";
+export {
+  deterministicSliceMark,
+} from "./slice-mark";
+export type {
+  SliceMark,
+} from "./slice-mark";
 export type {
   PruneOptions,
 } from "./strands";

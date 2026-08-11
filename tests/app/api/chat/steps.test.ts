@@ -24,6 +24,17 @@ const episodic = vi.hoisted(() => ({
   writeAgentTimeline: vi.fn(async () => ({ path: "", created: false })),
   ensurePreviously: vi.fn(async (sliceId: string) => `# Previously On\n\n_Active slice: ${sliceId} | Updated: ..._\n`),
   generateGlobalTimeline: vi.fn(async () => "mock timeline"),
+  weaveTimeline: vi.fn(async () => ({
+    added: 0,
+    removed: 0,
+    newly_dry: 0,
+    needs_marking: 0,
+    total: 0,
+    skipped: true,
+  })),
+  buildTimelineBrief: vi.fn(() => ""),
+  readTimelineIndex: vi.fn(async () => null),
+  deterministicSliceMark: vi.fn(() => ({ focus: "fallback focus", summary: "fallback summary" })),
   readStrands: vi.fn(async () => ({})),
   analyzeTurn: vi.fn(async () => ({
     messageTags: { reuse: [], create: [] },

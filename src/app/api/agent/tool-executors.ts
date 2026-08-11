@@ -70,6 +70,10 @@ import {
   reassembleSlice,
   type ParsedTurn,
 } from "@/lib/episodic/turn-parser";
+import matter from "gray-matter";
+import { sliceLine } from "@/lib/episodic/timeline/render";
+import { TIMELINE_INDEX_PATH } from "@/lib/episodic/timeline/store";
+import type { TimelineSliceEntry } from "@/lib/episodic/timeline/types";
 
 // ─── Shared tool contexts ────────────────────────────────────────────────
 
@@ -269,6 +273,82 @@ export async function readSliceExecute(
     const msg = domainError(e);
     if (msg === null) throw e;
     return `ERROR: ${msg}. This time slice does not exist.`;
+  }
+}
+
+// ── readSliceSummary — frontmatter only (the cheapest relevance check) ──
+
+export async function readSliceSummaryExecute(
+  { sliceId }: { sliceId: string },
+  { context: ctx }: ExecuteOpts<ToolContext>,
+): Promise<string> {
+  "use step";
+  const parsed = parseSliceId(sliceId);
+  if (!parsed) {
+    return "ERROR: Invalid slice ID. Expected format: YYYY-MM-DD-HHMM (e.g. 2026-07-24-1500).";
+  }
+  const path = `memory/episodic/slices/${parsed.y}/${parsed.m}/${parsed.d}/${parsed.hm}/timeline/core.md`;
+  try {
+    const raw = ctx.useDemo
+      ? await readFileDemo(path)
+      : ctx.useGithub
+        ? await readFile(path, ctx.repo, ctx.owner)
+        : await readFileLocal(path);
+    const { data } = matter(raw);
+    const { turns } = parseTurns(raw);
+    const fmt = (v: unknown): string =>
+      Array.isArray(v) && v.length ? v.join("; ") : "(none)";
+    const lines = [
+      `slice ${sliceId}`,
+      `start: ${typeof data.start === "string" ? data.start : "?"}`,
+      `end: ${typeof data.end === "string" ? data.end : "(active)"}`,
+      `turns: ${turns.length}`,
+      `focus: ${typeof data.focus === "string" && data.focus ? data.focus : "(none)"}`,
+      `summary: ${typeof data.summary === "string" && data.summary ? data.summary : "(none)"}`,
+      `tags: ${fmt(data.tags)}`,
+      `tone: ${typeof data.emotional_tone === "string" && data.emotional_tone ? data.emotional_tone : "(none)"}`,
+      `open_loops: ${fmt(data.open_loops)}`,
+      `decisions: ${fmt(data.decisions)}`,
+    ];
+    const note = ctx.timezone ? `\n(时间均为 UTC；本地时区 ${ctx.timezone})` : "";
+    return lines.join("\n") + note;
+  } catch (e) {
+    const msg = domainError(e);
+    if (msg === null) throw e;
+    return `ERROR: ${msg}. This time slice does not exist.`;
+  }
+}
+
+// ── readTimelineWindow — the timeline catalog over a date window ────────
+
+export async function readTimelineWindowExecute(
+  { from, to, limit }: { from?: string; to?: string; limit?: number },
+  { context: ctx }: ExecuteOpts<ToolContext>,
+): Promise<string> {
+  "use step";
+  try {
+    const raw = ctx.useDemo
+      ? await readFileDemo(TIMELINE_INDEX_PATH)
+      : ctx.useGithub
+        ? await readFile(TIMELINE_INDEX_PATH, ctx.repo, ctx.owner)
+        : await readFileLocal(TIMELINE_INDEX_PATH);
+    const idx = JSON.parse(raw) as { slices?: TimelineSliceEntry[] };
+    const slices = (idx.slices ?? [])
+      .filter((s) => {
+        const date = s.id.slice(0, 10); // "YYYY-MM-DD"
+        if (from && date < from) return false;
+        if (to && date > to) return false;
+        return true;
+      })
+      .sort((a, b) => b.id.localeCompare(a.id))
+      .slice(0, limit ?? 20);
+    if (slices.length === 0) {
+      return `(时间线窗口 ${from ?? "开始"} → ${to ?? "现在"} 内没有切片)`;
+    }
+    const windowLabel = `${from ?? "开始"} → ${to ?? "现在"}`;
+    return `时间线窗口 ${windowLabel}（${slices.length} 片，每一行是指针，不是内容——相关就先 readSliceSummary / readSlice）：\n\n${slices.map(sliceLine).join("\n")}`;
+  } catch {
+    return "(时间线目录尚不可用——weave 尚未运行，或演示数据没有目录)";
   }
 }
 

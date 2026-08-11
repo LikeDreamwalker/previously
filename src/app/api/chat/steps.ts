@@ -27,6 +27,10 @@ import {
   ensurePreviously,
   readStrands,
   generateGlobalTimeline,
+  weaveTimeline,
+  buildTimelineBrief,
+  readTimelineIndex,
+  deterministicSliceMark,
   startBatch,
   flushBatch,
   analyzeTurn,
@@ -253,6 +257,17 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   // ── Begin batch: all writes below go into ONE git commit ──────────────
   startBatch();
 
+  // ── v0.8: weave the timeline first (throttled). Its writes (index.json +
+  // timeline.md) join this turn's batch; the full reconcile runs when the
+  // catalog is stale or a slice just closed. The result feeds the timeline
+  // brief for the system prompt.
+  const weaveResult = await weaveTimeline();
+  if (!weaveResult.skipped) {
+    console.log(
+      `[Timeline] weave: +${weaveResult.added} -${weaveResult.removed} dry=${weaveResult.needs_marking} total=${weaveResult.total}`,
+    );
+  }
+
   let slice: TimeSlice;
   /** The slice we came from — set when we close one this call, or resolved
    *  from the global timeline when today has none. Drives the continuity brief. */
@@ -298,6 +313,18 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
       if (analysis.closedMarking.tags.length > 0) diskSlice.tags = analysis.closedMarking.tags;
       if (analysis.closedMarking.tone) diskSlice.emotional_tone = analysis.closedMarking.tone;
     }
+    // v0.8 reliability: never close a slice dry when it has content. The
+    // analyzer silently returns EMPTY on any failure (worker outage, schema
+    // mismatch), which used to leave focus/summary empty — the "39% dry"
+    // timeline. Fill any gap with a deterministic mark from the slice itself.
+    if (!diskSlice.focus || !diskSlice.summary) {
+      const fallback = deterministicSliceMark(diskSlice);
+      if (!diskSlice.focus) diskSlice.focus = fallback.focus;
+      if (!diskSlice.summary) diskSlice.summary = fallback.summary;
+      console.log(
+        `[Episodic] ${diskSlice.slice_id} closed with deterministic mark (analyzer output incomplete)`,
+      );
+    }
     prevSlice = toPrevRef(diskSlice);
     await closeSlice(diskSlice, closeSignal);
     console.log(`[Episodic] Closed slice: ${diskSlice.slice_id} (${closeSignal})`);
@@ -308,7 +335,9 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
     // trivial turns from minting tags. Always firing keeps the auto-evolution
     // visibly alive instead of silently going quiet.
     await emitPhase("slice-closed", false, [diskSlice.slice_id]);
-    await generateGlobalTimeline();
+    // v0.8 — force the reconcile so the just-closed slice is in the projection
+    // immediately (the throttled per-turn weave would defer it up to 5 min).
+    await weaveTimeline({ force: true });
 
     // Strand consolidation (opportunistic, on slice close): prune single-use
     // stale strands deterministically; when the index is large enough, ask the
@@ -489,12 +518,20 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   await writer.write({ type: "start-step" } as UIMessageChunk);
   writer.releaseLock();
 
+  // ── v0.8: assemble the timeline brief for the system prompt — recent slice
+  // pointer lines + catalog totals. Pure pointers, never content.
+  const timelineIndex = await readTimelineIndex();
+  const timelineBrief = timelineIndex
+    ? buildTimelineBrief(timelineIndex)
+    : "";
+
   return {
     slice,
     previouslyContent,
     strandsMenu,
     turnPriming,
     identityPrompt,
+    ...(timelineBrief ? { timelineBrief } : {}),
     ...(evolutionResult ? { evolutionResult } : {}),
   };
 }

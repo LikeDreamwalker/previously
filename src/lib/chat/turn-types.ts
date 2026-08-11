@@ -97,6 +97,13 @@ export interface HousekeepingResult {
   identityPrompt: string;
   /** Present when a synchronous card evolution ran this turn (slice close or explicit request). */
   evolutionResult?: EvolutionResult;
+  /**
+   * v0.8 — compact timeline brief (recent slice pointer lines + catalog
+   * totals), assembled from the woven index. Injected into the system prompt's
+   * variable tail so the agent can perceive the recent past without reading
+   * slices. Absent when the timeline isn't available yet.
+   */
+  timelineBrief?: string;
 }
 
 /** A background loop the agent started during this turn (for slice writeback). */

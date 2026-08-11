@@ -72,10 +72,23 @@ export function extractFinalText(messages: ModelMessage[]): string {
  * This is what gets stored in the time slice as the agent turn: a faithful
  * text-only snapshot of the turn, keeping both the leading and trailing parts
  * while the tool calls in between are not preserved.
+ *
+ * `startIndex` bounds collection to THIS turn's output: the workflow hands
+ * `agent.stream()` the client history (plus a system message the SDK prepends
+ * at index 0), and `result.messages` echoes all of it back. Without a
+ * startIndex the stored turn would re-capture the entire history every turn —
+ * the v0.7 storage-accumulation bug (each stored agent turn grew into a
+ * monotonic superset of all prior assistant text, and content bled across
+ * slice boundaries). The caller passes `1 + input.modelMessages.length` to
+ * skip the system message + the input history, leaving only this run's steps.
  */
-export function extractAllAssistantText(messages: ModelMessage[]): string {
+export function extractAllAssistantText(
+  messages: ModelMessage[],
+  startIndex = 0,
+): string {
   const parts: string[] = [];
-  for (const m of messages) {
+  for (let i = startIndex; i < messages.length; i++) {
+    const m = messages[i];
     if (m.role !== "assistant") continue;
     if (typeof m.content === "string") {
       if (m.content.trim()) parts.push(m.content.trim());
@@ -377,6 +390,8 @@ export function assembleSystemPrompt(opts: {
   previouslyContent: string;
   /** The per-turn brief (timestamp / intent / continuity / semantic links). */
   turnPriming: string;
+  /** Pre-built "## Timeline (recent)…" pointer block, or "" to omit. */
+  timelineBrief: string;
   /** Pre-built "## Memory topics…" block, or "" to omit. */
   strandsBlock: string;
   /** Pre-built "[System] A self-evolution…" notice, or "" to omit. */
@@ -390,6 +405,7 @@ export function assembleSystemPrompt(opts: {
     identityPrompt,
     previouslyContent,
     turnPriming,
+    timelineBrief,
     strandsBlock,
     evolutionNotice,
     demoNotice,
@@ -401,6 +417,7 @@ export function assembleSystemPrompt(opts: {
     previouslyContent,
     "The above is the current profile and operating model — distilled hypotheses, each carrying `refs` to its evidence. If any line seems outdated or contradicts what the user just said, cite its refs and say so; the correction flows into the archive.",
     turnPriming,
+    timelineBrief,
     strandsBlock,
     evolutionNotice,
     demoNotice,
@@ -422,6 +439,7 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
     strandsMenu,
     turnPriming,
     identityPrompt,
+    timelineBrief,
     evolutionResult,
   } = await housekeeping(input);
 
@@ -440,6 +458,9 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
     identityPrompt,
     previouslyContent,
     turnPriming,
+    timelineBrief: timelineBrief
+      ? `${timelineBrief}\nTimeline lines are pointers — if a line looks relevant, read the slice (readSliceSummary / readSlice) before answering from it.`
+      : "",
     strandsBlock: strandsMenu
       ? `## Memory topics\n\n${strandsMenu}\nWhen the user mentions these topics, use recall to search for related memories. If a search finds nothing relevant, do not retry it — answer from what you have.`
       : "",
@@ -644,8 +665,16 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
     // The stored agent turn is ALL assistant text across the turn (intermediate
     // text + final answer), in order. Tool calls are not preserved — see
     // extractAllAssistantText.
+    //
+    // `1 + input.modelMessages.length` skips the system message the SDK
+    // prepends (index 0) plus the client history handed to the first
+    // agent.stream() call — so only THIS run's assistant text is stored, never
+    // the whole conversation (the v0.7 storage-accumulation bug). Continuations
+    // are covered: the final result.messages is [system, history, ...contN],
+    // and slicing at the original history count captures every continuation's
+    // output while excluding prior turns.
     outcome = {
-      text: extractAllAssistantText(finalMessages),
+      text: extractAllAssistantText(finalMessages, 1 + input.modelMessages.length),
       finishReason: finalFinishReason,
       startedLoops: extractStartedLoops(finalMessages),
       cognition: allCognition,
