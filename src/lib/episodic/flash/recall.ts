@@ -21,6 +21,9 @@ import {
 import { fsReadFile } from "../io-helpers";
 import { readStrands } from "@/lib/episodic/manager";
 import { generateGlobalTimeline } from "@/lib/episodic/flash/global-timeline";
+import { sliceLine } from "@/lib/episodic/timeline/render";
+import { TIMELINE_INDEX_PATH } from "@/lib/episodic/timeline/store";
+import type { TimelineSliceEntry } from "@/lib/episodic/timeline/types";
 import { createModel } from "@/lib/models/provider";
 import { workerProviderOptions } from "@/lib/models/worker";
 import type { ModelConfig } from "@/lib/models/registry";
@@ -173,6 +176,33 @@ async function readStrandImpl(strand: string): Promise<string> {
   }
 }
 
+// ─── Sub-agent tool: readTimelineWindow ────────────────────────────────
+
+/** Timeline catalog over a date window (inclusive YYYY-MM-DD) — compact
+ *  pointer lines. Lets recall navigate by TIME ("what happened in 2025-03 to
+ *  2025-10") in addition to tracing strands by topic. */
+async function readTimelineWindowImpl(from?: string, to?: string): Promise<string> {
+  try {
+    const raw = await fsReadFile(TIMELINE_INDEX_PATH);
+    const idx = JSON.parse(raw) as { slices?: TimelineSliceEntry[] };
+    const slices = (idx.slices ?? [])
+      .filter((s) => {
+        const date = s.id.slice(0, 10); // "YYYY-MM-DD"
+        if (from && date < from) return false;
+        if (to && date > to) return false;
+        return true;
+      })
+      .sort((a, b) => b.id.localeCompare(a.id))
+      .slice(0, 40);
+    if (slices.length === 0) {
+      return `(no slices in window ${from ?? "start"} → ${to ?? "now"})`;
+    }
+    return `Timeline ${from ?? "start"} → ${to ?? "now"} (${slices.length} slices):\n${slices.map(sliceLine).join("\n")}`;
+  } catch {
+    return "(timeline index not available yet — the weave hasn't run)";
+  }
+}
+
 // ─── Structured output schema: recallReport ─────────────────────────
 
 const recallReportSchema = tool({
@@ -237,12 +267,13 @@ const recallReportSchema = tool({
 const RECALL_SYSTEM_PROMPT = `You are the recall search engine for a personal AI platform.
 Your job: find past conversations relevant to a search query and advise the main agent on what to read.
 
-You work from SUMMARIES ONLY — the global timeline holds one summary per closed slice. You NEVER read slice content (no readSlice tool). Your value is fast, accurate navigation over the memory index.
+You work from POINTERS ONLY — the timeline holds one compact line per slice (id · focus · tags · turns). You NEVER read slice content (no readSlice tool). Your value is fast, accurate navigation over the memory index.
 
 Process:
-1. Read the global timeline index to see all available past conversations with their summaries.
-2. If a topic seems relevant, use readStrand to trace it across slices — the strand maps a keyword to its slice paths.
-3. When you have enough information, call recallReport with:
+1. Read the global timeline index to see all available past conversations with their pointer lines.
+2. If the query is about a time period, use readTimelineWindow to scope that window.
+3. If a topic seems relevant, use readStrand to trace it across slices — the strand maps a keyword to its slice paths.
+4. When you have enough information, call recallReport with:
    - hits: slices with a clear connection to the query (with a one-line reason).
    - recommended_reads: slices the main agent should consider opening with readSlice — the slices whose summaries suggest the deepest or most direct relevance. The main agent decides whether to read them; you only advise.
 
@@ -282,9 +313,10 @@ IMPORTANT: After reading the global timeline, check which strands match your que
 Current slice: ${currentSliceId} — this is the ONGOING conversation, NOT a past memory. EXCLUDE it from hits and recommended_reads; only report past slices.${strandsHint}
 
 Follow this process:
-1. START — call readGlobalTimeline to see all available past conversations and their summaries.
-2. EXPLORE — trace any matching strands with readStrand to find which slices carry the topic.
-3. REPORT — call recallReport with your findings, including recommended_reads advising the main agent which slices are worth opening.
+1. START — call readGlobalTimeline to see all available past conversations and their pointer lines.
+2. SCOPE — if the query names a time period, call readTimelineWindow to scope that window.
+3. EXPLORE — trace any matching strands with readStrand to find which slices carry the topic.
+4. REPORT — call recallReport with your findings, including recommended_reads advising the main agent which slices are worth opening.
 
 IMPORTANT: You MUST end by calling recallReport. Even if nothing matches, call it with an empty hits array.`;
 
@@ -314,6 +346,24 @@ IMPORTANT: You MUST end by calling recallReport. Even if nothing matches, call i
             return content;
           },
         }),
+        readTimelineWindow: tool({
+          description:
+            "Read the timeline catalog over a date window (inclusive, YYYY-MM-DD) — " +
+            "one compact pointer line per slice. Use this when the query is about " +
+            "a time period ('what happened around mid-2025') to scope the search.",
+          inputSchema: z.object({
+            from: z
+              .string()
+              .optional()
+              .describe("Start date YYYY-MM-DD (inclusive). Omit for the beginning."),
+            to: z
+              .string()
+              .optional()
+              .describe("End date YYYY-MM-DD (inclusive). Omit for now."),
+          }),
+          execute: async ({ from, to }: { from?: string; to?: string }) =>
+            readTimelineWindowImpl(from, to),
+        }),
         recallReport: recallReportSchema,
       },
       // Stream the sub-agent's exploration trail live: each tool the recall
@@ -325,6 +375,8 @@ IMPORTANT: You MUST end by calling recallReport. Even if nothing matches, call i
         const name = toolCall.toolName;
         if (name === "readGlobalTimeline") {
           onProgress("Reading global timeline…");
+        } else if (name === "readTimelineWindow") {
+          onProgress("Scoping timeline window…");
         } else if (name === "readStrand") {
           const strand =
             typeof toolCall.input === "object" &&

@@ -46,6 +46,15 @@ export function ChatPage({ children, initialConfig }: ChatPageProps) {
 // private-mode / SSR environment (no localStorage) degrades to no-op.
 const RUN_ID_KEY = "previously:activeRunId";
 
+// ─── Sending window (v0.8) ────────────────────────────────────────────────
+// The client keeps the full conversation for rendering, but only the LAST N
+// messages travel to the server each turn. Everything earlier is already
+// stored in the current slice; if the agent needs deeper context it reads it
+// via recall / readSliceSummary / readTimelineWindow — it must NOT be handed
+// the whole client history (that is the context-bloat + storage-accumulation
+// source). The UI never trims; only the wire payload does.
+const SEND_MESSAGE_WINDOW = 10; // ~5 turns of working memory
+
 function readStoredRunId(): string | null {
   if (typeof localStorage === "undefined") return null;
   try {
@@ -350,7 +359,9 @@ function Inner({
         headers: config.headers,
         credentials: config.credentials,
         body: {
-          messages: config.messages,
+          // v0.8: send only the working-memory window — the rest is stored in
+          // the slice and reachable via the memory tools (see SEND_MESSAGE_WINDOW).
+          messages: config.messages.slice(-SEND_MESSAGE_WINDOW),
           model: selectedModel,
           thinking,
           effort,
