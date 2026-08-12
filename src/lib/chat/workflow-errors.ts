@@ -158,3 +158,123 @@ export function errorMessage(err: unknown, fallback = "Unknown error"): string {
     return fallback;
   }
 }
+
+// ─── Full-error serialization (log-facing diagnostics) ─────────────────────
+
+/** Cap the stack trace so a pathological error can't flood the log. */
+const MAX_STACK_LENGTH = 4000;
+/** Depth cap for the recursive `cause` chain. */
+const MAX_CAUSE_DEPTH = 5;
+/** Length cap for a single serialized field value. */
+const MAX_FIELD_LENGTH = 1000;
+/**
+ * Provider SDK / workflow fields worth surfacing explicitly before the generic
+ * props sweep — the AI SDK error classes (AI_APICallError, AI_RetryError,
+ * AI_NoSuchModelError) and the @workflow error classes all carry these.
+ */
+const PROVIDER_FIELDS = [
+  "statusCode",
+  "requestId",
+  "errorId",
+  "code",
+  "url",
+  "isRetryable",
+  "retryCount",
+  "modelId",
+] as const;
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null;
+}
+
+function capValue(s: string, max = MAX_FIELD_LENGTH): string {
+  return s.length <= max ? s : `${s.slice(0, max)}…`;
+}
+
+/** Best-effort stringify of a single field value (never throws). */
+function stringifyValue(value: unknown): string | undefined {
+  if (typeof value === "string") return value;
+  if (
+    typeof value === "number" ||
+    typeof value === "boolean" ||
+    typeof value === "bigint"
+  ) {
+    return String(value);
+  }
+  try {
+    const s = JSON.stringify(value);
+    return s === undefined ? undefined : s;
+  } catch {
+    // Circular reference — fall back to the native toString.
+    return String(value);
+  }
+}
+
+function indentBlock(s: string, pad = "  "): string {
+  return s
+    .split("\n")
+    .map((l) => `${pad}${l}`)
+    .join("\n");
+}
+
+/**
+ * Serialize a thrown value into a complete, log-facing diagnostic string —
+ * the full detail behind `errorMessage`'s one-liner.
+ *
+ * IMPORTANT: never `instanceof` — errors crossing the workflow VM realm are
+ * distinct objects, so every check is shape/name based (same discipline as
+ * `classifyWorkflowError`). Captures name / message / stack, the provider SDK
+ * fields above, any JSON-serializable own enumerable properties, and the
+ * `cause` chain recursively (bounded). Safe for the "use workflow" sandbox:
+ * no Node imports, never throws.
+ */
+export function formatErrorDetail(err: unknown, depth = 0): string {
+  if (!isRecord(err)) {
+    if (err === null || err === undefined) return "(no error value)";
+    return typeof err === "string"
+      ? capValue(err, MAX_STACK_LENGTH)
+      : String(err);
+  }
+
+  const lines: string[] = [];
+
+  const name = typeof err.name === "string" ? err.name : "(anonymous error)";
+  const message = typeof err.message === "string" ? err.message : "";
+  lines.push(`name=${name}`);
+  if (message) lines.push(`message=${capValue(message)}`);
+
+  if (typeof err.stack === "string" && err.stack.trim()) {
+    lines.push(`stack=${capValue(err.stack.trim(), MAX_STACK_LENGTH)}`);
+  }
+
+  // Provider / workflow fields (AI_APICallError, WorkflowWorldError, ...).
+  for (const key of PROVIDER_FIELDS) {
+    const value = err[key];
+    if (value === undefined || value === null) continue;
+    const serialized = stringifyValue(value);
+    if (serialized !== undefined) lines.push(`${key}=${capValue(serialized)}`);
+  }
+
+  // Any remaining JSON-serializable own enumerable property (these are the
+  // fields a cross-realm serialized error carries that we haven't shown yet).
+  const extras: string[] = [];
+  for (const key of Object.keys(err)) {
+    if (key === "name" || key === "message" || key === "stack") continue;
+    if ((PROVIDER_FIELDS as readonly string[]).includes(key)) continue;
+    const value = err[key];
+    if (value === undefined || value === null) continue;
+    const serialized = stringifyValue(value);
+    if (serialized === undefined) continue;
+    extras.push(`${key}=${capValue(serialized)}`);
+  }
+  if (extras.length > 0) lines.push(`extra={ ${extras.join(", ")} }`);
+
+  // Cause chain — recursive, indented, bounded.
+  const cause = err.cause;
+  if (cause !== undefined && cause !== null && depth < MAX_CAUSE_DEPTH) {
+    const nested = formatErrorDetail(cause, depth + 1);
+    lines.push(`cause:\n${indentBlock(nested)}`);
+  }
+
+  return lines.join("\n");
+}

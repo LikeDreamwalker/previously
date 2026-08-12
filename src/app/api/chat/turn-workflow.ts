@@ -34,6 +34,7 @@ import { DEPLOY_GUIDE_URL } from "@/lib/capabilities";
 import {
   classifyWorkflowError,
   errorMessage,
+  formatErrorDetail,
 } from "@/lib/chat/workflow-errors";
 import {
   housekeeping,
@@ -581,6 +582,13 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
       } catch (err) {
         // ── Workflow-error classification → what to do ────────────────────
         const classified = classifyWorkflowError(err);
+        // v0.8: log the FULL error on every agent.stream failure. The classify
+        // branches below reduce it to a short message (or rethrow it without a
+        // word), which leaves transient/timeout/model failures invisible in the
+        // function log — this line is the diagnostic trail for the test env.
+        console.error(
+          `[Turn:${input.turnId}][agent.stream] classified=${classified.kind}\n${formatErrorDetail(err)}`,
+        );
         if (classified.kind === "transient") {
           // Infrastructure blip — let the workflow queue retry the run.
           throw err;
@@ -680,8 +688,24 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
       cognition: allCognition,
       error: turnError,
     };
+
+    // v0.8: make a non-stop end visible in the log. Model errors, timeouts and
+    // interruptions otherwise terminate silently — this line records why the
+    // turn ended so the test env can trace it against the detail logs above.
+    if (finalFinishReason !== "stop") {
+      console.error(
+        `[Turn:${input.turnId}][turn] ended=${finalFinishReason} text=${outcome.text.length} chars` +
+          (turnError ? ` error=${turnError.slice(0, 500)}` : ""),
+      );
+    }
   } catch (err) {
     streamError = err;
+    // Full diagnostic trail for anything the agent loop didn't handle (step
+    // failures, extraction bugs, persistence errors). The outcome below only
+    // carries errorMessage's one-liner, so this is where the detail lives.
+    console.error(
+      `[Turn:${input.turnId}][workflow] turn failed\n${formatErrorDetail(err)}`,
+    );
     outcome = {
       text: "",
       finishReason: "error",

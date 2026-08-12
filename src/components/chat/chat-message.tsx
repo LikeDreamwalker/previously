@@ -260,6 +260,11 @@ export const ChatMessage = memo(function ChatMessage({
                     // Terminal interrupted/error — prominent static card.
                     if (item.mode === "terminal") {
                       const isInterrupted = item.phase.includes("interrupted");
+                      // The client-visible explanation for a terminal/model failure
+                      // (buildStream puts it in `summaries` from data-turn-status).
+                      // Show the first line in the header and the full text
+                      // expandable, so a failed turn says WHY it failed.
+                      const detail = (item.summaries ?? []).join("\n");
                       return (
                         <PhaseIndicator
                           key={key}
@@ -278,6 +283,12 @@ export const ChatMessage = memo(function ChatMessage({
                             isInterrupted
                               ? TERMINAL_INTERRUPTED_STATE
                               : TERMINAL_ERROR_STATE
+                          }
+                          summary={detail ? detail.split("\n")[0] : undefined}
+                          expandedContent={
+                            detail ? (
+                              <p className="whitespace-pre-wrap">{detail}</p>
+                            ) : undefined
                           }
                         />
                       );

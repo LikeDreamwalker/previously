@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { classifyWorkflowError, errorMessage } from "@/lib/chat/workflow-errors";
+import {
+  classifyWorkflowError,
+  errorMessage,
+  formatErrorDetail,
+} from "@/lib/chat/workflow-errors";
 
 /** Build a bare error with an overridden name + optional code/status. */
 function namedError(
@@ -114,5 +118,75 @@ describe("errorMessage", () => {
     expect(errorMessage("plain")).toBe("plain");
     expect(errorMessage(42)).toBe("42");
     expect(errorMessage(null, "fallback")).toBe("fallback");
+  });
+});
+
+describe("formatErrorDetail", () => {
+  it("captures name, message and stack", () => {
+    const e = new Error("boom");
+    const out = formatErrorDetail(e);
+    expect(out).toContain("name=Error");
+    expect(out).toContain("message=boom");
+    expect(out).toContain("stack=Error: boom");
+  });
+
+  it("captures provider SDK fields (statusCode / requestId / code)", () => {
+    const e = new Error("Invalid API key") as Error & Record<string, unknown>;
+    e.name = "AI_APICallError";
+    e.statusCode = 401;
+    e.requestId = "req_123";
+    e.code = "unauthorized";
+    const out = formatErrorDetail(e);
+    expect(out).toContain("name=AI_APICallError");
+    expect(out).toContain("statusCode=401");
+    expect(out).toContain("requestId=req_123");
+    expect(out).toContain("code=unauthorized");
+  });
+
+  it("recurses the cause chain", () => {
+    const outer = new Error("wrapped") as Error & { cause?: unknown };
+    outer.cause = new Error("root cause");
+    const out = formatErrorDetail(outer);
+    expect(out).toContain("cause:");
+    expect(out).toContain("message=root cause");
+  });
+
+  it("bounds the cause-chain depth", () => {
+    let current: Error & { cause?: unknown } = new Error("deep-6");
+    for (let i = 0; i < 10; i++) {
+      const next = new Error(`deep-${i}`) as Error & { cause?: unknown };
+      next.cause = current;
+      current = next;
+    }
+    const out = formatErrorDetail(current);
+    // MAX_CAUSE_DEPTH = 5 → exactly 5 `cause:` blocks (depths 0..4).
+    expect(out.match(/cause:/g)?.length).toBe(5);
+  });
+
+  it("captures JSON-serializable extra own properties", () => {
+    const e = new Error("x") as Error & Record<string, unknown>;
+    e.responseBody = { message: "quota exceeded" };
+    const out = formatErrorDetail(e);
+    expect(out).toContain('responseBody={"message":"quota exceeded"}');
+  });
+
+  it("handles non-Error values without crashing", () => {
+    expect(formatErrorDetail(null)).toBe("(no error value)");
+    expect(formatErrorDetail(undefined)).toBe("(no error value)");
+    expect(formatErrorDetail("plain string")).toBe("plain string");
+    expect(formatErrorDetail(42)).toBe("42");
+  });
+
+  it("marks anonymous / empty errors readably", () => {
+    const out = formatErrorDetail({});
+    expect(out).toContain("name=(anonymous error)");
+  });
+
+  it("does not throw on circular extra properties", () => {
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    const e = new Error("x") as Error & Record<string, unknown>;
+    e.meta = circular;
+    expect(() => formatErrorDetail(e)).not.toThrow();
   });
 });

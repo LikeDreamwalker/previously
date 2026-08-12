@@ -12,6 +12,7 @@
 import { createUIMessageStreamResponse, type UIMessage } from "ai";
 import { startTurn } from "./start-turn";
 import { createMixedStreamTransform } from "./mixed-stream-transform";
+import { formatErrorDetail } from "@/lib/chat/workflow-errors";
 
 export async function POST(request: Request): Promise<Response> {
   try {
@@ -55,6 +56,9 @@ export async function POST(request: Request): Promise<Response> {
       console.error("[chat] Configuration error:", error.message);
       return new Response(JSON.stringify({ error: "Server configuration error" }), { status: 500, headers: { "Content-Type": "application/json" } });
     }
+    // v0.8: full diagnostic trail for anything the request handler didn't
+    // handle (startTurn failures, workflow-start errors, stream-setup throws).
+    console.error("[chat] POST /api/chat unhandled:", formatErrorDetail(error));
     throw error;
   }
 }

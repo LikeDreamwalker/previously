@@ -16,6 +16,7 @@
 import { createUIMessageStreamResponse, type UIMessageChunk } from "ai";
 import { getRun } from "workflow/api";
 import { createMixedStreamTransform } from "../../mixed-stream-transform";
+import { formatErrorDetail } from "@/lib/chat/workflow-errors";
 
 export async function GET(
   request: Request,
@@ -61,8 +62,7 @@ export async function GET(
     });
   } catch (err) {
     console.warn(
-      `[chat/reconnect] run ${runId} unavailable:`,
-      err instanceof Error ? err.message : err
+      `[chat/reconnect] run ${runId} unavailable:\n${formatErrorDetail(err)}`
     );
     return new Response(
       JSON.stringify({ error: "Run not available for reconnect" }),
