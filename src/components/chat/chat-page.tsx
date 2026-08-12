@@ -294,12 +294,20 @@ function Inner({ initialConfig }: { initialConfig?: UserConfig }) {
   // flight) stay false so a reconnect never 404s on a brand-new page.
   const [shouldResume] = useState(() => readStoredRunId() !== null);
 
-  // Restore the persisted conversation once at mount so the resume replay only
-  // reconciles the last message instead of pushing a full copy per replayed
-  // chunk into an empty store (the duplicated/growing message list). Stable
-  // reference (useState initializer) — an unstable messages array itself trips
-  // React #185.
-  const [initialMessages] = useState<UIMessage[]>(() => readStoredMessages());
+  // Restore the persisted conversation once at mount. When resuming, the
+  // trailing partial assistant turn is dropped FIRST — the resume replay
+  // REBUILDS that turn into a fresh assistant message. Keeping it would seed
+  // the replay with a snapshot of the partial turn (createStreamingUIMessageState
+  // reuses the last message verbatim when it's assistant), so every replayed
+  // text-/reasoning-start would APPEND a duplicate part and replaceMessage the
+  // whole grown message per chunk — the "content grows + full re-render per
+  // update" storm (#185). Mirrors resetPartialTurn, the same-session path's
+  // strip-before-resume. Stable reference (useState initializer) — an unstable
+  // messages array itself trips React #185.
+  const [initialMessages] = useState<UIMessage[]>(() => {
+    const stored = readStoredMessages();
+    return shouldResume ? dropTrailingAssistantMessages(stored) : stored;
+  });
 
   const {
     messages,
@@ -327,6 +335,15 @@ function Inner({ initialConfig }: { initialConfig?: UserConfig }) {
       if (/404|Run not available/.test(msg)) {
         clearStoredRunId();
       }
+    },
+    // Flush the completed conversation the moment a turn ends, so a refresh
+    // right after finishing never restores a stale copy. The debounced effect
+    // below only writes after a quiet period — during continuous streaming it
+    // may not have written at all, and onChatEnd clears the runId immediately,
+    // so the gap between "finished" and "persisted" would otherwise lose the
+    // just-finished reply.
+    onFinish: ({ messages: finished }) => {
+      writeStoredMessages(finished.slice(-PERSIST_MESSAGE_CAP));
     },
     transport: new WorkflowChatTransport({
       api: "/api/chat",
@@ -393,7 +410,7 @@ function Inner({ initialConfig }: { initialConfig?: UserConfig }) {
     if (demoMessages.length > 0) return;
     const id = setTimeout(() => {
       writeStoredMessages(messages.slice(-PERSIST_MESSAGE_CAP));
-    }, 400);
+    }, 100);
     return () => clearTimeout(id);
   }, [messages, demoMessages.length]);
 

@@ -32,12 +32,15 @@ export async function GET(
     const run = getRun(runId);
     const status = await run.status;
 
-    // A finished run (completed / failed / cancelled) has nothing to recover —
-    // the turn is over. Emit a clean terminal instead of opening its stream,
-    // which can otherwise sit open with no more chunks and leave the client
-    // stuck in "streaming" forever. The client's onChatEnd then clears the
-    // stored runId, so a later refresh no longer reconnects to it.
-    if (status === "completed" || status === "failed" || status === "cancelled") {
+    // failed / cancelled runs have nothing valid to recover — emit a clean
+    // terminal so the client ends cleanly instead of retrying a stream that
+    // will never deliver a finish chunk. A COMPLETED run, however, must return
+    // its actual stream: the client may have dropped before receiving the
+    // finish chunk, and the durable stream still carries the full reply. A bare
+    // terminal here would leave the client with an empty assistant turn (the
+    // mount-resume path strips the partial turn before replaying — see
+    // chat-page.tsx — so the rebuild must come from the stream, not a terminal).
+    if (status === "failed" || status === "cancelled") {
       const terminalStream = new ReadableStream<UIMessageChunk>({
         start(controller) {
           controller.enqueue({ type: "finish-step" } as UIMessageChunk);
