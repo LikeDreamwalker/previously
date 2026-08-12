@@ -10,7 +10,8 @@
   },
   "errorBoundary": {
     "title": "Client render error — full details below",
-    "consoleHint": "The full error and component stack are also logged to the browser console."
+    "consoleHint": "The full error and component stack are also logged to the browser console.",
+    "fullError": "Full error details"
   },
   "nav": {
     "dashboard": "Dashboard",

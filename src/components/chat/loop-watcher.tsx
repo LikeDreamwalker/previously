@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import { toast } from "sonner";
 import type { UIMessage } from "ai";
+import { formatErrorDetail } from "@/lib/chat/workflow-errors";
 
 /**
  * Durable loop streams recognized by this watcher. Avoids duplicate
@@ -117,6 +118,7 @@ export function LoopWatcher({ messages }: { messages: UIMessage[] }) {
           duration: 8000,
         });
       } catch (err) {
+        console.error("[LoopWatcher] loop stream failed:", formatErrorDetail(err));
         toast.error(`Loop connection lost: ${goal.slice(0, 50)}`, {
           id: toastId,
           description: err instanceof Error ? err.message : undefined,

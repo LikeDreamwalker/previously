@@ -3,6 +3,7 @@
 import { getDemoPersona, listDemoPersonas, setDemoPersona } from "@/lib/demo/demo-fs";
 import { resolveDataSource } from "@/lib/data-source/resolve";
 import { getUserName } from "@/lib/identity";
+import { formatErrorDetail } from "@/lib/chat/workflow-errors";
 import { readSliceIndex, readSliceBody, parseSlice, sliceIdToFilePath, readPreviously, readAgentTimeline } from "./manager";
 import { readTimelineIndex } from "./timeline/store";
 import type { TimelineSliceEntry } from "./timeline/types";
@@ -242,7 +243,7 @@ export async function getSliceContent(
       previously,
     };
   } catch (err) {
-    console.error(`[Episodic] getSliceContent failed for ${sliceId}:`, err instanceof Error ? err.message : err);
+    console.error(`[Episodic] getSliceContent failed for ${sliceId}:`, formatErrorDetail(err));
     return null;
   }
 }
