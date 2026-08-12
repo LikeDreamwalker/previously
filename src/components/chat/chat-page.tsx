@@ -265,11 +265,12 @@ function Inner({ initialConfig }: { initialConfig?: UserConfig }) {
   // turn stores its runId, and useChat's `resume` effect would re-fire
   // resumeStream() mid-stream (a second writer → #185). Fresh visits (no run in
   // flight) stay false so a reconnect never 404s on a brand-new page.
-  const [shouldResume] = useState(() => {
-    const stored = readStoredRunId();
-    clientTrace("mount", `storedRunId=${stored} shouldResume=${stored !== null}`);
-    return stored !== null;
-  });
+  // v0.8: mount-resume (resume:true) is DISABLED — see the resume:false note
+  // on useChat. Log the stored run id on mount so the reconnect trace still
+  // shows whether a run was pending.
+  useEffect(() => {
+    clientTrace("mount", `storedRunId=${readStoredRunId()}`);
+  }, []);
 
   const {
     messages,
@@ -280,7 +281,9 @@ function Inner({ initialConfig }: { initialConfig?: UserConfig }) {
     resumeStream,
     setMessages,
   } = useChat({
-    resume: shouldResume,
+    // Mount auto-resume disabled (see shouldResume comment — the full-replay
+    // burst trips React #185). Same-session reconnect is unaffected.
+    resume: false,
     // Clear a stale runId when a reconnect 404s ("Run not available") — the run
     // is gone, so a future reload shouldn't keep retrying it.
     onError: (err) => {
