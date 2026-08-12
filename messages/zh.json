@@ -8,6 +8,10 @@
       "day": "日"
     }
   },
+  "errorBoundary": {
+    "title": "客户端渲染错误 — 完整详情如下",
+    "consoleHint": "完整错误与组件堆栈也已打印到浏览器控制台。"
+  },
   "nav": {
     "dashboard": "仪表盘",
     "chat": "聊天",

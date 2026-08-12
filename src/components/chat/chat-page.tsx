@@ -27,6 +27,7 @@ import { saveUserConfig } from "@/lib/config/actions";
 import type { UserConfig } from "@/lib/config/types";
 import { useTranslations } from "next-intl";
 import { toast } from "sonner";
+import { formatErrorDetail } from "@/lib/chat/workflow-errors";
 
 interface ChatPageProps {
   /** Server-preloaded user config (RSC) — seeds model/thinking/effort so the
@@ -278,6 +279,10 @@ function Inner({ initialConfig }: { initialConfig?: UserConfig }) {
     // Clear a stale runId when a reconnect 404s ("Run not available") — the run
     // is gone, so a future reload shouldn't keep retrying it.
     onError: (err) => {
+      // v0.8: log the FULL error object — WorkflowChatTransport swallows stream
+      // errors and only rethrows a generic reconnect failure, so the complete
+      // detail (stack / cause / status) is captured here for diagnosis.
+      console.error("[useChat][onError]", formatErrorDetail(err));
       const msg = err instanceof Error ? err.message : String(err);
       if (/404|Run not available/.test(msg)) {
         clearStoredRunId();

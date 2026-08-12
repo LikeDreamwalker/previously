@@ -8,6 +8,10 @@
       "day": ""
     }
   },
+  "errorBoundary": {
+    "title": "Client render error — full details below",
+    "consoleHint": "The full error and component stack are also logged to the browser console."
+  },
   "nav": {
     "dashboard": "Dashboard",
     "chat": "Chat",
