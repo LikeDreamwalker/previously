@@ -81,6 +81,32 @@ function clearStoredRunId(): void {
   }
 }
 
+// ─── Conversation persistence (official single-turn resume pattern) ───────
+// The chat-session-modeling / resumable-streams docs: the client owns the
+// conversation and restores it via `initialMessages` on refresh, so the stream
+// resume only reconciles the LAST message instead of replaying the whole run
+// into an empty store (which pushes a full copy per chunk → duplicated,
+// growing message list). We persist the rendered UIMessage[] to localStorage.
+const STORED_MESSAGES_KEY = "previously:messages";
+
+function readStoredMessages(): UIMessage[] {
+  if (typeof localStorage === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(STORED_MESSAGES_KEY);
+    return raw ? (JSON.parse(raw) as UIMessage[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeStoredMessages(messages: UIMessage[]): void {
+  try {
+    localStorage.setItem(STORED_MESSAGES_KEY, JSON.stringify(messages));
+  } catch {
+    /* private mode — persistence is best-effort */
+  }
+}
+
 // ─── Inner ───────────────────────────────────────────────────────────────
 
 function Inner({ initialConfig }: { initialConfig?: UserConfig }) {
@@ -271,6 +297,17 @@ function Inner({ initialConfig }: { initialConfig?: UserConfig }) {
     return stored !== null;
   });
 
+  // Restore the persisted conversation once at mount so the resume replay only
+  // reconciles the last message instead of pushing a full copy per replayed
+  // chunk into an empty store (the duplicated/growing message list). Stable
+  // reference (useState initializer) — an unstable initialMessages array itself
+  // trips React #185.
+  const [initialMessages] = useState<UIMessage[]>(() => {
+    const restored = readStoredMessages();
+    clientTrace("mount", `restored ${restored.length} persisted message(s)`);
+    return restored;
+  });
+
   const {
     messages,
     sendMessage,
@@ -280,6 +317,8 @@ function Inner({ initialConfig }: { initialConfig?: UserConfig }) {
     resumeStream,
     setMessages,
   } = useChat({
+    // v5 SDK: initial conversation state is passed as `messages` (ChatInit).
+    messages: initialMessages,
     resume: shouldResume,
     // v0.8: throttle the UI updates. The resume replay (and heavy streaming)
     // delivers chunks rapidly; each write() does setStatus + replaceMessage via
@@ -380,6 +419,21 @@ function Inner({ initialConfig }: { initialConfig?: UserConfig }) {
       prevStatusRef.current = status;
     }
   }, [status]);
+
+  // ── Persist the conversation (debounced) so a refresh restores it via
+  // `initialMessages`. Skip the demo stream (demoMessages is separate).
+  const firstRenderRef = useRef(true);
+  useEffect(() => {
+    if (firstRenderRef.current) {
+      firstRenderRef.current = false;
+      return;
+    }
+    const id = setTimeout(() => {
+      clientTrace("persist", `saving ${messages.length} message(s)`);
+      writeStoredMessages(messages);
+    }, 400);
+    return () => clearTimeout(id);
+  }, [messages]);
 
   // ── Reconnect on return to the foreground ────────────────────────────────
   // When the phone locks / the tab is backgrounded mid-turn, the fetch dies
