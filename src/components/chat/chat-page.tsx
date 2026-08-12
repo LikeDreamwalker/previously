@@ -301,8 +301,7 @@ function Inner({ initialConfig }: { initialConfig?: UserConfig }) {
   // reuses the last message verbatim when it's assistant), so every replayed
   // text-/reasoning-start would APPEND a duplicate part and replaceMessage the
   // whole grown message per chunk — the "content grows + full re-render per
-  // update" storm (#185). Mirrors resetPartialTurn, the same-session path's
-  // strip-before-resume. Stable reference (useState initializer) — an unstable
+  // update" storm (#185). Stable reference (useState initializer) — an unstable
   // messages array itself trips React #185.
   const [initialMessages] = useState<UIMessage[]>(() => {
     const stored = readStoredMessages();
@@ -315,8 +314,6 @@ function Inner({ initialConfig }: { initialConfig?: UserConfig }) {
     status,
     stop,
     error,
-    resumeStream,
-    setMessages,
   } = useChat({
     // v5 SDK: initial conversation state is passed as `messages` (ChatInit).
     messages: initialMessages,
@@ -413,85 +410,6 @@ function Inner({ initialConfig }: { initialConfig?: UserConfig }) {
     }, 100);
     return () => clearTimeout(id);
   }, [messages, demoMessages.length]);
-
-  // ── Reconnect on return to the foreground ────────────────────────────────
-  // When the phone locks / the tab is backgrounded mid-turn, the fetch dies
-  // (status → "error") even though the durable workflow keeps running. On
-  // return, re-attach to the run's stream to replay what was missed. Skip when
-  // the turn is still actively streaming or already finished.
-  //
-  // SINGLE-WRITER GUARD: the focus/visibility handler below is the ONLY manual
-  // reconnect now (refresh-resume is handled by the SDK's `resume: true` above;
-  // same-session drops by the transport's internal auto-reconnect). It fires
-  // only when status is "error" — the previous stream is already dead, so this
-  // resume can't race a live writer. The in-flight guard keeps even two rapid
-  // focus events from starting two resumeStream() calls, which would otherwise
-  // both write the same turn into the message list (duplicate ids → duplicate
-  // keys → React "Maximum update depth exceeded" #185). We also abort any
-  // still-active stream first and drop the partial turn so the startIndex-0
-  // replay rebuilds it cleanly instead of appending a second copy.
-  const reconnectInFlightRef = useRef(false);
-
-  const resetPartialTurn = useCallback(() => {
-    setMessages((prev) => dropTrailingAssistantMessages(prev));
-  }, [setMessages]);
-
-  const resumeWithRetry = useCallback(
-    async (attempts = 3) => {
-      if (reconnectInFlightRef.current) return;
-      reconnectInFlightRef.current = true;
-      try {
-        // Kill any in-flight SDK stream before starting our own.
-        await stop();
-        resetPartialTurn();
-        for (let attempt = 0; attempt < attempts; attempt++) {
-          try {
-            await resumeStream();
-            return;
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            if (/404|Run not available/.test(msg)) {
-              clearStoredRunId();
-              return;
-            }
-            if (!/Failed to fetch/.test(msg) || attempt === attempts - 1) {
-              if (!/Failed to fetch/.test(msg)) {
-                console.warn("[chat] reconnect failed:", msg);
-              }
-              return;
-            }
-            // Transient network error — wait with backoff, then retry.
-            await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
-          }
-        }
-      } finally {
-        reconnectInFlightRef.current = false;
-      }
-    },
-    [resumeStream, stop, resetPartialTurn],
-  );
-
-  const attemptReconnect = useCallback(() => {
-    if (!readStoredRunId()) return;
-    // Only reconnect when the previous stream actually DIED (status "error") —
-    // not while it's still streaming, finished, or a fresh POST is in flight.
-    if (status !== "error") return;
-    void resumeWithRetry();
-  }, [status, resumeWithRetry]);
-
-  useEffect(() => {
-    if (typeof document === "undefined" || typeof window === "undefined") return;
-    const onVisibility = () => {
-      if (document.visibilityState === "visible") attemptReconnect();
-    };
-    const onFocus = () => attemptReconnect();
-    document.addEventListener("visibilitychange", onVisibility);
-    window.addEventListener("focus", onFocus);
-    return () => {
-      document.removeEventListener("visibilitychange", onVisibility);
-      window.removeEventListener("focus", onFocus);
-    };
-  }, [attemptReconnect]);
 
   const isStreaming = status === "streaming" || demoStreaming;
   const isLoading = status === "submitted" || isStreaming;
