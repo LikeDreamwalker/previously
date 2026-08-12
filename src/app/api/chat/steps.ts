@@ -517,6 +517,7 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   await writer.write({ type: "start" } as UIMessageChunk);
   await writer.write({ type: "start-step" } as UIMessageChunk);
   writer.releaseLock();
+  console.log(`[Trace][Server] ${input.turnId} UI stream opened (start/start-step)`);
 
   // ── v0.8: assemble the timeline brief for the system prompt — recent slice
   // pointer lines + catalog totals. Pure pointers, never content.
@@ -623,6 +624,10 @@ export async function finalizeTurn(
   // A reconnecting client replays the stream from the last-seen index and
   // derives the status from the final assistant message.
   const status = deriveTurnStatus(outcome);
+  console.log(
+    `[Trace][Server] ${turnId} turn-status=${status} text=${outcome.text.length} chars` +
+      (outcome.error ? ` error=${outcome.error.slice(0, 200)}` : ""),
+  );
   const writable = getWritable<UIMessageChunk>();
   const writer = writable.getWriter();
   await writer.write({
