@@ -7,8 +7,10 @@ import { cn } from "@/lib/utils"
 
 interface NumberTickerProps extends ComponentPropsWithoutRef<"span"> {
   value: number
+  /** The number the roll STARTS from. May be larger or smaller than `value` —
+   *  the spring rolls forward (start → value) or reverse (value → start)
+   *  automatically. */
   startValue?: number
-  direction?: "up" | "down"
   delay?: number
   decimalPlaces?: number
   /** Pad the integer part to at least this many digits (e.g. 2 → "09") */
@@ -18,7 +20,6 @@ interface NumberTickerProps extends ComponentPropsWithoutRef<"span"> {
 export function NumberTicker({
   value,
   startValue = 0,
-  direction = "up",
   delay = 0,
   className,
   decimalPlaces = 0,
@@ -26,7 +27,7 @@ export function NumberTicker({
   ...props
 }: NumberTickerProps) {
   const ref = useRef<HTMLSpanElement>(null)
-  const motionValue = useMotionValue(direction === "down" ? value : startValue)
+  const motionValue = useMotionValue(startValue)
   const springValue = useSpring(motionValue, {
     damping: 60,
     stiffness: 100,
@@ -38,7 +39,7 @@ export function NumberTicker({
 
     if (isInView) {
       timer = setTimeout(() => {
-        motionValue.set(direction === "down" ? startValue : value)
+        motionValue.set(value)
       }, delay * 1000)
     }
 
@@ -47,7 +48,7 @@ export function NumberTicker({
         clearTimeout(timer)
       }
     }
-  }, [motionValue, isInView, delay, value, direction, startValue])
+  }, [motionValue, isInView, delay, value, startValue])
 
   useEffect(
     () =>
@@ -68,7 +69,7 @@ export function NumberTicker({
     <span
       ref={ref}
       className={cn(
-        "inline-block tracking-wider text-black tabular-nums dark:text-white",
+        "inline-block tracking-wider font-mono text-black tabular-nums dark:text-white",
         className
       )}
       {...props}

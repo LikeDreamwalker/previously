@@ -4,17 +4,17 @@
 
 The chat rendering system is a client-side component tree that pipes Vercel AI SDK `UIMessage` parts (text, reasoning, tool-invocations, data-phase, data-evolution) through a unified stream pipeline — recall context, reasoning, tool calls, and final response — all rendered inline inside each assistant message bubble via `AnimatePresence`. The top-level container (`ChatPage`) uses `useChat` with `@ai-sdk/workflow`'s `WorkflowChatTransport` — every turn runs inside a durable Vercel Workflow run and is resumable after a dropped connection.
 
-The timeline is a horizontally-scrollable date strip (sticky below AppHeader). Switching between "now" (live chat) and past slices (historical view) swaps the content area without unmounting the timeline.
+The timeline is a full-height **wheel** on the left (sticky below AppHeader): a virtual-scrolled column of the real time slices (rendered from `timeline/index.json`), oldest at the top and newest at the bottom. A center selection band highlights the focused slice; a central rolling readout animates the timestamp (digits count down while scrolling into the past, up while forward). Switching between "now" (live chat) and past slices (historical view) swaps the content area without unmounting the wheel.
 
 ## Component Tree
 
 ```
 ChatPage (chat-page.tsx)  ← "use client", top-level useChat container
 ├── [Hero Section] (children from [locale]/page.tsx — server component)
-├── HorizontalTimeline (sticky below AppHeader, horizontally scrollable date dots)
+├── TimelineWheel (sticky left, full-height, virtual-scrolled focal wheel over the slice catalog)
 ├── Content area (min-h-screen fill)
 │   ├── [Live — "now" selected]
-│   │   ├── NowPlaceholder (when no messages and not loading — animated gap + "现在")
+│   │   ├── EmptyBriefing (when no messages and not loading — the "Previously On" arrival briefing)
 │   │   └── ChatSection (chat-section.tsx)
 │   │       ├── ChatMessage (per message)
 │   │       │   ├── EvolutionIndicator  ← per-bubble self-evolution status
@@ -74,7 +74,10 @@ ChatPage (chat-page.tsx)  ← "use client", top-level useChat container
 | `tool-renderers/loop.tsx` | StartLoop tool: Repeat icon, goal summary, loopId/filePath details |
 | `tool-renderers/default.tsx` | Fallback for unknown tools: Wrench icon, JSON-snippet summary |
 | `historical-chat-view.tsx` | Past slice content: Previously On bar (dialog), turn list with timestamps, CognitionPopover per turn, open loops/decisions footer |
-| `horizontal-timeline.tsx` | Horizontally scrollable date/time dot strip with "load more" pagination, selected/highlighted states |
+| `timeline-wheel.tsx` | Full-height virtual-scrolled focal wheel over the slice catalog: center selection band, rolling-digit central readout (reverse tick), click-to-load content sync. Reads `getTimelineCatalog()` |
+| `time-display.tsx` | The shared time readout (`NumberTicker` per field). With `from`, each field rolls from that time's value to `timestamp`'s (forward/reverse automatically) and `onRollComplete` fires once settled |
+| `relative-time.tsx` | The time-travel readout shown during slice navigation: a big relative label (the delta from the current slice to the target — "3 days ago", "1 year later") as the title + the actual time as a smaller rolling subtitle. The label's count is a `NumberTicker` (monospace, rolls from 0 on entry) |
+| `empty-briefing.tsx` | The empty-live "arrival" briefing: a letter-spaced `PREVIOUSLY ON` eyebrow + the user's name over a soft brand glow (film-title-card framing), then a hot-start summary drawn from real memory — the active slice's focus ("上次聊到"), open loops ("还欠着的事"), and contextual suggestion chips ("可以接着聊"). Every section only renders when it has real data; the name doubles as the persona switcher in demo mode; "view full previously" opens the same Previously On dialog the slice view uses |
 | `time-display.tsx` | Date/time formatting: `sameDay()` check, `TimeDisplay` with date/time modes |
 | `cognition-popover.tsx` | Per-turn agent thoughts dialog: Brain icon trigger, lazy-loaded Markdown content |
 | `loading-tip.tsx` | Loading indicator cycling through i18n tips with fade transitions |
@@ -97,7 +100,10 @@ ChatPage (chat-page.tsx)  ← "use client", top-level useChat container
 - **EvolutionIndicator per bubble**: Self-evolution status is per-turn, not global. It renders at the top of the latest assistant bubble using the same `PhaseIndicator` component as thinking/recall/phase indicators, maintaining visual consistency.
 - **PhaseIndicator as the universal indicator**: Instead of duplicating expandable card patterns, thinking, evolution, recall, and data-phase items all use PhaseIndicator (not ToolLayout which is for tool calls). This avoids the confusion between indicators and tools.
 - **ChatPage owns the orchestration, ChatSection owns the message list, ChatMessage owns the rendering**: Three-layer separation keeps concerns isolated.
-- **Timeline as sticky strip**: Horizontally scrollable date dots (newest on the right) snap below the AppHeader. Switching between "now" and past slices swaps the content area via `selectedSliceId` state.
-- **NowPlaceholder fills the void**: When no messages exist and the user hasn't sent anything, an animated "现在" placeholder with a computed time gap from the last slice fills the content area.
+- **Timeline as a focal wheel**: A full-height virtual-scrolled column of the slice catalog on the left. The row nearest the vertical center is enlarged (scale + opacity fall off with distance); a center selection band highlights it; the central readout rolls its digits (odometer-style) when the focused slice changes. Scrolling up = into the past (digits count down), down = toward now. **Content loads only on explicit click** — scrolling is pure preview (readout + focus text), so browsing costs zero requests. This matters because slice reads are GitHub API calls in production. **The blue selection mark follows the LOADED slice** (whose content the right side shows), not the scroll preview — it moves only when the user clicks.
+- **Mouse drag-to-scroll**: the wheel also responds to left-button drag with a **content-follows-finger** gesture (mobile-style): drag down moves the content down → reveals earlier/past frames; drag up → toward now. `mousedown` calls `preventDefault()` to stop text selection, `select-none` is on the container, and a click-capture handler swallows the click that would otherwise fire when a drag ends over a row.
+- **Navigation = time travel**: clicking a slice renders `RelativeTimeReadout` in the content area — the relative label — anchored to the slice the viewer is currently ON, so traveling from a year-old slice back to "now" reads "1 year later" — is the big title (its count is a `NumberTicker` that rolls straight from 0 on entry, monospace like all time rendering), and the actual time is a smaller rolling subtitle. With `from` set, the subtitle's fields roll from where the viewer currently is to the target the moment they enter (no start beat — same as the title count) — `NumberTicker`'s spring is bidirectional, so direction is automatic (reverse when going back, forward when going forward). Pacing: the spring settles (~1s), then a ~1.2s hold at the target (`ROLL_HOLD_MS`) before `onRollComplete` — so the clock visibly lands, pauses, then leaves. Wrapped in `AnimatePresence mode="wait"` for fade in/out; the target content fetches in the background and fades in. Submitting a chat message cancels any in-flight transition.
+- **Empty state = the arrival briefing, not a clock**: the empty-live state renders `EmptyBriefing` — a film-title-card `PREVIOUSLY ON` eyebrow + the user's name over a soft brand glow, with a hot-start summary drawn from real memory (the active slice's focus, open loops, and contextual suggestion chips). There is deliberately NO live clock — the product is not an alarm clock. Every section fail-safes: it only renders when its data exists (nothing reads "上次聊到" followed by nothing). The name doubles as the persona switcher in demo mode.
+- **Shared stage-light language**: the time-travel transition and the empty briefing share one visual identity — the `PREVIOUSLY ON` mono eyebrow + a soft `brand-500/10` radial glow — so the two "moments" (arriving, and traveling through time) feel like one product.
 - **ChatInput owns its images** via `useImageAttachments` hook: paste, drag-drop, and file picker all funnel into the same state. Images are previewed as thumbnails with remove buttons.
 - **MarkdownRenderer is not `prose`-only**: it has custom per-element styles (tables with borders, links as blue with underline, code blocks with background, etc.) instead of relying solely on Tailwind typography prose classes.

@@ -10,33 +10,32 @@ import { ChatSection } from "./chat-section";
 import { LoopWatcher } from "./loop-watcher";
 import { buildMockSteps } from "@/lib/chat/mock-stream";
 import type { EvolutionState } from "./evolution-indicator";
-import { HorizontalTimeline } from "./horizontal-timeline";
+import { TimelineWheel } from "./timeline-wheel";
 import { HistoricalChatView } from "./historical-chat-view";
+import { RelativeTimeReadout } from "./relative-time";
+import { EmptyBriefing } from "./empty-briefing";
+import { AnimatePresence, motion } from "motion/react";
 import {
   getEpisodicState,
-  getMoreSlices,
   getSliceContent,
   type SliceSummary,
   type SliceContent,
 } from "@/lib/episodic/actions";
 import { getCached, setCache } from "@/lib/chat/slice-cache";
 import { dropTrailingAssistantMessages } from "@/lib/chat/reconnect";
-import { NumberTicker } from "@/components/ui/number-ticker";
-import { TextGenerateEffect } from "@/components/ui/text-generate-effect";
 import { saveUserConfig } from "@/lib/config/actions";
 import type { UserConfig } from "@/lib/config/types";
 import { useTranslations } from "next-intl";
 import { toast } from "sonner";
 
 interface ChatPageProps {
-  children: React.ReactNode;
   /** Server-preloaded user config (RSC) — seeds model/thinking/effort so the
    *  chat starts on the real values instead of flashing defaults. */
   initialConfig?: UserConfig;
 }
 
-export function ChatPage({ children, initialConfig }: ChatPageProps) {
-  return <Inner initialConfig={initialConfig}>{children}</Inner>;
+export function ChatPage({ initialConfig }: ChatPageProps) {
+  return <Inner initialConfig={initialConfig} />;
 }
 
 // ─── Reconnect persistence ────────────────────────────────────────────────
@@ -80,74 +79,9 @@ function clearStoredRunId(): void {
   }
 }
 
-// ─── Gap calculator ──────────────────────────────────────────────────
-
-type GapInfo =
-  | { count: number; unitKey: string }
-  | { special: string }
-  | null;
-
-function getGapInfo(fromISO: string, now: number): GapInfo {
-  const from = new Date(fromISO).getTime();
-  if (Number.isNaN(from) || now < from) return null;
-  const minutes = Math.floor((now - from) / 60_000);
-  if (minutes < 5) return { special: "moments" };
-  if (minutes < 60) return { count: minutes, unitKey: "minute" };
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return { count: hours, unitKey: "hour" };
-  const days = Math.floor(hours / 24);
-  if (days < 7) return { count: days, unitKey: "day" };
-  if (days < 35) return { count: Math.floor(days / 7), unitKey: "week" };
-  return { count: Math.floor(days / 30), unitKey: "month" };
-}
-
 // ─── Inner ───────────────────────────────────────────────────────────────
 
-function NowPlaceholder({ gapAnchor }: { gapAnchor: string | null }) {
-  const t = useTranslations("timeline");
-  const [gapInfo, setGapInfo] = useState<GapInfo>(null);
-
-  useEffect(() => {
-    setGapInfo(gapAnchor ? getGapInfo(gapAnchor, Date.now()) : null);
-  }, [gapAnchor]);
-
-  return (
-    <div className="flex flex-col items-center pt-24 pb-20 text-center">
-      {gapInfo && (
-        "special" in gapInfo ? (
-          <p className="mb-5 font-mono text-xs tracking-[0.25em] text-muted-foreground/60">
-            {t(`gap.${gapInfo.special}`)}
-          </p>
-        ) : (
-          <p className="mb-5 font-mono text-xs tracking-[0.25em] text-muted-foreground/60">
-            <NumberTicker
-              value={gapInfo.count}
-              className="text-muted-foreground/60"
-            />
-            {" "}
-            {t(`gap.unit.${gapInfo.unitKey}`, { count: gapInfo.count })}
-          </p>
-        )
-      )}
-      <TextGenerateEffect
-        words={t("panel.now")}
-        className="text-5xl sm:text-6xl font-light tracking-tighter leading-none text-foreground"
-        filter={false}
-        duration={0.3}
-        delay={0.2}
-        animateOnView
-      />
-    </div>
-  );
-}
-
-function Inner({
-  children,
-  initialConfig,
-}: {
-  children: React.ReactNode;
-  initialConfig?: UserConfig;
-}) {
+function Inner({ initialConfig }: { initialConfig?: UserConfig }) {
   // ── Model / thinking / effort — reactive, persisted to config.json ─────
   // The single source of truth is memory/user/config.json (cross-device, no
   // localStorage). The RSC page preloads it (initialConfig) so there's no
@@ -195,12 +129,22 @@ function Inner({
 
   // ── Timeline state ──────────────────────────────────────────────────────
   const [timelineSlices, setTimelineSlices] = useState<SliceSummary[]>([]);
-  const [timelineHasMore, setTimelineHasMore] = useState(false);
-  const [timelineLoadingMore, setTimelineLoadingMore] = useState(false);
-  const [timelineReady, setTimelineReady] = useState(false);
+  // The most recent slice — its focus / open_loops seed the empty briefing.
+  const [activeSlice, setActiveSlice] = useState<SliceSummary | null>(null);
   const [selectedSliceId, setSelectedSliceId] = useState<string | null>("now");
   const [historicalContent, setHistoricalContent] = useState<SliceContent | null>(null);
-  const [historicalLoading, setHistoricalLoading] = useState(false);
+  // The time-travel transition currently playing (if any). While active, the
+  // clock overlay covers the content area and doubles as the loading state.
+  const [transition, setTransition] = useState<{
+    from: string;
+    to: string;
+    sliceId: string;
+  } | null>(null);
+  // Start time of the currently loaded slice — the clock travels FROM here
+  // (or from the live "now" when nothing historical is loaded).
+  const [loadedSliceStart, setLoadedSliceStart] = useState<string | null>(null);
+  // Resolves when the clock animation lands (see handleSelectSlice).
+  const clockLandedRef = useRef<(() => void) | null>(null);
 
   // Persona picked from URL — server actions need it because they can't
   // access searchParams on the server side. Defaults to "personal_14".
@@ -209,73 +153,60 @@ function Inner({
     return new URLSearchParams(window.location.search).get("persona") || "personal_14";
   }, []);
 
-  // Load initial timeline data on mount
+  // Load the newest slice on mount — feeds the NowPlaceholder gap anchor and
+  // the send-window `loadedSliceIds`. The timeline WHEEL loads its own full
+  // catalog independently (see timeline-wheel.tsx).
   useEffect(() => {
     let cancelled = false;
     getEpisodicState(persona)
       .then((data) => {
         if (cancelled) return;
         setTimelineSlices(data.recent);
-        setTimelineHasMore(data.hasMore);
-        setTimelineReady(true);
+        setActiveSlice(data.active);
       })
       .catch(() => {
-        if (!cancelled) setTimelineReady(true);
+        // silently ignore
       });
     return () => { cancelled = true; };
   }, [persona]);
 
-  // Load more slices
-  const handleLoadMore = useCallback(async () => {
-    if (timelineLoadingMore || !timelineHasMore) return;
-    const oldest = timelineSlices[timelineSlices.length - 1];
-    if (!oldest) return;
-
-    setTimelineLoadingMore(true);
-    try {
-      const data = await getMoreSlices(oldest.start, 10, persona);
-      setTimelineSlices((prev) => [...prev, ...data.slices]);
-      setTimelineHasMore(data.hasMore);
-    } catch {
-      // silently fail
-    } finally {
-      setTimelineLoadingMore(false);
-    }
-  }, [timelineLoadingMore, timelineHasMore, timelineSlices, persona]);
-
-  // Handle slice selection — keeps old content visible during fetch
+  // Handle slice selection — runs the time-travel clock (which doubles as the
+  // loading state) while the target content fetches in the background, then
+  // swaps in the content and moves the blue selection mark.
   const handleSelectSlice = useCallback(
-    async (sliceId: string) => {
+    async (sliceId: string, toTime?: string) => {
+      if (sliceId === selectedSliceId) return; // already there
+
+      const nowIso = new Date().toISOString();
+      // Travel FROM wherever the viewer currently is (live now, or the last
+      // loaded slice) TO the clicked slice.
+      const from =
+        selectedSliceId !== "now" && loadedSliceStart ? loadedSliceStart : nowIso;
+      const to = toTime ?? (sliceId === "now" ? nowIso : from);
+
+      const clockLanded = new Promise<void>((resolve) => {
+        clockLandedRef.current = resolve;
+      });
+      setTransition({ from, to, sliceId });
+
+      // Fetch in the background while the clock animates.
+      let content: SliceContent | null = null;
+      if (sliceId !== "now") {
+        const cached = getCached(sliceId);
+        content = cached
+          ? cached.content
+          : await getSliceContent(sliceId, persona).catch(() => null);
+        if (content) setCache(sliceId, content, null);
+      }
+
+      // Land on the target: swap content + move the selection.
+      await clockLanded;
       setSelectedSliceId(sliceId);
-
-      if (sliceId === "now") {
-        setHistoricalContent(null);
-        setHistoricalLoading(false);
-        return;
-      }
-
-      const cached = getCached(sliceId);
-      if (cached) {
-        setHistoricalContent(cached.content);
-        setHistoricalLoading(false);
-        return;
-      }
-
-      // Don't clear previous content — keep it visible while loading
-      setHistoricalLoading(true);
-      try {
-        const content = await getSliceContent(sliceId, persona);
-        setHistoricalContent(content);
-        if (content) {
-          setCache(sliceId, content, null);
-        }
-      } catch {
-        // Keep previous content on error, don't wipe it
-      } finally {
-        setHistoricalLoading(false);
-      }
+      setHistoricalContent(content);
+      setLoadedSliceStart(sliceId === "now" ? null : content?.start ?? null);
+      setTransition(null);
     },
-    [persona],
+    [persona, selectedSliceId, loadedSliceStart],
   );
 
   // ── Mock demo state ─────────────────────────────────────────────────
@@ -539,9 +470,11 @@ function Inner({
   );
 
   const handleSubmit = (message: string) => {
-    if (selectedSliceId !== "now") {
+    if (selectedSliceId !== "now" || transition) {
       setSelectedSliceId("now");
       setHistoricalContent(null);
+      setTransition(null);
+      setLoadedSliceStart(null);
     }
     setLastUserMessageAt(new Date().toISOString());
     sendMessage({ role: "user", parts: [{ type: "text", text: message }] });
@@ -572,57 +505,94 @@ function Inner({
   }, [messages, demoStreaming]);
 
   const showingLive = selectedSliceId === "now";
+  // The "PREVIOUSLY ON" eyebrow over the travel readout — same brand mark as
+  // the empty briefing's title card.
+  const tBrief = useTranslations("emptyBriefing");
 
   return (
     <>
-      {/* ── Screen 1: Hero — full viewport ─────────────────────────────── */}
-      <section className="h-screen">
-        {children}
-      </section>
-
-      {/* ── Screen 2: Timeline + Content ───────────────────────────────── */}
-      <div>
-        {/* ── Sticky timeline — snaps below AppHeader (fixed h-12) ────────── */}
-        <div className="sticky top-12 z-10 bg-background/90 backdrop-blur-md">
-          <HorizontalTimeline
-            slices={timelineSlices}
+      {/* ── Timeline + Content — one page: wheel left, conversation right ── */}
+      <div className="flex items-start">
+        {/* ── Timeline wheel — sticky left, full-height, virtual-scrolled ────── */}
+        <div className="sticky top-12 z-10 h-[calc(100vh-3rem)] w-48 shrink-0 border-r border-border/40 bg-background/90 backdrop-blur-md">
+          <TimelineWheel
             selectedId={selectedSliceId}
             onSelect={handleSelectSlice}
-            onLoadMore={handleLoadMore}
-            hasMore={timelineHasMore}
-            loadingMore={timelineLoadingMore}
           />
         </div>
 
         {/* ── Chat content — natural document flow ────────────────────────── */}
-        <div className="min-h-[calc(100vh-12rem)] pb-24">
-        {showingLive ? (
-          allMessages.length === 0 && !isLoading ? (
-            <div className="flex items-center justify-center min-h-[calc(100vh-13rem)]">
-              <NowPlaceholder
-                gapAnchor={timelineSlices[0]?.start ?? null}
+        <div className="min-h-[calc(100vh-12rem)] min-w-0 flex-1 pb-24">
+        <AnimatePresence mode="wait">
+          {transition ? (
+            <motion.div
+              key="travel"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.3 }}
+              className="relative flex items-center justify-center overflow-hidden min-h-[calc(100vh-13rem)]"
+            >
+              {/* Soft brand glow behind the travel readout — the same stage-light
+                  as the empty briefing's title card. */}
+              <div
+                aria-hidden
+                className="pointer-events-none absolute left-1/2 top-1/2 h-72 w-72 -translate-x-1/2 -translate-y-1/2 rounded-full bg-brand-500/10 blur-3xl"
               />
-            </div>
+              <div className="relative flex flex-col items-center gap-3">
+                <span className="font-mono text-[0.65rem] uppercase tracking-[0.35em] text-muted-foreground/60">
+                  {tBrief("eyebrow")}
+                </span>
+                <RelativeTimeReadout
+                  timestamp={transition.to}
+                  from={transition.from}
+                  onRollComplete={() => clockLandedRef.current?.()}
+                />
+              </div>
+            </motion.div>
+          ) : showingLive ? (
+            <motion.div
+              key="live"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ duration: 0.3 }}
+            >
+              {allMessages.length === 0 && !isLoading ? (
+                <EmptyBriefing
+                  persona={persona}
+                  active={activeSlice}
+                  recent={timelineSlices}
+                  onSend={handleSubmit}
+                />
+              ) : (
+                <div className="mx-auto max-w-5xl xl:max-w-7xl px-4 sm:px-6 lg:px-8 min-h-[calc(100vh-13rem)]">
+                  <ChatSection
+                    messages={allMessages}
+                    isStreaming={isStreaming}
+                    isLoading={isLoading}
+                    error={error}
+                    lastUserMessageAt={lastUserMessageAt}
+                    evolutionState={evolutionState}
+                    isEvolutionTarget={isEvolutionTarget}
+                  />
+                  <LoopWatcher messages={messages} />
+                </div>
+              )}
+            </motion.div>
           ) : (
-            <div className="mx-auto max-w-5xl xl:max-w-7xl px-4 sm:px-6 lg:px-8 min-h-[calc(100vh-13rem)]">
-              <ChatSection
-                messages={allMessages}
-                isStreaming={isStreaming}
-                isLoading={isLoading}
-                error={error}
-                lastUserMessageAt={lastUserMessageAt}
-                evolutionState={evolutionState}
-                isEvolutionTarget={isEvolutionTarget}
+            <motion.div
+              key={`slice-${selectedSliceId ?? "none"}`}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ duration: 0.3 }}
+            >
+              <HistoricalChatView
+                content={historicalContent}
+                loading={false}
               />
-              <LoopWatcher messages={messages} />
-            </div>
-          )
-        ) : (
-          <HistoricalChatView
-            content={historicalContent}
-            loading={historicalLoading}
-          />
-        )}
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
       </div>
 

@@ -1,7 +1,11 @@
 "use server";
 
-import { setDemoPersona } from "@/lib/demo/demo-fs";
+import { getDemoPersona, listDemoPersonas, setDemoPersona } from "@/lib/demo/demo-fs";
+import { resolveDataSource } from "@/lib/data-source/resolve";
+import { getUserName } from "@/lib/identity";
 import { readSliceIndex, readSliceBody, parseSlice, sliceIdToFilePath, readPreviously, readAgentTimeline } from "./manager";
+import { readTimelineIndex } from "./timeline/store";
+import type { TimelineSliceEntry } from "./timeline/types";
 import type { Turn } from "./types";
 
 export interface SliceSummary {
@@ -113,6 +117,42 @@ export async function getEpisodicState(persona?: string): Promise<EpisodicState 
 export interface SlicePage {
   slices: SliceSummary[];
   hasMore: boolean;
+}
+
+/**
+ * The full timeline catalog — every slice entry from `timeline/index.json`,
+ * oldest → newest (the weave keeps it sorted ascending by id). This is the
+ * "long array" the timeline wheel renders from (virtualized), not a paginated
+ * page. Returns an empty array when the catalog hasn't been built yet.
+ */
+export async function getTimelineCatalog(): Promise<TimelineSliceEntry[]> {
+  const idx = await readTimelineIndex();
+  return idx?.slices ?? [];
+}
+
+// ─── Empty-state briefing identity ─────────────────────────────────────────
+// The empty-live state shows a small "Previously On" + the user's name (+ a
+// persona switcher in demo mode). No episodic re-scan here — ChatPage already
+// loads the active slice via getEpisodicState; this only resolves the display
+// name and, in demo mode, the persona list.
+export interface BriefingIdentity {
+  name: string;
+  isDemo: boolean;
+  personas?: Awaited<ReturnType<typeof listDemoPersonas>>;
+}
+
+export async function getBriefingIdentity(
+  persona?: string,
+): Promise<BriefingIdentity> {
+  if (resolveDataSource() === "demo") {
+    if (persona) setDemoPersona(persona);
+    const personas = await listDemoPersonas().catch(() => []);
+    const currentId = persona || getDemoPersona();
+    const name = personas.find((p) => p.id === currentId)?.name ?? currentId;
+    return { name, isDemo: true, personas };
+  }
+  const name = await getUserName().catch(() => "Previously");
+  return { name, isDemo: false };
 }
 
 export async function getMoreSlices(

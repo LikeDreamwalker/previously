@@ -316,5 +316,45 @@
     "emptyTitle": "No missions yet",
     "emptyDesc": "Use Chat to create task files in tasks/. The agent can help you track mission status.",
     "placeholderPreview": "Task content will load from GitHub. (Frontmatter parsing coming soon.)"
+  },
+  "emptyBriefing": {
+    "eyebrow": "PREVIOUSLY ON",
+    "lastTopic": "Where we left off",
+    "openLoops": "Open threads",
+    "pickUp": "Pick up where you left off",
+    "viewFull": "View full previously",
+    "chipContinue": "Continue: {topic}",
+    "chipLoops": "Show my open threads",
+    "chipTopic": "Talk about {topic}",
+    "loading": "Loading…"
+  },
+  "relative": {
+    "now": "Now",
+    "moments": { "before": "moments ago", "after": "in a moment" },
+    "prefixAfter": "in ",
+    "minute": {
+      "before": "{count, plural, one {min ago} other {mins ago}}",
+      "after": "{count, plural, one {min} other {mins}}"
+    },
+    "hour": {
+      "before": "{count, plural, one {hr ago} other {hrs ago}}",
+      "after": "{count, plural, one {hr} other {hrs}}"
+    },
+    "day": {
+      "before": "{count, plural, one {day ago} other {days ago}}",
+      "after": "{count, plural, one {day} other {days}}"
+    },
+    "week": {
+      "before": "{count, plural, one {wk ago} other {wks ago}}",
+      "after": "{count, plural, one {wk} other {wks}}"
+    },
+    "month": {
+      "before": "{count, plural, one {mo ago} other {mos ago}}",
+      "after": "{count, plural, one {mo} other {mos}}"
+    },
+    "year": {
+      "before": "{count, plural, one {yr ago} other {yrs ago}}",
+      "after": "{count, plural, one {yr} other {yrs}}"
+    }
   }
 }
