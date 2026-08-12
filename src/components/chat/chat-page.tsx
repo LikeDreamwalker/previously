@@ -28,7 +28,6 @@ import type { UserConfig } from "@/lib/config/types";
 import { useTranslations } from "next-intl";
 import { toast } from "sonner";
 import { formatErrorDetail } from "@/lib/chat/workflow-errors";
-import { clientTrace, createTracedFetch } from "./client-trace";
 
 interface ChatPageProps {
   /** Server-preloaded user config (RSC) — seeds model/thinking/effort so the
@@ -55,6 +54,8 @@ const RUN_ID_KEY = "previously:activeRunId";
 // the whole client history (that is the context-bloat + storage-accumulation
 // source). The UI never trims; only the wire payload does.
 const SEND_MESSAGE_WINDOW = 10; // ~5 turns of working memory
+/** Cap the persisted conversation so a long session can't overflow localStorage. */
+const PERSIST_MESSAGE_CAP = 200;
 
 function readStoredRunId(): string | null {
   if (typeof localStorage === "undefined") return null;
@@ -291,22 +292,14 @@ function Inner({ initialConfig }: { initialConfig?: UserConfig }) {
   // turn stores its runId, and useChat's `resume` effect would re-fire
   // resumeStream() mid-stream (a second writer → #185). Fresh visits (no run in
   // flight) stay false so a reconnect never 404s on a brand-new page.
-  const [shouldResume] = useState(() => {
-    const stored = readStoredRunId();
-    clientTrace("mount", `storedRunId=${stored}`);
-    return stored !== null;
-  });
+  const [shouldResume] = useState(() => readStoredRunId() !== null);
 
   // Restore the persisted conversation once at mount so the resume replay only
   // reconciles the last message instead of pushing a full copy per replayed
   // chunk into an empty store (the duplicated/growing message list). Stable
-  // reference (useState initializer) — an unstable initialMessages array itself
-  // trips React #185.
-  const [initialMessages] = useState<UIMessage[]>(() => {
-    const restored = readStoredMessages();
-    clientTrace("mount", `restored ${restored.length} persisted message(s)`);
-    return restored;
-  });
+  // reference (useState initializer) — an unstable messages array itself trips
+  // React #185.
+  const [initialMessages] = useState<UIMessage[]>(() => readStoredMessages());
 
   const {
     messages,
@@ -329,31 +322,16 @@ function Inner({ initialConfig }: { initialConfig?: UserConfig }) {
     // Clear a stale runId when a reconnect 404s ("Run not available") — the run
     // is gone, so a future reload shouldn't keep retrying it.
     onError: (err) => {
-      // v0.8: log the FULL error object — WorkflowChatTransport swallows stream
-      // errors and only rethrows a generic reconnect failure, so the complete
-      // detail (stack / cause / status) is captured here for diagnosis.
       console.error("[useChat][onError]", formatErrorDetail(err));
-      clientTrace("chat", `onError ${formatErrorDetail(err)}`);
       const msg = err instanceof Error ? err.message : String(err);
       if (/404|Run not available/.test(msg)) {
         clearStoredRunId();
       }
     },
-    onFinish: (result) =>
-      clientTrace(
-        "chat",
-        `onFinish role=${result.message.role} parts=${(result.message.parts ?? []).length} reason=${result.finishReason}`,
-      ),
     transport: new WorkflowChatTransport({
       api: "/api/chat",
-      // Trace every request / chunk / swallowed stream error (see client-trace).
-      fetch: createTracedFetch(fetch.bind(globalThis)),
       prepareSendMessagesRequest: (config) => {
         const sendWindow = config.messages.slice(-SEND_MESSAGE_WINDOW);
-        clientTrace(
-          "chat",
-          `prepareSendMessagesRequest window=${sendWindow.length} model=${selectedModel} thinking=${thinking} effort=${effort} loadedSlices=${timelineSlices.length}`,
-        );
         return {
           api: config.api,
           headers: config.headers,
@@ -377,10 +355,6 @@ function Inner({ initialConfig }: { initialConfig?: UserConfig }) {
       // dropped/reloaded tab can re-attach to the same run's stream.
       onChatSendMessage: (response, options) => {
         const runId = response.headers.get("x-workflow-run-id");
-        clientTrace(
-          "chat",
-          `onChatSendMessage runId=${runId} chatId=${options.chatId} status=${response.status}`,
-        );
         if (runId) {
           writeStoredRunId(runId);
           try {
@@ -391,15 +365,11 @@ function Inner({ initialConfig }: { initialConfig?: UserConfig }) {
         }
       },
       // A clean end means the run is finished — no reconnect needed.
-      onChatEnd: () => {
-        clientTrace("chat", "onChatEnd (clean turn end)");
-        clearStoredRunId();
-      },
+      onChatEnd: () => clearStoredRunId(),
       // Point any reconnect at the durable run (not the random per-mount
       // chatId) so a post-reload resume targets the real stream.
       prepareReconnectToStreamRequest: (config) => {
         const runId = readStoredRunId();
-        clientTrace("reconnect", `prepareReconnectToStreamRequest runId=${runId}`);
         if (runId) {
           return {
             ...config,
@@ -411,29 +381,21 @@ function Inner({ initialConfig }: { initialConfig?: UserConfig }) {
     }),
   });
 
-  // ── Trace every status transition ────────────────────────────────────────
-  const prevStatusRef = useRef(status);
-  useEffect(() => {
-    if (status !== prevStatusRef.current) {
-      clientTrace("status", `${prevStatusRef.current} -> ${status}`);
-      prevStatusRef.current = status;
-    }
-  }, [status]);
-
   // ── Persist the conversation (debounced) so a refresh restores it via
-  // `initialMessages`. Skip the demo stream (demoMessages is separate).
+  // `initialMessages`. Don't let the demo stream (demoMessages) wipe a real
+  // persisted conversation.
   const firstRenderRef = useRef(true);
   useEffect(() => {
     if (firstRenderRef.current) {
       firstRenderRef.current = false;
       return;
     }
+    if (demoMessages.length > 0) return;
     const id = setTimeout(() => {
-      clientTrace("persist", `saving ${messages.length} message(s)`);
-      writeStoredMessages(messages);
+      writeStoredMessages(messages.slice(-PERSIST_MESSAGE_CAP));
     }, 400);
     return () => clearTimeout(id);
-  }, [messages]);
+  }, [messages, demoMessages.length]);
 
   // ── Reconnect on return to the foreground ────────────────────────────────
   // When the phone locks / the tab is backgrounded mid-turn, the fetch dies
@@ -454,46 +416,23 @@ function Inner({ initialConfig }: { initialConfig?: UserConfig }) {
   const reconnectInFlightRef = useRef(false);
 
   const resetPartialTurn = useCallback(() => {
-    setMessages((prev) => {
-      const next = dropTrailingAssistantMessages(prev);
-      if (next.length !== prev.length) {
-        clientTrace(
-          "reconnect",
-          `resetPartialTurn dropped ${prev.length - next.length} trailing assistant message(s)`,
-        );
-      }
-      return next;
-    });
+    setMessages((prev) => dropTrailingAssistantMessages(prev));
   }, [setMessages]);
 
   const resumeWithRetry = useCallback(
     async (attempts = 3) => {
-      if (reconnectInFlightRef.current) {
-        clientTrace("reconnect", "resumeWithRetry skipped (already in flight)");
-        return;
-      }
+      if (reconnectInFlightRef.current) return;
       reconnectInFlightRef.current = true;
-      clientTrace("reconnect", `resumeWithRetry start attempts=${attempts}`);
       try {
         // Kill any in-flight SDK stream before starting our own.
         await stop();
-        clientTrace("reconnect", "stop() done");
         resetPartialTurn();
         for (let attempt = 0; attempt < attempts; attempt++) {
           try {
-            clientTrace(
-              "reconnect",
-              `attempt ${attempt + 1}/${attempts} resumeStream()`,
-            );
             await resumeStream();
-            clientTrace("reconnect", `attempt ${attempt + 1}/${attempts} SUCCEEDED`);
             return;
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
-            clientTrace(
-              "reconnect",
-              `attempt ${attempt + 1}/${attempts} FAILED ${formatErrorDetail(err)}`,
-            );
             if (/404|Run not available/.test(msg)) {
               clearStoredRunId();
               return;
@@ -505,48 +444,30 @@ function Inner({ initialConfig }: { initialConfig?: UserConfig }) {
               return;
             }
             // Transient network error — wait with backoff, then retry.
-            const backoff = 1000 * (attempt + 1);
-            clientTrace("reconnect", `backoff ${backoff}ms`);
-            await new Promise((r) => setTimeout(r, backoff));
+            await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
           }
         }
       } finally {
         reconnectInFlightRef.current = false;
-        clientTrace("reconnect", "resumeWithRetry end");
       }
     },
     [resumeStream, stop, resetPartialTurn],
   );
 
-  const attemptReconnect = useCallback(
-    (source: string) => {
-      const runId = readStoredRunId();
-      clientTrace(
-        "reconnect",
-        `attemptReconnect[${source}] status=${status} runId=${runId}`,
-      );
-      if (!runId) return;
-      // Only reconnect when the previous stream actually DIED (status "error") —
-      // not while it's still streaming, finished, or a fresh POST is in flight.
-      if (status !== "error") {
-        clientTrace("reconnect", `  skip: status is "${status}", not "error"`);
-        return;
-      }
-      void resumeWithRetry();
-    },
-    [status, resumeWithRetry],
-  );
+  const attemptReconnect = useCallback(() => {
+    if (!readStoredRunId()) return;
+    // Only reconnect when the previous stream actually DIED (status "error") —
+    // not while it's still streaming, finished, or a fresh POST is in flight.
+    if (status !== "error") return;
+    void resumeWithRetry();
+  }, [status, resumeWithRetry]);
 
   useEffect(() => {
     if (typeof document === "undefined" || typeof window === "undefined") return;
     const onVisibility = () => {
-      clientTrace(
-        "reconnect",
-        `visibilitychange -> ${document.visibilityState}`,
-      );
-      if (document.visibilityState === "visible") attemptReconnect("visibility");
+      if (document.visibilityState === "visible") attemptReconnect();
     };
-    const onFocus = () => attemptReconnect("focus");
+    const onFocus = () => attemptReconnect();
     document.addEventListener("visibilitychange", onVisibility);
     window.addEventListener("focus", onFocus);
     return () => {
@@ -613,10 +534,6 @@ function Inner({ initialConfig }: { initialConfig?: UserConfig }) {
   );
 
   const handleSubmit = (message: string) => {
-    clientTrace(
-      "chat",
-      `handleSubmit "${message.slice(0, 80)}" model=${selectedModel} thinking=${thinking} effort=${effort} window=${SEND_MESSAGE_WINDOW} loadedSlices=${timelineSlices.length} view=${selectedSliceId}`,
-    );
     if (selectedSliceId !== "now" || transition) {
       setSelectedSliceId("now");
       setHistoricalContent(null);
@@ -650,6 +567,16 @@ function Inner({ initialConfig }: { initialConfig?: UserConfig }) {
       setEvolutionState(found);
     }
   }, [messages, demoStreaming]);
+
+  // Hydration guard: the persisted conversation only exists client-side, so the
+  // server renders the empty state. Keep the FIRST client render matching the
+  // server HTML (empty), then reveal the restored messages after hydration —
+  // otherwise React throws a hydration mismatch (server empty vs client
+  // restored). Once hydrated the flag is irrelevant.
+  const [hydrated, setHydrated] = useState(false);
+  useEffect(() => {
+    setHydrated(true);
+  }, []);
 
   const showingLive = selectedSliceId === "now";
   // The "PREVIOUSLY ON" eyebrow over the travel readout — same brand mark as
@@ -704,7 +631,7 @@ function Inner({ initialConfig }: { initialConfig?: UserConfig }) {
               animate={{ opacity: 1 }}
               transition={{ duration: 0.3 }}
             >
-              {allMessages.length === 0 && !isLoading ? (
+              {(!hydrated || (allMessages.length === 0 && !isLoading)) ? (
                 <EmptyBriefing
                   persona={persona}
                   active={activeSlice}
