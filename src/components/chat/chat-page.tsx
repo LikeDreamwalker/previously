@@ -16,6 +16,7 @@ import { RelativeTimeReadout } from "./relative-time";
 import { EmptyBriefing } from "./empty-briefing";
 import { AnimatePresence, motion } from "motion/react";
 import {
+  getBriefingIdentity,
   getEpisodicState,
   getSliceContent,
   type SliceSummary,
@@ -161,6 +162,13 @@ function Inner({ initialConfig }: { initialConfig?: UserConfig }) {
   // The most recent slice — its focus / open_loops seed the empty briefing.
   const [activeSlice, setActiveSlice] = useState<SliceSummary | null>(null);
   const [selectedSliceId, setSelectedSliceId] = useState<string | null>("now");
+  // The slice the user just clicked — drives the wheel's selection glow
+  // IMMEDIATELY (before the time-travel transition lands), so the marker
+  // doesn't lag behind the click by the roll's duration.
+  const [pendingSliceId, setPendingSliceId] = useState<string | null>(null);
+  // The user's display name — feeds the "PREVIOUSLY ON {name}" eyebrow over
+  // the time-travel readout (falls back to "YOU" until it resolves).
+  const [briefingName, setBriefingName] = useState<string>("");
   const [historicalContent, setHistoricalContent] = useState<SliceContent | null>(null);
   // The time-travel transition currently playing (if any). While active, the
   // clock overlay covers the content area and doubles as the loading state.
@@ -196,6 +204,12 @@ function Inner({ initialConfig }: { initialConfig?: UserConfig }) {
       .catch(() => {
         // silently ignore
       });
+    // Resolve the display name for the "PREVIOUSLY ON {name}" eyebrow.
+    getBriefingIdentity(persona)
+      .then((id) => {
+        if (!cancelled) setBriefingName(id.name);
+      })
+      .catch(() => {});
     return () => { cancelled = true; };
   }, [persona]);
 
@@ -217,6 +231,9 @@ function Inner({ initialConfig }: { initialConfig?: UserConfig }) {
         clockLandedRef.current = resolve;
       });
       setTransition({ from, to, sliceId });
+      // Light the wheel's selection marker on the clicked slice right away —
+      // don't wait for the roll to land.
+      setPendingSliceId(sliceId);
 
       // Fetch in the background while the clock animates.
       let content: SliceContent | null = null;
@@ -231,6 +248,7 @@ function Inner({ initialConfig }: { initialConfig?: UserConfig }) {
       // Land on the target: swap content + move the selection.
       await clockLanded;
       setSelectedSliceId(sliceId);
+      setPendingSliceId(null);
       setHistoricalContent(content);
       setLoadedSliceStart(sliceId === "now" ? null : content?.start ?? null);
       setTransition(null);
@@ -473,6 +491,7 @@ function Inner({ initialConfig }: { initialConfig?: UserConfig }) {
       setSelectedSliceId("now");
       setHistoricalContent(null);
       setTransition(null);
+      setPendingSliceId(null);
       setLoadedSliceStart(null);
     }
     setLastUserMessageAt(new Date().toISOString());
@@ -520,12 +539,15 @@ function Inner({ initialConfig }: { initialConfig?: UserConfig }) {
 
   return (
     <>
-      {/* ── Timeline + Content — one page: wheel left, conversation right ── */}
-      <div className="flex items-start">
+      {/* ── Timeline + Content — one page: wheel left, conversation right ──
+           pt-12 = an equal-height placeholder under the fixed AppHeader (h-12),
+           so content starts below it instead of hiding beneath it. */}
+      <div className="flex items-start pt-12">
         {/* ── Timeline wheel — sticky left, full-height, virtual-scrolled ────── */}
-        <div className="sticky top-12 z-10 h-[calc(100vh-3rem)] w-48 shrink-0 border-r border-border/40 bg-background/90 backdrop-blur-md">
+        <div className="sticky top-12 z-10 h-[calc(100vh-3rem)] w-36 shrink-0 bg-background/90 backdrop-blur-md">
           <TimelineWheel
             selectedId={selectedSliceId}
+            pendingId={pendingSliceId}
             onSelect={handleSelectSlice}
           />
         </div>
@@ -550,7 +572,7 @@ function Inner({ initialConfig }: { initialConfig?: UserConfig }) {
               />
               <div className="relative flex flex-col items-center gap-3">
                 <span className="font-mono text-[0.65rem] uppercase tracking-[0.35em] text-muted-foreground/60">
-                  {tBrief("eyebrow")}
+                  {tBrief("eyebrowWithName", { name: briefingName || tBrief("fallbackName") })}
                 </span>
                 <RelativeTimeReadout
                   timestamp={transition.to}

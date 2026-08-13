@@ -54,10 +54,11 @@ interface RelativeTimeReadoutProps {
 
 /**
  * The time-travel readout shown during slice navigation: a big relative label
- * (anchored to the slice the viewer is currently on — so jumping back to "now"
- * from a year-old slice reads "1 year later") as the title, with the actual
- * time as a smaller rolling subtitle. The label's count rolls via NumberTicker
- * — the shared time component, in monospace — straight from 0 on entry.
+ * (anchored to wall-clock NOW — yesterday reads "昨天", 3 days ago reads
+ * "3天前") as the title, with the actual time as a smaller rolling subtitle
+ * that rolls from `from` (the viewer's current position) to the target. The
+ * label's count rolls via NumberTicker — the shared time component, in
+ * monospace — straight from 0 on entry.
  */
 export function RelativeTimeReadout({
   timestamp,
@@ -66,7 +67,10 @@ export function RelativeTimeReadout({
   className = "",
 }: RelativeTimeReadoutProps) {
   const t = useTranslations("relative");
-  const rel = from && timestamp ? relativeBetween(from, timestamp) : null;
+  // The LABEL is anchored to wall-clock NOW — yesterday reads "昨天", 3 days
+  // ago reads "3天前", no matter where the viewer sits in the timeline. Only
+  // the subtitle's roll is anchored to `from` (the viewer's current position).
+  const rel = timestamp ? relativeBetween(new Date().toISOString(), timestamp) : null;
 
   // The title. `moments` stays static text; a counted label is rendered as
   //  prefix + <rolling count> + suffix  (the suffix carries the ICU plural for

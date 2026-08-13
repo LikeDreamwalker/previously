@@ -323,7 +323,9 @@
     "placeholderPreview": "任务内容将从 GitHub 加载。（frontmatter 解析即将推出。）"
   },
   "emptyBriefing": {
-    "eyebrow": "前情提要",
+    "eyebrow": "PREVIOUSLY ON",
+    "eyebrowWithName": "PREVIOUSLY ON {name}",
+    "fallbackName": "YOU",
     "lastTopic": "上次聊到",
     "openLoops": "还欠着的事",
     "pickUp": "可以接着聊",

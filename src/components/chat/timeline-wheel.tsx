@@ -19,6 +19,10 @@ interface TimelineWheelProps {
    *  Its row carries the blue selection mark; the wheel's focused row (scroll
    *  preview) is deliberately NOT blue. */
   selectedId: string | null;
+  /** The slice the user just clicked but whose transition hasn't landed yet —
+   *  lights the selection glow IMMEDIATELY so it never lags the click by the
+   *  roll's duration. Cleared by the parent when the transition lands. */
+  pendingId?: string | null;
   /** `start` is the target slice's start ISO — lets the parent run the
    *  time-travel clock from where the viewer currently is to the target. */
   onSelect: (sliceId: string, start?: string) => void;
@@ -123,7 +127,7 @@ function RollingDate({ timestamp }: { timestamp: string }) {
   const h = d.getHours();
   const mi = d.getMinutes();
 
-  const sep = <span className="mx-1 text-muted-foreground/60">/</span>;
+  const sep = <span className="mx-0.5 text-muted-foreground/60">/</span>;
   return (
     <span className="inline-flex items-baseline font-mono leading-none">
       <RollingField value={y} digits={4} />
@@ -131,7 +135,7 @@ function RollingDate({ timestamp }: { timestamp: string }) {
       <RollingField value={mo} digits={2} />
       {sep}
       <RollingField value={day} digits={2} />
-      <span className="mx-1 text-muted-foreground/60">·</span>
+      <span className="mx-0.5 text-muted-foreground/60">·</span>
       <RollingField value={h} digits={2} />
       <span className="mx-0.5 text-muted-foreground/60">:</span>
       <RollingField value={mi} digits={2} />
@@ -141,7 +145,7 @@ function RollingDate({ timestamp }: { timestamp: string }) {
 
 // ─── The wheel ──────────────────────────────────────────────────────────
 
-export function TimelineWheel({ selectedId, onSelect }: TimelineWheelProps) {
+export function TimelineWheel({ selectedId, pendingId, onSelect }: TimelineWheelProps) {
   const t = useTranslations("timeline");
   const [items, setItems] = useState<WheelItem[] | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
@@ -309,8 +313,9 @@ export function TimelineWheel({ selectedId, onSelect }: TimelineWheelProps) {
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onClickCapture={handleClickCapture}
+      onContextMenu={(e) => e.preventDefault()}
       aria-label="Timeline wheel"
-      className={`relative h-full select-none overflow-y-auto scrollbar-none ${
+      className={`relative h-full select-none overflow-y-auto overflow-x-hidden scrollbar-none ${
         dragging ? "cursor-grabbing" : "cursor-grab"
       }`}
     >
@@ -324,12 +329,14 @@ export function TimelineWheel({ selectedId, onSelect }: TimelineWheelProps) {
           <div className="relative" style={{ height: totalPx }}>
             {visibleRows.map(({ index, item, scale, opacity }) => {
               const isNow = item.isNow;
-              // Blue = the LOADED slice (whose content is shown on the right).
+              // Blue = the LOADED slice (whose content is shown on the right),
+              // OR the slice the user just clicked while its transition is
+              // still rolling (pendingId) — so the glow lights instantly.
               // It does NOT follow scroll previews — only an explicit click
               // moves it.
               const isSelected = isNow
-                ? selectedId === "now"
-                : selectedId === item.id;
+                ? selectedId === "now" || pendingId === "now"
+                : selectedId === item.id || pendingId === item.id;
               return (
                 <button
                   key={item.id}
@@ -337,7 +344,8 @@ export function TimelineWheel({ selectedId, onSelect }: TimelineWheelProps) {
                     onSelect(item.id, item.start);
                     centerOn(index);
                   }}
-                  className="absolute left-1/2 flex w-full flex-col items-center gap-0.5 px-2 py-1"
+                  onContextMenu={(e) => e.preventDefault()}
+                  className="group absolute left-1/2 flex w-full cursor-pointer flex-col items-center gap-0.5 px-2 py-1"
                   style={{
                     top: pad + index * ROW_H + ROW_H / 2,
                     transform: `translate(-50%, -50%) scale(${scale})`,
@@ -345,23 +353,37 @@ export function TimelineWheel({ selectedId, onSelect }: TimelineWheelProps) {
                     zIndex: isSelected ? 5 : 1,
                   }}
                 >
-                  <span
-                    className={`font-mono text-[0.7rem] leading-tight tabular-nums transition-colors ${
-                      isSelected
-                        ? "text-brand-600 dark:text-brand-400"
-                        : "text-muted-foreground/60"
-                    }`}
-                  >
-                    {formatDate(item.start)}
-                  </span>
-                  <span
-                    className={`font-mono text-[0.8rem] leading-tight tabular-nums transition-colors ${
-                      isSelected
-                        ? "text-brand-600 dark:text-brand-400"
-                        : "text-foreground/70"
-                    }`}
-                  >
-                    {isNow ? t("panel.now") : formatTime(item.start)}
+                  {/* Soft brand glow under the label — the same "stage light" the
+                      empty briefing uses. Sized to the label (not the full row)
+                      so it never widens the column; lights instantly on click via
+                      pendingId, and shows a fainter version on hover. */}
+                  <span className="relative flex flex-col items-center gap-0.5">
+                    <div
+                      aria-hidden
+                      className={`pointer-events-none absolute -inset-x-2 -inset-y-1.5 -z-10 rounded-full blur-md transition-opacity duration-200 ${
+                        isSelected
+                          ? "bg-brand-500/15 opacity-100"
+                          : "bg-brand-500/8 opacity-0 group-hover:opacity-100"
+                      }`}
+                    />
+                    <span
+                      className={`font-mono text-[0.7rem] leading-tight tabular-nums transition-colors ${
+                        isSelected
+                          ? "text-brand-600 dark:text-brand-400"
+                          : "text-muted-foreground/60 group-hover:text-foreground/80"
+                      }`}
+                    >
+                      {formatDate(item.start)}
+                    </span>
+                    <span
+                      className={`font-mono text-[0.8rem] leading-tight tabular-nums transition-colors ${
+                        isSelected
+                          ? "text-brand-600 dark:text-brand-400"
+                          : "text-foreground/70 group-hover:text-foreground"
+                      }`}
+                    >
+                      {isNow ? t("panel.now") : formatTime(item.start)}
+                    </span>
                   </span>
                 </button>
               );
@@ -372,13 +394,15 @@ export function TimelineWheel({ selectedId, onSelect }: TimelineWheelProps) {
           <div className="pointer-events-none absolute inset-x-0 top-1/2 -translate-y-1/2 border-y border-brand-500/20 bg-brand-500/10" style={{ height: ROW_H }} />
 
           {/* ── Central rolling readout ── */}
-          <div className="pointer-events-none absolute inset-x-0 top-1/2 z-10 -translate-y-1/2 px-2">
-            <div className="mx-auto flex w-fit flex-col items-center gap-1 rounded-lg bg-background/80 px-3 py-1.5 backdrop-blur-sm">
-              <span className="whitespace-nowrap text-lg font-medium text-foreground">
+          <div className="pointer-events-none absolute inset-x-0 top-1/2 z-10 -translate-y-1/2 px-1">
+            {/* w-max max-w-full: the readout sizes to its content but is clamped
+                to the column so it can never push a horizontal scrollbar. */}
+            <div className="mx-auto flex w-max max-w-full flex-col items-center gap-1 overflow-hidden rounded-lg bg-background/80 px-1.5 py-1 backdrop-blur-sm">
+              <span className="whitespace-nowrap text-xs font-medium text-foreground">
                 {focused?.isNow ? t("panel.now") : focused ? <RollingDate timestamp={focused.start} /> : null}
               </span>
               {focused && !focused.isNow && focused.focus && (
-                <span className="max-w-[9rem] truncate text-[0.55rem] text-muted-foreground">
+                <span className="max-w-full truncate text-[0.55rem] text-muted-foreground">
                   {focused.focus}
                 </span>
               )}
