@@ -21,9 +21,9 @@ test.describe("Navigation", () => {
 
   test("chat page shows the empty briefing and a chat input", async ({ page }) => {
     await page.goto("/en");
-    // The hero was removed — the "PREVIOUSLY ON" eyebrow now opens the empty
-    // briefing (the product's arrival moment) instead.
-    await expect(page.getByText("PREVIOUSLY ON", { exact: true })).toBeVisible();
+    // The hero was removed — the "PREVIOUSLY ON {name}" eyebrow now opens the
+    // empty briefing (the product's arrival moment) instead.
+    await expect(page.getByText(/^PREVIOUSLY ON /)).toBeVisible();
     await expect(page.locator("textarea")).toBeVisible();
   });
 

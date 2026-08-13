@@ -14,6 +14,11 @@ import { formatErrorDetail } from "@/lib/chat/workflow-errors";
 export function ClientErrorCapture(): null {
   useEffect(() => {
     const onError = (event: ErrorEvent) => {
+      const msg = typeof event.message === "string" ? event.message : "";
+      // "ResizeObserver loop completed with undelivered notifications" is a
+      // benign browser warning (layout observers firing within a frame), not an
+      // actionable app error — the split's own ResizeObserver can trigger it.
+      if (msg.includes("ResizeObserver loop")) return;
       console.error(
         `[ClientError][window.onerror] ${formatErrorDetail(event.error ?? event.message)}`,
       );

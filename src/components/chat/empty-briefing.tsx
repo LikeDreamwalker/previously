@@ -110,7 +110,7 @@ export function EmptyBriefing({
   const sectionLabel = "flex items-center gap-2 text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground/70";
 
   return (
-    <div className="relative flex min-h-[calc(100vh-13rem)] flex-col items-center justify-center overflow-hidden px-4">
+    <div className="relative flex min-h-full flex-col items-center justify-center overflow-hidden px-4">
       {/* Soft brand glow — the "stage light" behind the title card. */}
       <div
         aria-hidden

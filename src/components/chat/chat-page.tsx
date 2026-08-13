@@ -10,10 +10,12 @@ import { ChatSection } from "./chat-section";
 import { LoopWatcher } from "./loop-watcher";
 import { buildMockSteps } from "@/lib/chat/mock-stream";
 import type { EvolutionState } from "./evolution-indicator";
-import { TimelineWheel } from "./timeline-wheel";
 import { HistoricalChatView } from "./historical-chat-view";
 import { RelativeTimeReadout } from "./relative-time";
 import { EmptyBriefing } from "./empty-briefing";
+import { TimelineWheel } from "./timeline-wheel";
+import { ResizableSplit } from "./resizable-split";
+import { useTimelineOverlay } from "./timeline-overlay-context";
 import { AnimatePresence, motion } from "motion/react";
 import {
   getBriefingIdentity,
@@ -23,7 +25,10 @@ import {
   type SliceContent,
 } from "@/lib/episodic/actions";
 import { getCached, setCache } from "@/lib/chat/slice-cache";
-import { dropTrailingAssistantMessages } from "@/lib/chat/reconnect";
+import {
+  dropTrailingAssistantMessages,
+  lastStoredActivity,
+} from "@/lib/chat/reconnect";
 import { saveUserConfig } from "@/lib/config/actions";
 import type { UserConfig } from "@/lib/config/types";
 import { useTranslations } from "next-intl";
@@ -312,18 +317,33 @@ function Inner({ initialConfig }: { initialConfig?: UserConfig }) {
   // flight) stay false so a reconnect never 404s on a brand-new page.
   const [shouldResume] = useState(() => readStoredRunId() !== null);
 
-  // Restore the persisted conversation once at mount. When resuming, the
-  // trailing partial assistant turn is dropped FIRST — the resume replay
-  // REBUILDS that turn into a fresh assistant message. Keeping it would seed
-  // the replay with a snapshot of the partial turn (createStreamingUIMessageState
-  // reuses the last message verbatim when it's assistant), so every replayed
-  // text-/reasoning-start would APPEND a duplicate part and replaceMessage the
-  // whole grown message per chunk — the "content grows + full re-render per
-  // update" storm (#185). Stable reference (useState initializer) — an unstable
-  // messages array itself trips React #185.
+  // Restore the persisted conversation once at mount — but only when it still
+  // belongs to the CURRENT time slice. A fresh arrival (no in-flight run) whose
+  // newest message is older than the time-silence window means the old slice was
+  // closed and a new one has begun: the live view should open BLANK so the
+  // arrival briefing (PREVIOUSLY ON + hot-start) greets the user, not a stale
+  // conversation dump. In-flight turns are ALWAYS restored — the durable
+  // workflow is still running, and "I come after you're done" depends on
+  // re-attaching regardless of how long ago it started.
+  //
+  // When resuming, the trailing partial assistant turn is dropped FIRST — the
+  // resume replay REBUILDS that turn into a fresh assistant message. Keeping it
+  // would seed the replay with a snapshot of the partial turn
+  // (createStreamingUIMessageState reuses the last message verbatim when it's
+  // assistant), so every replayed text-/reasoning-start would APPEND a duplicate
+  // part and replaceMessage the whole grown message per chunk — the "content
+  // grows + full re-render per update" storm (#185). Stable reference (useState
+  // initializer) — an unstable messages array itself trips React #185.
   const [initialMessages] = useState<UIMessage[]>(() => {
     const stored = readStoredMessages();
-    return shouldResume ? dropTrailingAssistantMessages(stored) : stored;
+    if (stored.length === 0) return stored;
+    if (shouldResume) return dropTrailingAssistantMessages(stored);
+    const lastActivity = lastStoredActivity(stored);
+    if (lastActivity === null) return stored; // no timestamp — fail-open restore
+    const silenceMs =
+      (initialConfig?.slicing.timeSilenceMinutes ?? 30) * 60 * 1000;
+    const isNewSlice = Date.now() - lastActivity > silenceMs;
+    return isNewSlice ? [] : stored;
   });
 
   const {
@@ -536,24 +556,43 @@ function Inner({ initialConfig }: { initialConfig?: UserConfig }) {
   // The "PREVIOUSLY ON" eyebrow over the travel readout — same brand mark as
   // the empty briefing's title card.
   const tBrief = useTranslations("emptyBriefing");
+  // Timeline expand — toggled from the header / mini spine / desktop expand
+  // button; collapses on slice select. The same left timeline widens in place
+  // over the content (no separate drawer), with a blur mask over what's behind.
+  const {
+    open: timelineOpen,
+    close: closeTimeline,
+  } = useTimelineOverlay();
 
+  // Picking a slice in the timeline collapses it so the time-travel transition
+  // plays against the content revealed behind.
+  const handleTimelineSelect = useCallback(
+    (sliceId: string, start?: string) => {
+      handleSelectSlice(sliceId, start);
+      closeTimeline();
+    },
+    [handleSelectSlice, closeTimeline],
+  );
   return (
     <>
-      {/* ── Timeline + Content — one page: wheel left, conversation right ──
-           pt-12 = an equal-height placeholder under the fixed AppHeader (h-12),
-           so content starts below it instead of hiding beneath it. */}
-      <div className="flex items-start pt-12">
-        {/* ── Timeline wheel — sticky left, full-height, virtual-scrolled ────── */}
-        <div className="sticky top-12 z-10 h-[calc(100vh-3rem)] w-36 shrink-0 bg-background/90 backdrop-blur-md">
-          <TimelineWheel
-            selectedId={selectedSliceId}
-            pendingId={pendingSliceId}
-            onSelect={handleSelectSlice}
-          />
-        </div>
-
-        {/* ── Chat content — natural document flow ────────────────────────── */}
-        <div className="min-h-[calc(100vh-12rem)] min-w-0 flex-1 pb-24">
+      {/* ── Timeline + Content — a split view: timeline left (fixed width:
+           full wheel on desktop / mini spine on phones), conversation right.
+           Expanding widens the SAME timeline over the content with a blur mask
+           (no separate drawer). The right panel scrolls internally. */}
+      <ResizableSplit
+        expanded={timelineOpen}
+        left={
+          <div className="flex h-full flex-col pl-2 md:pl-5">
+            <div className="min-h-0 flex-1">
+              <TimelineWheel
+                selectedId={selectedSliceId}
+                pendingId={pendingSliceId}
+                onSelect={handleTimelineSelect}
+              />
+            </div>
+          </div>
+        }
+        right={
         <AnimatePresence mode="wait">
           {transition ? (
             <motion.div
@@ -562,7 +601,7 @@ function Inner({ initialConfig }: { initialConfig?: UserConfig }) {
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               transition={{ duration: 0.3 }}
-              className="relative flex items-center justify-center overflow-hidden min-h-[calc(100vh-13rem)]"
+              className="relative flex items-center justify-center overflow-hidden min-h-full"
             >
               {/* Soft brand glow behind the travel readout — the same stage-light
                   as the empty briefing's title card. */}
@@ -587,6 +626,7 @@ function Inner({ initialConfig }: { initialConfig?: UserConfig }) {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               transition={{ duration: 0.3 }}
+              className="h-full"
             >
               {(!hydrated || (allMessages.length === 0 && !isLoading)) ? (
                 <EmptyBriefing
@@ -596,7 +636,7 @@ function Inner({ initialConfig }: { initialConfig?: UserConfig }) {
                   onSend={handleSubmit}
                 />
               ) : (
-                <div className="mx-auto max-w-5xl xl:max-w-7xl px-4 sm:px-6 lg:px-8 min-h-[calc(100vh-13rem)]">
+                <div className="mx-auto max-w-5xl xl:max-w-7xl px-4 sm:px-6 lg:px-8 min-h-full">
                   <ChatSection
                     messages={allMessages}
                     isStreaming={isStreaming}
@@ -624,8 +664,8 @@ function Inner({ initialConfig }: { initialConfig?: UserConfig }) {
             </motion.div>
           )}
         </AnimatePresence>
-      </div>
-      </div>
+        }>
+      </ResizableSplit>
 
       {/* ── Fixed bottom bar ────────────────────────────────────────────── */}
       <div className="fixed bottom-0 inset-x-0 z-10">

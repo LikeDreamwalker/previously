@@ -22,7 +22,8 @@
     "docs": "文档",
     "settings": "设置",
     "expand": "展开",
-    "collapse": "收起"
+    "collapse": "收起",
+    "timelineToggle": "切换时间线"
   },
   "theme": {
     "light": "浅色",
@@ -210,6 +211,7 @@
     ]
   },
   "timeline": {
+    "drawerTitle": "时间线",
     "row": {
       "charCount": "{value} 字",
       "collapse": "收起",

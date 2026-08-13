@@ -62,7 +62,7 @@ Every chat turn itself runs inside a durable Vercel Workflow run (`src/app/api/c
 
 Three-phase message rendering (M8). See `src/components/chat/CLAUDE.md` for full details.
 
-1. **`ChatPage`** (`chat-page.tsx`) — Main container, useChat hook, TimelinePanel, MessageScroller
+1. **`ChatPage`** (`chat-page.tsx`) — Main container, useChat hook, TimelineWheel, MessageScroller
 2. **`ChatMessage`** — Three-phase rendering: Recall → Reasoning → Response
 3. **`RecallPhase`** — Flash recall results with expandable matched slices (ToolLayout + History icon)
 4. **`ThinkingSteps`** — Pro reasoning block (ToolLayout + Brain icon, MarkdownRenderer)

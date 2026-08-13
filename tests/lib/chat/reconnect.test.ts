@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { dropTrailingAssistantMessages } from "@/lib/chat/reconnect";
+import {
+  dropTrailingAssistantMessages,
+  lastStoredActivity,
+} from "@/lib/chat/reconnect";
 import type { UIMessage } from "ai";
 
 // dropTrailingAssistantMessages is the pure half of the reconnect reset: it
@@ -62,5 +65,50 @@ describe("dropTrailingAssistantMessages", () => {
     const out = dropTrailingAssistantMessages([]);
     expect(out).toEqual([]);
     expect(out).not.toBe([]);
+  });
+});
+
+describe("lastStoredActivity", () => {
+  const ISO = "2026-08-13T10:00:00.000Z";
+  const T = new Date(ISO).getTime();
+
+  it("returns the createdAt of the last message", () => {
+    const messages = [
+      msg("u1", "user"),
+      { ...msg("a1", "assistant"), createdAt: ISO } as UIMessage,
+    ];
+    expect(lastStoredActivity(messages)).toBe(T);
+  });
+
+  it("skips messages without createdAt and uses the newest one that has it", () => {
+    const messages = [
+      msg("u1", "user"), // no createdAt
+      { ...msg("a1", "assistant"), createdAt: T } as UIMessage,
+    ];
+    expect(lastStoredActivity(messages)).toBe(T);
+  });
+
+  it("accepts a numeric createdAt", () => {
+    const messages = [
+      { ...msg("a1", "assistant"), createdAt: T } as UIMessage,
+    ];
+    expect(lastStoredActivity(messages)).toBe(T);
+  });
+
+  it("accepts a Date createdAt", () => {
+    const messages = [
+      { ...msg("a1", "assistant"), createdAt: new Date(T) } as UIMessage,
+    ];
+    expect(lastStoredActivity(messages)).toBe(T);
+  });
+
+  it("returns null when no message has a usable createdAt", () => {
+    expect(lastStoredActivity([msg("u1", "user"), msg("a1", "assistant")])).toBe(
+      null,
+    );
+  });
+
+  it("returns null for an empty list", () => {
+    expect(lastStoredActivity([])).toBe(null);
   });
 });

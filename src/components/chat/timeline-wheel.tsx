@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
 import { Loader2 } from "lucide-react";
 import { getTimelineCatalog } from "@/lib/episodic/actions";
@@ -35,6 +35,27 @@ interface WheelItem {
   isNow: boolean;
 }
 
+// ─── Internal responsive switch ─────────────────────────────────────────
+// The wheel decides its own gear (mobile lock-screen clock vs desktop
+// sidebar) instead of receiving `narrow`/`compact` props from the parent.
+// matchMedia is consulted in a layout effect so a phone flips to the narrow
+// form BEFORE the first paint (the SSR first render stays desktop so
+// hydration matches). The threshold mirrors Tailwind's `md:` breakpoint —
+// the few responsive class swaps below (`md:left-1.5`, `md:justify-start`)
+// rely on that.
+
+function useIsMobile(): boolean {
+  const [isMobile, setIsMobile] = useState(false);
+  useLayoutEffect(() => {
+    const mq = window.matchMedia("(max-width: 767.98px)");
+    const update = () => setIsMobile(mq.matches);
+    update();
+    mq.addEventListener("change", update);
+    return () => mq.removeEventListener("change", update);
+  }, []);
+  return isMobile;
+}
+
 // ─── Plain local-time formatting ────────────────────────────────────────
 // Rows render these directly — NOT TimeDisplay (whose NumberTicker starts
 // digits at `value - 30` and only animates in view, so offscreen virtualized
@@ -56,6 +77,74 @@ function formatTime(iso: string): string {
   const h = String(d.getHours()).padStart(2, "0");
   const mi = String(d.getMinutes()).padStart(2, "0");
   return `${h}:${mi}`;
+}
+
+function pad2(n: number): string {
+  return String(n).padStart(2, "0");
+}
+
+/** MM/DD only — the narrow (mobile) clock drops the year. */
+function formatMD(iso: string): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  return `${pad2(d.getMonth() + 1)}/${pad2(d.getDate())}`;
+}
+
+// ─── Timestamp tones ────────────────────────────────────────────────────
+// Two emphasis levels shared by every timestamp variant: the primary line
+// (hour / time) reads stronger, the secondary line (date) reads muted.
+// Selected = brand blue; otherwise muted with a hover lift (the row button
+// is the `group`).
+
+function accentCls(isSelected: boolean): string {
+  return isSelected
+    ? "text-brand-600 dark:text-brand-400"
+    : "text-foreground/70 group-hover:text-foreground";
+}
+
+function mutedCls(isSelected: boolean): string {
+  return isSelected
+    ? "text-brand-600 dark:text-brand-400"
+    : "text-muted-foreground/60 group-hover:text-foreground/80";
+}
+
+/** The soft brand stage-light behind a timestamp — lit when its slice is
+ *  loaded (or clicked-pending), a fainter version on hover. */
+function RowGlow({ isSelected, className }: { isSelected: boolean; className: string }) {
+  return (
+    <div
+      aria-hidden
+      className={`pointer-events-none absolute -z-10 transition-opacity duration-200 ${
+        isSelected
+          ? "bg-brand-500/15 opacity-100"
+          : "bg-brand-500/8 opacity-0 group-hover:opacity-100"
+      } ${className}`}
+    />
+  );
+}
+
+/**
+ * The lock-screen clock — the narrow (mobile) timestamp. Small MM/DD over big
+ * hour and minute, year dropped. Everything is tabular monospace so the three
+ * lines share one width: "MM/DD" is 5 glyphs at 0.6rem and "HH"/"MM" are 2
+ * glyphs at text-2xl, which come out the same in a mono face — the digits line
+ * up as a clean column, lock-screen style.
+ */
+function LockClock({ timestamp, isSelected }: { timestamp: string; isSelected: boolean }) {
+  const d = new Date(timestamp);
+  const valid = !isNaN(d.getTime());
+  const hour = valid ? pad2(d.getHours()) : "00";
+  const minute = valid ? pad2(d.getMinutes()) : "00";
+  const date = valid ? formatMD(timestamp) : "00/00";
+  return (
+    <>
+      <span className={`font-mono text-[0.6rem] leading-none tabular-nums transition-colors ${mutedCls(isSelected)}`}>
+        {date}
+      </span>
+      <span className={`font-mono text-2xl leading-none tabular-nums transition-colors ${accentCls(isSelected)}`}>{hour}</span>
+      <span className={`font-mono text-2xl leading-none tabular-nums transition-colors ${accentCls(isSelected)}`}>{minute}</span>
+    </>
+  );
 }
 
 // ─── Rolling digit — the "reverse tick" ──────────────────────────────────
@@ -118,24 +207,15 @@ function RollingField({ value, digits = 2 }: { value: number; digits?: number })
   );
 }
 
-/** The central readout — a rolling YYYY/MM/DD · HH:MM. */
-function RollingDate({ timestamp }: { timestamp: string }) {
+/** The central readout — a rolling HH:MM (the rows carry the full date, so
+ *  the readout stays slim). */
+function RollingTime({ timestamp }: { timestamp: string }) {
   const d = new Date(timestamp);
-  const y = d.getFullYear();
-  const mo = d.getMonth() + 1;
-  const day = d.getDate();
   const h = d.getHours();
   const mi = d.getMinutes();
 
-  const sep = <span className="mx-0.5 text-muted-foreground/60">/</span>;
   return (
     <span className="inline-flex items-baseline font-mono leading-none">
-      <RollingField value={y} digits={4} />
-      {sep}
-      <RollingField value={mo} digits={2} />
-      {sep}
-      <RollingField value={day} digits={2} />
-      <span className="mx-0.5 text-muted-foreground/60">·</span>
       <RollingField value={h} digits={2} />
       <span className="mx-0.5 text-muted-foreground/60">:</span>
       <RollingField value={mi} digits={2} />
@@ -143,10 +223,102 @@ function RollingDate({ timestamp }: { timestamp: string }) {
   );
 }
 
+// ─── The per-slice timestamp ────────────────────────────────────────────
+
+/**
+ * The ONLY part of the wheel that differs between the two gears. Narrow
+ * (mobile): a lock-screen clock straddling the centered spine. Desktop: an
+ * axis dot on the left spine plus a two-line date/time label to its right.
+ * Same timestamp, two placements — the spine, beam, focal scale, scroll and
+ * selection logic are all ONE shared code path; this component is the entire
+ * responsive surface.
+ *
+ * The narrow clock rides on a patch of FOG — the desktop's brand glow shape
+ * rendered in the panel's own background color instead of blue: the spine
+ * dissolves into the mist behind the glyphs instead of striking through
+ * them. Because the fog's edges are soft, it masks gracefully at ANY opacity,
+ * so the whole row takes the focal fade — no decoupling needed. On mobile the
+ * fog REPLACES the glow (selected = brand-colored digits + the spine beam's
+ * peak); the desktop label keeps the blue glow as its selection light.
+ */
+function RowTimestamp({
+  item,
+  isSelected,
+  narrow,
+  nowLabel,
+}: {
+  item: WheelItem;
+  isSelected: boolean;
+  narrow: boolean;
+  nowLabel: string;
+}) {
+  if (narrow) {
+    return (
+      <span className="relative flex flex-col items-center px-1 py-1">
+        {/* The fog — same footprint as the desktop glow, bg-colored. Above the
+            spine, below the glyphs. */}
+        <span aria-hidden className="absolute -inset-x-1 -inset-y-1.5 rounded-2xl bg-background blur-md" />
+        <span className="relative flex flex-col items-center gap-1">
+          {item.isNow ? (
+            <span
+              className={`font-mono text-base leading-none tracking-wider transition-colors ${mutedCls(isSelected)}`}
+            >
+              {nowLabel}
+            </span>
+          ) : (
+            <LockClock timestamp={item.start} isSelected={isSelected} />
+          )}
+        </span>
+      </span>
+    );
+  }
+  return (
+    <span className="flex items-center gap-2">
+      {/* Axis dot — sits on the left spine. */}
+      <span className="flex size-3 shrink-0 items-center justify-center">
+        <span
+          className={`block size-2 rounded-full transition-colors ${
+            isSelected
+              ? "bg-brand-500 shadow-[0_0_8px_var(--brand-500)]"
+              : "bg-border/60 group-hover:bg-brand-500/60"
+          }`}
+        />
+      </span>
+      {/* Two-line time (year/month/day over hh:mm), left-aligned. */}
+      <span className="relative flex flex-col items-start gap-0.5">
+        <RowGlow isSelected={isSelected} className="-inset-x-2 -inset-y-1.5 rounded-full blur-md" />
+        <span className={`font-mono text-[0.7rem] leading-tight tabular-nums transition-colors ${mutedCls(isSelected)}`}>
+          {formatDate(item.start)}
+        </span>
+        <span className={`font-mono text-[0.8rem] leading-tight tabular-nums transition-colors ${accentCls(isSelected)}`}>
+          {item.isNow ? nowLabel : formatTime(item.start)}
+        </span>
+      </span>
+    </span>
+  );
+}
+
+/** Fake row rendered by the width sentinel — tabular-nums makes every digit
+ *  the same width, so any valid timestamp measures the widest label. */
+const SENTINEL_ITEM: WheelItem = {
+  id: "sentinel",
+  start: "2000-01-01T00:00:00",
+  focus: "",
+  isNow: false,
+};
+
 // ─── The wheel ──────────────────────────────────────────────────────────
 
 export function TimelineWheel({ selectedId, pendingId, onSelect }: TimelineWheelProps) {
   const t = useTranslations("timeline");
+  const nowLabel = t("panel.now");
+  // Internal responsive gear: `narrow` = the mobile lock-screen-clock column.
+  // The component owns the switch — the parent just renders <TimelineWheel …/>.
+  // The mechanism below is identical in both gears; only the timestamp
+  // (RowTimestamp), the row height and the spine's horizontal position respond
+  // to it.
+  const narrow = useIsMobile();
+
   const [items, setItems] = useState<WheelItem[] | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [height, setHeight] = useState(0);
@@ -156,6 +328,12 @@ export function TimelineWheel({ selectedId, pendingId, onSelect }: TimelineWheel
   // Mouse drag-to-scroll state. `moved` distinguishes a drag from a click so a
   // drag that ends over a row doesn't accidentally load it.
   const dragRef = useRef({ active: false, moved: false, startY: 0, startScroll: 0 });
+  // Narrow rows are taller — the lock-screen clock (small date + big hour +
+  // big minute) needs room for the spine line to show through above and below
+  // each timestamp block, threading the whole column. This is a parameter of
+  // the skin, not a second implementation.
+  const rowH = narrow ? 96 : ROW_H;
+  const fadePx = FADE_PX * (rowH / ROW_H);
 
   const handleMouseDown = (e: React.MouseEvent) => {
     if (e.button !== 0 || !scrollRef.current) return;
@@ -245,10 +423,10 @@ export function TimelineWheel({ selectedId, pendingId, onSelect }: TimelineWheel
     const el = scrollRef.current;
     // Center the "now" sentinel (the last row). With the symmetric padding this
     // equals the max scrollTop, so the wheel opens on the present.
-    const target = Math.max(0, (items.length - 1) * ROW_H);
+    const target = Math.max(0, (items.length - 1) * rowH);
     el.scrollTop = target;
     setScrollTop(el.scrollTop);
-  }, [items, height]);
+  }, [items, height, rowH]);
 
   // rAF-throttled scroll position.
   const handleScroll = () => {
@@ -263,20 +441,20 @@ export function TimelineWheel({ selectedId, pendingId, onSelect }: TimelineWheel
   const centerY = scrollTop + height / 2;
   // Symmetric top/bottom padding so the first and last rows can BOTH reach the
   // selection band at the vertical center — the wheel's two ends aren't dead.
-  const pad = Math.max(0, height / 2 - ROW_H / 2);
-  const totalPx = items ? items.length * ROW_H + pad * 2 : 0;
+  const pad = Math.max(0, height / 2 - rowH / 2);
+  const totalPx = items ? items.length * rowH + pad * 2 : 0;
 
   // Virtualized + focal-transform view of the visible rows.
   const visibleRows = useMemo(() => {
     if (!items || items.length === 0) return [];
-    const start = Math.max(0, Math.floor((scrollTop - pad) / ROW_H) - RENDER_MARGIN);
-    const end = Math.min(items.length, Math.ceil((scrollTop + height - pad) / ROW_H) + RENDER_MARGIN);
+    const start = Math.max(0, Math.floor((scrollTop - pad) / rowH) - RENDER_MARGIN);
+    const end = Math.min(items.length, Math.ceil((scrollTop + height - pad) / rowH) + RENDER_MARGIN);
     const rows: Array<{ index: number; item: WheelItem; scale: number; opacity: number }> = [];
     for (let i = start; i < end; i++) {
       const item = items[i];
-      const rowCenter = pad + i * ROW_H + ROW_H / 2;
+      const rowCenter = pad + i * rowH + rowH / 2;
       const dist = Math.abs(rowCenter - centerY);
-      const tt = Math.min(1, dist / FADE_PX);
+      const tt = Math.min(1, dist / fadePx);
       rows.push({
         index: i,
         item,
@@ -285,40 +463,93 @@ export function TimelineWheel({ selectedId, pendingId, onSelect }: TimelineWheel
       });
     }
     return rows;
-  }, [items, scrollTop, height, centerY, pad]);
+  }, [items, scrollTop, height, centerY, pad, rowH, fadePx]);
 
   // The row nearest the selection band — drives the readout only. Content is
   // loaded on EXPLICIT click, not on scroll-settle, so browsing costs zero
   // requests (slice reads are GitHub API calls in production).
   const focusedIndex = useMemo(() => {
     if (!items || items.length === 0) return 0;
-    const idx = Math.round((centerY - pad - ROW_H / 2) / ROW_H);
+    const idx = Math.round((centerY - pad - rowH / 2) / rowH);
     return Math.max(0, Math.min(items.length - 1, idx));
-  }, [items, centerY, pad]);
+  }, [items, centerY, pad, rowH]);
   const focused = items ? items[focusedIndex] : null;
+
+  // The lit slice — the LOADED one (or a pending click, so the light moves the
+  // instant the user clicks, like the blue dot). It lights the axis spine below.
+  const litIndex = useMemo(() => {
+    if (!items) return -1;
+    return items.findIndex((i) => i.id === selectedId || i.id === pendingId);
+  }, [items, selectedId, pendingId]);
+
+  // The spine's background — a brand-blue light that peaks at the lit slice's
+  // current viewport position and fades out above and below it, like a beam.
+  const spineBackground = useMemo(() => {
+    if (litIndex === -1 || height === 0) {
+      // No selection yet — a uniform translucent brand line.
+      return "oklch(from var(--brand-500) l c h / 0.18)";
+    }
+    const center = pad + litIndex * rowH + rowH / 2 - scrollTop;
+    const peak = Math.max(0, Math.min(100, (center / height) * 100));
+    const s = 18;
+    const lo = Math.max(0, peak - s);
+    const hi = Math.min(100, peak + s);
+    return `linear-gradient(to bottom,
+      oklch(from var(--brand-500) l c h / 0.05) 0%,
+      oklch(from var(--brand-500) l c h / 0.22) ${lo}%,
+      oklch(from var(--brand-500) l c h / 0.65) ${peak}%,
+      oklch(from var(--brand-500) l c h / 0.22) ${hi}%,
+      oklch(from var(--brand-500) l c h / 0.05) 100%)`;
+  }, [litIndex, height, scrollTop, pad, rowH]);
 
   const centerOn = (index: number) => {
     const el = scrollRef.current;
     if (!el) return;
-    // Rows sit at `pad + i*ROW_H + ROW_H/2` — the pad must be included so the
+    // Rows sit at `pad + i*rowH + rowH/2` — the pad must be included so the
     // clicked row lands exactly on the selection band.
-    const target = Math.max(0, pad + index * ROW_H + ROW_H / 2 - height / 2);
+    const target = Math.max(0, pad + index * rowH + rowH / 2 - height / 2);
     el.scrollTo({ top: target, behavior: "smooth" });
   };
 
   return (
-    <div
-      ref={scrollRef}
-      onScroll={handleScroll}
-      onMouseDown={handleMouseDown}
-      onMouseMove={handleMouseMove}
-      onClickCapture={handleClickCapture}
-      onContextMenu={(e) => e.preventDefault()}
-      aria-label="Timeline wheel"
-      className={`relative h-full select-none overflow-y-auto overflow-x-hidden scrollbar-none ${
-        dragging ? "cursor-grabbing" : "cursor-grab"
-      }`}
-    >
+    <div className="relative h-full">
+      {/* ONE spine for both gears — the same brand-blue beam, brightest at the
+          lit slice. Only its horizontal position is responsive: centered on
+          mobile (the clocks straddle it), left edge on desktop (the dots sit
+          on it). Drawn OUTSIDE the scroll container so it never moves while
+          the timestamps scroll past it (time is continuous). */}
+      <div
+        className="pointer-events-none absolute inset-y-0 left-1/2 z-0 w-px -translate-x-1/2 md:left-1.5"
+        style={{ background: spineBackground }}
+      />
+      <div
+        ref={scrollRef}
+        onScroll={handleScroll}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onClickCapture={handleClickCapture}
+        onContextMenu={(e) => e.preventDefault()}
+        aria-label="Timeline wheel"
+        className={`relative z-10 h-full select-none overflow-y-auto overflow-x-hidden scrollbar-none ${
+          dragging ? "cursor-grabbing" : "cursor-grab"
+        }`}
+      >
+      {/* Invisible width sentinel: every row is absolutely positioned, so on
+          their own they give the panel zero intrinsic width. This hidden copy
+          of the widest timestamp defines the collapsed panel's natural width —
+          the split measures it and the column shrinks to fit the content
+          instead of a fixed 180px. Desktop keeps a trailing padding for the
+          selected row's brand glow so its soft edge fades before the panel
+          cuts it off; mobile needs none — the fog is background-colored, so
+          clipping it is invisible, and the column stays tight to the clocks. */}
+      <div
+        aria-hidden
+        className={`w-max ${narrow ? "px-1" : "pr-4"}`}
+        style={{ height: 0, visibility: "hidden" }}
+      >
+        <RowTimestamp item={SENTINEL_ITEM} isSelected={false} narrow={narrow} nowLabel={nowLabel} />
+      </div>
+
       {!items ? (
         <div className="flex h-full items-center justify-center">
           <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
@@ -328,13 +559,12 @@ export function TimelineWheel({ selectedId, pendingId, onSelect }: TimelineWheel
           {/* ── Virtualized rows ── */}
           <div className="relative" style={{ height: totalPx }}>
             {visibleRows.map(({ index, item, scale, opacity }) => {
-              const isNow = item.isNow;
               // Blue = the LOADED slice (whose content is shown on the right),
               // OR the slice the user just clicked while its transition is
               // still rolling (pendingId) — so the glow lights instantly.
               // It does NOT follow scroll previews — only an explicit click
               // moves it.
-              const isSelected = isNow
+              const isSelected = item.isNow
                 ? selectedId === "now" || pendingId === "now"
                 : selectedId === item.id || pendingId === item.id;
               return (
@@ -345,75 +575,66 @@ export function TimelineWheel({ selectedId, pendingId, onSelect }: TimelineWheel
                     centerOn(index);
                   }}
                   onContextMenu={(e) => e.preventDefault()}
-                  className="group absolute left-1/2 flex w-full cursor-pointer flex-col items-center gap-0.5 px-2 py-1"
+                  // justify-center ↔ md:justify-start is the row's only layout
+                  // response to the gear (`md:` mirrors the useIsMobile threshold).
+                  className="group absolute inset-x-0 flex cursor-pointer items-center justify-center md:justify-start md:pr-2"
                   style={{
-                    top: pad + index * ROW_H + ROW_H / 2,
-                    transform: `translate(-50%, -50%) scale(${scale})`,
+                    // ONE geometry for both gears: content centered on the row
+                    // line, then focal-scaled and focal-faded. Mobile scales
+                    // from its center; desktop scales toward the spine so the
+                    // dots stay on it.
+                    top: pad + index * rowH + rowH / 2,
+                    transform: `translateY(-50%) scale(${scale})`,
+                    transformOrigin: narrow ? "center center" : "left center",
                     opacity,
                     zIndex: isSelected ? 5 : 1,
                   }}
                 >
-                  {/* Soft brand glow under the label — the same "stage light" the
-                      empty briefing uses. Sized to the label (not the full row)
-                      so it never widens the column; lights instantly on click via
-                      pendingId, and shows a fainter version on hover. */}
-                  <span className="relative flex flex-col items-center gap-0.5">
-                    <div
-                      aria-hidden
-                      className={`pointer-events-none absolute -inset-x-2 -inset-y-1.5 -z-10 rounded-full blur-md transition-opacity duration-200 ${
-                        isSelected
-                          ? "bg-brand-500/15 opacity-100"
-                          : "bg-brand-500/8 opacity-0 group-hover:opacity-100"
-                      }`}
-                    />
-                    <span
-                      className={`font-mono text-[0.7rem] leading-tight tabular-nums transition-colors ${
-                        isSelected
-                          ? "text-brand-600 dark:text-brand-400"
-                          : "text-muted-foreground/60 group-hover:text-foreground/80"
-                      }`}
-                    >
-                      {formatDate(item.start)}
-                    </span>
-                    <span
-                      className={`font-mono text-[0.8rem] leading-tight tabular-nums transition-colors ${
-                        isSelected
-                          ? "text-brand-600 dark:text-brand-400"
-                          : "text-foreground/70 group-hover:text-foreground"
-                      }`}
-                    >
-                      {isNow ? t("panel.now") : formatTime(item.start)}
-                    </span>
-                  </span>
+                  <RowTimestamp item={item} isSelected={isSelected} narrow={narrow} nowLabel={nowLabel} />
                 </button>
               );
             })}
           </div>
 
-          {/* ── Center selection band ── */}
-          <div className="pointer-events-none absolute inset-x-0 top-1/2 -translate-y-1/2 border-y border-brand-500/20 bg-brand-500/10" style={{ height: ROW_H }} />
+          {/* ── Center selection band — desktop only. Narrow mode drops it:
+               the focal scale and the brand-colored clock mark the loaded slice. ── */}
+          {!narrow && (
+            <div
+              className="pointer-events-none absolute left-5 right-0 top-1/2 -translate-y-1/2 border-y border-brand-500/20 bg-brand-500/10"
+              style={{ height: rowH }}
+            />
+          )}
 
-          {/* ── Central rolling readout ── */}
-          <div className="pointer-events-none absolute inset-x-0 top-1/2 z-10 -translate-y-1/2 px-1">
-            {/* w-max max-w-full: the readout sizes to its content but is clamped
-                to the column so it can never push a horizontal scrollbar. */}
-            <div className="mx-auto flex w-max max-w-full flex-col items-center gap-1 overflow-hidden rounded-lg bg-background/80 px-1.5 py-1 backdrop-blur-sm">
-              <span className="whitespace-nowrap text-xs font-medium text-foreground">
-                {focused?.isNow ? t("panel.now") : focused ? <RollingDate timestamp={focused.start} /> : null}
-              </span>
-              {focused && !focused.isNow && focused.focus && (
-                <span className="max-w-full truncate text-[0.55rem] text-muted-foreground">
-                  {focused.focus}
+          {/* ── Central rolling readout — anchored to the axis, desktop only
+               (in the narrow gear each row's clock IS the readout). The rows
+               already carry the full date, so it stays a rolling HH:MM,
+               clamped so it can never push past the column's edge. ── */}
+          {!narrow && (
+            <div className="pointer-events-none absolute left-5 top-1/2 z-10 -translate-y-1/2">
+              <div className="flex w-max max-w-[calc(100%-1.25rem)] flex-col items-start gap-1 overflow-hidden rounded-lg bg-background/80 px-2 py-1 backdrop-blur-sm">
+                <span className="whitespace-nowrap text-xs font-medium text-foreground">
+                  {focused ? (focused.isNow ? nowLabel : <RollingTime timestamp={focused.start} />) : null}
                 </span>
-              )}
+                {focused && !focused.isNow && focused.focus && (
+                  <span className="max-w-full truncate text-[0.55rem] text-muted-foreground">
+                    {focused.focus}
+                  </span>
+                )}
+              </div>
             </div>
-          </div>
+          )}
 
-          {/* ── Edge fade for depth ── */}
-          <div className="pointer-events-none absolute inset-x-0 top-0 h-10 bg-gradient-to-b from-background to-transparent" />
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-background to-transparent" />
+          {/* ── Edge fade for depth (desktop only — narrow keeps no background
+               band that could cover the static spine). ── */}
+          {!narrow && (
+            <>
+              <div className="pointer-events-none absolute inset-x-0 top-0 h-10 bg-gradient-to-b from-background to-transparent" />
+              <div className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-background to-transparent" />
+            </>
+          )}
         </>
       )}
+      </div>
     </div>
   );
 }

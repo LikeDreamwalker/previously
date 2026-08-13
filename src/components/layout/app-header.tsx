@@ -2,20 +2,25 @@
 
 import { Link } from "@/i18n/navigation";
 import { BookOpen, Settings } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { ThemeToggle } from "@/components/chat/theme-toggle";
 import { LocaleToggle } from "@/components/chat/locale-toggle";
 import { VersionBadge } from "@/components/layout/version-badge";
 import { DemoBadge } from "@/components/layout/demo-badge";
 
 export function AppHeader({ isDemo = false }: { isDemo?: boolean }) {
+  const t = useTranslations("nav");
+
   return (
     <header className="fixed top-0 inset-x-0 z-50 flex items-center justify-between h-12 px-4 sm:px-6 bg-background/90 backdrop-blur-md">
-      <Link
-        href="/"
-        className="text-sm font-semibold tracking-tight hover:text-foreground/80 transition-colors"
-      >
-        Previously
-      </Link>
+      <div className="flex items-center gap-1">
+        <Link
+          href="/"
+          className="text-sm font-semibold tracking-tight hover:text-foreground/80 transition-colors"
+        >
+          Previously
+        </Link>
+      </div>
 
       <nav className="flex items-center gap-1">
         {isDemo && <DemoBadge />}

@@ -22,7 +22,8 @@
     "docs": "Docs",
     "settings": "Settings",
     "expand": "Expand",
-    "collapse": "Collapse"
+    "collapse": "Collapse",
+    "timelineToggle": "Toggle timeline"
   },
   "theme": {
     "light": "Light",
@@ -210,6 +211,7 @@
     ]
   },
   "timeline": {
+    "drawerTitle": "Timeline",
     "row": {
       "charCount": "{value} chars",
       "collapse": "Collapse",
