@@ -102,7 +102,7 @@ export function HistoricalChatView({
   // ── Content exists — always render it (even while loading next slice) ──
   // No left padding — the timeline itself is the separator.
   return (
-    <div className="mx-auto max-w-5xl xl:max-w-7xl pl-0 pr-4 sm:pr-6 lg:pr-8 py-3">
+    <div className="mx-auto max-w-5xl xl:max-w-7xl pl-0 pr-4 sm:pr-6 lg:pr-8 pt-3 pb-36">
       {/* Subtle loading bar — only when transitioning to a new slice */}
       {loading && (
         <div className="mb-3 h-0.5 bg-muted-foreground/10 rounded-full overflow-hidden">

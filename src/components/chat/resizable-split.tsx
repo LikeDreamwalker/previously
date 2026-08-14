@@ -66,9 +66,11 @@ export function ResizableSplit({
             <div className="h-full">{right}</div>
           </div>
 
-          {/* Timeline — one instance, widens in place over the content. */}
+          {/* Timeline — one instance, widens in place over the content.
+              z-20 only while expanded: collapsed, the fixed bottom input bar
+              (z-10) must cover the mini spine where they overlap. */}
           <div
-            className="absolute inset-y-0 left-0 z-20 transition-[width] duration-300 ease-in-out"
+            className={`absolute inset-y-0 left-0 transition-[width] duration-300 ease-in-out ${expanded ? "z-20" : "z-0"}`}
             style={{ width: expanded ? "100%" : contentWidth }}
           >
             {/* Blur mask: while expanded, the covered content shows through a

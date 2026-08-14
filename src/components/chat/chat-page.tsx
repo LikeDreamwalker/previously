@@ -696,8 +696,9 @@ function Inner({
                   onSend={handleSubmit}
                 />
               ) : (
-                <div className="mx-auto max-w-5xl xl:max-w-7xl pl-0 pr-4 sm:pr-6 lg:pr-8 min-h-full">
-                  {/* No left padding — the timeline itself is the separator. */}
+                <div className="mx-auto max-w-5xl xl:max-w-7xl pl-0 pr-4 sm:pr-6 lg:pr-8 min-h-full pb-36">
+                  {/* No left padding — the timeline itself is the separator.
+                      pb-36 = safe area clearing the fixed bottom input bar. */}
                   <ChatSection
                     messages={allMessages}
                     isStreaming={isStreaming}
@@ -729,7 +730,13 @@ function Inner({
       </ResizableSplit>
 
       {/* ── Fixed bottom bar ────────────────────────────────────────────── */}
-      <div className="fixed bottom-0 inset-x-0 z-10">
+      {/* While the timeline is expanded (z-20 panel + translucent blur mask),
+          fade the input out — otherwise the card ghosts through the mask. */}
+      <div
+        className={`fixed bottom-0 inset-x-0 z-10 transition-opacity duration-300 ${
+          timelineOpen ? "pointer-events-none opacity-0" : "opacity-100"
+        }`}
+      >
         <div className="pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom,0.5rem))]">
           <div className="mx-auto w-full md:max-w-2xl px-4 sm:px-6 lg:px-8">
             <ChatInput
