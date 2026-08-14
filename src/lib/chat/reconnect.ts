@@ -24,31 +24,37 @@ export function dropTrailingAssistantMessages(
   return messages.slice(0, end);
 }
 
+export interface ArrivalDecision {
+  /** Passed to useChat's `resume` — re-attach to the in-flight run's stream. */
+  shouldResume: boolean;
+  /** Passed to useChat's `messages` — the conversation the live view opens with. */
+  initialMessages: UIMessage[];
+}
+
 /**
- * The timestamp (ms) of the newest message in a persisted conversation, or null
- * when no message carries a usable createdAt.
+ * The mount-time arrival decision — the pure half (side effects like reading /
+ * clearing localStorage live in the caller).
  *
- * Drives the "am I still in the same time slice?" decision on refresh: a
- * conversation whose newest message is older than the time-silence window has
- * been closed as a slice, so the live view should open blank (arrival briefing)
- * instead of restoring the stale conversation.
+ * The rule is one-dimensional: the live view restores ONLY in-flight work.
+ * `runActive` is the server's verdict on the persisted run ("pending" /
+ * "running" — see isChatRunActive); the client never infers slice boundaries
+ * from timestamps or silence windows.
+ *
+ * - Run still active → genuine reconnect: keep the working conversation, but
+ *   drop the trailing partial assistant turn (the replay rebuilds it).
+ * - Anything else (no run, or a terminal one) → fresh arrival: open blank so
+ *   the arrival briefing greets the user. Completed conversation is NOT
+ *   restored into the live view — it belongs to its slice on the timeline.
  */
-export function lastStoredActivity(messages: readonly UIMessage[]): number | null {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    // createdAt isn't on the UIMessage type (useChat attaches it at runtime,
-    // and JSON round-tripping turns the Date into an ISO string), so access it
-    // structurally.
-    const t = (messages[i] as { createdAt?: unknown }).createdAt;
-    if (!t) continue;
-    const ms =
-      typeof t === "number"
-        ? t
-        : typeof t === "string"
-          ? Date.parse(t)
-          : t instanceof Date
-            ? t.getTime()
-            : NaN;
-    if (Number.isFinite(ms)) return ms;
+export function decideArrival(
+  runActive: boolean,
+  stored: readonly UIMessage[],
+): ArrivalDecision {
+  if (runActive) {
+    return {
+      shouldResume: true,
+      initialMessages: dropTrailingAssistantMessages(stored),
+    };
   }
-  return null;
+  return { shouldResume: false, initialMessages: [] };
 }

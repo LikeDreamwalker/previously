@@ -117,14 +117,19 @@ async function emitEvolutionResult(result: EvolutionResult): Promise<void> {
     id: "evolution-result",
     data: {
       running: false,
-      changes: {
+      changes: result.changes ?? {
         added: result.changed ? 1 : 0,
         reinforced: 0,
-        demoted: 0,
-        removed: result.droppedRecent,
+        demoted: result.droppedRecent,
+        removed: 0,
         superseded: 0,
       },
       hasChanges: result.changed,
+      // The review's reasoning + the actual line diff — the indicator's
+      // expanded content. `error` marks a FAILED run (never a legit no-change).
+      note: result.note,
+      mutations: result.mutations ?? [],
+      ...(result.error ? { error: result.error } : {}),
     },
   } as UIMessageChunk);
   writer.releaseLock();
@@ -328,12 +333,9 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
     prevSlice = toPrevRef(diskSlice);
     await closeSlice(diskSlice, closeSignal);
     console.log(`[Episodic] Closed slice: ${diskSlice.slice_id} (${closeSignal})`);
-    // v0.7: signal the client (which fires the per-slice evolution) on EVERY
-    // slice close — this is the one evolution per slice boundary. Trivial
-    // slices are fine to check: the Previously Agent self-gates ("no new info →
-    // output the card verbatim") and the memory_worthy→tag gate already keeps
-    // trivial turns from minting tags. Always firing keeps the auto-evolution
-    // visibly alive instead of silently going quiet.
+    // Signal the client that a slice closed (rendered as a housekeeping
+    // checklist row). The per-slice evolution itself runs INLINE below
+    // (§4b) — the client no longer fires anything on this signal.
     await emitPhase("slice-closed", false, [diskSlice.slice_id]);
     // v0.8 — force the reconcile so the just-closed slice is in the projection
     // immediately (the throttled per-turn weave would defer it up to 5 min).
@@ -424,41 +426,66 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   // write the real card (the old /api/evolution route also returned skipped).
   let evolutionResult: EvolutionResult | undefined;
   const explicitUpdate = analysis.memoryUpdate;
-  if (!input.useDemo && closeSignal && diskSlice) {
-    const trivialClose =
-      diskSlice.tags.length === 0 && diskSlice.turns.length <= 2;
-    if (!trivialClose) {
+  // Evolution failures must never take the turn down: a write/agent error is
+  // reported to the client as an error chunk and the turn continues.
+  try {
+    if (!input.useDemo && closeSignal && diskSlice) {
+      const trivialClose =
+        diskSlice.tags.length === 0 && diskSlice.turns.length <= 2;
+      if (!trivialClose) {
+        evolutionResult = await runCardEvolution({
+          model: input.workerModel,
+          sliceId: diskSlice.slice_id,
+          closedSliceId: diskSlice.slice_id,
+          recentTurns: diskSlice.turns.map((t) => ({ role: t.role, content: t.content })),
+          currentSliceTags: diskSlice.tags,
+          signal: "slice_closed",
+          focus: explicitUpdate?.content,
+          readers: buildCardReaders(input),
+          onProgress: emitEvolutionProgress,
+        });
+        await emitEvolutionResult(evolutionResult);
+        console.log(
+          `[Evolution] inline slice-close: changed=${evolutionResult.changed}, droppedRecent=${evolutionResult.droppedRecent}`,
+        );
+      } else {
+        // Trivial boundary — still emit a terminal chunk so the auto-evolution
+        // stays visibly alive (a silent skip reads as "it never runs").
+        await emitEvolutionResult({
+          ran: false,
+          changed: false,
+          droppedRecent: 0,
+          note: "Trivial slice boundary — nothing to review.",
+        });
+      }
+    } else if (explicitUpdate && slice) {
       evolutionResult = await runCardEvolution({
         model: input.workerModel,
-        sliceId: diskSlice.slice_id,
-        closedSliceId: diskSlice.slice_id,
-        recentTurns: diskSlice.turns.map((t) => ({ role: t.role, content: t.content })),
-        currentSliceTags: diskSlice.tags,
-        signal: "slice_closed",
-        focus: explicitUpdate?.content,
+        sliceId: slice.slice_id,
+        recentTurns: input.recentTurns,
+        currentSliceTags: slice.tags,
+        focus: explicitUpdate.content,
+        signal: "new_observation",
         readers: buildCardReaders(input),
         onProgress: emitEvolutionProgress,
       });
       await emitEvolutionResult(evolutionResult);
       console.log(
-        `[Evolution] inline slice-close: changed=${evolutionResult.changed}, droppedRecent=${evolutionResult.droppedRecent}`,
+        `[Evolution] inline user request: changed=${evolutionResult.changed}`,
       );
     }
-  } else if (explicitUpdate && slice) {
-    evolutionResult = await runCardEvolution({
-      model: input.workerModel,
-      sliceId: slice.slice_id,
-      recentTurns: input.recentTurns,
-      currentSliceTags: slice.tags,
-      focus: explicitUpdate.content,
-      signal: "new_observation",
-      readers: buildCardReaders(input),
-      onProgress: emitEvolutionProgress,
-    });
-    await emitEvolutionResult(evolutionResult);
-    console.log(
-      `[Evolution] inline user request: changed=${evolutionResult.changed}`,
+  } catch (err) {
+    console.error(
+      `[Evolution] inline run failed, continuing turn:`,
+      err instanceof Error ? err.message : err,
     );
+    await emitEvolutionResult({
+      ran: false,
+      changed: false,
+      droppedRecent: 0,
+      note: "Evolution run failed.",
+      error: err instanceof Error ? err.message : String(err),
+    }).catch(() => {});
   }
 
   // ── 4. Ensure previously.md (pure copy forward, no decay) ────────────

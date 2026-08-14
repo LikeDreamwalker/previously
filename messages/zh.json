@@ -146,7 +146,8 @@
       "superseded": "↻{count} 取代",
       "previouslyOn": "前情提要",
       "clickToView": "点击查看",
-      "thoughts": "思考"
+      "thoughts": "思考",
+      "applied": "正在应用更新..."
     },
     "phase": {
       "thinking": "正在思考…",

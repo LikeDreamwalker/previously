@@ -14,6 +14,7 @@
  */
 import type { ModelMessage } from "ai";
 import type { TimeSlice } from "@/lib/episodic";
+import type { CardChangeSummary, CardMutation } from "@/lib/episodic/card-diff";
 import type { UserConfig } from "@/lib/config/types";
 import type { ModelConfig } from "@/lib/models/registry";
 
@@ -75,6 +76,13 @@ export interface EvolutionResult {
   changed: boolean;
   droppedRecent: number;
   note: string;
+  /** Line-level mutations vs the previous card — the indicator's expanded diff. */
+  mutations?: CardMutation[];
+  /** Semantic change counts — the indicator's collapsed summary chips. */
+  changes?: CardChangeSummary;
+  /** Set when the evolution FAILED (worker down, write error) — a failure must
+   *  never be presented as a legitimate "no changes" result. */
+  error?: string;
 }
 
 /** Result of the housekeeping step — slice + prepared context for the agent. */

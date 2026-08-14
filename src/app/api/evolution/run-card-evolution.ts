@@ -13,6 +13,7 @@
  */
 import { runPreviouslyAgent, type PreviouslySignal } from "@/lib/episodic/flash/previously-agent";
 import { applyCardUpdate } from "@/lib/episodic/previously-updater";
+import { diffCardLines, summarizeCardChanges, type CardChangeSummary, type CardMutation } from "@/lib/episodic/card-diff";
 import { readCurrentPreviously, writeCurrentPreviously, writePreviously } from "@/lib/episodic";
 import type { ModelConfig } from "@/lib/models/registry";
 
@@ -53,6 +54,13 @@ export interface RunCardEvolutionResult {
   changed: boolean;
   droppedRecent: number;
   note: string;
+  /** Line-level mutations vs the previous card — the indicator's expanded diff. */
+  mutations?: CardMutation[];
+  /** Semantic change counts (added/reinforced/demoted/removed/superseded) —
+   *  the indicator's collapsed summary. Present when the card moved. */
+  changes?: CardChangeSummary;
+  /** Set when the evolution FAILED — never present on a legitimate no-change. */
+  error?: string;
 }
 
 const VALID_SIGNALS: PreviouslySignal[] = [
@@ -97,6 +105,12 @@ export async function runCardEvolution(
 
   input.onProgress?.("reviewing");
 
+  // A FAILED worker (unreachable / schema-invalid / no output call) must not be
+  // presented as "checked, no updates" — surface the failure as an error.
+  if (result.failed) {
+    return { ran: true, changed: false, droppedRecent: 0, note: result.reasoning, error: result.reasoning };
+  }
+
   if (!result.updatedCard.trim()) {
     return { ran: true, changed: false, droppedRecent: 0, note: result.reasoning };
   }
@@ -113,5 +127,11 @@ export async function runCardEvolution(
     changed: applied.changed,
     droppedRecent: applied.droppedRecent,
     note: result.reasoning,
+    // The expanded "what changed" diff + the semantic counts — only meaningful
+    // when the card moved.
+    mutations: applied.changed ? diffCardLines(baseCard, applied.content) : [],
+    changes: applied.changed
+      ? summarizeCardChanges(baseCard, applied.content, applied.droppedRecent)
+      : undefined,
   };
 }

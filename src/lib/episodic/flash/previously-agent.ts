@@ -70,6 +70,12 @@ export interface PreviouslyAgentOutput {
   /** The FULL updated card text. Empty when nothing changed / on failure. */
   updatedCard: string;
   reasoning: string;
+  /**
+   * True when the worker FAILED (unreachable, schema-invalid, no output tool)
+   * as opposed to legitimately deciding "nothing to update" — the caller must
+   * not present a failure as a clean no-change result.
+   */
+  failed?: boolean;
 }
 
 // ─── Standing rules (distilled from DIRECTIVES) ──────────────────────────
@@ -235,7 +241,7 @@ ${recentTurns.length > 0
 async function attemptCall(
   prompt: string,
   input: PreviouslyAgentInput,
-): Promise<{ updatedCard?: string; reasoning: string }> {
+): Promise<{ updatedCard?: string; reasoning: string; failed?: boolean }> {
   const result = await generateText({
     model: createModel(input.model),
     prompt,
@@ -308,13 +314,13 @@ async function attemptCall(
       "[PreviouslyAgent] Output schema validation failed:",
       parsed.error.issues,
     );
-    return { reasoning: "Schema validation failed" };
+    return { reasoning: "Schema validation failed", failed: true };
   }
 
   if (result.text?.trim()) {
     console.warn("[PreviouslyAgent] Worker returned text instead of tool call:", result.text.slice(0, 200));
   }
-  return { reasoning: result.text?.slice(0, 200) ?? "Worker did not call output tool" };
+  return { reasoning: result.text?.slice(0, 200) ?? "Worker did not call output tool", failed: true };
 }
 
 const RETRY_DELAY_MS = 300;
@@ -338,7 +344,7 @@ export async function runPreviouslyAgent(
       const result = await attemptCall(prompt, input);
       return { updatedCard: result.updatedCard ?? "", reasoning: result.reasoning };
     } catch {
-      return { updatedCard: "", reasoning: "Previously Agent worker unavailable" };
+      return { updatedCard: "", reasoning: "Previously Agent worker unavailable", failed: true };
     }
   }
 }

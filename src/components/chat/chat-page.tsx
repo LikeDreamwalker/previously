@@ -26,9 +26,10 @@ import {
 } from "@/lib/episodic/actions";
 import { getCached, setCache } from "@/lib/chat/slice-cache";
 import {
-  dropTrailingAssistantMessages,
-  lastStoredActivity,
+  decideArrival,
+  type ArrivalDecision,
 } from "@/lib/chat/reconnect";
+import { isChatRunActive } from "@/lib/chat/actions";
 import { saveUserConfig } from "@/lib/config/actions";
 import type { UserConfig } from "@/lib/config/types";
 import { useTranslations } from "next-intl";
@@ -42,15 +43,73 @@ interface ChatPageProps {
 }
 
 export function ChatPage({ initialConfig }: ChatPageProps) {
-  return <Inner initialConfig={initialConfig} />;
+  // Mount-time arrival decision. Only the SERVER can say whether the persisted
+  // run is still in flight, so this verdict is async — Inner (and therefore
+  // useChat) mounts only after it lands, keeping useChat's init a synchronous,
+  // once-only snapshot. Until then nothing renders (the header is outside this
+  // tree, so the page chrome still shows).
+  const [arrival, setArrival] = useState<ArrivalDecision | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    resolveArrival().then((d) => {
+      if (!cancelled) setArrival(d);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  if (!arrival) return null;
+  return (
+    <Inner
+      initialConfig={initialConfig}
+      shouldResume={arrival.shouldResume}
+      initialMessages={arrival.initialMessages}
+    />
+  );
+}
+
+/**
+ * The one-shot arrival verdict, side effects included. The rule: the live view
+ * restores ONLY in-flight work.
+ *
+ * - The persisted run is still pending/running → genuine reconnect: keep the
+ *   working conversation (the replay rebuilds its trailing partial turn).
+ * - Anything else (no run, terminal run) → fresh arrival: CLEAR the stash so
+ *   completed conversation never resurrects in the live view — it already
+ *   lives in its slice on the timeline, and the arrival briefing carries the
+ *   continuity ("上次聊到", suggested follow-ups).
+ *
+ * A failed status check (offline / server down) fails neutral: open blank but
+ * DON'T clear the stash, so the next visit can retry the verdict.
+ */
+async function resolveArrival(): Promise<ArrivalDecision> {
+  const runId = readStoredRunId();
+  let active = false;
+  if (runId) {
+    try {
+      active = await isChatRunActive(runId);
+    } catch {
+      return { shouldResume: false, initialMessages: [] };
+    }
+  }
+  if (active) {
+    return decideArrival(true, readStoredMessages());
+  }
+  clearStoredRunId();
+  clearStoredChatId();
+  clearStoredMessages();
+  return decideArrival(false, []);
 }
 
 // ─── Reconnect persistence ────────────────────────────────────────────────
 // The durable workflow run's id is persisted so a reloaded or backgrounded tab
 // (phone lock / app switch) can re-attach to the SAME run's stream and replay
-// whatever it missed. Cleared when a turn completes cleanly. Guarded so a
-// private-mode / SSR environment (no localStorage) degrades to no-op.
+// whatever it missed — but only while the run is actually in flight (the
+// mount-time arrival decision asks the server, see resolveArrival). Cleared on
+// a clean turn end and on any fresh arrival. Guarded so a private-mode / SSR
+// environment (no localStorage) degrades to no-op.
 const RUN_ID_KEY = "previously:activeRunId";
+const CHAT_ID_KEY = "previously:chatId";
 
 // ─── Sending window (v0.8) ────────────────────────────────────────────────
 // The client keeps the full conversation for rendering, but only the LAST N
@@ -88,12 +147,22 @@ function clearStoredRunId(): void {
   }
 }
 
+function clearStoredChatId(): void {
+  try {
+    localStorage.removeItem(CHAT_ID_KEY);
+  } catch {
+    /* best-effort */
+  }
+}
+
 // ─── Conversation persistence (official single-turn resume pattern) ───────
 // The chat-session-modeling / resumable-streams docs: the client owns the
-// conversation and restores it via `initialMessages` on refresh, so the stream
-// resume only reconciles the LAST message instead of replaying the whole run
-// into an empty store (which pushes a full copy per chunk → duplicated,
-// growing message list). We persist the rendered UIMessage[] to localStorage.
+// conversation and restores it via `initialMessages` when a run is resumed, so
+// the stream resume only reconciles the LAST message instead of replaying the
+// whole run into an empty store (which pushes a full copy per chunk →
+// duplicated, growing message list). We persist the rendered UIMessage[] to
+// localStorage. A fresh arrival CLEARS the stash (see resolveArrival) — the
+// live view never resurrects completed conversation.
 const STORED_MESSAGES_KEY = "previously:messages";
 
 function readStoredMessages(): UIMessage[] {
@@ -114,9 +183,26 @@ function writeStoredMessages(messages: UIMessage[]): void {
   }
 }
 
+function clearStoredMessages(): void {
+  try {
+    localStorage.removeItem(STORED_MESSAGES_KEY);
+  } catch {
+    /* best-effort */
+  }
+}
+
 // ─── Inner ───────────────────────────────────────────────────────────────
 
-function Inner({ initialConfig }: { initialConfig?: UserConfig }) {
+function Inner({
+  initialConfig,
+  shouldResume,
+  initialMessages,
+}: {
+  initialConfig?: UserConfig;
+  /** The mount-time arrival verdict (resolveArrival) — see ChatPage. */
+  shouldResume: boolean;
+  initialMessages: UIMessage[];
+}) {
   // ── Model / thinking / effort — reactive, persisted to config.json ─────
   // The single source of truth is memory/user/config.json (cross-device, no
   // localStorage). The RSC page preloads it (initialConfig) so there's no
@@ -310,42 +396,12 @@ function Inner({ initialConfig }: { initialConfig?: UserConfig }) {
   // Refresh-resume goes through the SDK's own path: `resume: true` calls
   // resumeStream() on mount, and prepareReconnectToStreamRequest redirects it
   // to the durable run (`/api/chat/<runId>/stream?startIndex=0`), which rebuilds
-  // the interrupted turn on a fresh page. Snapshot the decision ONCE at mount —
-  // computing it from localStorage each render would flip false→true when a new
-  // turn stores its runId, and useChat's `resume` effect would re-fire
-  // resumeStream() mid-stream (a second writer → #185). Fresh visits (no run in
-  // flight) stay false so a reconnect never 404s on a brand-new page.
-  const [shouldResume] = useState(() => readStoredRunId() !== null);
-
-  // Restore the persisted conversation once at mount — but only when it still
-  // belongs to the CURRENT time slice. A fresh arrival (no in-flight run) whose
-  // newest message is older than the time-silence window means the old slice was
-  // closed and a new one has begun: the live view should open BLANK so the
-  // arrival briefing (PREVIOUSLY ON + hot-start) greets the user, not a stale
-  // conversation dump. In-flight turns are ALWAYS restored — the durable
-  // workflow is still running, and "I come after you're done" depends on
-  // re-attaching regardless of how long ago it started.
-  //
-  // When resuming, the trailing partial assistant turn is dropped FIRST — the
-  // resume replay REBUILDS that turn into a fresh assistant message. Keeping it
-  // would seed the replay with a snapshot of the partial turn
-  // (createStreamingUIMessageState reuses the last message verbatim when it's
-  // assistant), so every replayed text-/reasoning-start would APPEND a duplicate
-  // part and replaceMessage the whole grown message per chunk — the "content
-  // grows + full re-render per update" storm (#185). Stable reference (useState
-  // initializer) — an unstable messages array itself trips React #185.
-  const [initialMessages] = useState<UIMessage[]>(() => {
-    const stored = readStoredMessages();
-    if (stored.length === 0) return stored;
-    if (shouldResume) return dropTrailingAssistantMessages(stored);
-    const lastActivity = lastStoredActivity(stored);
-    if (lastActivity === null) return stored; // no timestamp — fail-open restore
-    const silenceMs =
-      (initialConfig?.slicing.timeSilenceMinutes ?? 30) * 60 * 1000;
-    const isNewSlice = Date.now() - lastActivity > silenceMs;
-    return isNewSlice ? [] : stored;
-  });
-
+  // the interrupted turn on a fresh page. The `shouldResume` / `initialMessages`
+  // verdict arrives as PROPS from ChatPage's one-shot arrival decision (the
+  // server is the only authority on whether the run is still in flight) — never
+  // recompute it from localStorage here: a mid-stream flip would re-fire
+  // useChat's `resume` effect (a second writer → #185), and an unstable
+  // messages array itself trips React #185.
   const {
     messages,
     sendMessage,
@@ -410,7 +466,7 @@ function Inner({ initialConfig }: { initialConfig?: UserConfig }) {
         if (runId) {
           writeStoredRunId(runId);
           try {
-            localStorage.setItem("previously:chatId", options.chatId);
+            localStorage.setItem(CHAT_ID_KEY, options.chatId);
           } catch {
             /* best-effort */
           }
@@ -506,6 +562,7 @@ function Inner({ initialConfig }: { initialConfig?: UserConfig }) {
     [lastAssistantId],
   );
 
+  const lastEvolutionDataRef = useRef<string>("");
   const handleSubmit = (message: string) => {
     if (selectedSliceId !== "now" || transition) {
       setSelectedSliceId("now");
@@ -514,6 +571,10 @@ function Inner({ initialConfig }: { initialConfig?: UserConfig }) {
       setPendingSliceId(null);
       setLoadedSliceStart(null);
     }
+    // Reset the evolution indicator so a new turn never shows the previous
+    // turn's result while its own data-evolution chunks are still in flight.
+    setEvolutionState(null);
+    lastEvolutionDataRef.current = "";
     setLastUserMessageAt(new Date().toISOString());
     sendMessage({ role: "user", parts: [{ type: "text", text: message }] });
     // v0.7b: self-evolution runs INLINE inside housekeeping (the turn's stream
@@ -523,7 +584,6 @@ function Inner({ initialConfig }: { initialConfig?: UserConfig }) {
   // v0.7b: watch the turn stream for data-evolution chunks and drive the
   // EvolutionIndicator from them — the synchronous inline run streams reading →
   // reviewing → result while the turn is processing, so the user sees progress.
-  const lastEvolutionDataRef = useRef<string>("");
   useEffect(() => {
     if (demoStreaming) return;
     const last = messages[messages.length - 1];
@@ -636,7 +696,8 @@ function Inner({ initialConfig }: { initialConfig?: UserConfig }) {
                   onSend={handleSubmit}
                 />
               ) : (
-                <div className="mx-auto max-w-5xl xl:max-w-7xl px-4 sm:px-6 lg:px-8 min-h-full">
+                <div className="mx-auto max-w-5xl xl:max-w-7xl pl-0 pr-4 sm:pr-6 lg:pr-8 min-h-full">
+                  {/* No left padding — the timeline itself is the separator. */}
                   <ChatSection
                     messages={allMessages}
                     isStreaming={isStreaming}

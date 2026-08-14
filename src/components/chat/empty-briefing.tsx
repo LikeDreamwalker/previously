@@ -33,6 +33,9 @@ function truncate(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text;
 }
 
+/** Open loops shown in the briefing card — the rest live behind "view full previously". */
+const MAX_LOOPS = 4;
+
 // ─── Component ──────────────────────────────────────────────────────────
 
 /**
@@ -108,9 +111,14 @@ export function EmptyBriefing({
   const hasSections = Boolean(focus) || openLoops.length > 0 || chips.length > 0;
 
   const sectionLabel = "flex items-center gap-2 text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground/70";
+  /** Each briefing block is a quiet card — contains long content and keeps the
+   *  sections visually parallel. */
+  const sectionCard = "rounded-xl border border-border/50 bg-muted/20 px-4 py-3 backdrop-blur-sm";
 
   return (
-    <div className="relative flex min-h-full flex-col items-center justify-center overflow-hidden px-4">
+    // Tall briefings scroll instead of clipping (the parent chain is a fixed
+    // h-full) — overflow-x stays hidden so the glow blob never widens the page.
+    <div className="relative flex min-h-full flex-col items-center justify-center overflow-x-hidden overflow-y-auto pl-0 pr-4">
       {/* Soft brand glow — the "stage light" behind the title card. */}
       <div
         aria-hidden
@@ -126,46 +134,50 @@ export function EmptyBriefing({
           {identity?.isDemo ? (
             <button
               onClick={() => setPersonaOpen(true)}
-              className="mt-3 inline-block text-4xl font-light tracking-tight text-foreground transition-colors hover:text-brand-600 sm:text-5xl dark:hover:text-brand-400"
+              className="mt-3 inline-block max-w-full text-4xl font-light tracking-tight break-words text-foreground transition-colors hover:text-brand-600 sm:text-5xl dark:hover:text-brand-400"
             >
               {name}
             </button>
           ) : (
-            <div className="mt-3 text-4xl font-light tracking-tight text-foreground sm:text-5xl">
+            <div className="mt-3 text-4xl font-light tracking-tight break-words text-foreground sm:text-5xl">
               {name}
             </div>
           )}
         </div>
 
-        {/* ── Hot-start briefing — each section only when it has data ── */}
+        {/* ── Hot-start briefing — each section is a card and only renders
+             when it has data. Test data runs long, so every block clamps:
+             the topic to 3 lines, loops to 4 entries × 2 lines, chips to one
+             truncated line. The full text is always one click away ("view
+             full previously"). ── */}
         {hasSections && (
-          <div className="mt-12 space-y-7">
+          <div className="mt-12 space-y-4">
             {focus && (
-              <section>
+              <section className={sectionCard}>
                 <h3 className={sectionLabel}>
                   <span className="inline-block size-1.5 rounded-full bg-brand-500" />
                   {t("lastTopic")}
                 </h3>
-                <p className="mt-2 text-base leading-relaxed text-foreground/85">
+                <p className="mt-2 line-clamp-3 text-base leading-relaxed break-words text-foreground/85">
                   {focus}
                 </p>
               </section>
             )}
 
             {openLoops.length > 0 && (
-              <section>
+              <section className={sectionCard}>
                 <h3 className={sectionLabel}>
                   <span className="inline-block size-1.5 rounded-full bg-brand-500" />
                   {t("openLoops")}
                 </h3>
                 <ul className="mt-2 space-y-1.5">
-                  {openLoops.map((loop, i) => (
+                  {openLoops.slice(0, MAX_LOOPS).map((loop, i) => (
                     <li
                       key={i}
                       className="flex items-start gap-2 text-sm leading-relaxed text-muted-foreground"
                     >
                       <span className="mt-1.5 inline-block size-1 shrink-0 rounded-full bg-muted-foreground/50" />
-                      {loop}
+                      <span className="line-clamp-2 break-words">{loop}</span>
                     </li>
                   ))}
                 </ul>
@@ -173,7 +185,7 @@ export function EmptyBriefing({
             )}
 
             {chips.length > 0 && (
-              <section>
+              <section className={sectionCard}>
                 <h3 className={sectionLabel}>
                   <span className="inline-block size-1.5 rounded-full bg-brand-500" />
                   {t("pickUp")}
@@ -183,7 +195,7 @@ export function EmptyBriefing({
                     <button
                       key={chip.prompt}
                       onClick={() => onSend(chip.prompt)}
-                      className="rounded-full border border-border/60 px-3.5 py-1.5 text-sm text-foreground/80 transition-colors hover:border-brand-500/50 hover:text-brand-600 dark:hover:text-brand-400"
+                      className="max-w-full truncate rounded-full border border-border/60 px-3.5 py-1.5 text-sm text-foreground/80 transition-colors hover:border-brand-500/50 hover:text-brand-600 dark:hover:text-brand-400"
                     >
                       {chip.label}
                     </button>

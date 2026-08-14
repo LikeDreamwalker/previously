@@ -146,7 +146,8 @@
       "superseded": "↻{count} superseded",
       "previouslyOn": "Previously On",
       "clickToView": "Click to view",
-      "thoughts": "Thoughts"
+      "thoughts": "Thoughts",
+      "applied": "Applying update..."
     },
     "phase": {
       "thinking": "Thinking…",

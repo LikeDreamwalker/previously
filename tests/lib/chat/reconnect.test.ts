@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
+  decideArrival,
   dropTrailingAssistantMessages,
-  lastStoredActivity,
 } from "@/lib/chat/reconnect";
 import type { UIMessage } from "ai";
 
@@ -68,47 +68,42 @@ describe("dropTrailingAssistantMessages", () => {
   });
 });
 
-describe("lastStoredActivity", () => {
-  const ISO = "2026-08-13T10:00:00.000Z";
-  const T = new Date(ISO).getTime();
-
-  it("returns the createdAt of the last message", () => {
-    const messages = [
-      msg("u1", "user"),
-      { ...msg("a1", "assistant"), createdAt: ISO } as UIMessage,
-    ];
-    expect(lastStoredActivity(messages)).toBe(T);
+// decideArrival is the pure half of the mount-time arrival verdict: the live
+// view restores ONLY in-flight work (the server said the run is still
+// pending/running); every other arrival opens blank so the arrival briefing
+// greets the user and completed conversation stays on the timeline.
+describe("decideArrival", () => {
+  it("resumes with the working conversation when the run is still active", () => {
+    const stored = [msg("u1", "user"), msg("a1", "assistant")];
+    const d = decideArrival(true, stored);
+    expect(d.shouldResume).toBe(true);
+    // The trailing partial turn is dropped — the replay rebuilds it.
+    expect(ids(d.initialMessages)).toEqual(["u1"]);
   });
 
-  it("skips messages without createdAt and uses the newest one that has it", () => {
-    const messages = [
-      msg("u1", "user"), // no createdAt
-      { ...msg("a1", "assistant"), createdAt: T } as UIMessage,
-    ];
-    expect(lastStoredActivity(messages)).toBe(T);
+  it("keeps a trailing user message when resuming (reply not started yet)", () => {
+    const stored = [msg("u1", "user"), msg("a1", "assistant"), msg("u2", "user")];
+    const d = decideArrival(true, stored);
+    expect(d.shouldResume).toBe(true);
+    expect(ids(d.initialMessages)).toEqual(["u1", "a1", "u2"]);
   });
 
-  it("accepts a numeric createdAt", () => {
-    const messages = [
-      { ...msg("a1", "assistant"), createdAt: T } as UIMessage,
-    ];
-    expect(lastStoredActivity(messages)).toBe(T);
+  it("resumes into an empty store when the stash is gone (full replay)", () => {
+    const d = decideArrival(true, []);
+    expect(d.shouldResume).toBe(true);
+    expect(d.initialMessages).toEqual([]);
   });
 
-  it("accepts a Date createdAt", () => {
-    const messages = [
-      { ...msg("a1", "assistant"), createdAt: new Date(T) } as UIMessage,
-    ];
-    expect(lastStoredActivity(messages)).toBe(T);
+  it("opens blank when the run is terminal — completed conversation is NOT restored", () => {
+    const stored = [msg("u1", "user"), msg("a1", "assistant")];
+    const d = decideArrival(false, stored);
+    expect(d.shouldResume).toBe(false);
+    expect(d.initialMessages).toEqual([]);
   });
 
-  it("returns null when no message has a usable createdAt", () => {
-    expect(lastStoredActivity([msg("u1", "user"), msg("a1", "assistant")])).toBe(
-      null,
-    );
-  });
-
-  it("returns null for an empty list", () => {
-    expect(lastStoredActivity([])).toBe(null);
+  it("opens blank when there is no stash at all", () => {
+    const d = decideArrival(false, []);
+    expect(d.shouldResume).toBe(false);
+    expect(d.initialMessages).toEqual([]);
   });
 });
