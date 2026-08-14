@@ -129,7 +129,7 @@ export function EmptyBriefing({
         {/* ── Title card ─────────────────────────────────────────────── */}
         <div className="text-center">
           <div className="font-mono text-[0.65rem] uppercase tracking-[0.35em] text-muted-foreground/60">
-            {t("eyebrowWithName", { name: name || t("fallbackName") })}
+            {t("eyebrow")}
           </div>
           {identity?.isDemo ? (
             <button
