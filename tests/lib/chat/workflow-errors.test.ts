@@ -89,9 +89,14 @@ describe("classifyWorkflowError", () => {
     expect(classifyWorkflowError(new Error("FUNCTION_INVOCATION_TIMEOUT")).kind).toBe(
       "timeout",
     );
-    expect(classifyWorkflowError(new Error("Step exceeded the time limit")).kind).toBe(
+    expect(classifyWorkflowError(new Error("Step timed out: deadline exceeded")).kind).toBe(
       "timeout",
     );
+  });
+
+  it("classifies timeout error NAMES as timeout", () => {
+    expect(classifyWorkflowError(namedError("TimeoutError")).kind).toBe("timeout");
+    expect(classifyWorkflowError(namedError("StepTimeoutError")).kind).toBe("timeout");
   });
 
   it("classifies transient infra messages as transient", () => {
@@ -100,15 +105,70 @@ describe("classifyWorkflowError", () => {
     );
   });
 
-  it("defaults unknown agent-loop errors to timeout (the dominant cause is a killed step)", () => {
-    expect(classifyWorkflowError(new Error("some unclassifiable error")).kind).toBe(
-      "timeout",
-    );
+  it("defaults unknown agent-loop errors to TERMINAL (surface, don't burn continuations)", () => {
+    const c = classifyWorkflowError(new Error("some unclassifiable error"));
+    expect(c.kind).toBe("terminal");
+    expect(c.userMessage).toBeTruthy();
   });
 
   it("handles null / non-Error values", () => {
     expect(classifyWorkflowError(null).kind).toBe("terminal");
-    expect(classifyWorkflowError("string error").kind).toBe("timeout");
+    expect(classifyWorkflowError("string error").kind).toBe("terminal");
+  });
+
+  // ── Structured-evidence table (C1) ────────────────────────────────────────
+  describe("structured statusCode evidence", () => {
+    function apiError(statusCode: number, message = "API call failed"): Error {
+      const e = new Error(message) as Error & { statusCode?: number };
+      e.name = "AI_APICallError";
+      e.statusCode = statusCode;
+      return e;
+    }
+
+    it.each([
+      [500, "transient"],
+      [502, "transient"],
+      [503, "transient"],
+      [429, "transient"],
+      [409, "transient"],
+      [408, "timeout"],
+      [400, "model"],
+      [401, "model"],
+      [403, "model"],
+      [404, "model"],
+    ] as const)("APICallError statusCode=%i → %s", (statusCode, kind) => {
+      expect(classifyWorkflowError(apiError(statusCode)).kind).toBe(kind);
+    });
+
+    it("model-classified 4xx carries a user message", () => {
+      const c = classifyWorkflowError(apiError(401, "Invalid API key"));
+      expect(c.kind).toBe("model");
+      expect(c.userMessage).toContain("The model call failed");
+    });
+  });
+
+  it("classifies AI_RetryError as transient (queue redelivers)", () => {
+    expect(classifyWorkflowError(namedError("AI_RetryError", "retries exhausted")).kind).toBe(
+      "transient",
+    );
+  });
+
+  it("does NOT classify a real GitHub-404 text as a model failure", () => {
+    // The old MODEL_RE matched the bare "404" in any message — a missing file
+    // read or a tool's fetch would be misreported as a model/auth failure.
+    const github404 = new Error(
+      "Not Found - https://api.github.com/repos/o/r/contents/memory/episodic/slices/2026/08/16 (404)",
+    );
+    expect(classifyWorkflowError(github404).kind).not.toBe("model");
+    // Octokit-style errors carry `status` (not `statusCode`) — deliberately
+    // not treated as provider evidence.
+    const octokit404 = Object.assign(new Error("Not Found"), { status: 404 });
+    expect(classifyWorkflowError(octokit404).kind).not.toBe("model");
+  });
+
+  it("no longer treats bare 400 text as a model failure", () => {
+    const c = classifyWorkflowError(new Error("Request failed with status 400 from example.com"));
+    expect(c.kind).not.toBe("model");
   });
 });
 

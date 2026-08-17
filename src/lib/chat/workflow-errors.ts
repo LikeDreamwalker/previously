@@ -17,9 +17,10 @@
  *   terminal  → run cannot recover (corrupted event log, contract mismatch,
  *               not-registered, expired run) — surface an explanation.
  *
- * Detection is NAME-based (`.is()`-style duck checks), not `instanceof`, because
- * the workflow body runs in a separate VM realm where the SDK error classes are
- * distinct objects. The name set mirrors `@workflow/errors@4.1.4` + the
+ * Detection prefers STRUCTURED evidence (`.statusCode`, error names) over
+ * message regexes, and every check is duck-typed, never `instanceof`, because
+ * the workflow body runs in a separate VM realm where the SDK error classes
+ * are distinct objects. The name set mirrors `@workflow/errors@4.1.4` + the
  * `@workflow/core@4.6.0` `classify-error.js` categories.
  */
 
@@ -51,8 +52,11 @@ const TRANSIENT_RE =
   /(ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|ECONNREFUSED|socket hang up|UND_ERR_REQ_RETRY|network error|temporary|5\d\d|Throttle)/i;
 const TIMEOUT_RE =
   /(timeout|deadline|FUNCTION_INVOCATION|maximum queue deliveries|exceeded max|cut off|interrupted|aborted by platform)/i;
+// Message-regex LAST RESORT for model failures. NOTE: no bare `400`/`404` —
+// a GitHub-404 or a bad-request body from a tool's fetch is not a model
+// failure; structured statusCode evidence (below) decides those.
 const MODEL_RE =
-  /(invalid api key|authentication|unauthorized|insufficient_quota|rate.?limit|content.?filter|permission|400|401|403|404)/i;
+  /(invalid api key|authentication|unauthorized|insufficient_quota|rate.?limit|content.?filter|permission denied|\b401\b|\b403\b)/i;
 
 /** Shorten a raw message for user display (keep it one line-ish). */
 function displayMessage(msg: string, max = 180): string {
@@ -63,17 +67,52 @@ function displayMessage(msg: string, max = 180): string {
 /**
  * Classify a workflow-runtime / agent-loop error into an actionable kind.
  * Errors cross the VM realm, so all checks are name/pattern based.
+ *
+ * Order of evidence: (1) abort/timeout names, (2) STRUCTURED status codes
+ * (AI SDK `APICallError.statusCode`), (3) workflow SDK error names,
+ * (4) message regex as a last resort. Unknown errors fall through to
+ * TERMINAL — they surface to the client immediately instead of silently
+ * burning continuation re-invocations.
  */
 export function classifyWorkflowError(err: unknown): ClassifiedWorkflowError {
   if (err === null || err === undefined) {
     return { kind: "terminal", message: "Unknown workflow error (empty)" };
   }
-  const error = err as Error & { name?: unknown; code?: unknown; status?: unknown };
+  const error = err as Error & { name?: unknown; code?: unknown; status?: unknown; statusCode?: unknown };
   const name = typeof error.name === "string" ? error.name : "";
   const message = typeof error.message === "string" ? error.message : String(err);
 
   // Client cancel / SDK abort — not a failure.
   if (name === "AbortError") return { kind: "abort", message };
+  // SDK / provider timeout names — bounded continuation, same as a
+  // platform-killed step.
+  if (name === "TimeoutError" || name === "StepTimeoutError") {
+    return { kind: "timeout", message };
+  }
+
+  // ── Structured evidence: AI SDK APICallError carries `statusCode` ────────
+  // 429 / 5xx / 409 → transient (queue redelivers). 408 → timeout. Every
+  // other 4xx is a deterministic model/request failure — surface it.
+  const statusCode =
+    typeof error.statusCode === "number" ? error.statusCode : undefined;
+  if (statusCode !== undefined) {
+    if (statusCode === 408) return { kind: "timeout", message };
+    if (statusCode === 429 || statusCode === 409 || statusCode >= 500) {
+      return { kind: "transient", message };
+    }
+    if (statusCode >= 400 && statusCode < 500) {
+      return {
+        kind: "model",
+        message,
+        userMessage: `The model call failed: ${displayMessage(message)}`,
+      };
+    }
+  }
+  // AI SDK RetryError: the SDK already exhausted its internal retries on a
+  // retryable failure — escalate to the workflow queue's redelivery.
+  if (name === "AI_RetryError") {
+    return { kind: "transient", message };
+  }
 
   // ── Workflow SDK error classes (name-based) ──────────────────────────────
   if (name === "ThrottleError") {
@@ -138,13 +177,16 @@ export function classifyWorkflowError(err: unknown): ClassifiedWorkflowError {
     return { kind: "transient", message };
   }
 
-  // Default: a step that failed without a clean signature. The dominant cause
-  // of agent.stream() throwing is a platform-killed step (no error code — the
-  // process is SIGKILL'd, the queue redelivers, and eventually a generic
-  // "exceeded retries" surfaces). Classify as timeout so the bounded
-  // continuation path handles it; a genuinely terminal error still resolves to
-  // `interrupted` after the continuation bound instead of a silent empty turn.
-  return { kind: "timeout", message };
+  // Default: unknown errors are TERMINAL — surface them to the client. The
+  // old fallthrough classified everything unrecognized as `timeout`, which
+  // silently burned two continuation re-invocations before giving up; an
+  // error we can't recognize is far more likely a bug than a killed step.
+  return {
+    kind: "terminal",
+    message,
+    userMessage:
+      "The turn failed with an unexpected error. Please retry — if it keeps happening, check the server logs for the full diagnostic.",
+  };
 }
 
 /** Extract a concise log-facing message from any thrown value. */
