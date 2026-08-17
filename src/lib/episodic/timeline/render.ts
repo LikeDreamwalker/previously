@@ -7,6 +7,42 @@
  *    prompt (recent slices only — pointers, never content).
  */
 import type { TimelineIndex, TimelineSliceEntry } from "./types";
+import {
+  localDateKey,
+  normalizeLocale,
+  relPhrase,
+} from "@/lib/time/relative";
+
+/** Optional user-clock context — when present, pointer lines carry a local
+ *  weekday + relative-days annotation so the agent never does date math. */
+export interface SliceLineTimeOpts {
+  nowIso?: string;
+  timezone?: string;
+  locale?: string;
+}
+
+/**
+ * "（08-11 周二 · 6 天前）" / " (08-11 Tue · 6 days ago)" — the slice id's
+ * UTC instant rendered on the user's local calendar. "" when unparseable or no
+ * time context was provided.
+ */
+export function sliceIdRelTag(
+  id: string,
+  nowIso: string,
+  timezone: string,
+  locale: string,
+): string {
+  const m = id.match(/^(\d{4})-(\d{2})-(\d{2})-(\d{2})(\d{2})$/);
+  if (!m) return "";
+  const iso = `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:00.000Z`;
+  const localKey = localDateKey(iso, timezone);
+  const phrase = relPhrase(iso, nowIso, timezone, locale, { weekday: true });
+  if (!localKey || !phrase) return "";
+  const mmdd = localKey.slice(5);
+  return normalizeLocale(locale) === "zh"
+    ? `（${mmdd} ${phrase}）`
+    : ` (${mmdd} ${phrase})`;
+}
 
 interface EraGroup {
   era: string;
@@ -58,6 +94,23 @@ export function sliceLine(s: TimelineSliceEntry): string {
   return `- **${s.id}** ${label}${turns}${tone}${tags}`;
 }
 
+/** sliceLine with a local weekday + relative-days tag on the id. Kept as a
+ *  separate function so `slices.map(sliceLine)` call sites stay valid. */
+export function sliceLineWithTime(
+  s: TimelineSliceEntry,
+  time: SliceLineTimeOpts,
+): string {
+  const turns = s.turn_count ? ` · ${s.turn_count}轮` : "";
+  const tone = s.tone ? ` · ${s.tone}` : "";
+  const tags = s.tags.length ? ` [${s.tags.join(",")}]` : "";
+  const label = s.focus || s.summary || "*(无摘要)*";
+  const when =
+    time.nowIso && time.timezone
+      ? sliceIdRelTag(s.id, time.nowIso, time.timezone, time.locale ?? "en")
+      : "";
+  return `- **${s.id}**${when} ${label}${turns}${tone}${tags}`;
+}
+
 /** The full projection — every slice, era- and day-grouped, newest first. */
 export function renderTimelineMd(idx: TimelineIndex): string {
   const header = [
@@ -91,14 +144,16 @@ export function renderTimelineMd(idx: TimelineIndex): string {
  */
 export function buildTimelineBrief(
   idx: TimelineIndex,
-  opts: { recent?: number } = {},
+  opts: { recent?: number } & SliceLineTimeOpts = {},
 ): string {
   const recent = opts.recent ?? 10;
   const newest = [...idx.slices].sort((a, b) => b.id.localeCompare(a.id)).slice(0, recent);
 
   const lines = [
     "## Timeline (recent)",
-    ...(newest.length ? newest.map(sliceLine) : ["- (empty — no slices yet)"]),
+    ...(newest.length
+      ? newest.map((s) => sliceLineWithTime(s, opts))
+      : ["- (empty — no slices yet)"]),
   ];
   if (idx.slice_count > recent) {
     lines.push(

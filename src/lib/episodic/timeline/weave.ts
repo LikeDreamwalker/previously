@@ -15,7 +15,7 @@
  * slice-close path forces a reconcile so a just-closed slice is visible
  * immediately.
  */
-import { fsReadFile } from "../io-helpers";
+import { fsReadFile, type WriteBatch } from "../io-helpers";
 import { enumerateSliceIds } from "./enumerate";
 import {
   TIMELINE_MD_PATH,
@@ -40,9 +40,9 @@ export const WEAVE_FRESH_MS = 5 * 60 * 1000;
 // ─── Strand resolution ─────────────────────────────────────────────────
 
 /** The strand index, read ONCE per weave (not once per slice). */
-async function readStrandIndex(): Promise<Set<string>> {
+async function readStrandIndex(batch?: WriteBatch): Promise<Set<string>> {
   try {
-    const raw = await fsReadFile(STRANDS_PATH);
+    const raw = await fsReadFile(STRANDS_PATH, batch);
     const strands = JSON.parse(raw) as Record<string, unknown>;
     return new Set(Object.keys(strands));
   } catch {
@@ -57,7 +57,7 @@ function resolveStrands(tags: string[], strandNames: Set<string>): string[] {
 
 // ─── Migration: build the projected map from legacy monthly _index.json ─
 
-async function readMonthlyIndices(): Promise<Map<string, TimelineSliceEntry>> {
+async function readMonthlyIndices(batch?: WriteBatch): Promise<Map<string, TimelineSliceEntry>> {
   const map = new Map<string, TimelineSliceEntry>();
   const now = new Date();
   for (let i = 0; i < 24; i++) {
@@ -69,7 +69,7 @@ async function readMonthlyIndices(): Promise<Map<string, TimelineSliceEntry>> {
     }
     let raw: string;
     try {
-      raw = await fsReadFile(monthlyIndexPath(y, m));
+      raw = await fsReadFile(monthlyIndexPath(y, m), batch);
     } catch {
       continue; // month has no index yet
     }
@@ -105,8 +105,9 @@ async function readMonthlyIndices(): Promise<Map<string, TimelineSliceEntry>> {
 
 export async function weaveTimeline(
   opts: { force?: boolean } = {},
+  batch?: WriteBatch,
 ): Promise<TimelineWeaveResult> {
-  const existing = await readTimelineIndex();
+  const existing = await readTimelineIndex(batch);
 
   // Throttle: the projection is fresh — skip the full reconcile.
   if (!opts.force && existing) {
@@ -134,7 +135,7 @@ export async function weaveTimeline(
       projected.set(s.id.split("-").join("/"), s);
     }
   } else {
-    projected = await readMonthlyIndices();
+    projected = await readMonthlyIndices(batch);
   }
 
   // 3. DIFF + rebuild.
@@ -153,7 +154,7 @@ export async function weaveTimeline(
     if (prior) {
       const mayHaveNewSemantics = prior.needs_marking || prior.date === today;
       if (mayHaveNewSemantics) {
-        const refreshed = await sliceEntryFromDisk(rel);
+        const refreshed = await sliceEntryFromDisk(rel, batch);
         if (refreshed) {
           // Pick up semantics written after the entry was created (close-marking
           // on today's slice, or the needs_marking fill worker).
@@ -168,7 +169,7 @@ export async function weaveTimeline(
     } else {
       // A slice on disk the projection never saw (crash before index write,
       // orphaned active slice, first run) — read its frontmatter once.
-      const fresh = await sliceEntryFromDisk(rel);
+      const fresh = await sliceEntryFromDisk(rel, batch);
       if (!fresh) continue;
       added += 1;
       entries.push(fresh);
@@ -181,7 +182,7 @@ export async function weaveTimeline(
   }
 
   // 4. Resolve strand membership (strands.json read once) + sort chronologically.
-  const strandNames = await readStrandIndex();
+  const strandNames = await readStrandIndex(batch);
   for (const entry of entries) {
     entry.strands = resolveStrands(entry.tags, strandNames);
   }
@@ -197,8 +198,8 @@ export async function weaveTimeline(
   };
 
   // 5. Write both views. Inside a batch (turn) these land in the same commit.
-  await writeTimelineIndex(idx);
-  await writeTimelineMd(renderTimelineMd(idx));
+  await writeTimelineIndex(idx, batch);
+  await writeTimelineMd(renderTimelineMd(idx), batch);
 
   return {
     added,

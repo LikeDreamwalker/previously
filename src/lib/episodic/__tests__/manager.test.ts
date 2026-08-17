@@ -20,6 +20,8 @@ import {
   ensurePreviously,
   readCurrentPreviously,
   writeCurrentPreviously,
+  closeSlice,
+  tryLoadTodaySlice,
 } from "../manager";
 import type { TimeSlice, Turn } from "../types";
 
@@ -529,5 +531,144 @@ describe("live current card (current-previously.md)", () => {
     vi.mocked(fsReadFile).mockResolvedValue(CARD_A);
     await writeCurrentPreviously(CARD_A);
     expect(await readCurrentPreviously()).toBe(CARD_A);
+  });
+});
+
+// ─── closedBy round-trip (v0.8) ──────────────────────────────────────────
+
+describe("closedBy round-trip", () => {
+  it("persists the real close signal in frontmatter and parses it back", () => {
+    const closed = { ...sampleSlice, closedBy: "time_silence" as const };
+    const md = serializeSlice(closed);
+    expect(md).toContain("closed_by: time_silence");
+    expect(parseSlice(md).closedBy).toBe("time_silence");
+  });
+
+  it("falls back to user_explicit for legacy closed slices without closed_by", () => {
+    const md = serializeSlice({ ...sampleSlice, closedBy: undefined });
+    expect(md).not.toContain("closed_by");
+    expect(parseSlice(md).closedBy).toBe("user_explicit");
+  });
+
+  it("falls back to user_explicit for an unknown closed_by value", () => {
+    const md = serializeSlice({
+      ...sampleSlice,
+      closedBy: "capacity" as const,
+    }).replace("closed_by: capacity", "closed_by: bogus_signal");
+    expect(parseSlice(md).closedBy).toBe("user_explicit");
+  });
+
+  it("leaves closedBy undefined on active slices", () => {
+    const parsed = parseSlice(
+      serializeSlice({
+        ...sampleSlice,
+        status: "active" as const,
+        closedBy: undefined,
+      }),
+    );
+    expect(parsed.closedBy).toBeUndefined();
+  });
+});
+
+// ─── KNOWN LIMITATION pin: turn-header collision ─────────────────────────
+//
+// parseTurns' header regex (/^## Turn (\S+) — (\S+) \((\w+)\)$/gm) matches ANY
+// line shaped like a turn header — including one embedded in a message body
+// (e.g. the user pastes a slice excerpt). Such a line splits one real turn
+// into two parsed turns. This test PINS the current (wrong) behavior so a
+// future fix deliberately flips it.
+
+describe("parseSlice — turn-header collision (KNOWN LIMITATION pin)", () => {
+  it("a body line shaped like a turn header currently splits the parse", () => {
+    const md = serializeSlice({
+      ...sampleSlice,
+      turns: [
+        {
+          timestamp: "2024-03-15T10:00:00.000Z",
+          role: "user" as const,
+          content:
+            "look at this line:\n## Turn abc — 2026-01-01T00:00:00Z (user)\nisn't it odd",
+          turnId: "a3fk2w",
+        },
+      ],
+    });
+    const parsed = parseSlice(md);
+    // 1 real user turn + 1 phantom turn parsed out of the message body.
+    expect(parsed.turns).toHaveLength(2);
+    expect(parsed.turns[1].turnId).toBe("abc");
+    expect(parsed.turns[1].timestamp).toBe("2026-01-01T00:00:00Z");
+    expect(parsed.turns[1].content).toBe("isn't it odd");
+  });
+});
+
+// ─── closeSlice end semantics + cross-UTC-day recovery ───────────────────
+
+describe("closeSlice — end is the conversation's last turn, not the close time", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(fsWriteFile).mockResolvedValue({ path: "x", created: true });
+    vi.mocked(fsReadFile).mockRejectedValue(new Error("not found"));
+  });
+
+  it("stamps end with the last turn's timestamp (lazy close may run hours later)", async () => {
+    const slice: TimeSlice = {
+      ...sampleSlice,
+      status: "active",
+      end: undefined,
+      tags: [],
+      turns: sampleTurns,
+    };
+    const closed = await closeSlice(slice, "time_silence");
+    expect(closed.end).toBe("2024-03-15T10:02:00.000Z");
+  });
+
+  it("falls back to now for a turn-less slice", async () => {
+    const slice: TimeSlice = {
+      ...sampleSlice,
+      status: "active",
+      end: undefined,
+      tags: [],
+      turns: [],
+    };
+    const closed = await closeSlice(slice, "capacity");
+    expect(closed.end).toBeDefined();
+    expect(Number.isNaN(Date.parse(closed.end!))).toBe(false);
+  });
+});
+
+describe("tryLoadTodaySlice — UTC-day-boundary fallback", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("recovers a still-active slice from YESTERDAY's UTC directory", async () => {
+    const now = new Date();
+    const y = new Date(now.getTime() - 86_400_000);
+    const dirOf = (d: Date) =>
+      `memory/episodic/slices/${d.getUTCFullYear()}/${String(d.getUTCMonth() + 1).padStart(2, "0")}/${String(d.getUTCDate()).padStart(2, "0")}`;
+    const todayDir = dirOf(now);
+    const yesterdayDir = dirOf(y);
+
+    vi.mocked(fsListFiles).mockImplementation(async (dir: string) => {
+      if (dir === todayDir) return [];
+      if (dir === yesterdayDir)
+        return [{ name: "2330", path: `${yesterdayDir}/2330`, type: "dir" as const }];
+      return [];
+    });
+    vi.mocked(fsReadFile).mockResolvedValue(
+      serializeSlice({ ...sampleSlice, status: "active", end: undefined }),
+    );
+
+    const recovered = await tryLoadTodaySlice();
+    expect(recovered).not.toBeNull();
+    expect(recovered!.status).toBe("active");
+    // Today's directory was scanned first (empty), then yesterday's.
+    expect(vi.mocked(fsListFiles).mock.calls.map((c) => c[0])).toEqual([
+      todayDir,
+      yesterdayDir,
+    ]);
+  });
+
+  it("returns null when neither today nor yesterday holds an active slice", async () => {
+    vi.mocked(fsListFiles).mockResolvedValue([]);
+    expect(await tryLoadTodaySlice()).toBeNull();
   });
 });

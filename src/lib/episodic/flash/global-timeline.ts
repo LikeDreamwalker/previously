@@ -8,6 +8,7 @@
  */
 
 import { weaveTimeline, readTimelineMd } from "../timeline/weave";
+import type { WriteBatch } from "../io-helpers";
 
 // ─── Public API ────────────────────────────────────────────────────────
 
@@ -17,8 +18,8 @@ import { weaveTimeline, readTimelineMd } from "../timeline/weave";
  * otherwise it returns the cached projection. Kept as the accessor all callers
  * (housekeeping, finalize, recall) already use.
  */
-export async function generateGlobalTimeline(): Promise<string> {
-  await weaveTimeline();
+export async function generateGlobalTimeline(batch?: WriteBatch): Promise<string> {
+  await weaveTimeline({}, batch);
   return readTimelineMd();
 }
 
@@ -27,6 +28,6 @@ export async function generateGlobalTimeline(): Promise<string> {
  * visible immediately. (Kept for callers; the slice-close path in housekeeping
  * calls `weaveTimeline({ force: true })` directly.)
  */
-export async function updateGlobalTimeline(): Promise<void> {
-  await weaveTimeline({ force: true });
+export async function updateGlobalTimeline(batch?: WriteBatch): Promise<void> {
+  await weaveTimeline({ force: true }, batch);
 }

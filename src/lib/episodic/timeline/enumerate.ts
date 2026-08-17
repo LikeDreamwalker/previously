@@ -11,6 +11,7 @@
  */
 import { getOctokit } from "@/lib/github/client";
 import { getRepoConfig } from "@/lib/capabilities";
+import { getDefaultBranch } from "@/lib/tools/batch-write";
 import { resolveDataSource } from "@/lib/data-source/resolve";
 import { fsListFiles } from "../io-helpers";
 
@@ -28,10 +29,12 @@ export async function enumerateSliceIds(): Promise<string[]> {
 async function enumerateGithubTree(): Promise<string[]> {
   const { owner, repo } = getRepoConfig();
   const octokit = getOctokit();
+  // The repo's default branch, not a hardcoded "main" (see batch-write.ts).
+  const branch = await getDefaultBranch();
   const { data: ref } = await octokit.rest.git.getRef({
     owner,
     repo,
-    ref: "heads/main",
+    ref: `heads/${branch}`,
   });
   const { data: tree } = await octokit.rest.git.getTree({
     owner,

@@ -7,12 +7,16 @@
  *   - GitHub mode → GitHub API (production)
  *   - Otherwise   → local filesystem (dev)
  *
- * Batch mode: call `startBatch()` to begin collecting writes. Subsequent
- * `fsWriteFile` calls are queued in-memory instead of hitting the backend
- * immediately. `fsReadFile` checks the pending queue first, so writes that
- * happen earlier in the same batch are visible to later reads (preserving
- * ordering dependencies). Call `flushBatch(message)` to commit all queued
- * writes as a single git commit (GitHub mode) or write them to disk (local).
+ * Batch mode: a `WriteBatch` is an EXPLICIT object (`createBatch()`) that the
+ * owning step threads through every I/O call in its write window. Passing the
+ * batch to `fsWriteFile` queues the write in-memory instead of hitting the
+ * backend; passing it to `fsReadFile` checks the pending queue first, so
+ * writes earlier in the same batch are visible to later reads (read-your-
+ * writes, preserving ordering dependencies). `flushBatch(batch, message)`
+ * commits all queued writes as a single git commit (GitHub mode) or writes
+ * them to disk (local). Because the batch is a per-call object — not a module
+ * global — two turns running concurrently in one process can never flush each
+ * other's writes.
  *
  * Extracted from manager.ts to avoid circular imports: global-timeline.ts and
  * recall.ts need these helpers, but importing them from manager.ts would create
@@ -41,46 +45,52 @@ const DATA_SOURCE = resolveDataSource();
 const USE_GITHUB = DATA_SOURCE === "github";
 const DEMO_MODE = isDemo(DATA_SOURCE);
 
-// ─── Batch state (module-level — single turn === single batch boundary) ──
+// ─── Write batches (explicit, per-turn objects) ──────────────────────────
 
-/** Pending writes keyed by path. `null` means batch mode is off. */
-let pendingWrites: Map<string, string> | null = null;
-
-/** Begin collecting writes into a batch. */
-export function startBatch(): void {
-  pendingWrites = new Map();
+/**
+ * A pending-writes batch. `entries` is mutable so a caller can adjust a
+ * queued write before flushing (e.g. the finalize-turn conflict self-heal,
+ * which replaces a stale slice file with a re-merged one before retrying).
+ */
+export interface WriteBatch {
+  readonly entries: Map<string, string>;
 }
 
-/** True when batch mode is active (writes are being deferred). */
-export function isBatching(): boolean {
-  return pendingWrites !== null;
+/** Begin collecting writes into a fresh batch. */
+export function createBatch(): WriteBatch {
+  return { entries: new Map() };
 }
 
 /**
- * Commit all queued writes as a single git commit and exit batch mode.
+ * Commit all queued writes as a single git commit.
  * If the queue is empty this is a no-op.
+ *
+ * On SUCCESS the batch is emptied. On FAILURE the entries are kept, so the
+ * caller can inspect/adjust the queue and retry the flush (see finalizeTurn's
+ * write-conflict self-heal).
  */
-export async function flushBatch(message: string): Promise<void> {
-  if (!pendingWrites || pendingWrites.size === 0) {
-    pendingWrites = null;
-    return;
-  }
+export async function flushBatch(
+  batch: WriteBatch,
+  message: string,
+): Promise<void> {
+  if (batch.entries.size === 0) return;
 
   const entries: BatchEntry[] = [];
-  for (const [path, content] of pendingWrites) {
+  for (const [path, content] of batch.entries) {
     entries.push({ path, content });
   }
-  pendingWrites = null;
 
   if (DEMO_MODE) {
     for (const { path, content } of entries) {
       await writeFileDemo(path, content);
     }
+    batch.entries.clear();
     return;
   }
 
   if (USE_GITHUB) {
     await commitBatchToGitHub(entries, message);
+    batch.entries.clear();
     return;
   }
 
@@ -88,16 +98,21 @@ export async function flushBatch(message: string): Promise<void> {
   for (const { path, content } of entries) {
     await writeFileLocal(path, content);
   }
+  batch.entries.clear();
 }
 
 // ─── Public I/O helpers ─────────────────────────────────────────────────
 
-export async function fsReadFile(path: string): Promise<string> {
-  // During batch mode, check pending writes first so functions that write
-  // and then read (e.g. write _index.json → generateGlobalTimeline reads it)
-  // see the latest in-batch content.
-  if (pendingWrites?.has(path)) {
-    return pendingWrites.get(path)!;
+export async function fsReadFile(
+  path: string,
+  batch?: WriteBatch,
+): Promise<string> {
+  // With a batch, check pending writes first so functions that write and then
+  // read (e.g. write _index.json → generateGlobalTimeline reads it) see the
+  // latest in-batch content.
+  const pending = batch?.entries.get(path);
+  if (pending !== undefined) {
+    return pending;
   }
 
   if (DEMO_MODE) return readFileDemo(path);
@@ -111,10 +126,11 @@ export async function fsReadFile(path: string): Promise<string> {
 export async function fsWriteFile(
   path: string,
   content: string,
+  batch?: WriteBatch,
 ): Promise<{ path: string; created: boolean }> {
-  // In batch mode: queue the write, don't touch the backend yet.
-  if (pendingWrites !== null) {
-    pendingWrites.set(path, content);
+  // With a batch: queue the write, don't touch the backend yet.
+  if (batch) {
+    batch.entries.set(path, content);
     return { path, created: true };
   }
 

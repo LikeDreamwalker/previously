@@ -106,4 +106,29 @@ describe("buildTimelineBrief", () => {
     );
     expect(brief).toContain("1 片尚未生成摘要");
   });
+
+  it("annotates pointer lines with local date + relative days when time context is given", () => {
+    // now = 2026-08-17 06:00 UTC (Monday); the slice is 2026-08-11 11:15 UTC
+    // = 19:15 local (Tuesday) in Asia/Shanghai — 6 days earlier.
+    const brief = buildTimelineBrief(index([entry()]), {
+      nowIso: "2026-08-17T06:00:00.000Z",
+      timezone: "Asia/Shanghai",
+      locale: "zh",
+    });
+    expect(brief).toContain("**2026-08-11-1115**（08-11 周二·6 天前）");
+  });
+
+  it("renders the en annotation when locale is en", () => {
+    const brief = buildTimelineBrief(index([entry()]), {
+      nowIso: "2026-08-17T06:00:00.000Z",
+      timezone: "Asia/Shanghai",
+      locale: "en",
+    });
+    expect(brief).toContain("**2026-08-11-1115** (08-11 Tue · 6 days ago)");
+  });
+
+  it("omits the annotation without time context (backwards compatible)", () => {
+    const brief = buildTimelineBrief(index([entry()]));
+    expect(brief).toContain("**2026-08-11-1115** 回顾滴滴时期绩效背锅");
+  });
 });
