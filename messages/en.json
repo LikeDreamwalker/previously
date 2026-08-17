@@ -129,7 +129,9 @@
     "code": {
       "fallbackLanguage": "code",
       "copyTooltip": "Copy code",
-      "copiedTooltip": "Copied!"
+      "copiedTooltip": "Copied!",
+      "expandAll": "Show all {count} lines",
+      "collapse": "Collapse"
     },
     "evolution": {
       "reading": "Reading memory...",
@@ -365,6 +367,15 @@
     "year": {
       "before": "{count, plural, one {yr ago} other {yrs ago}}",
       "after": "{count, plural, one {yr} other {yrs}}"
+    }
+  },
+  "markdown": {
+    "alert": {
+      "note": "Note",
+      "tip": "Tip",
+      "important": "Important",
+      "warning": "Warning",
+      "caution": "Caution"
     }
   }
 }

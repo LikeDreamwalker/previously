@@ -2,9 +2,8 @@
 
 Get your own Previously running in about 10 minutes. You'll create a private copy from the template, create a GitHub token, and deploy to Vercel. No server management, no database setup — just a repo, a token, and a deploy.
 
-```alert
-⚠️ Important: No authentication yet. Previously is in early development and does not yet have built-in authentication or access control. Anyone with your deployment URL can use your instance — and access or modify your memory data. Keep your deployment URL private. Do not share it publicly. Limit your Vercel deployment visibility if possible. Authentication is a high-priority feature and will be available soon.
-```
+> [!WARNING]
+> **No authentication yet.** Previously is in early development and does not yet have built-in authentication or access control. Anyone with your deployment URL can use your instance — and access or modify your memory data. Keep your deployment URL private. Do not share it publicly. Limit your Vercel deployment visibility if possible. Authentication is a high-priority feature and will be available soon.
 
 ## Create your private copy
 

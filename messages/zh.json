@@ -129,7 +129,9 @@
     "code": {
       "fallbackLanguage": "代码",
       "copyTooltip": "复制代码",
-      "copiedTooltip": "已复制"
+      "copiedTooltip": "已复制",
+      "expandAll": "展开全部 {count} 行",
+      "collapse": "收起"
     },
     "evolution": {
       "reading": "正在读取记忆...",
@@ -348,5 +350,14 @@
     "week": { "before": "周前", "after": "周后" },
     "month": { "before": "个月前", "after": "个月后" },
     "year": { "before": "年前", "after": "年后" }
+  },
+  "markdown": {
+    "alert": {
+      "note": "备注",
+      "tip": "提示",
+      "important": "重要",
+      "warning": "注意",
+      "caution": "警告"
+    }
   }
 }

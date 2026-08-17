@@ -6,7 +6,7 @@ This file provides guidance to AI coding agents when working with code in this r
 
 A Next.js web application with a server-side LLM agent and a GitHub-backed episodic memory system (conversation history stored as time slices). The agent operates only on whitelisted data directories and can spawn durable background loops (Vercel Workflow).
 
-**Tech stack**: Next.js 16 · React 19 · TypeScript 6 · Tailwind CSS 4 · shadcn/ui (Base UI) · next-intl · Vercel AI SDK · Vercel Workflow · octokit · sonner · streamdown
+**Tech stack**: Next.js 16 · React 19 · TypeScript 6 · Tailwind CSS 4 · shadcn/ui (Base UI) · next-intl · Vercel AI SDK · Vercel Workflow · octokit · sonner · react-markdown (remark-gfm · remark-math/KaTeX · rehype-highlight · mermaid)
 
 ## Commands
 

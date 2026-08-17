@@ -1,6 +1,7 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
+@import "katex/dist/katex.min.css";
 @import "./typeset.css";
 
 @custom-variant dark (&:is(.dark *));
@@ -282,4 +283,138 @@
 
 .streaming-content > p:last-child {
   animation: text-arrive-glow 0.6s ease-out;
+}
+
+/* Other block types arrive with the same soft fade */
+.streaming-content > blockquote,
+.streaming-content > .typeset-scroll,
+.streaming-content > .code-block,
+.streaming-content > hr {
+  animation: slide-up-fade 0.3s ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .streaming-content,
+  .streaming-content * {
+    animation: none !important;
+  }
+}
+
+/* ── Syntax highlighting (rehype-highlight / hljs tokens) ─────────────
+   Custom theme on project tokens. The `.hljs` class is added by
+   rehype-highlight; CodeBlock may discard it, so token classes are
+   styled globally and the base color inherits from the block. */
+
+:root {
+  --hljs-comment: oklch(0.556 0.01 260);
+  --hljs-keyword: oklch(0.55 0.2 25);
+  --hljs-string: oklch(0.45 0.09 255);
+  --hljs-number: oklch(0.5 0.16 240);
+  --hljs-title: oklch(0.5 0.2 300);
+  --hljs-attr: oklch(0.5 0.12 190);
+  --hljs-type: oklch(0.55 0.15 60);
+  --hljs-meta: oklch(0.55 0.15 60);
+}
+
+.dark {
+  --hljs-comment: oklch(0.65 0.01 260);
+  --hljs-keyword: oklch(0.72 0.16 20);
+  --hljs-string: oklch(0.78 0.11 210);
+  --hljs-number: oklch(0.8 0.12 220);
+  --hljs-title: oklch(0.78 0.13 300);
+  --hljs-attr: oklch(0.78 0.1 190);
+  --hljs-type: oklch(0.8 0.12 75);
+  --hljs-meta: oklch(0.75 0.12 75);
+}
+
+.hljs-comment,
+.hljs-quote {
+  color: var(--hljs-comment);
+  font-style: italic;
+}
+
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-tag,
+.hljs-template-tag {
+  color: var(--hljs-keyword);
+}
+
+.hljs-string,
+.hljs-regexp {
+  color: var(--hljs-string);
+}
+
+/* diff fences: green/red tinted rows */
+.hljs-addition {
+  color: var(--hljs-diff-add, oklch(0.6 0.15 155));
+  background-color: oklch(0.65 0.17 155 / 0.14);
+}
+
+.hljs-deletion {
+  color: var(--hljs-diff-del, oklch(0.6 0.2 25));
+  background-color: oklch(0.62 0.22 25 / 0.12);
+}
+
+.hljs-number,
+.hljs-literal,
+.hljs-symbol,
+.hljs-bullet {
+  color: var(--hljs-number);
+}
+
+.hljs-title,
+.hljs-section {
+  color: var(--hljs-title);
+}
+
+.hljs-name,
+.hljs-attr,
+.hljs-attribute,
+.hljs-variable,
+.hljs-template-variable,
+.hljs-selector-class,
+.hljs-selector-id {
+  color: var(--hljs-attr);
+}
+
+.hljs-built_in,
+.hljs-type,
+.hljs-title.class_ {
+  color: var(--hljs-type);
+}
+
+.hljs-meta {
+  color: var(--hljs-meta);
+}
+
+.hljs-emphasis {
+  font-style: italic;
+}
+
+.hljs-strong {
+  font-weight: 600;
+}
+
+/* ── Heading anchor links (rehype-autolink-headings, docs) ──────────── */
+
+.heading-anchor {
+  margin-inline-start: 0.35em;
+  font-weight: 400;
+  text-decoration: none;
+  color: var(--muted-foreground);
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+
+:where(h1, h2, h3, h4, h5, h6):hover .heading-anchor,
+.heading-anchor:focus-visible {
+  opacity: 1;
+}
+
+/* Touch devices have no hover — keep anchors faintly visible. */
+@media (hover: none) {
+  .heading-anchor {
+    opacity: 0.45;
+  }
 }
