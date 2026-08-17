@@ -323,4 +323,59 @@ describe("buildTurnPriming", () => {
     );
     expect(block).not.toContain("Emotional register");
   });
+
+  // ── Date anchors (T3) ────────────────────────────────────────────────
+  // NOW = 2026-08-02 06:32 UTC = 14:32 in Asia/Shanghai — a Sunday.
+
+  it("injects the precomputed date-anchor table (en by default)", () => {
+    const block = buildTurnPriming(makeInput({ tier: "continuing" }, "hi", {}));
+    expect(block).toContain("Date anchors");
+    expect(block).toContain("Today: 2026-08-02 (Sun)");
+    expect(block).toContain("This week's Monday: 2026-07-27");
+    expect(block).toContain("Last week: 2026-07-20 (Mon) → 2026-07-26 (Sun)");
+    expect(block).toContain("Tomorrow: 2026-08-03 (Mon)");
+    expect(block).toContain("This weekend: 2026-08-01 (Sat) → 2026-08-02 (Sun)");
+  });
+
+  it("renders the anchor table in zh when locale is zh", () => {
+    const block = buildTurnPriming({
+      ...makeInput({ tier: "continuing" }, "hi", {}),
+      locale: "zh",
+    });
+    expect(block).toContain("日期锚点");
+    expect(block).toContain("今天：2026-08-02（周日）");
+    expect(block).toContain("上周：2026-07-20（周一） 至 2026-07-26（周日）");
+  });
+
+  // ── Overdue Horizon (T3) ─────────────────────────────────────────────
+
+  it("surfaces overdue Horizon items with a proactive-ask instruction", () => {
+    const block = buildTurnPriming({
+      ...makeInput({ tier: "continuing" }, "hi", {}),
+      overdueHorizon: [
+        { text: "Ship the release", by: "2026-07-31", refs: [] },
+        { text: "Renew the domain", by: "2026-07-20", refs: [] },
+      ],
+    });
+    expect(block).toContain("Overdue commitments");
+    expect(block).toContain('"Ship the release" (by 2026-07-31, 2 days overdue)');
+    expect(block).toContain('"Renew the domain" (by 2026-07-20, 13 days overdue)');
+    expect(block).toContain("proactively ask the user");
+  });
+
+  it("renders the overdue line in zh", () => {
+    const block = buildTurnPriming({
+      ...makeInput({ tier: "continuing" }, "hi", {}),
+      locale: "zh",
+      overdueHorizon: [{ text: "发布新版本", by: "2026-07-31", refs: [] }],
+    });
+    expect(block).toContain("逾期承诺");
+    expect(block).toContain("「发布新版本」（by 2026-07-31，已逾期 2 天）");
+  });
+
+  it("omits the overdue line when there are no overdue items", () => {
+    const block = buildTurnPriming(makeInput({ tier: "continuing" }, "hi", {}));
+    expect(block).not.toContain("Overdue");
+    expect(block).not.toContain("逾期");
+  });
 });

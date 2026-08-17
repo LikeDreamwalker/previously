@@ -28,11 +28,11 @@ import {
 } from "@/lib/demo/demo-fs";
 
 import { searchViaFlash, type WebSearchResult } from "@/lib/search/flash-search";
-import { isPrivateHost, extractText } from "@/lib/search/fetch-utils";
+import { isPrivateHost, extractText, fetchWithGuard } from "@/lib/search/fetch-utils";
 import { startLoop } from "@/app/api/loops/start-loop";
 import { readLoopRun, serializeLoop, writeLoopFile } from "@/lib/loops/store";
 import { isAIConfigured, canWrite, DEPLOY_GUIDE_URL } from "@/lib/capabilities";
-import type { LoopRun, LoopStep } from "@/lib/loops/types";
+import { LOOP_WALL_CLOCK_MS, type LoopRun, type LoopStep } from "@/lib/loops/types";
 import {
   runRecallSearch,
   type RecallHit,
@@ -44,7 +44,9 @@ import {
   annotateSliceWithLocalTime,
   sliceLocalBanner,
   sliceIdLocalClock,
+  sliceIdRelPhrase,
 } from "@/lib/episodic/time-localize";
+import { normalizeLocale } from "@/lib/time/relative";
 import { formatLocalTime } from "@/lib/turn-priming";
 import {
   splitTurns,
@@ -121,6 +123,8 @@ export interface ToolContext {
   timezone?: string;
   /** The turn's start instant (UTC ISO) — anchors local-time rendering. */
   startedAtIso?: string;
+  /** UI locale ("zh" | "en") — relative-time annotations follow it. */
+  locale?: string;
 }
 
 /**
@@ -660,9 +664,8 @@ export async function webFetchExecute(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), WEB_FETCH_TIMEOUT_MS);
   try {
-    const res = await fetch(parsed.toString(), {
+    const res = await fetchWithGuard(parsed.toString(), {
       signal: controller.signal,
-      redirect: "follow",
     });
     if (!res.ok) {
       return `ERROR: HTTP ${res.status} ${res.statusText}`;
@@ -733,6 +736,11 @@ export async function recallExecute(
     // Soft 120s safety net. Recall is best-effort: a timeout returns an empty
     // search rather than failing the step, so the main agent knows nothing was
     // found instead of a hard error.
+    //
+    // Cancellation: withStepTimeout aborts its signal on timeout, but
+    // runRecallSearch's generateText has no abortSignal param to consume it,
+    // so the loser runs to completion in the background. That is harmless
+    // here — recall is read-only and its late result is discarded by the race.
     const workerModel = ctx.workerModel ?? (await resolveWorkerModel());
     const timed = await withStepTimeout(
       () =>
@@ -782,11 +790,21 @@ export async function recallExecute(
         ? "No relevant past conversations were found for this query. This is a definitive result — do NOT call recall again for this topic; answer from the conversation and your knowledge."
         : undefined;
 
-    // Pre-render each hit's local clock (from its UTC-derived slice id) so the
-    // agent knows WHEN a past conversation happened without converting itself.
+    // Pre-render each hit's local clock + relative days (from its UTC-derived
+    // slice id) so the agent knows WHEN a past conversation happened without
+    // converting UTC or doing date arithmetic itself.
     const annotateReason = (reason: string, sliceId: string) => {
-      const clock = ctx.timezone ? sliceIdLocalClock(sliceId, ctx.timezone) : null;
-      return clock ? `${reason}（本地 ${clock}）` : reason;
+      if (!ctx.timezone) return reason;
+      const clock = sliceIdLocalClock(sliceId, ctx.timezone);
+      if (!clock) return reason;
+      const rel = sliceIdRelPhrase(sliceId, ctx.timezone, {
+        nowIso: ctx.startedAtIso,
+        locale: ctx.locale ?? "en",
+      });
+      const inner = rel ? `${clock} · ${rel}` : clock;
+      return normalizeLocale(ctx.locale) === "zh"
+        ? `${reason}（本地 ${inner}）`
+        : `${reason} (local ${inner})`;
     };
     return {
       hits: result.hits.map((h) => ({ ...h, reason: annotateReason(h.reason, h.slice_id) })),
@@ -1309,10 +1327,15 @@ export async function loopReportExecute(
   try {
     // The GitHub/local read-append-write can hang on a network partition; a 30s
     // soft timeout bounds the checkpoint. The loop run file is the accumulator,
-    // so a timed-out checkpoint is safe to retry.
+    // so a timed-out checkpoint is safe to retry. The abort signal stops the
+    // losing work BEFORE its write — otherwise a timed-out checkpoint could
+    // still commit later and duplicate the step the retry already recorded.
     const io = await withStepTimeout(
-      async () => {
+      async (signal) => {
         const existing = await readLoopRun(ctx.filePath);
+        if (signal.aborted) {
+          throw new Error("Checkpoint aborted after timeout — write skipped");
+        }
         const priorSteps: LoopStep[] = existing?.steps ?? [];
         const step: LoopStep = {
           step: priorSteps.length + 1,
@@ -1328,6 +1351,9 @@ export async function loopReportExecute(
           status: "running", // final status is stamped by the workflow's finalizeLoop
           startedAt: ctx.startedAt,
           updatedAt: new Date().toISOString(),
+          deadlineAt:
+            existing?.deadlineAt ??
+            new Date(Date.parse(ctx.startedAt) + LOOP_WALL_CLOCK_MS).toISOString(),
           sliceOrigin: ctx.sliceOrigin,
           tags: ctx.tags,
           iterations: steps.length,
@@ -1335,6 +1361,9 @@ export async function loopReportExecute(
           lastError: existing?.lastError ?? "",
           steps,
         };
+        if (signal.aborted) {
+          throw new Error("Checkpoint aborted after timeout — write skipped");
+        }
         await writeLoopFile(ctx.filePath, serializeLoop(run));
         return { steps, step };
       },

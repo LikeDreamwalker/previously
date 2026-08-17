@@ -32,7 +32,7 @@ import {
 import { isChatRunActive } from "@/lib/chat/actions";
 import { saveUserConfig } from "@/lib/config/actions";
 import type { UserConfig } from "@/lib/config/types";
-import { useTranslations } from "next-intl";
+import { useTranslations, useLocale } from "next-intl";
 import { toast } from "sonner";
 import { formatErrorDetail } from "@/lib/chat/workflow-errors";
 
@@ -207,6 +207,7 @@ function Inner({
   // The single source of truth is memory/user/config.json (cross-device, no
   // localStorage). The RSC page preloads it (initialConfig) so there's no
   // default-flash + mount reconcile; saves still write back via server action.
+  const locale = useLocale();
   const [selectedModel, setSelectedModel] = useState(
     initialConfig?.model.provider ?? "deepseek-v4-flash",
   );
@@ -455,6 +456,8 @@ function Inner({
               typeof Intl !== "undefined"
                 ? Intl.DateTimeFormat().resolvedOptions().timeZone
                 : "UTC",
+            // UI locale — the turn's relative-time annotations follow it.
+            locale,
             loadedSliceIds: timelineSlices.map((s) => s.slice_id),
           },
         };

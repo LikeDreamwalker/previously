@@ -39,6 +39,8 @@ export interface StartTurnArgs {
   effort?: "low" | "medium" | "high";
   /** Client-reported timezone, used when minting a new slice. */
   timezone?: string;
+  /** UI locale ("zh" | "en") — relative-time annotations follow it. */
+  locale?: string;
 }
 
 /** Extract the latest user message text from raw UI messages. */
@@ -105,6 +107,9 @@ export async function startTurn(
     `[Turn] model=${model} (requested=${requested}) sdk=${modelConfig.sdk} thinking=${thinking} effort=${reasoningEffort}`,
   );
   const clientTimezone = args.timezone ?? "UTC";
+  // UI locale for relative-time annotations — only zh/en are supported; any
+  // other value (or none) falls back to English.
+  const locale = args.locale === "zh" ? "zh" : "en";
   const { owner, repo } = getRepoConfig();
   const dataSource = resolveDataSource();
 
@@ -138,6 +143,7 @@ export async function startTurn(
     thinking,
     reasoningEffort,
     clientTimezone,
+    locale,
     config,
     owner,
     repo,

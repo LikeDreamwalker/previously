@@ -15,6 +15,12 @@
  */
 import type { StrandIndex } from "@/lib/episodic";
 export type { StrandIndex } from "@/lib/episodic";
+import type { CardHorizonItem } from "@/lib/episodic/previously-format";
+import {
+  buildDateAnchors,
+  normalizeLocale,
+  relPhrase,
+} from "@/lib/time/relative";
 
 // ─── Emotional register ───────────────────────────────────────────────────
 
@@ -103,6 +109,17 @@ export interface PrimingInput {
    * match the user's register instead of staying purely analytical.
    */
   emotionalSignal?: EmotionalSignal;
+  /**
+   * UI locale ("zh" | "en") — the date-anchor table and overdue line follow
+   * it. Defaults to "en".
+   */
+  locale?: string;
+  /**
+   * Horizon items past their `by` date (from the mechanical card maintenance
+   * at a slice boundary). When present, the brief tells the agent to
+   * proactively ask the user about outcomes.
+   */
+  overdueHorizon?: CardHorizonItem[];
 }
 
 // ─── Constants / helpers ─────────────────────────────────────────────────
@@ -361,6 +378,7 @@ function continuityLine(c: ContinuityInfo): string {
 export function buildTurnPriming(input: PrimingInput): string {
   const t = formatLocalTime(input.nowIso, input.clientTimezone);
   const offset = t.offset ? `, ${t.offset}` : "";
+  const zh = normalizeLocale(input.locale) === "zh";
 
   const parts: string[] = [
     "## This turn — analysis",
@@ -368,6 +386,18 @@ export function buildTurnPriming(input: PrimingInput): string {
     `- Sent: ${t.local} (${t.zone}${offset}) · UTC ${t.utc}`,
     `- Slice ids are UTC labels (YYYY-MM-DD-HHMM; stored at memory/episodic/slices/YYYY/MM/DD/HHMM). The times in this brief are already computed in the user's zone and in UTC.`,
   ];
+
+  // Precomputed date anchors — the model resolves "上周五" / "last Friday"
+  // against this table instead of doing date arithmetic itself.
+  const anchors = buildDateAnchors(input.nowIso, input.clientTimezone, input.locale);
+  if (anchors.length > 0) {
+    parts.push(
+      zh
+        ? "- 日期锚点（“上周五”这类相对日期以此表为准，不要自行推算）："
+        : `- Date anchors (resolve relative dates like "last Friday" from this table — never do date arithmetic yourself):`,
+    );
+    parts.push(anchors.map((a) => `    - ${a}`).join("\n"));
+  }
 
   // Intent — LLM-classified in housekeeping. Omitted entirely when the analyze
   // call didn't produce one (housekeeping failure handling is a separate TODO).
@@ -400,6 +430,25 @@ export function buildTurnPriming(input: PrimingInput): string {
   }
 
   parts.push(`- Continuity: ${continuityLine(input.continuity)}`);
+
+  // Overdue Horizon commitments — surfaced by the mechanical card maintenance
+  // at a slice boundary; the agent should proactively ask about outcomes.
+  if (input.overdueHorizon && input.overdueHorizon.length > 0) {
+    const locale = input.locale ?? "en";
+    const items = input.overdueHorizon.map((h) => {
+      const due = relPhrase(h.by, input.nowIso, input.clientTimezone, locale, {
+        due: true,
+      });
+      return zh
+        ? `「${h.text}」（by ${h.by}${due ? `，${due}` : ""}）`
+        : `"${h.text}" (by ${h.by}${due ? `, ${due}` : ""})`;
+    });
+    parts.push(
+      zh
+        ? `- 逾期承诺：以下 Horizon 事项已超过其 by 日期 —— 主动询问用户这些事情的结果：${items.join("；")}`
+        : `- Overdue commitments: these Horizon items are past their "by" date — proactively ask the user how they turned out: ${items.join("; ")}`,
+    );
+  }
 
   // LLM-suggested strands are primary (they understand paraphrase / language);
   // the engineering vocabulary match is the fallback when the hint is empty.
