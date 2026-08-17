@@ -309,8 +309,9 @@ export const chatTools = {
       "their history. Returns POINTERS — which slices are relevant and why " +
       "(slice ids, relevance, reasons) — plus recommended reads with suggested " +
       "priorities. It never returns conversation content. " +
-      "Decide whether to open slices with readSlice (optionally with a range) — " +
-      "the summaries may already be enough to answer. " +
+      "Timeline lines and card summaries are only enough to decide WHETHER to " +
+      "dig — never enough to QUOTE. Open the slice with readSlice (optionally " +
+      "with a range) before citing specifics from a past event. " +
       "If the search returns NO relevant matches, do NOT call recall again for " +
       "this topic — there is no past context to find; answer from the conversation " +
       "and your knowledge.",

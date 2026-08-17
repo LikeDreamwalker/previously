@@ -10,7 +10,7 @@ import type { ToolRenderState } from "@/lib/chat/tool-state";
 export interface EvolutionState {
   running: boolean;
   step?: string;
-  /** Card update summary: added = card rewritten, removed = stale Recent dropped. */
+  /** Card update summary: added = card rewritten, removed = stale Now items dropped. */
   changes?: {
     added: number;
     reinforced: number;
@@ -21,6 +21,9 @@ export interface EvolutionState {
   hasChanges?: boolean;
   /** The review's reasoning — shown as the indicator's expanded content. */
   note?: string;
+  /** The agent's one-sentence user-language account of what changed — the
+   *  indicator's headline when present (the abstract counts fall back). */
+  summary?: string;
   /** The actual line-level card mutations — the expanded diff. */
   mutations?: Array<{ type: "added" | "removed"; text: string }>;
   error?: string;
@@ -164,7 +167,7 @@ export function EvolutionIndicator({ state }: EvolutionIndicatorProps) {
   // ── Complete, has changes ────────────────────────────────────────────────
 
   const c = state.changes!;
-  const summary = [
+  const counts = [
     c.added > 0 && t("added", { count: c.added }),
     c.reinforced > 0 && t("reinforced", { count: c.reinforced }),
     c.demoted > 0 && t("demoted", { count: c.demoted }),
@@ -174,11 +177,15 @@ export function EvolutionIndicator({ state }: EvolutionIndicatorProps) {
     .filter(Boolean)
     .join(" · ");
 
+  // The agent's own one-sentence account is the headline when present; the
+  // abstract line counts demote to the meta line (and remain the fallback
+  // headline when the worker gave no summary).
   return (
     <PhaseIndicator
       mode="static"
       icon={<Brain className="h-3.5 w-3.5" />}
-      label={t("evolved", { summary })}
+      label={t("evolved", { summary: state.summary?.trim() || counts })}
+      meta={state.summary?.trim() ? counts : undefined}
       state={COMPLETED_STATE}
       expandedContent={expandedContent}
     />

@@ -564,32 +564,73 @@ export function migrateToV3(content: string, currentSliceId?: string): string {
   return serializePreviously(doc);
 }
 
-// ─── User card format (v4) ──────────────────────────────────────────────────
+// ─── User card format (v5) ──────────────────────────────────────────────────
 
 /**
- * v4 "user card" — the compact successor to the v3 dimension archive.
+ * v5 "user card" — the compact successor to the v3 dimension archive, with the
+ * user's TIME AXIS made explicit as Past / Now / Horizon:
  *
- * Structured identity head (machine-parsed) + ONE rolling profile paragraph
- * (hard-capped, updated IN PLACE by the evolution agent) + a short 7-day
- * recent-items list + a compact self-model list. The card is the stable,
- * byte-identical-within-a-slice snapshot that keeps the main agent's prompt
- * prefix cacheable; slices remain the lossless source of truth and every entry
- * keeps its `refs` so the agent can drill down with readSlice.
+ *   1. Identity  — structured head (machine-parsed): Name / Address them as /
+ *      Pronouns / Alias.
+ *   2. Past      — the rolling third-person profile paragraph (hard-capped,
+ *      updated IN PLACE by the evolution agent) + an "anchor facts" bullet
+ *      list: durable facts (dates / decisions / red lines) that will almost
+ *      certainly still be true in 3 years.
+ *   3. Now       — current-state semantic compression pool (rename of the v4
+ *      Recent section): hooks, not narratives; 7-day mechanical expiry.
+ *   4. Horizon   — future-facing open loops: commitments / deadlines / awaited
+ *      replies, each with a `by:` date. NOT age-expiring — items resolve only
+ *      by being fulfilled; overdue items are kept and flagged, never silently
+ *      dropped.
+ *   5. Self-model — compact operating lessons, DELTA from DIRECTIVES only.
+ *
+ * The card is the stable, byte-identical-within-a-slice snapshot that keeps
+ * the main agent's prompt prefix cacheable; slices remain the lossless source
+ * of truth and every entry keeps its `refs` so the agent can drill down with
+ * readSlice.
+ *
+ * The v1 card ("Format: user card", sections Profile / Recent) stays readable:
+ * parseCard maps `## Profile` → Past profile paragraph and `## Recent` → Now.
  */
-export const CARD_STAMP = "Format: user card";
-/** Recent-items older than this many days are dropped mechanically. */
-export const CARD_RECENT_EXPIRY_DAYS = 7;
+export const CARD_STAMP = "Format: user card v2";
+/** The v1 card stamp — still accepted by parseCard. */
+export const LEGACY_CARD_STAMP = "Format: user card";
+/** Now-items older than this many days are dropped mechanically. */
+export const CARD_NOW_EXPIRY_DAYS = 7;
 /** Hard caps — enforced by the card updater after every rewrite. */
-export const CARD_RECENT_MAX = 5;
+export const CARD_NOW_MAX = 5;
 export const CARD_SELF_MODEL_MAX = 10;
-/** Hard ceiling for the Profile paragraph (~600 tokens worst case). */
+/** Hard ceiling for the Past profile paragraph (~600 tokens worst case). */
 export const CARD_PROFILE_MAX_CHARS = 2400;
+/** Per-item text caps (refs/by/since tails never count against them). */
+export const NOW_ITEM_MAX_CHARS = 300;
+export const HORIZON_ITEM_MAX_CHARS = 200;
+export const SELF_MODEL_LINE_MAX_CHARS = 300;
+export const PAST_ANCHOR_MAX_CHARS = 300;
+/** Section caps. */
+export const PAST_ANCHORS_MAX = 8;
+export const HORIZON_MAX = 5;
+/** Total serialized card budget — the updater sheds sections to stay under. */
+export const CARD_TOTAL_MAX_CHARS = 8192;
 
-export interface CardRecentItem {
+export interface CardNowItem {
   text: string;
   refs: string[];
   /** ISO date the item was recorded — used for the 7-day expiry. */
   since: string;
+}
+
+export interface CardHorizonItem {
+  text: string;
+  /** ISO date (YYYY-MM-DD) the item is due by. */
+  by: string;
+  refs: string[];
+}
+
+/** A durable Past anchor fact — one line, refs required. */
+export interface CardAnchorItem {
+  text: string;
+  refs: string[];
 }
 
 export interface CardDocument {
@@ -597,17 +638,24 @@ export interface CardDocument {
   updated: string;
   /** Structured identity head lines (Name: … / Address them as: … / Pronouns: …). */
   identity: string[];
-  /** The rolling third-person profile paragraph. */
-  profile: string;
-  recent: CardRecentItem[];
+  past: {
+    /** The rolling third-person profile paragraph. */
+    profile: string;
+    /** Durable anchor facts (dates / decisions / red lines), refs required. */
+    anchors: CardAnchorItem[];
+  };
+  now: CardNowItem[];
+  horizon: CardHorizonItem[];
   selfModel: string[];
 }
 
-/** Detect the v4 user-card format — the stamp is authoritative (sections can be empty). */
+/** Detect the user-card format (v1 or v2) — the stamp is authoritative. */
 export function isCardFormat(content: string): boolean {
   return (
-    content.includes(CARD_STAMP) ||
-    (content.includes("## Profile") && content.includes("## Identity"))
+    // LEGACY_CARD_STAMP is a prefix of CARD_STAMP, so this covers both.
+    content.includes(LEGACY_CARD_STAMP) ||
+    (content.includes("## Identity") &&
+      (content.includes("## Profile") || content.includes("## Past")))
   );
 }
 
@@ -617,13 +665,14 @@ export function newCardTemplate(sliceId: string): string {
     sliceId,
     updated: new Date().toISOString(),
     identity: [],
-    profile: "",
-    recent: [],
+    past: { profile: "", anchors: [] },
+    now: [],
+    horizon: [],
     selfModel: [],
   });
 }
 
-/** Serialize a CardDocument to markdown. Empty sections are omitted. */
+/** Serialize a CardDocument to markdown (v5 layout). Empty sections are omitted. */
 export function serializeCard(doc: CardDocument): string {
   const lines: string[] = ["# Previously On", ""];
   lines.push(
@@ -635,14 +684,27 @@ export function serializeCard(doc: CardDocument): string {
     lines.push("## Identity", "");
     for (const line of doc.identity) lines.push(`- ${stripInlineComments(line)}`, "");
   }
-  if (doc.profile.trim()) {
-    lines.push("## Profile", "", doc.profile.trim(), "");
+  if (doc.past.profile.trim() || doc.past.anchors.length > 0) {
+    lines.push("## Past", "");
+    if (doc.past.profile.trim()) lines.push(doc.past.profile.trim(), "");
+    for (const a of doc.past.anchors) {
+      const refs = a.refs.length > 0 ? ` — refs: ${a.refs.map((x) => `[${x}]`).join(", ")}` : "";
+      lines.push(`- ${stripInlineComments(a.text)}${refs}`, "");
+    }
   }
-  if (doc.recent.length > 0) {
-    lines.push("## Recent", "");
-    for (const r of doc.recent) {
+  if (doc.now.length > 0) {
+    lines.push("## Now", "");
+    for (const r of doc.now) {
       const refs = r.refs.length > 0 ? ` — refs: ${r.refs.map((x) => `[${x}]`).join(", ")}` : "";
       lines.push(`- ${stripInlineComments(r.text)}${refs} | since: ${r.since}`, "");
+    }
+  }
+  if (doc.horizon.length > 0) {
+    lines.push("## Horizon", "");
+    for (const h of doc.horizon) {
+      const by = h.by ? ` — by: ${h.by}` : "";
+      const refs = h.refs.length > 0 ? ` — refs: ${h.refs.map((x) => `[${x}]`).join(", ")}` : "";
+      lines.push(`- ${stripInlineComments(h.text)}${by}${refs}`, "");
     }
   }
   if (doc.selfModel.length > 0) {
@@ -653,7 +715,7 @@ export function serializeCard(doc: CardDocument): string {
   return lines.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd() + "\n";
 }
 
-/** Parse a serialized v4 user card into a CardDocument. Null for non-card content. */
+/** Parse a serialized user card (v1 or v2) into a CardDocument. Null for non-card content. */
 export function parseCard(content: string): CardDocument | null {
   if (!isCardFormat(content)) return null;
   const headerMatch = content.match(/_Active slice: ([^\s|]+).*?Updated: (.+?)_/);
@@ -661,41 +723,60 @@ export function parseCard(content: string): CardDocument | null {
     sliceId: headerMatch?.[1]?.trim() ?? "",
     updated: headerMatch?.[2]?.trim() ?? new Date().toISOString(),
     identity: [],
-    profile: "",
-    recent: [],
+    past: { profile: "", anchors: [] },
+    now: [],
+    horizon: [],
     selfModel: [],
   };
 
-  let section: "identity" | "profile" | "recent" | "self_model" | null = null;
+  let section: "identity" | "past" | "now" | "horizon" | "self_model" | null = null;
   for (const rawLine of content.split("\n")) {
     const trimmed = rawLine.trim();
     if (trimmed === "## Identity") { section = "identity"; continue; }
-    if (trimmed === "## Profile") { section = "profile"; continue; }
-    if (trimmed === "## Recent") { section = "recent"; continue; }
+    // v1 headers map onto the v5 sections.
+    if (trimmed === "## Profile" || trimmed === "## Past") { section = "past"; continue; }
+    if (trimmed === "## Recent" || trimmed === "## Now") { section = "now"; continue; }
+    if (trimmed === "## Horizon") { section = "horizon"; continue; }
     if (trimmed === "## Self-model") { section = "self_model"; continue; }
     if (trimmed.startsWith("## ")) { section = null; continue; }
     if (!section) continue;
 
-    if (section === "profile") {
-      // Paragraph line — skip blank/header/stamp lines, keep flowing text.
-      if (trimmed && !trimmed.startsWith("_") && !trimmed.startsWith("#") && !trimmed.startsWith("<!--")) {
-        doc.profile = doc.profile ? `${doc.profile}\n${trimmed}` : trimmed;
-      }
-      continue;
-    }
-
     if (trimmed.startsWith("- ")) {
       const body = stripInlineComments(trimmed.slice(2).trim());
       if (!body) continue;
-      if (section === "identity") doc.identity.push(body);
-      else if (section === "self_model") doc.selfModel.push(body);
-      else if (section === "recent") {
-        const item: CardRecentItem = { text: body, refs: [], since: formatDate() };
+      if (section === "identity") { doc.identity.push(body); continue; }
+      if (section === "self_model") { doc.selfModel.push(body); continue; }
+      if (section === "past") {
+        // Anchor fact: a bullet under Past. Refs tail is split off the text.
+        const anchor: CardAnchorItem = { text: body, refs: [] };
+        const refsMatch = body.match(/—\s*refs:\s*(.*)$/);
+        if (refsMatch) { anchor.refs = parseRefList(refsMatch[1]); anchor.text = anchor.text.replace(/—\s*refs:.*$/, "").trim(); }
+        doc.past.anchors.push(anchor);
+        continue;
+      }
+      if (section === "now") {
+        const item: CardNowItem = { text: body, refs: [], since: formatDate() };
         const sinceMatch = body.match(/\|\s*since:\s*(\d{4}-\d{2}-\d{2})/);
         if (sinceMatch) { item.since = sinceMatch[1]; item.text = item.text.replace(/\|\s*since:\s*\d{4}-\d{2}-\d{2}/, "").trim(); }
         const refsMatch = body.match(/—\s*refs:\s*(.*)$/);
         if (refsMatch) { item.refs = parseRefList(refsMatch[1]); item.text = item.text.replace(/—\s*refs:.*$/, "").trim(); }
-        doc.recent.push(item);
+        doc.now.push(item);
+        continue;
+      }
+      // horizon
+      const item: CardHorizonItem = { text: body, by: "", refs: [] };
+      const byMatch = body.match(/—\s*by:\s*(\d{4}-\d{2}-\d{2})/);
+      if (byMatch) { item.by = byMatch[1]; item.text = item.text.replace(/—\s*by:\s*\d{4}-\d{2}-\d{2}/, "").trim(); }
+      const refsMatch = body.match(/—\s*refs:\s*(.*)$/);
+      if (refsMatch) { item.refs = parseRefList(refsMatch[1]); item.text = item.text.replace(/—\s*refs:.*$/, "").trim(); }
+      doc.horizon.push(item);
+      continue;
+    }
+
+    if (section === "past") {
+      // Profile paragraph line — skip blank/header/stamp lines, keep flowing text.
+      if (trimmed && !trimmed.startsWith("_") && !trimmed.startsWith("#") && !trimmed.startsWith("<!--")) {
+        doc.past.profile = doc.past.profile ? `${doc.past.profile}\n${trimmed}` : trimmed;
       }
     }
   }
@@ -704,9 +785,23 @@ export function parseCard(content: string): CardDocument | null {
 }
 
 /**
+ * Horizon items whose `by` date is before `today` (YYYY-MM-DD). Pure — flags
+ * overdue commitments WITHOUT dropping them (an overdue commitment is kept and
+ * surfaced, never silently shed).
+ */
+export function findOverdueHorizonItems(
+  card: CardDocument,
+  today: string,
+): CardHorizonItem[] {
+  return card.horizon.filter(
+    (h) => /^\d{4}-\d{2}-\d{2}$/.test(h.by) && h.by < today,
+  );
+}
+
+/**
  * Best-effort fold of a v3 (or legacy) document into the card format. Identity
  * → head; personality/communication/cognition/knowledge/values/work_style/goals
- * → one Profile paragraph; current_state/boundaries → Recent; all self-model
+ * → the Past profile paragraph; current_state/boundaries → Now; all self-model
  * dimensions → the Self-model list. The evolution agent refines on later passes.
  */
 export function migrateV3ToCard(content: string, currentSliceId?: string): string {
@@ -717,8 +812,9 @@ export function migrateV3ToCard(content: string, currentSliceId?: string): strin
     sliceId: doc?.sliceId || currentSliceId || "unknown",
     updated: new Date().toISOString(),
     identity: [],
-    profile: "",
-    recent: [],
+    past: { profile: "", anchors: [] },
+    now: [],
+    horizon: [],
     selfModel: [],
   };
   if (doc) {
@@ -727,9 +823,9 @@ export function migrateV3ToCard(content: string, currentSliceId?: string): strin
     for (const dim of ["personality", "communication", "cognition", "knowledge", "values", "work_style", "goals"] as const) {
       for (const b of doc.profile[dim] ?? []) sentences.push(b.text);
     }
-    card.profile = sentences.join(" ");
-    for (const b of doc.profile.current_state ?? []) card.recent.push({ text: b.text, refs: b.refs, since: b.updated });
-    for (const b of doc.profile.boundaries ?? []) card.recent.push({ text: b.text, refs: b.refs, since: b.updated });
+    card.past.profile = sentences.join(" ");
+    for (const b of doc.profile.current_state ?? []) card.now.push({ text: b.text, refs: b.refs, since: b.updated });
+    for (const b of doc.profile.boundaries ?? []) card.now.push({ text: b.text, refs: b.refs, since: b.updated });
     for (const dim of SELF_MODEL_DIMENSIONS) {
       for (const b of doc.selfModel[dim] ?? []) card.selfModel.push(b.text);
     }

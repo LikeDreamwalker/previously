@@ -14,6 +14,7 @@
  */
 import type { ModelMessage } from "ai";
 import type { TimeSlice } from "@/lib/episodic";
+import type { CardHorizonItem } from "@/lib/episodic/previously-format";
 import type { CardChangeSummary, CardMutation } from "@/lib/episodic/card-diff";
 import type { UserConfig } from "@/lib/config/types";
 import type { ModelConfig } from "@/lib/models/registry";
@@ -50,6 +51,12 @@ export interface TurnInput {
   reasoningEffort: "low" | "medium" | "high";
   /** Client-reported timezone, used when minting a new slice. */
   clientTimezone: string;
+  /**
+   * UI locale ("zh" | "en") — relative-time annotations in the injected card,
+   * turn brief, timeline brief, and read-tool output follow it. Normalized in
+   * start-turn with fallback "en".
+   */
+  locale: string;
   /** User config snapshot (loaded once in the route layer). */
   config: UserConfig;
   /** GitHub repo owner (or "local" without a token). */
@@ -76,6 +83,9 @@ export interface EvolutionResult {
   changed: boolean;
   droppedRecent: number;
   note: string;
+  /** ONE user-language sentence describing what changed — the indicator's
+   *  headline and the core agent's account of the evolution. */
+  summary?: string;
   /** Line-level mutations vs the previous card — the indicator's expanded diff. */
   mutations?: CardMutation[];
   /** Semantic change counts — the indicator's collapsed summary chips. */
@@ -105,6 +115,13 @@ export interface HousekeepingResult {
   identityPrompt: string;
   /** Present when a synchronous card evolution ran this turn (slice close or explicit request). */
   evolutionResult?: EvolutionResult;
+  /**
+   * Horizon items whose `by` date is already past, surfaced by the mechanical
+   * card maintenance at a slice boundary. Kept on the card (never dropped) and
+   * injected into the turn brief (buildTurnPriming) so the agent proactively
+   * asks the user about outcomes.
+   */
+  overdueHorizon?: CardHorizonItem[];
   /**
    * v0.8 — compact timeline brief (recent slice pointer lines + catalog
    * totals), assembled from the woven index. Injected into the system prompt's

@@ -12,6 +12,7 @@ import {
   newCardTemplate,
   migrateV3ToCard,
   isCardFormat,
+  findOverdueHorizonItems,
   stripTrailingParentheticals,
   type PreviouslyDocument,
   type PreviouslyBelief,
@@ -239,36 +240,45 @@ describe("migrateToV3", () => {
   });
 });
 
-// ─── User card (v4) ─────────────────────────────────────────────────────
+// ─── User card (v5) ─────────────────────────────────────────────────────
 
-describe("user card format (v4)", () => {
+describe("user card format (v5)", () => {
   function card(overrides: Partial<CardDocument> = {}): CardDocument {
     return {
       sliceId: "2026-08-08-1200",
       updated: "2026-08-08T12:00:00.000Z",
       identity: ["Name: Alex", "Address them as: Alex"],
-      profile: "Alex is an AI engineer who prefers concise answers.",
-      recent: [
+      past: {
+        profile: "Alex is an AI engineer who prefers concise answers.",
+        anchors: [
+          { text: "Founded their studio in 2021", refs: ["2026/07/01/0900"] },
+        ],
+      },
+      now: [
         { text: "Evaluating a Rust migration", refs: ["2026/08/05/1420"], since: "2026-08-05" },
+      ],
+      horizon: [
+        { text: "Send the contractor invoice", by: "2026-08-20", refs: ["2026/08/07/0709"] },
       ],
       selfModel: ["Prefer explicit low effort for simple checks."],
       ...overrides,
     };
   }
 
-  it("round-trips a populated card through serializeCard / parseCard", () => {
+  it("writes the v5 layout and stamp", () => {
     const serialized = serializeCard(card());
-    expect(isCardFormat(serialized)).toBe(true);
-    const parsed = parseCard(serialized)!;
-    expect(parsed.sliceId).toBe("2026-08-08-1200");
-    expect(parsed.identity).toEqual(["Name: Alex", "Address them as: Alex"]);
-    expect(parsed.profile).toContain("concise answers");
-    expect(parsed.recent[0]).toEqual({
-      text: "Evaluating a Rust migration",
-      refs: ["2026/08/05/1420"],
-      since: "2026-08-05",
-    });
-    expect(parsed.selfModel).toEqual(["Prefer explicit low effort for simple checks."]);
+    expect(serialized).toContain("Format: user card v2");
+    expect(serialized).toContain("## Past");
+    expect(serialized).toContain("## Now");
+    expect(serialized).toContain("## Horizon");
+    expect(serialized).not.toContain("## Profile");
+    expect(serialized).not.toContain("## Recent");
+  });
+
+  it("round-trips a populated card: parse(serialize(doc)) deep-equals doc", () => {
+    const doc = card();
+    const parsed = parseCard(serializeCard(doc));
+    expect(parsed).toEqual(doc);
   });
 
   it("produces an empty template that parses back", () => {
@@ -276,9 +286,48 @@ describe("user card format (v4)", () => {
     expect(isCardFormat(tpl)).toBe(true);
     const parsed = parseCard(tpl)!;
     expect(parsed.identity).toEqual([]);
-    expect(parsed.profile).toBe("");
-    expect(parsed.recent).toEqual([]);
+    expect(parsed.past).toEqual({ profile: "", anchors: [] });
+    expect(parsed.now).toEqual([]);
+    expect(parsed.horizon).toEqual([]);
     expect(parsed.selfModel).toEqual([]);
+  });
+
+  it("reads a v1 card: old stamp, ## Profile → Past paragraph, ## Recent → Now", () => {
+    const v1 = `# Previously On
+
+_Active slice: 2026-08-08-1200 | Format: user card | Updated: 2026-08-08T12:00:00.000Z_
+
+## Identity
+
+- Name: Alex
+
+## Profile
+
+Alex is an AI engineer who prefers concise answers.
+
+## Recent
+
+- Evaluating a Rust migration — refs: [2026/08/05/1420] | since: 2026-08-05
+
+## Self-model
+
+- Prefer explicit low effort for simple checks.
+`;
+    expect(isCardFormat(v1)).toBe(true);
+    const parsed = parseCard(v1)!;
+    expect(parsed.identity).toEqual(["Name: Alex"]);
+    expect(parsed.past.profile).toContain("concise answers");
+    expect(parsed.past.anchors).toEqual([]);
+    expect(parsed.now).toEqual([
+      { text: "Evaluating a Rust migration", refs: ["2026/08/05/1420"], since: "2026-08-05" },
+    ]);
+    expect(parsed.horizon).toEqual([]);
+    expect(parsed.selfModel).toEqual(["Prefer explicit low effort for simple checks."]);
+    // And a re-serialization comes out in the v5 layout.
+    const reserialized = serializeCard(parsed);
+    expect(reserialized).toContain("Format: user card v2");
+    expect(reserialized).toContain("## Past");
+    expect(reserialized).toContain("## Now");
   });
 
   it("is distinct from v3 — migrateToV3 never downgrades a card", () => {
@@ -294,6 +343,31 @@ describe("user card format (v4)", () => {
     const parsed = parseCard(migrated)!;
     // identity bullet folded into the Identity head
     expect(parsed.identity.join(" ")).toContain("named Alex");
+  });
+});
+
+// ─── findOverdueHorizonItems ─────────────────────────────────────────────
+
+describe("findOverdueHorizonItems", () => {
+  it("flags items whose by date is before today, keeps the rest", () => {
+    const doc = parseCard(
+      serializeCard({
+        sliceId: "s",
+        updated: "2026-08-08",
+        identity: [],
+        past: { profile: "", anchors: [] },
+        now: [],
+        horizon: [
+          { text: "Overdue item", by: "2026-08-01", refs: ["a"] },
+          { text: "Due today", by: "2026-08-08", refs: [] },
+          { text: "Future item", by: "2026-09-01", refs: [] },
+          { text: "No date", by: "", refs: [] },
+        ],
+        selfModel: [],
+      }),
+    )!;
+    const overdue = findOverdueHorizonItems(doc, "2026-08-08");
+    expect(overdue.map((h) => h.text)).toEqual(["Overdue item"]);
   });
 });
 

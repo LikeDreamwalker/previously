@@ -14,16 +14,13 @@
 
 import { generateText, tool, isStepCount } from "ai";
 import { z } from "zod";
-import {
-  tolerantBounded01,
-  tolerantNumberArray,
-} from "@/lib/chat/tolerant-schemas";
+import { tolerantBounded01 } from "@/lib/chat/tolerant-schemas";
 import { fsReadFile } from "../io-helpers";
 import { readStrands } from "@/lib/episodic/manager";
 import { generateGlobalTimeline } from "@/lib/episodic/flash/global-timeline";
 import { sliceLine } from "@/lib/episodic/timeline/render";
 import { TIMELINE_INDEX_PATH } from "@/lib/episodic/timeline/store";
-import type { TimelineSliceEntry } from "@/lib/episodic/timeline/types";
+import type { TimelineIndex, TimelineSliceEntry } from "@/lib/episodic/timeline/types";
 import { createModel } from "@/lib/models/provider";
 import { workerProviderOptions } from "@/lib/models/worker";
 import type { ModelConfig } from "@/lib/models/registry";
@@ -34,7 +31,6 @@ export interface RecallHit {
   slice_id: string;
   relevance: number;
   reason: string;
-  key_turns: number[];
 }
 
 /** A slice the main agent should consider reading, with a suggested priority. */
@@ -128,34 +124,106 @@ const GLOBAL_TIMELINE_PATH = "memory/episodic/timeline.md";
 
 const STALE_THRESHOLD_MS = 6 * 60 * 60 * 1000; // 6 hours
 
+/** How many pointer lines readGlobalTimeline returns. The full projection
+ *  (100+ slices and growing) is too large to dump into the worker model in
+ *  one tool result — it burns steps and context. Older slices are reachable
+ *  via readTimelineWindow. */
+const TIMELINE_PAGE_SIZE = 40;
+
+/** True when an ISO timestamp is parseable and older than the staleness threshold. */
+function isStaleTimestamp(iso: string | undefined): boolean {
+  if (!iso) return false;
+  const t = new Date(iso).getTime();
+  return Number.isFinite(t) && Date.now() - t > STALE_THRESHOLD_MS;
+}
+
+/** Render the newest `limit` catalog entries as pointer lines (newest first),
+ *  with a header noting the total and how to reach older slices. */
+export function paginateTimelineEntries(
+  slices: TimelineSliceEntry[],
+  limit: number = TIMELINE_PAGE_SIZE,
+): string {
+  const newest = [...slices]
+    .sort((a, b) => b.id.localeCompare(a.id))
+    .slice(0, limit);
+  if (newest.length === 0) {
+    return "(timeline is empty — no slices yet)";
+  }
+  const header =
+    `Global timeline: showing newest ${newest.length} of ${slices.length} slices. ` +
+    "Older slices: use readTimelineWindow with a date range.";
+  return `${header}\n${newest.map(sliceLine).join("\n")}`;
+}
+
+/** Same pagination for the markdown projection — the fallback when
+ *  index.json is missing. timeline.md is rendered newest-first, so the first
+ *  pointer lines (`- **id** …`) are already the newest slices. */
+export function paginateTimelineMarkdown(
+  content: string,
+  limit: number = TIMELINE_PAGE_SIZE,
+): string {
+  const pointerLines = content.split("\n").filter((l) => l.startsWith("- **"));
+  if (pointerLines.length === 0) {
+    return "(timeline is empty — no slices yet)";
+  }
+  const page = pointerLines.slice(0, limit);
+  const header =
+    `Global timeline: showing newest ${page.length} of ${pointerLines.length} slices. ` +
+    "Older slices: use readTimelineWindow with a date range.";
+  return `${header}\n${page.join("\n")}`;
+}
+
+/** Regenerate the projection, then return the paginated view. */
+async function regenerateAndPaginate(): Promise<string> {
+  // generateGlobalTimeline reweaves both index.json and timeline.md.
+  await generateGlobalTimeline();
+  try {
+    const raw = await fsReadFile(TIMELINE_INDEX_PATH);
+    const idx = JSON.parse(raw) as Partial<TimelineIndex>;
+    return paginateTimelineEntries(idx.slices ?? []);
+  } catch {
+    const content = await fsReadFile(GLOBAL_TIMELINE_PATH);
+    return paginateTimelineMarkdown(content);
+  }
+}
+
 async function readGlobalTimelineImpl(): Promise<string> {
+  // Preferred path: the structured catalog, paginated to the newest slices.
+  try {
+    const raw = await fsReadFile(TIMELINE_INDEX_PATH);
+    const idx = JSON.parse(raw) as Partial<TimelineIndex>;
+    // Defense in depth: regenerate when the catalog is stale — the recall
+    // agent would miss recent slices otherwise.
+    if (isStaleTimestamp(idx.updated_at)) {
+      console.log(
+        `[Recall] Global timeline stale (${Math.round((Date.now() - new Date(idx.updated_at!).getTime()) / 3_600_000)}h old), regenerating...`,
+      );
+      return await regenerateAndPaginate();
+    }
+    return paginateTimelineEntries(idx.slices ?? []);
+  } catch {
+    // Index missing or corrupt — fall back to the markdown projection.
+  }
+
   try {
     const content = await fsReadFile(GLOBAL_TIMELINE_PATH);
     if (content.trim()) {
-      // Defense in depth: check if the timeline is stale.
-      // Even though the lifecycle should keep it fresh, a stale timeline
-      // is worse than a slow regeneration — the recall agent would return
-      // 0 hits if it can't see recent slices.
       const match = content.match(/_Generated: ([^\n]+)_/);
-      if (match) {
-        const genTime = new Date(match[1]).getTime();
-        const ageMs = Date.now() - genTime;
-        if (ageMs > STALE_THRESHOLD_MS) {
-          console.log(
-            `[Recall] Global timeline stale (${Math.round(ageMs / 3_600_000)}h old), regenerating...`,
-          );
-          return await generateGlobalTimeline();
-        }
+      if (match && isStaleTimestamp(match[1])) {
+        console.log(
+          `[Recall] Global timeline stale (${Math.round((Date.now() - new Date(match[1]).getTime()) / 3_600_000)}h old), regenerating...`,
+        );
+        return await regenerateAndPaginate();
       }
-      return content;
+      return paginateTimelineMarkdown(content);
     }
     // File exists but is empty — regenerate
-    return await generateGlobalTimeline();
+    return await regenerateAndPaginate();
   } catch {
-    // File doesn't exist yet — generate it from monthly indices
+    // File doesn't exist yet — generate it from the catalog
     try {
-      return await generateGlobalTimeline();
-    } catch (genErr) {
+      return await regenerateAndPaginate();
+    } catch {
       return "(No timeline index found and could not generate one. This may be the first session.)";
     }
   }
@@ -220,10 +288,6 @@ const recallReportSchema = tool({
           reason: z
             .string()
             .describe("One-line explanation of why this slice is relevant"),
-          key_turns: tolerantNumberArray
-            .describe(
-              "Turn numbers within the slice that are most relevant. Empty array if you didn't deep-read the slice.",
-            ),
         }),
       )
       .describe("Relevant slices found. Empty if nothing matches."),
@@ -280,22 +344,80 @@ Process:
 Guidelines:
 - Be thorough but efficient — aim for 2-4 steps.
 - Base relevance and priority on summary quality, strand overlap, and tag relevance — not on content you never read.
-- Do NOT invent key_turns: without reading a slice you cannot know which turns matter, so leave key_turns empty.
 - If nothing is relevant, return an empty hits array. That's fine.
 - Focus on RECALLING context, not answering the question.
 - The current session's slice is the ONGOING conversation, NOT a past memory — never return it as a hit or recommended read, even if it appears in the timeline or a strand path. You recall the PAST only.`;
 
 // ─── Public API ────────────────────────────────────────────────────────
 
-const MAX_STEPS = 5;
+/**
+ * Step budget for the recall mini-agent. The prescribed process is 4 phases
+ * (timeline → window → strand → report) and the prompt still says "aim for
+ * 2-4 steps", but a wandering model gets room to explore — prepareRecallStep
+ * guarantees the last step is the report.
+ */
+export const MAX_STEPS = 8;
+
+/**
+ * prepareStep for the recall mini-agent: when the step budget is nearly
+ * exhausted and recallReport hasn't been called yet, force the model to call
+ * it. Without this, an over-exploring model hits the step cap mid-exploration
+ * and the run falls back to returning a partial-thinking fragment as the
+ * reasoning. Pure — takes the executed steps and returns a per-step override.
+ */
+export function prepareRecallStep({
+  steps,
+  maxSteps = MAX_STEPS,
+}: {
+  steps: ReadonlyArray<{ toolCalls?: ReadonlyArray<{ toolName: string }> }>;
+  maxSteps?: number;
+}): { toolChoice: { type: "tool"; toolName: "recallReport" } } | undefined {
+  const reportCalled = steps.some((s) =>
+    (s.toolCalls ?? []).some((tc) => tc.toolName === "recallReport"),
+  );
+  if (!reportCalled && steps.length >= maxSteps - 1) {
+    return { toolChoice: { type: "tool", toolName: "recallReport" } };
+  }
+  return undefined;
+}
+
+/**
+ * Drop hits / recommended reads whose slice id is not in the catalog — the
+ * worker model sometimes hallucinates plausible-looking ids, which then 404
+ * when the main agent calls readSlice. `validIds === null` means the catalog
+ * couldn't be loaded this run: skip validation rather than break recall.
+ */
+export function filterKnownSliceIds<T extends { slice_id: string }>(
+  items: T[],
+  validIds: ReadonlySet<string> | null,
+): T[] {
+  if (!validIds) return items;
+  return items.filter((i) => {
+    if (validIds.has(i.slice_id)) return true;
+    console.warn(`[Recall] Dropping hallucinated slice id: ${i.slice_id}`);
+    return false;
+  });
+}
+
+/** Load the catalog's slice ids once per run. Null when unreadable. */
+async function loadValidSliceIds(): Promise<Set<string> | null> {
+  try {
+    const raw = await fsReadFile(TIMELINE_INDEX_PATH);
+    const idx = JSON.parse(raw) as Partial<TimelineIndex>;
+    return new Set((idx.slices ?? []).map((s) => s.id));
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Run the recall search mini-agent using AI SDK v7 native multi-step.
  *
- * `stopWhen: isStepCount(5)` tells generateText to loop: after each tool
- * call, feed the result back to the model and continue, up to 5 turns.
- * This gives Flash time to explore (timeline → strands → deep-read) and
- * then call recallReport.
+ * `stopWhen: isStepCount(MAX_STEPS)` tells generateText to loop: after each
+ * tool call, feed the result back to the model and continue, up to MAX_STEPS
+ * turns. This gives Flash time to explore (timeline → strands → deep-read)
+ * and then call recallReport. `prepareStep` forces recallReport on the final
+ * step if the model hasn't called it yet, so a report is always produced.
  */
 export async function runRecallSearch(
   input: RecallSearchInput,
@@ -320,6 +442,10 @@ Follow this process:
 
 IMPORTANT: You MUST end by calling recallReport. Even if nothing matches, call it with an empty hits array.`;
 
+  // Load the catalog's slice ids once per run — used afterwards to drop
+  // hallucinated pointers before they reach the main agent.
+  const validSliceIds = await loadValidSliceIds();
+
   try {
     const result = await generateText({
       model: createModel(input.model),
@@ -329,8 +455,9 @@ IMPORTANT: You MUST end by calling recallReport. Even if nothing matches, call i
       tools: {
         readGlobalTimeline: tool({
           description:
-            "Read the global timeline index — contains summaries of all past " +
-            "conversation slices. Always start here to see what's available.",
+            "Read the global timeline index — pointer lines for the newest " +
+            "conversation slices (with the total count). Always start here to " +
+            "see what's available; use readTimelineWindow to reach older slices.",
           inputSchema: z.object({}),
           execute: async () => readGlobalTimelineImpl(),
         }),
@@ -391,6 +518,9 @@ IMPORTANT: You MUST end by calling recallReport. Even if nothing matches, call i
       },
       toolChoice: "auto",
       stopWhen: isStepCount(MAX_STEPS),
+      // Last-resort guarantee: if the model burned the budget exploring
+      // without reporting, force recallReport on the final step.
+      prepareStep: prepareRecallStep,
       providerOptions: workerProviderOptions(input.model.sdk),
     });
 
@@ -414,15 +544,19 @@ IMPORTANT: You MUST end by calling recallReport. Even if nothing matches, call i
           }>;
         };
         const rawHits = report.hits ?? [];
-        const hits = excludeCurrentSlice(rawHits, currentSliceId);
-        const recommendedReads = excludeCurrentSlice(
-          normalizeRecommendedReads(report.recommended_reads),
-          currentSliceId,
+        const pastHits = excludeCurrentSlice(rawHits, currentSliceId);
+        const hits = filterKnownSliceIds(pastHits, validSliceIds);
+        const recommendedReads = filterKnownSliceIds(
+          excludeCurrentSlice(
+            normalizeRecommendedReads(report.recommended_reads),
+            currentSliceId,
+          ),
+          validSliceIds,
         );
         // If the model's only "evidence" was the current slice, the search
         // genuinely found nothing from the past — zero the confidence rather
         // than report a false hit with a confident score.
-        const droppedCurrent = rawHits.length - hits.length;
+        const droppedCurrent = rawHits.length - pastHits.length;
         const confidence =
           droppedCurrent > 0 && hits.length === 0
             ? 0

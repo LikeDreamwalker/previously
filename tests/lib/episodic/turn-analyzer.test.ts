@@ -12,7 +12,7 @@ vi.mock("@/lib/models/worker", () => ({
   workerProviderOptions: vi.fn(() => ({})),
 }));
 
-import { analyzeTurn } from "@/lib/episodic/flash/turn-analyzer";
+import { analyzeTurn, shouldRunCardEvolution } from "@/lib/episodic/flash/turn-analyzer";
 import type { ModelConfig } from "@/lib/models/registry";
 
 const model: ModelConfig = {
@@ -114,13 +114,31 @@ describe("analyzeTurn", () => {
         intent: { type: "chat", reason: "user asked to record a preference" },
         memory_worthy: true,
         emotional_signal: { intensity: "light", register: "excited", note: "user is happy" },
-        memory_update: { content: "User prefers answers in Chinese from now on", section: "profile" },
+        memory_update: { content: "User prefers answers in Chinese from now on", section: "past" },
       }),
     );
     const result = await analyzeTurn({ model, userMessage: "记住：以后都用中文回答", existingStrandNames: [] });
     expect(result.memoryUpdate).toEqual({
       content: "User prefers answers in Chinese from now on",
-      section: "profile",
+      section: "past",
+    });
+  });
+
+  it("extracts an explicit behavioral correction as a memory update (self_model)", async () => {
+    ai.generateText.mockResolvedValue(
+      makeToolCall({
+        message_tags: { reuse: [], create: [] },
+        semantic_hint: { strands: [], reason: "" },
+        intent: { type: "chat", reason: "user correcting agent behavior" },
+        memory_worthy: true,
+        emotional_signal: { intensity: "light", register: "frustrated", note: "mildly annoyed" },
+        memory_update: { content: "Never open with filler preambles", section: "self_model" },
+      }),
+    );
+    const result = await analyzeTurn({ model, userMessage: "以后别给废话开场白", existingStrandNames: [] });
+    expect(result.memoryUpdate).toEqual({
+      content: "Never open with filler preambles",
+      section: "self_model",
     });
   });
 
@@ -186,5 +204,71 @@ describe("analyzeTurn", () => {
     ai.generateText.mockResolvedValue({ toolCalls: [] });
     const result = await analyzeTurn({ model, userMessage: "x", existingStrandNames: [] });
     expect(result.messageTags).toEqual({ reuse: [], create: [] });
+  });
+
+  it("maps evolve_card when a slice is closing", async () => {
+    ai.generateText.mockResolvedValue(
+      makeToolCall({
+        message_tags: { reuse: [], create: [] },
+        semantic_hint: { strands: [], reason: "" },
+        intent: { type: "chat", reason: "wrapping up" },
+        memory_worthy: false,
+        emotional_signal: { intensity: "none", register: "neutral", note: "" },
+        closed_marking: { focus: "logistics", summary: "scheduling", tags: ["calendar"], tone: "neutral" },
+        evolve_card: { worth: false, reason: "pure logistics, nothing durable" },
+      }),
+    );
+    const result = await analyzeTurn({
+      model,
+      userMessage: "ok",
+      existingStrandNames: [],
+      closingSlice: { turns: [{ timestamp: "t", role: "user", content: "hi" }], tags: [] },
+    });
+    expect(result.evolveCard).toEqual({ worth: false, reason: "pure logistics, nothing durable" });
+  });
+
+  it("omits evolve_card when no slice is closing, even if the model returns it", async () => {
+    ai.generateText.mockResolvedValue(
+      makeToolCall({
+        message_tags: { reuse: [], create: [] },
+        semantic_hint: { strands: [], reason: "" },
+        intent: { type: "chat", reason: "chat" },
+        memory_worthy: true,
+        emotional_signal: { intensity: "none", register: "neutral", note: "" },
+        evolve_card: { worth: true, reason: "should be ignored" },
+      }),
+    );
+    const result = await analyzeTurn({ model, userMessage: "x", existingStrandNames: [] });
+    expect(result.evolveCard).toBeUndefined();
+  });
+
+  it("defaults evolve_card.worth to true on analyzer failure when a slice is closing", async () => {
+    ai.generateText.mockRejectedValue(new Error("boom"));
+    const result = await analyzeTurn({
+      model,
+      userMessage: "x",
+      existingStrandNames: [],
+      closingSlice: { turns: [{ timestamp: "t", role: "user", content: "hi" }], tags: [] },
+    });
+    // A missed evolution is permanent memory loss — failure defaults to running.
+    expect(result.evolveCard?.worth).toBe(true);
+    expect(result.memoryWorthy).toBe(true);
+  });
+
+  it("does not add evolve_card to the failure fallback when no slice is closing", async () => {
+    ai.generateText.mockRejectedValue(new Error("boom"));
+    const result = await analyzeTurn({ model, userMessage: "x", existingStrandNames: [] });
+    expect(result.evolveCard).toBeUndefined();
+  });
+});
+
+describe("shouldRunCardEvolution", () => {
+  it("follows the analyzer's worth judgment", () => {
+    expect(shouldRunCardEvolution({ evolveCard: { worth: false, reason: "trivial" } })).toBe(false);
+    expect(shouldRunCardEvolution({ evolveCard: { worth: true, reason: "durable fact" } })).toBe(true);
+  });
+
+  it("defaults to true when the analyzer gave no judgment (failure fallback)", () => {
+    expect(shouldRunCardEvolution({})).toBe(true);
   });
 });

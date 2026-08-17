@@ -13,13 +13,13 @@
  * added — the conventional diff reading).
  *
  * `summarizeCardChanges` parses both revisions into card documents and maps
- * the v4 card semantics onto the five counters:
+ * the v5 card semantics onto the five counters:
  *   added      — brand-new entries
  *   removed    — entries the agent deleted outright
  *   superseded — an entry rewritten in place (a removed line paired with a
  *                similar added line)
- *   reinforced — the rolling Profile paragraph updated in place
- *   demoted    — Recent items aged out by the mechanical 7-day expiry
+ *   reinforced — the rolling Past profile paragraph updated in place
+ *   demoted    — Now items aged out by the mechanical 7-day expiry
  */
 
 import { parseCard, type CardDocument } from "./previously-format";
@@ -134,22 +134,26 @@ function countSetChanges(
   };
 }
 
-/** Entry lines per card section (recent items compare by text only). */
+/** Entry lines per card section (now items compare by text only). */
 function entryLines(doc: CardDocument): {
   identity: string[];
-  recent: string[];
+  now: string[];
+  horizon: string[];
+  anchors: string[];
   selfModel: string[];
 } {
   return {
     identity: doc.identity,
-    recent: doc.recent.map((r) => r.text),
+    now: doc.now.map((r) => r.text),
+    horizon: doc.horizon.map((h) => h.text),
+    anchors: doc.past.anchors.map((a) => a.text),
     selfModel: doc.selfModel,
   };
 }
 
 /**
  * Summarize a card rewrite into the five indicator counters. Falls back to the
- * plain line diff when either side doesn't parse as a v4 card. `droppedRecent`
+ * plain line diff when either side doesn't parse as a card. `droppedRecent`
  * (the mechanical 7-day expiry count from the updater) is reported as demoted
  * and excluded from the agent-authored removed count.
  */
@@ -179,19 +183,19 @@ export function summarizeCardChanges(
     superseded: 0,
   };
 
-  for (const key of ["identity", "recent", "selfModel"] as const) {
+  for (const key of ["identity", "now", "horizon", "anchors", "selfModel"] as const) {
     const c = countSetChanges(prev[key], next[key]);
     sum.added += c.added;
     sum.removed += c.removed;
     sum.superseded += c.superseded;
   }
-  // Expired Recent items also show up as removed lines — don't double-count.
+  // Expired Now items also show up as removed lines — don't double-count.
   sum.removed = Math.max(0, sum.removed - droppedRecent);
 
-  // The rolling Profile paragraph: rewritten in place = reinforced; appearing
-  // from nothing = added; dropped entirely = removed.
-  const pBefore = prevDoc.profile.trim();
-  const pAfter = nextDoc.profile.trim();
+  // The rolling Past profile paragraph: rewritten in place = reinforced;
+  // appearing from nothing = added; dropped entirely = removed.
+  const pBefore = prevDoc.past.profile.trim();
+  const pAfter = nextDoc.past.profile.trim();
   if (pBefore !== pAfter) {
     if (!pBefore) sum.added += 1;
     else if (!pAfter) sum.removed += 1;

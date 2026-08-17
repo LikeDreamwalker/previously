@@ -1,12 +1,14 @@
 /**
  * Turn Analyzer — the single worker-model call inside the housekeeping step.
  *
- * One pass, three outputs (structured, thinking off, cheap):
+ * One pass, four outputs (structured, thinking off, cheap):
  *   1. message_tags   — keyword tags for the current user message (woven into strands).
  *   2. semantic_hint  — which EXISTING strands this message is about, plus why
  *      (feeds the turn-priming block; an LLM understands paraphrase / cross-language).
  *   3. closed_marking — focus / summary / refined tags / tone for a slice that is
  *      about to close (only when one closed this turn).
+ *   4. evolve_card    — whether the closing slice holds anything worth
+ *      sedimenting onto the user card (only when one closed this turn).
  *
  * The model is passed in — it is the resolved WORKER model (see
  * src/lib/models/worker.ts), not the main chat model. Never throws — returns an
@@ -50,8 +52,8 @@ export interface NewTagProposal {
   reason: string;
 }
 
-/** Best-fit card section for an explicit memory update. */
-export const CARD_SECTIONS = ["identity", "profile", "recent", "self_model"] as const;
+/** Best-fit card section for an explicit memory update (v5 card sections). */
+export const CARD_SECTIONS = ["identity", "past", "now", "horizon", "self_model"] as const;
 export type CardSection = (typeof CARD_SECTIONS)[number];
 
 export interface TurnAnalysis {
@@ -81,9 +83,19 @@ export interface TurnAnalysis {
   emotionalSignal: EmotionalSignal;
   /**
    * Present only when the user EXPLICITLY asked to record/evolve ("记住：…",
-   * "自进化", "更新前情提要"). Carries the exact content to fold into the card.
+   * "自进化", "更新前情提要") OR stated an explicit BEHAVIORAL CORRECTION /
+   * durable preference ("以后别…", "下次先…", "你不要总是…", "stop doing X").
+   * Carries the exact content to fold into the card.
    */
   memoryUpdate?: { content: string; section?: CardSection };
+  /**
+   * Present ONLY when a slice was closing this turn (closingSlice input): the
+   * worker's judgment on whether anything in the closing slice deserves
+   * sedimentation onto the user card. On analyzer failure the fallback is
+   * worth: true — a wasted worker call is cheap, a missed evolution is
+   * permanent memory loss.
+   */
+  evolveCard?: { worth: boolean; reason: string };
   closedMarking?: ClosedMarking;
 }
 
@@ -145,7 +157,7 @@ const analyzeSchema = z.object({
   memory_update: z
     .object({
       content: z.string().describe(
-        "The EXACT durable fact/preference the user asked to record, in English — third person " +
+        "The EXACT durable fact/preference/correction the user stated, in English — third person " +
         "about the user ('User prefers…'), first person about the agent ('Always summarize before " +
         "answering').",
       ),
@@ -153,14 +165,31 @@ const analyzeSchema = z.object({
         .enum(CARD_SECTIONS)
         .optional()
         .describe(
-          "Best-fit card section: identity | profile | recent | self_model. Omit when unsure.",
+          "Best-fit card section: identity | past | now | horizon | self_model. Omit when unsure.",
         ),
     })
     .optional()
     .describe(
-      "Set ONLY when the user EXPLICITLY asked to record something or run self-evolution " +
-      "('记住：…', '自进化', '更新前情提要', 'record this'). Extract the exact content. Omit otherwise.",
+      "Set when the user EXPLICITLY asked to record something or run self-evolution " +
+      "('记住：…', '自进化', '更新前情提要', 'record this') OR stated an explicit BEHAVIORAL " +
+      "CORRECTION / durable preference the agent should evolve from immediately " +
+      "('以后别…', '下次先…', '你不要总是…', 'stop doing X', 'from now on always…'). " +
+      "Extract the exact content. Omit otherwise.",
     ),
+  evolve_card: z
+    .object({
+      worth: z
+        .boolean()
+        .describe(
+          "Whether anything in the CLOSING slice deserves sedimentation onto the user card — " +
+          "a durable fact, a preference/correction, a commitment or deadline (Horizon), a " +
+          "resolvable open loop, or an operating lesson. False only for slices with zero " +
+          "card-worthy content (pure greetings, logistics, ephemeral chit-chat).",
+        ),
+      reason: z.string().describe("One line: what deserves sedimentation, or why nothing does."),
+    })
+    .optional()
+    .describe("ONLY when a slice is closing this turn — judge card-evolution worthiness."),
   emotional_signal: z
     .object({
       intensity: z
@@ -233,7 +262,13 @@ Return closed_marking with:
 - focus: one sentence on what this session was about
 - summary: at most 100 characters — what happened / key decisions
 - tags: 2-6 clean tags (dedupe, merge the same concept across languages)
-- tone: positive | neutral | negative | mixed`
+- tone: positive | neutral | negative | mixed
+
+ALSO return evolve_card — your judgment on whether anything in this closing slice deserves sedimentation onto the user card:
+- worth: true when the slice contains a durable fact about the user, a stated preference or correction, a commitment / deadline / awaited reply (a Horizon item), the resolution of an open loop, or an operating lesson for the agent
+- worth: false ONLY when the slice holds zero card-worthy content — pure greetings, logistics, ephemeral chit-chat
+- reason: one line on what deserves sedimentation, or why nothing does
+When in doubt, worth: true — a wasted review is cheap, a missed evolution is permanent memory loss.`
     : "";
 
   return `You are the memory analyzer for a personal AI platform. One pass, three tasks. Keep every field short — this is metadata, not prose.
@@ -266,7 +301,7 @@ Is this a substantive exchange that should update memory (a new fact about the u
 
 Return memory_worthy: true only when the turn contains durable information worth tagging and evolving. Trivial turns are false.
 
-If the user EXPLICITLY asked to record something or run self-evolution ("记住：…", "自进化", "更新前情提要", "record this") — regardless of memory_worthy — ALSO return memory_update with the exact content (English) + the best-fit card section. Omit memory_update otherwise.
+If the user EXPLICITLY asked to record something or run self-evolution ("记住：…", "自进化", "更新前情提要", "record this") — OR stated an explicit BEHAVIORAL CORRECTION / durable preference the agent should evolve from immediately ("以后别…", "下次先…", "你不要总是…", "stop doing X", "from now on always…") — regardless of memory_worthy — ALSO return memory_update with the exact content (English) + the best-fit card section. Omit memory_update otherwise.
 
 ## Task 5 — Read the emotional register
 
@@ -278,7 +313,19 @@ Return emotional_signal with:
 - note: one short line on what the user is feeling and why (empty when neutral).${closingSection}`;
 }
 
-const EMPTY: TurnAnalysis = {
+/**
+ * Pure boundary gate: should the LLM card evolution run for this closed slice?
+ * The analyzer's `evolveCard.worth` decides; when the analyzer failed (or
+ * didn't answer), default to TRUE — a wasted worker call is cheap, a missed
+ * evolution is permanent memory loss.
+ */
+export function shouldRunCardEvolution(
+  analysis: Pick<TurnAnalysis, "evolveCard">,
+): boolean {
+  return analysis.evolveCard?.worth ?? true;
+}
+
+const EMPTY_BASE: TurnAnalysis = {
   messageTags: { reuse: [], create: [] },
   semanticHint: { strands: [], reason: "" },
   // Conservative on failure: don't block tag extraction (empty tags are a
@@ -287,7 +334,21 @@ const EMPTY: TurnAnalysis = {
   emotionalSignal: { intensity: "none", register: "neutral", note: "" },
 };
 
+/**
+ * The degraded analysis returned on any failure. When a slice was closing,
+ * evolveCard defaults to worth: true (see shouldRunCardEvolution).
+ */
+function emptyAnalysis(sliceClosing: boolean): TurnAnalysis {
+  return sliceClosing
+    ? {
+        ...EMPTY_BASE,
+        evolveCard: { worth: true, reason: "Analyzer unavailable — defaulting to evolve." },
+      }
+    : { ...EMPTY_BASE };
+}
+
 export async function analyzeTurn(input: AnalyzeTurnInput): Promise<TurnAnalysis> {
+  const sliceClosing = input.closingSlice !== undefined;
   try {
     const result = await generateText({
       model: createModel(input.model),
@@ -304,10 +365,10 @@ export async function analyzeTurn(input: AnalyzeTurnInput): Promise<TurnAnalysis
     });
 
     const tc = result.toolCalls?.[0];
-    if (tc?.toolName !== "analyzeOutput" || !tc.input) return EMPTY;
+    if (tc?.toolName !== "analyzeOutput" || !tc.input) return emptyAnalysis(sliceClosing);
 
     const parsed = analyzeSchema.safeParse(tc.input);
-    if (!parsed.success) return EMPTY;
+    if (!parsed.success) return emptyAnalysis(sliceClosing);
 
     const d = parsed.data;
     return {
@@ -347,6 +408,12 @@ export async function analyzeTurn(input: AnalyzeTurnInput): Promise<TurnAnalysis
             section: d.memory_update.section,
           }
         : undefined,
+      // Only meaningful when a slice is closing; if the model omitted it, the
+      // caller's gate (shouldRunCardEvolution) defaults to running.
+      evolveCard:
+        sliceClosing && d.evolve_card
+          ? { worth: d.evolve_card.worth, reason: d.evolve_card.reason }
+          : undefined,
       closedMarking: d.closed_marking
         ? {
             focus: typeof d.closed_marking.focus === "string" ? d.closed_marking.focus.trim() : "",
@@ -359,6 +426,6 @@ export async function analyzeTurn(input: AnalyzeTurnInput): Promise<TurnAnalysis
         : undefined,
     };
   } catch {
-    return EMPTY;
+    return emptyAnalysis(sliceClosing);
   }
 }

@@ -41,7 +41,9 @@ export {
 //       support dropped. Use sliceIdToTimelineDir / sliceIdToFilePath instead.
 //
 // NOTE: maintenance.ts v1 types (SliceMetadata, applyMetadataUpdates) were
-//       removed in v0.5.1. Use previously-updater.ts (v2) instead.
+//       removed in v0.5.1. Card maintenance / updater passes were removed in
+//       v0.8 — card writes are mutation-tool based (card-session.ts), owned
+//       by the Previously Agent end to end.
 
 export {
   runRecallSearch,
@@ -54,6 +56,7 @@ export type {
 
 export {
   analyzeTurn,
+  shouldRunCardEvolution,
 } from "./flash/turn-analyzer";
 export type {
   TurnAnalysis,
@@ -88,6 +91,7 @@ export {
 export {
   readTimelineIndex,
   sliceEntryFromDisk,
+  upsertTimelineEntry,
   TIMELINE_INDEX_PATH,
   TIMELINE_MD_PATH,
 } from "./timeline/store";
@@ -98,9 +102,10 @@ export type {
 } from "./timeline/types";
 
 export {
-  startBatch,
+  createBatch,
   flushBatch,
 } from "./io-helpers";
+export type { WriteBatch } from "./io-helpers";
 
 export {
   DEFAULT_TIME_SILENCE_MS,

@@ -2,7 +2,7 @@
 
 ## Overview
 
-The episodic memory subsystem records, indexes, and recalls conversation history as discrete **time slices** -- one per real conversation session (closed by context loss, 30 minutes of inactivity, or turn cap), stored as Markdown files with YAML frontmatter. A calendar day is a *directory* that may hold multiple slice files. It is the L2 memory layer in Previously On's three-tier memory architecture (L0/L1 bundled at build time, L2 fetched on-demand at runtime).
+The episodic memory subsystem records, indexes, and recalls conversation history as discrete **time slices** -- one per real conversation session (closed by context loss, 30 minutes of inactivity, or turn cap), stored as Markdown files with YAML frontmatter. A calendar day is a *directory* that may hold multiple slice files. Only the identity constitution (`identity/agent/`) is bundled at build time; all episodic data is fetched on-demand at runtime.
 
 The resolved WORKER model (see `src/lib/models/worker.ts` — a cheap tier derived from the main model's provider, configurable in config.json) runs the internal calls: recall search, the unified turn analyze (tag extraction + semantic hint + intent + slice marking), and belief evolution. The main model handles user-facing chat. The core agent only reads memory; writes to tags/strands happen mechanically in the housekeeping step.
 
@@ -22,10 +22,14 @@ File storage is abstracted behind a local-filesystem vs. GitHub API switch, gate
 | `flash/recall.ts` | Worker-model recall mini-agent — searches past conversations and returns structured pointers |
 | `flash/turn-analyzer.ts` | The one housekeeping worker-model call: message tags + semantic hint + intent + (on close) slice marking |
 | `flash/global-timeline.ts` | Global timeline file aggregating all slice summaries |
-| `flash/previously-agent.ts` | Previously Agent (worker model) — rewrites the user card IN PLACE (outputs the full `updated_card`) |
-| `previously-format.ts` | previously.md format — v3 archive (read-only history) + v4 user card (Identity/Profile/Recent/Self-model); serialization, parsing, validation, legacy migration |
-| `previously-updater.ts` | `applyCardUpdate` — validates + mechanically enforces the agent's updated card (7-day recent expiry, section caps, anti-conflict backstop) |
-| `io-helpers.ts` | I/O wrappers delegating to demo-fs, GitHub API, or local FS |
+| `flash/previously-agent.ts` | Previously Agent (worker model) — edits the user card through validated MUTATION tools (never a whole-file rewrite); rejected writes come back with compression instructions |
+| `previously-format.ts` | previously.md format — v3 archive (read-only history) + v5 user card (Identity / Past = profile paragraph + anchor facts / Now = agent-expired hooks / Horizon = future commitments with `by` dates / Self-model); serialization, parsing, per-item caps, legacy migration |
+| `card-session.ts` | The mutation session behind the agent's write tools — in-memory CardDocument + per-entry validated mutations (`addNow` / `updatePastProfile` / `resolveHorizon` / …), self-model invariant backstop, substance comparison. Pure, no I/O |
+| `flash/backfill-marks.ts` | Opportunistic dry-slice remediation — on a close boundary, the worker model fills focus/summary for up to 3 `needs_marking` slices, inside the turn's batch |
+| `timeline/` | Canonical catalog (`store.ts`: `timeline/index.json` + upsert), `weave.ts` projection reconcile ("slices are truth, timeline is a projection"), `render.ts` pointer lines (incl. `sliceLineWithTime`), `enumerate.ts` repo enumeration (default-branch aware) |
+| `io-helpers.ts` | I/O wrappers delegating to demo-fs, GitHub API, or local FS. Batching is an EXPLICIT `WriteBatch` object (`createBatch()` → thread through I/O calls → `flushBatch(batch, msg)`) — never module-global, so concurrent turns in one process can't flush each other's writes. A failed flush keeps the queue for retry. |
+| `slice-mutex.ts` | In-process per-sliceId async mutex (`withSliceLock`) serializing housekeeping/finalizeTurn on the same slice; acquired inside a single step only |
+| `turn-merge.ts` | `mergeTurnsWithRemote` — pure append-only turn merge used by finalizeTurn's write-conflict self-heal (re-read remote core.md, append missing turns by turnId, retry commit ≤ 2×) |
 
 ## Key Flows
 
@@ -49,12 +53,12 @@ File storage is abstracted behind a local-filesystem vs. GitHub API switch, gate
 2. `getMoreSlices(before)` returns slices older than the given cursor, with cursor-based pagination.
 3. `getSliceContent(sliceId)` reads the full MD file, parses turns, and returns structured content for the detail view.
 
-### 4. Belief evolution (once per closed slice + explicit trigger)
+### 4. Card evolution (every boundary, agent-gated + explicit trigger)
 
-1. The evolution runs INLINE in the housekeeping step (v0.7b) — synchronously on a slice close and on an explicit user request (detected by `analyzeTurn`'s `memory_update`). Progress streams via `data-evolution` chunks; the result is noted for the agent to acknowledge.
-2. `readEvolutionContext` reads the TARGET slice's previously.md and agent.md (full content), plus its last 3 turns; on `slice_closed` the closed slice id is passed for a deep review.
-3. The Previously Agent (worker, thinking off) edits the user card IN PLACE and returns the full `updated_card`.
-4. `applyCardUpdate()` validates the card and enforces the mechanical rules (7-day recent expiry, section caps, anti-conflict backstop), then it is written back.
+1. The evolution runs INLINE in the housekeeping step (v0.7b). Engineering owns the TRIGGER only: at a slice boundary the worker's own judgment gates the run — `analyzeTurn` returns `evolve_card.worth` for closing slices (failure defaults to true), and a legacy (pre-v5) card forces a run so format migration never waits. Explicit user requests — including behavioral corrections, not just "记住…" phrasing — are detected via `memory_update` and trigger an immediate run. Progress streams via `data-evolution` chunks.
+2. There is NO mechanical card pass: expiry/overdue/caps are the agent's decisions, enforced inside its write tools. Housekeeping computes overdue Horizon items read-only for turn priming and injects the time context (user-local date, Now ages) into the prompt.
+3. The Previously Agent (worker, thinking off) edits an in-memory copy of the card through per-entry mutation tools (`addNow`, `updatePastProfile`, `resolveHorizon`, …). Over-limit / malformed writes are REJECTED with compression instructions — the agent decides what survives a cap. It ends with a `finish` call.
+4. The serialized result is written back only when the card's substance changed (stamps ignored) — both the live card and the per-slice snapshot.
 
 ## Core Types
 
@@ -97,14 +101,14 @@ by Flash in the housekeeping step and woven into strands at snapshot time.
 
 - **Flash tag extraction in housekeeping**: A quick, non-thinking Flash call extracts tags from each user message. Existing tags are preferred to encourage cross-language semantic merging (e.g., "self-evolution" and "自我进化" reuse the same tag).
 - **Context continuity detection**: When a client has no assistant messages in its history but the recovered slice has agent turns, the slice is closed with `"context_lost"` — handling page refreshes and device switches gracefully.
-- **Main agent reads only**: The main agent never modifies previously.md. The worker-model Previously Agent rewrites the card; mechanical writes (slice tags, strands) happen in housekeeping and finalizeTurn. Belief evolution is a separate workflow run.
+- **Main agent reads only**: The main agent never modifies previously.md. The worker-model Previously Agent edits the card through validated mutation tools; mechanical writes (slice tags, strands) happen in housekeeping and finalizeTurn. Card evolution runs INLINE in the housekeeping step, gated by the worker's `evolve_card.worth` judgment (a legacy-format card forces a run).
 - **Time-based slicing with context-loss trigger**: The primary slicing triggers are context loss and 30 minutes of inactivity (`"time_silence"`). Turn count cap is a safety net (`"capacity"`).
 - **In-memory active slice with periodic snapshots**: The slice is held in a module-level variable. It is snapshotted to disk periodically (every N turns, `beforeunload`) but not on every turn -- avoids excessive GitHub API writes. `tryLoadTodaySlice()` recovers state on refresh.
 - **Gray-matter serialization**: Slices use `---` YAML frontmatter + markdown body, parsed via `gray-matter`. Turn headers follow the convention `## Turn {id} — ISO_TIMESTAMP (role)`.
 - **Dual storage backend**: Local filesystem (dev) vs. GitHub API (production) selected at import time via a `USE_GITHUB` flag. The `fsReadFile`/`fsWriteFile`/`fsListFiles` wrappers in `io-helpers.ts` delegate transparently.
-- **DEMO_MODE extends scan range**: `actions.ts` checks `DEMO_MODE=true` to scan up to 48 months back instead of 1-2, supporting pre-seeded demo personas.
+- **Demo mode extends scan range**: with the demo data source (`STORAGE=demo`), `actions.ts` scans up to 48 months back instead of 1-2, supporting pre-seeded demo personas.
 
 ## Known Limitations
 
-- **`parseSlice()` hardcodes `closedBy: "user_explicit"`** for any slice parsed from disk with `status: "closed"`, ignoring the actual signal that closed it. The signal is lost on serialization — only relevant for historical slices.
+- **Turn-header collision**: a message body containing a line shaped like `## Turn {id} — ISO (role)` splits slice parsing incorrectly (pinned by a guard test in `manager.test.ts`).
 - **Rich first-class strands** (with per-strand rolling summaries) are a future milestone. Currently strands are a keyword-to-slice-paths index; the recall agent traces them automatically but they don't yet carry their own semantic summaries.

@@ -56,8 +56,9 @@ describe("summarizeCardChanges", () => {
       sliceId: "2026-08-14-1000",
       updated: "2026-08-14",
       identity: ["Name: Bob"],
-      profile: "Bob is a developer.",
-      recent: [{ text: "Exploring timeline UI", refs: [], since: "2026-08-13" }],
+      past: { profile: "Bob is a developer.", anchors: [] },
+      now: [{ text: "Exploring timeline UI", refs: [], since: "2026-08-13" }],
+      horizon: [],
       selfModel: ["Always cite refs"],
       ...over,
     });
@@ -76,22 +77,22 @@ describe("summarizeCardChanges", () => {
 
   it("counts a rewritten entry as superseded, not add + remove", () => {
     const before = card({});
-    const after = card({ recent: [{ text: "Exploring the timeline wheel UI", refs: [], since: "2026-08-13" }] });
+    const after = card({ now: [{ text: "Exploring the timeline wheel UI", refs: [], since: "2026-08-13" }] });
     const sum = summarizeCardChanges(before, after);
     expect(sum.superseded).toBe(1);
     expect(sum.added).toBe(0);
     expect(sum.removed).toBe(0);
   });
 
-  it("counts an in-place profile rewrite as reinforced", () => {
+  it("counts an in-place Past profile rewrite as reinforced", () => {
     const before = card({});
-    const after = card({ profile: "Bob is a senior developer who values directness." });
+    const after = card({ past: { profile: "Bob is a senior developer who values directness.", anchors: [] } });
     expect(summarizeCardChanges(before, after).reinforced).toBe(1);
   });
 
-  it("reports expired Recent items as demoted, excluded from removed", () => {
+  it("reports expired Now items as demoted, excluded from removed", () => {
     const before = card({
-      recent: [
+      now: [
         { text: "Exploring timeline UI", refs: [], since: "2026-08-13" },
         { text: "Old stale item", refs: [], since: "2026-08-01" },
       ],

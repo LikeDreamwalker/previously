@@ -1,25 +1,36 @@
 /**
- * Previously Agent — the "brain" that maintains previously.md (v4 user card).
+ * Previously Agent — the "brain" that maintains previously.md (v5 user card).
  *
- * The document is a compact USER CARD:
- *   1. Identity head     — structured, machine-parsed (Name / Address them as / Pronouns / Alias).
- *   2. Profile paragraph — ONE rolling third-person description of the user,
- *      updated IN PLACE (preserve unchanged parts verbatim).
- *   3. Recent            — short-lived current-state lines, 7-day expiry.
- *   4. Self-model        — compact operating lessons, DELTA from DIRECTIVES only.
+ * The document is a compact USER CARD with the user's time axis explicit:
+ *   1. Identity head — structured, machine-parsed (Name / Address them as / Pronouns / Alias).
+ *   2. Past          — ONE rolling third-person profile paragraph (updated IN
+ *      PLACE) + durable "anchor facts" (still true in 3 years).
+ *   3. Now           — current-state hooks. EXPIRY IS AGENT-OWNED: items older
+ *      than 7 days are surfaced with their age; the agent promotes the durable
+ *      substance to Past or drops the hook. Nothing is removed mechanically.
+ *   4. Horizon       — future-facing open loops (commitments / deadlines /
+ *      awaited replies), each with an explicit `by` date. Resolved only by
+ *      being fulfilled — never age-expired, overdue items are kept.
+ *   5. Self-model    — compact operating lessons, DELTA from DIRECTIVES only.
  *
- * Each evolution pass evaluates the recent exchange (or, on slice close, the
- * whole slice) against the current card: is there new information, a change, or
- * something stale? The agent rewrites the card in place — no additive
- * accumulation, no re-derivation from history, no wholesale re-synthesis.
+ * WRITING IS MUTATION-BASED: the agent never outputs the whole card. It edits
+ * an in-memory copy through per-entry write tools (addNow / updatePastProfile /
+ * resolveHorizon / …) that validate each write and REJECT with compression
+ * instructions — the agent decides what survives a cap, never a hard cut.
+ * Untouched entries are preserved by construction.
  *
- * Self-model entries must be a DELTA from the standing operating rules
- * (distilled from DIRECTIVES below): restating a rule is forbidden;
- * contradicting one is forbidden unless the user explicitly overrode it
- * (marked `overrides: <rule>` with high confidence + the user's words).
+ * Each evolution pass is INCREMENTAL: it evaluates only the new evidence (the
+ * recent exchange, or the just-closed slice) against the current card. Past
+ * slices are immutable evidence; their reading may be revised by NEW evidence,
+ * never re-derived from re-reading the same history.
  *
- * Uses the WORKER model (cheap tier) without thinking. Output is structured via
- * the `previouslyOutput` tool call — a single `updated_card` field.
+ * Self-model lessons need BOTH process and outcome evidence: the agent.md
+ * timeline shows HOW it thought/acted (error→retry sequences, discarded
+ * options), core.md shows what the user actually said and how tools replied.
+ * Reasoning proposes, outcomes dispose.
+ *
+ * Uses the WORKER model (cheap tier) without thinking. The pass ends with the
+ * `finish` tool call.
  */
 
 import { generateText, tool, isStepCount } from "ai";
@@ -27,19 +38,47 @@ import { z } from "zod";
 import { createModel } from "@/lib/models/provider";
 import { workerProviderOptions } from "@/lib/models/worker";
 import type { ModelConfig } from "@/lib/models/registry";
+import {
+  parseCard,
+  findOverdueHorizonItems,
+  CARD_NOW_EXPIRY_DAYS,
+  CARD_PROFILE_MAX_CHARS,
+  NOW_ITEM_MAX_CHARS,
+  HORIZON_ITEM_MAX_CHARS,
+  SELF_MODEL_LINE_MAX_CHARS,
+  PAST_ANCHOR_MAX_CHARS,
+  CARD_NOW_MAX,
+  CARD_SELF_MODEL_MAX,
+  PAST_ANCHORS_MAX,
+  HORIZON_MAX,
+} from "../previously-format";
+import {
+  createCardSession,
+  serializeSession,
+  sessionSetIdentity,
+  sessionUpdatePastProfile,
+  sessionAddPastAnchor,
+  sessionRemovePastAnchor,
+  sessionAddNow,
+  sessionRemoveNow,
+  sessionPromoteNowToPast,
+  sessionAddHorizon,
+  sessionResolveHorizon,
+  sessionAddSelfModel,
+  sessionRemoveSelfModel,
+} from "../card-session";
 
 // ─── Types ──────────────────────────────────────────────────────────────
 
 export type PreviouslySignal =
   | "new_observation"
-  | "user_correction"
   | "slice_closed"
   | "self_reflection";
 
 export interface PreviouslyAgentInput {
   signal: PreviouslySignal;
   note: string;
-  /** The worker model to run the belief review on (resolved from config). */
+  /** The worker model running the belief review (resolved from config). */
   model: ModelConfig;
   /** Slice the card belongs to. */
   currentSliceId: string;
@@ -47,12 +86,13 @@ export interface PreviouslyAgentInput {
   closedSliceId?: string;
   /** The current card — pre-loaded by the executor. */
   previouslyContent: string;
-  /** Current slice's agent.md — pre-loaded by the executor. */
-  agentCognition: string;
-  /** The recent exchange (last user msg + prev agent reply + prev user msg). */
+  /** The recent exchange (the closed slice's turns, or the active exchange). */
   recentTurns: Array<{ role: string; content: string }>;
-  /** Tags on the current slice — helps contextualize the conversation. */
+  /** Tags on the current slice — context for the review. */
   currentSliceTags?: string[];
+  /** The user's LOCAL calendar date (YYYY-MM-DD) — Now ages / overdue checks
+   *  compare against the user's clock, and it is the default `since`. */
+  todayLocal?: string;
 
   // ── Tool implementations (callbacks provided by the executor) ──────
 
@@ -67,11 +107,16 @@ export interface PreviouslyAgentInput {
 }
 
 export interface PreviouslyAgentOutput {
-  /** The FULL updated card text. Empty when nothing changed / on failure. */
+  /** The serialized card after the session's mutations. Empty on failure. */
   updatedCard: string;
   reasoning: string;
+  /** ONE user-language sentence describing what changed — shown in the UI and
+   *  handed to the core agent. Empty when nothing changed. */
+  summary: string;
+  /** Compact log of every applied mutation ("addNow: …", "resolveHorizon: …"). */
+  mutations: string[];
   /**
-   * True when the worker FAILED (unreachable, schema-invalid, no output tool)
+   * True when the worker FAILED (unreachable, schema-invalid, no finish call)
    * as opposed to legitimately deciding "nothing to update" — the caller must
    * not present a failure as a clean no-change result.
    */
@@ -93,39 +138,57 @@ const STANDING_RULES = [
   "every claim in the card carries refs to its evidence slice",
 ];
 
-// ─── Structured output schema ──────────────────────────────────────────
-
-const outputSchema = z.object({
-  updated_card: z.string().describe(
-    "The FULL updated previously.md user card. Preserve every unchanged line VERBATIM — only " +
-    "add, edit, or remove what the new evidence warrants. Structure:\n" +
-    "# Previously On\n_Active slice: {id} | Format: user card | Updated: {iso}_\n\n" +
-    "## Identity\n- Name: ... | - Address them as: ... | - Pronouns: ... | - Alias: ... (real nicknames only — never spelling/casing variants of the Name, and never parenthetical notes)\n\n" +
-    "## Profile\n{ONE flowing third-person paragraph about the user — ≤ ~400 tokens}\n\n" +
-    "## Recent\n- {short current-state line} — refs: [...] | since: YYYY-MM-DD   (≤ 5 lines, newest first)\n\n" +
-    "## Self-model\n- {compact operating lesson, DELTA from the standing rules}   (≤ 10 lines)\n\n" +
-    "Refs stay attached to each claim so the agent can read the evidence slice for detail.",
-  ),
-  reasoning: z.string().describe("1-3 sentences for the developer log. Not shown to the core agent."),
-});
-
 // ─── Prompt ────────────────────────────────────────────────────────────
+
+function buildTimeContext(input: PreviouslyAgentInput): string {
+  const doc = input.previouslyContent.trim()
+    ? parseCard(input.previouslyContent)
+    : null;
+  const today =
+    input.todayLocal ??
+    doc?.now.find((r) => r.since)?.since ??
+    new Date().toISOString().slice(0, 10);
+  const lines: string[] = [`**Today (the user's LOCAL date): ${today}**`];
+  if (doc) {
+    const aged = doc.now
+      .map((r) => ({ text: r.text, since: r.since, days: daysBetween(r.since, today) }))
+      .filter((r) => r.days >= CARD_NOW_EXPIRY_DAYS);
+    if (aged.length > 0) {
+      lines.push(
+        `Now items PAST the ${CARD_NOW_EXPIRY_DAYS}-day horizon (you decide: promote durable substance to Past, or remove the hook):`,
+      );
+      for (const r of aged) lines.push(`- ${r.days} days old (since ${r.since}): "${r.text.slice(0, 80)}"`);
+    }
+    const overdue = findOverdueHorizonItems(doc, today);
+    if (overdue.length > 0) {
+      lines.push("OVERDUE Horizon items (by already passed — KEEP them, resolve only on fulfillment; flag in text if useful):");
+      for (const h of overdue) lines.push(`- by ${h.by}: "${h.text.slice(0, 80)}"`);
+    }
+  }
+  return lines.join("\n");
+}
+
+function daysBetween(since: string, today: string): number {
+  const a = Date.parse(`${since}T00:00:00.000Z`);
+  const b = Date.parse(`${today}T00:00:00.000Z`);
+  if (Number.isNaN(a) || Number.isNaN(b)) return 0;
+  return Math.floor((b - a) / 86_400_000);
+}
 
 function buildPrompt(input: PreviouslyAgentInput): string {
   const {
     signal, note, currentSliceId, closedSliceId, previouslyContent,
-    agentCognition, recentTurns, currentSliceTags,
+    recentTurns, currentSliceTags,
   } = input;
 
   const signalLabels: Record<PreviouslySignal, string> = {
     new_observation: "new_observation — a new round of conversation happened; check for new information",
-    user_correction: "user_correction — the user confirmed an explicit memory update",
     slice_closed: "slice_closed — a time slice just closed; review the whole conversation",
     self_reflection: "self_reflection — the core agent thinks its strategy needs adjustment",
   };
 
   const deepNote = closedSliceId
-    ? `\n**DEEP MODE**: slice \`${closedSliceId}\` just closed. You may read its full conversation and agent.md for patterns worth folding into the card.`
+    ? `\n**DEEP MODE**: slice \`${closedSliceId}\` just closed. Its full conversation is below; its agent timeline (readAgentTimeline) is your source for self-model lessons.`
     : "";
 
   const tagsNote = currentSliceTags && currentSliceTags.length > 0
@@ -138,13 +201,18 @@ function buildPrompt(input: PreviouslyAgentInput): string {
 
 ## What the card is
 
-A compact, bounded snapshot of the user (and how you should operate), NOT an event log and NOT an additive archive:
+A compact, bounded snapshot of the user across their time axis (and how you should operate), NOT an event log and NOT an additive archive:
 1. **Identity** — structured head: name, how to address them, pronouns, aliases.
-2. **Profile** — ONE rolling third-person paragraph describing the user (who they are, how they work, what they prefer). Updated IN PLACE.
-3. **Recent** — short-lived current-state lines ("user is evaluating X"), each carrying \`since\`; older than 7 days they are dropped.
-4. **Self-model** — compact operating lessons about how you handle things.
+2. **Past** — ONE rolling third-person paragraph describing the user (who they are, how they work, what they prefer), updated IN PLACE — plus durable anchor facts.
+3. **Now** — current-state semantic compression: short hooks into what is happening right now, each carrying \`since\`. Expiry is YOURS: items past ${CARD_NOW_EXPIRY_DAYS} days are listed below — promote durable substance to Past or drop the hook.
+4. **Horizon** — future-facing open loops: commitments, deadlines, awaited replies. Each carries an explicit \`by: YYYY-MM-DD\`. Horizon items NEVER age-expire; overdue ones are KEPT until fulfilled.
+5. **Self-model** — compact operating lessons about how you handle things.
 
 The raw evidence lives in the time slices; the card only summarizes and points at them via refs.
+
+## Time context
+
+${buildTimeContext(input)}
 
 ## Signal
 
@@ -152,31 +220,44 @@ ${signalLabels[signal]}
 Note: "${note}"${tagsNote}
 Current slice: \`${currentSliceId}\`${deepNote}
 
-## What to do — edit the card IN PLACE
+## How you write — MUTATIONS, never the whole file
 
-Compare the input below against the current card. Update the card to incorporate anything NEW and durable, and remove anything stale. **Preserve what is still accurate and well-formed** — but the card must read as ONE clean, coherent description. If the current card is fragmented (space-joined fragments, non-English entries, broken structure), REWRITE those parts into canonical form — preserving the substance, improving the form. Do not gratuitously rewrite what is already accurate and well-formed; do not re-derive content from history.
+You edit an in-memory copy of the card through write tools. Each write is validated: over-limit or malformed writes come back REJECTED with instructions — compress and retry; YOU decide what survives a cap (nothing is ever truncated silently). Entries you never touch stay exactly as they are. Removal tools take a \`match\` substring of the entry you mean.
 
-- New stable fact about the user → fold it into the Profile paragraph (or Identity head if it is a name/address fact).
-- Current situation that will fade → a Recent line with \`since: <today>\`.
-- A user correction / explicit preference → update the Profile paragraph and/or Self-model to reflect it.
-- Fragmented or non-English content → rewrite it cleanly: the Profile as ONE flowing English paragraph, every entry in English.
-- Nothing new AND the card is already clean → output the card UNCHANGED (verbatim) with a short reasoning.
+| Tool | When to use |
+|------|-------------|
+| \`setIdentity(field, value)\` | field ∈ name / address_as / pronouns / alias. Sets or replaces that line. |
+| \`updatePastProfile(text)\` | Rewrite the rolling profile paragraph IN PLACE (≤ ${CARD_PROFILE_MAX_CHARS} chars). |
+| \`addPastAnchor(text, refs)\` / \`removePastAnchor(match)\` | Durable fact ("still true in 3 years"), ≤ ${PAST_ANCHOR_MAX_CHARS} chars, refs required, ≤ ${PAST_ANCHORS_MAX} total. |
+| \`addNow(text, refs, since?)\` / \`removeNow(match)\` / \`promoteNowToPast(match)\` | Current-state hook, ≤ ${NOW_ITEM_MAX_CHARS} chars, refs required, ≤ ${CARD_NOW_MAX} total. \`since\` defaults to today. Promote moves the hook to Past anchors (keeps refs). |
+| \`addHorizon(text, by, refs)\` / \`resolveHorizon(match, note?)\` | Open loop, ≤ ${HORIZON_ITEM_MAX_CHARS} chars, \`by: YYYY-MM-DD\` + refs required, ≤ ${HORIZON_MAX} total. Resolve removes it — the ONLY way a Horizon item leaves. |
+| \`addSelfModel(text)\` / \`removeSelfModel(match)\` | Operating lesson, ≤ ${SELF_MODEL_LINE_MAX_CHARS} chars, ≤ ${CARD_SELF_MODEL_MAX} total. |
+| \`readSlice(sliceId, range?)\` | Read conversation from any slice. Verify what the user actually said. |
+| \`readAgentTimeline(sliceId)\` | Read agent.md — the reasoning + tool calls. Mine it for self-model lessons. |
+| \`readPreviously(sliceId)\` | Read a past slice's card snapshot. Check how long a fact has been held. |
+| \`finish(reasoning, summary)\` | REQUIRED, LAST call — ends the pass. \`summary\` is ONE sentence IN THE USER'S LANGUAGE describing what changed (shown to the user + the core agent); empty when nothing changed. Call it even when nothing changed. |
+
+## What to do — fold in the NEW evidence only
+
+Compare the conversation below against the current card. Incorporate anything NEW and durable; resolve or remove what is stale. **Preserve what is still accurate and well-formed** — do not re-derive content from history, do not rewrite what already reads well.
+
+- New stable fact about the user → fold it into the Past profile paragraph (or Identity head if it is a name/address fact).
+- A durable fact that will ALMOST CERTAINLY still be true in 3 years (a date, a decision, a red line) → a Past anchor. Evolving situations do NOT belong in anchors.
+- Current situation that will fade → a Now hook (ONE event per line; the details stay in the slices).
+- A commitment, deadline, or awaited reply → a Horizon line with \`by\` + refs.
+- **Horizon resolution rule**: when the user reports the outcome of an open loop, RESOLVE it — and record the outcome via addNow (or the Past profile if durable). Overdue items are KEPT, never silently dropped.
+- A user correction / explicit preference → update the Past paragraph and/or Self-model to reflect it.
+- Fragmented or non-English card content → rewrite those entries cleanly (ONE flowing English Past paragraph, every entry in English) while preserving substance.
+- Nothing new AND the card is already clean → make no writes; just \`finish\` with a short reasoning.
 
 ## Identity head — stable, minimal
 
 The Identity head is machine-parsed, so keep it minimal and STABLE:
 - **Never change the user's Name, how to address them, or their pronouns unless the user explicitly asks.** A name change is a user correction — you do not infer it. If the card already has a Name, preserve it exactly.
-- **Spelling and casing variants are NOT alternate names.** If the user's name appears with different casing or a typo, that is the SAME name. Do not record it as another version, and never add "(also written …)" / "又称 …" annotations inside any Identity field — those corrupt the machine-parsed value.
-- A genuine alias/nickname (a name the user actually goes by, distinct from their name) belongs in its own line: \`- Alias: <name>\`.
-- When a Name is absent and you must set one, use the user's primary name only — extraction always prefers \`Name:\`.
+- **Spelling and casing variants are NOT alternate names.** Never add "(also written …)" / "又称 …" annotations inside any Identity field — those corrupt the machine-parsed value.
+- A genuine alias/nickname (a name the user actually goes by, distinct from their name) goes in \`setIdentity("alias", …)\`.
 
-## Caps (hard — the updater enforces them too)
-
-- Profile paragraph ≤ ~400 tokens. Compress rather than grow.
-- Recent ≤ 5 lines, newest first; drop anything older than 7 days.
-- Self-model ≤ 10 lines. Identity head ≤ 8 lines.
-
-## Self-model — DELTA from the standing rules
+## Self-model — DELTA from the standing rules, backed by BOTH timelines
 
 You operate under these standing rules:
 
@@ -184,30 +265,26 @@ ${standingRules}
 
 Self-model entries must be a **delta** from them — either:
 1. A NEW heuristic the rules do not cover (tool usage, answer form, error patterns), or
-2. An explicit USER override of a rule — then mark \`overrides: <rule>\`, set high confidence, and cite the user's own words as evidence.
+2. An explicit USER override of a rule — then mark \`overrides: <rule>\` and cite the user's own words.
 
-FORBIDDEN: restating a standing rule as a self-model entry, or recording a lesson that contradicts one without an \`overrides\` marker. Drop such lines.
+Evidence bar — reasoning proposes, outcomes dispose:
+- **User corrections** (in the conversation) are the strongest source — record them.
+- **Error→fix sequences** in the agent timeline (a tool call failed, a retry with a different approach worked) are lessons when the fix GENERALIZES. One-off glitches are not lessons.
+- Check your existing Self-model lines BEFORE adding: a lesson already on the card means the pattern RECURRED — prefer sharpening the existing line over adding a near-duplicate. Never restate a standing rule.
+
+When the signal is slice_closed, read the closed slice's agent timeline (\`readAgentTimeline\`) — how the agent thought and called tools there is your raw material for these lessons. User FACTS always come from the conversation (core), never from the agent's narration of it.
 
 ## Ref entry format
 
-Each claim carries a compact ref line, e.g.:
-- \`refs: [2026/08/07/0709]\` (slice id) or \`refs: [2026/08/07/0709-abc123]\` (slice-turn). Never invent refs — no evidence, no write.
-
-## Drill-down
-
-The refs point to the original time slices. The core agent reads the card as standing context; when it needs the actual conversation, it calls \`readSlice\` on the referenced slice. Keep refs accurate so that works.
+Every claim carries refs to its evidence slice: \`["2026/08/07/0709"]\` (slice) or \`["2026/08/07/0709-abc123"]\` (slice-turn). Never invent refs — no evidence, no write.
 
 ## Reformat (legacy only)
 
-FIRST check the current card structure. If the document is still the OLD v3 format (headers \`## User profile\` / \`## Self-model\`, or \`### Identity & background\`), rewrite it wholesale into the card structure above. If it is already a card, just edit in place.
+FIRST check the current card's structure below. If it is NOT the v5 card (old stamps, \`## Profile\` / \`## Recent\` / \`## User profile\` / \`### Identity & background\` headers), your working copy starts EMPTY or partially mapped — REBUILD the card through mutations: setIdentity / updatePastProfile / addNow / … carrying over everything still accurate. This wholesale migration is the one case where you re-write existing content.
 
-## Current card (the document you update)
+## Current card (your working copy starts from this)
 
-${previouslyContent || "(empty — new card. Start from the structure above.)"}
-
-## Agent Cognition (current slice's agent.md — raw material for self-model lessons)
-
-${agentCognition || "(no cognition yet — this is the first turn in this slice)"}
+${previouslyContent || "(empty — new card. Build it from the structure above.)"}
 
 ## Recent Conversation (your window into what changed)
 
@@ -217,37 +294,122 @@ ${recentTurns.length > 0
 
 ## Your Process
 
-1. Compare the recent conversation against the current card. New durable info? Stale lines? A self-model lesson (tool failure / correction / user preference)?
-2. If the document is legacy v3 → rewrite it into the card structure (\`updated_card\`).
-3. Else → output the updated card via \`previouslyOutput\` — editing in place, preserving everything unchanged.
-4. If nothing changed → output the card verbatim with empty reasoning.
-5. Never call \`previouslyOutput\` until you are done reading; it is the LAST call.
+1. Read the time context + compare the conversation against the card. New durable info? Stale lines? A self-model lesson (user correction / error→fix pattern)?
+2. slice_closed and you suspect process lessons → \`readAgentTimeline\` on the closed slice. Verify quotes with \`readSlice\` when unsure.
+3. Apply mutations — one tool call per entry change.
+4. \`finish\` LAST — 1-3 sentences of reasoning (developer log) + a one-sentence user-language summary of what changed (shown in the UI; empty when nothing changed). Never write after finish.
 
-**Semantic merging:** the same concept across languages (e.g. "self-evolution" and "自我进化") is ONE fact — merge, never duplicate.
-
-## Your Tools
-
-| Tool | When to use |
-|------|-------------|
-| \`readSlice(sliceId, range?)\` | Read conversation from any slice. Verify what the user actually said. |
-| \`readAgentTimeline(sliceId)\` | Read agent cognition from any slice. Understand what you were thinking. |
-| \`readPreviously(sliceId)\` | Read a past slice's card. Check whether a fact has been consistently held. |
-
-\`previouslyOutput\` — call LAST with the full updated card + a short reasoning note.`;
+**Semantic merging:** the same concept across languages (e.g. "self-evolution" and "自我进化") is ONE fact — merge, never duplicate.`;
 }
 
 // ─── Worker call ──────────────────────────────────────────────────────────
 
+const MAX_STEPS = 30;
+
 async function attemptCall(
   prompt: string,
   input: PreviouslyAgentInput,
-): Promise<{ updatedCard?: string; reasoning: string; failed?: boolean }> {
+  session: ReturnType<typeof createCardSession>,
+): Promise<{ reasoning: string; summary: string; failed?: boolean }> {
   const result = await generateText({
     model: createModel(input.model),
     prompt,
     temperature: 0.1,
-    stopWhen: isStepCount(5),
+    stopWhen: isStepCount(MAX_STEPS),
     tools: {
+      // ── Write tools (mutations on the session's working document) ──
+      setIdentity: tool({
+        description:
+          "Set or replace one Identity head field. Name/pronouns/address-as are STABLE — " +
+          "change them only when the user explicitly asked.",
+        inputSchema: z.object({
+          field: z.enum(["name", "address_as", "pronouns", "alias"]),
+          value: z.string().describe("The field value, e.g. 'Alan'. Single line."),
+        }),
+        execute: async ({ field, value }) => sessionSetIdentity(session, field, value),
+      }),
+      updatePastProfile: tool({
+        description:
+          `Rewrite the rolling Past profile paragraph IN PLACE (≤ ${CARD_PROFILE_MAX_CHARS} chars). ` +
+          "Preserve what is still accurate; fold in new durable substance.",
+        inputSchema: z.object({
+          text: z.string().describe("The full new profile paragraph, English."),
+        }),
+        execute: async ({ text }) => sessionUpdatePastProfile(session, text),
+      }),
+      addPastAnchor: tool({
+        description:
+          `Add a durable Past anchor fact (≤ ${PAST_ANCHOR_MAX_CHARS} chars, refs required, ≤ ${PAST_ANCHORS_MAX} total). ` +
+          "Admission test: almost certainly still true in 3 years.",
+        inputSchema: z.object({
+          text: z.string(),
+          refs: z.array(z.string()).describe("Evidence slices, e.g. [\"2026/08/07/0709\"]."),
+        }),
+        execute: async ({ text, refs }) => sessionAddPastAnchor(session, text, refs),
+      }),
+      removePastAnchor: tool({
+        description: "Remove a Past anchor by a substring of its text.",
+        inputSchema: z.object({ match: z.string() }),
+        execute: async ({ match }) => sessionRemovePastAnchor(session, match),
+      }),
+      addNow: tool({
+        description:
+          `Add a Now hook — a current situation that will fade (≤ ${NOW_ITEM_MAX_CHARS} chars, refs required, ≤ ${CARD_NOW_MAX} total). ` +
+          "ONE event per line; the details stay in the slices.",
+        inputSchema: z.object({
+          text: z.string(),
+          refs: z.array(z.string()),
+          since: z.string().optional().describe("YYYY-MM-DD, defaults to the user's local today."),
+        }),
+        execute: async ({ text, refs, since }) => sessionAddNow(session, text, refs, since),
+      }),
+      removeNow: tool({
+        description: "Remove a Now item by a substring of its text.",
+        inputSchema: z.object({ match: z.string() }),
+        execute: async ({ match }) => sessionRemoveNow(session, match),
+      }),
+      promoteNowToPast: tool({
+        description:
+          "Promote a Now item to a durable Past anchor, keeping its refs. " +
+          "Use when a fading situation turned out to be lasting.",
+        inputSchema: z.object({ match: z.string() }),
+        execute: async ({ match }) => sessionPromoteNowToPast(session, match),
+      }),
+      addHorizon: tool({
+        description:
+          `Add a Horizon open loop — commitment / deadline / awaited reply ` +
+          `(≤ ${HORIZON_ITEM_MAX_CHARS} chars, explicit by date + refs required, ≤ ${HORIZON_MAX} total).`,
+        inputSchema: z.object({
+          text: z.string(),
+          by: z.string().describe("YYYY-MM-DD — when this is due."),
+          refs: z.array(z.string()),
+        }),
+        execute: async ({ text, by, refs }) => sessionAddHorizon(session, text, by, refs),
+      }),
+      resolveHorizon: tool({
+        description:
+          "Resolve (remove) a Horizon item — the ONLY way one leaves the card. " +
+          "Record the outcome via addNow / updatePastProfile when it matters.",
+        inputSchema: z.object({
+          match: z.string(),
+          note: z.string().optional().describe("Where the outcome went, e.g. 'folded into Now'."),
+        }),
+        execute: async ({ match, note }) => sessionResolveHorizon(session, match, note),
+      }),
+      addSelfModel: tool({
+        description:
+          `Add a Self-model operating lesson (≤ ${SELF_MODEL_LINE_MAX_CHARS} chars, ≤ ${CARD_SELF_MODEL_MAX} total). ` +
+          "Must be a DELTA from the standing rules, with process + outcome evidence. " +
+          "Check the existing lines first — a recurring lesson sharpens the old line, never duplicates.",
+        inputSchema: z.object({ text: z.string() }),
+        execute: async ({ text }) => sessionAddSelfModel(session, text),
+      }),
+      removeSelfModel: tool({
+        description: "Remove a Self-model line by a substring of its text.",
+        inputSchema: z.object({ match: z.string() }),
+        execute: async ({ match }) => sessionRemoveSelfModel(session, match),
+      }),
+      // ── Read tools ──────────────────────────────────────────────────
       readSlice: tool({
         description:
           "Read the conversation record (core.md) from a specific slice. " +
@@ -271,7 +433,9 @@ async function attemptCall(
       }),
       readAgentTimeline: tool({
         description:
-          "Read agent.md for a specific slice — the agent's reasoning and tool calls during that slice.",
+          "Read agent.md for a specific slice — the agent's reasoning and tool calls. " +
+          "Mine it for self-model lessons: error→fix sequences, discarded options, strategy choices. " +
+          "Never take user FACTS from here — facts come from the conversation.",
         inputSchema: z.object({
           sliceId: z.string().describe("Slice ID in YYYY-MM-DD-HHMM format."),
         }),
@@ -292,11 +456,22 @@ async function attemptCall(
           catch { return `(previously.md not available for ${sliceId})`; }
         },
       }),
-      previouslyOutput: tool({
+      // ── Terminal ────────────────────────────────────────────────────
+      finish: tool({
         description:
-          "REQUIRED — call this LAST to report the full updated card. " +
-          "Output the card unchanged (verbatim) when nothing changed.",
-        inputSchema: outputSchema,
+          "REQUIRED — call this LAST to end the pass. `reasoning`: 1-3 sentences for the " +
+          "developer log. `summary`: ONE short sentence IN THE USER'S LANGUAGE describing " +
+          "what this evolution changed (shown to the user and the core agent) — empty string " +
+          "when nothing changed. Call finish even when nothing changed.",
+        inputSchema: z.object({
+          reasoning: z.string().describe("1-3 sentences for the developer log."),
+          summary: z
+            .string()
+            .describe(
+              "One short sentence in the user's language describing what changed, e.g. " +
+              "'记下了你周五的面试安排，把等 HR 回复标记为进行中'. Empty when nothing changed.",
+            ),
+        }),
       }),
     },
     toolChoice: "auto",
@@ -304,47 +479,76 @@ async function attemptCall(
     providerOptions: workerProviderOptions(input.model.sdk),
   });
 
-  const outputCall = result.toolCalls?.find((tc) => tc.toolName === "previouslyOutput");
-  if (outputCall?.input) {
-    const parsed = outputSchema.safeParse(outputCall.input);
-    if (parsed.success) {
-      return { updatedCard: parsed.data.updated_card, reasoning: parsed.data.reasoning };
-    }
-    console.warn(
-      "[PreviouslyAgent] Output schema validation failed:",
-      parsed.error.issues,
-    );
-    return { reasoning: "Schema validation failed", failed: true };
+  const finishCall = result.toolCalls?.find((tc) => tc.toolName === "finish");
+  if (finishCall?.input) {
+    const parsed = z
+      .object({ reasoning: z.string(), summary: z.string().catch("") })
+      .safeParse(finishCall.input);
+    if (parsed.success)
+      return { reasoning: parsed.data.reasoning, summary: parsed.data.summary };
+    console.warn("[PreviouslyAgent] finish args invalid:", parsed.error.issues);
+    return { reasoning: "finish args invalid", summary: "", failed: true };
   }
 
   if (result.text?.trim()) {
-    console.warn("[PreviouslyAgent] Worker returned text instead of tool call:", result.text.slice(0, 200));
+    console.warn("[PreviouslyAgent] Worker returned text instead of finish:", result.text.slice(0, 200));
   }
-  return { reasoning: result.text?.slice(0, 200) ?? "Worker did not call output tool", failed: true };
+  return { reasoning: result.text?.slice(0, 200) ?? "Worker did not call finish", summary: "", failed: true };
 }
 
 const RETRY_DELAY_MS = 300;
 
 /**
  * Run the Previously Agent. Never throws — returns an empty updatedCard on
- * failure so the caller can no-op gracefully.
+ * failure so the caller can no-op gracefully. A fresh session is created per
+ * attempt so a retried pass never inherits half-applied mutations.
  */
 export async function runPreviouslyAgent(
   input: PreviouslyAgentInput,
 ): Promise<PreviouslyAgentOutput> {
   const prompt = buildPrompt(input);
+  const today =
+    input.todayLocal ?? new Date().toISOString().slice(0, 10);
 
   try {
-    const result = await attemptCall(prompt, input);
-    return { updatedCard: result.updatedCard ?? "", reasoning: result.reasoning };
+    const session = createCardSession(
+      input.previouslyContent,
+      input.currentSliceId,
+      today,
+    );
+    const result = await attemptCall(prompt, input, session);
+    return {
+      updatedCard: result.failed ? "" : serializeSession(session),
+      reasoning: result.reasoning,
+      summary: result.summary,
+      mutations: session.log,
+      failed: result.failed,
+    };
   } catch (firstError) {
     console.warn("[PreviouslyAgent] First attempt failed, retrying:", firstError instanceof Error ? firstError.message : firstError);
     await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
     try {
-      const result = await attemptCall(prompt, input);
-      return { updatedCard: result.updatedCard ?? "", reasoning: result.reasoning };
+      const session = createCardSession(
+        input.previouslyContent,
+        input.currentSliceId,
+        today,
+      );
+      const result = await attemptCall(prompt, input, session);
+      return {
+        updatedCard: result.failed ? "" : serializeSession(session),
+        reasoning: result.reasoning,
+        summary: result.summary,
+        mutations: session.log,
+        failed: result.failed,
+      };
     } catch {
-      return { updatedCard: "", reasoning: "Previously Agent worker unavailable", failed: true };
+      return {
+        updatedCard: "",
+        reasoning: "Previously Agent worker unavailable",
+        summary: "",
+        mutations: [],
+        failed: true,
+      };
     }
   }
 }
