@@ -59,18 +59,5 @@ export function syncDiscoveredSkills(): void {
   }
 }
 
-// Built-in skills (programmatic registration)
-registerSkill({
-  id: "create-memory",
-  name: "Create Memory",
-  command: "/create-memory",
-  description: "Create a new memory node in memory/nodes/",
-  parameters: {
-    title: { type: "string", description: "Memory title" },
-    content: { type: "string", description: "Memory content in Markdown" },
-    type: { type: "string", description: "concept | experience | project | people" },
-  },
-});
-
 // Sync file-driven skills on module load
 syncDiscoveredSkills();
