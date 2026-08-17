@@ -23,10 +23,17 @@ import type { ModelCallStreamPart } from "@ai-sdk/workflow";
 import { createLoopAgent } from "@/app/api/agent/agent";
 import { buildLoopToolsContext } from "@/app/api/agent/tools";
 import type { LoopInput, LoopResult, LoopStatus } from "@/lib/loops/types";
+import { LOOP_WALL_CLOCK_MS } from "@/lib/loops/types";
 import {
   detectNoProgressFromReports,
+  detectPastDeadline,
   type LoopReportLike,
 } from "@/lib/loops/guards";
+import {
+  classifyWorkflowError,
+  errorMessage,
+  formatErrorDetail,
+} from "@/lib/chat/workflow-errors";
 import { initLoop, finalizeLoop } from "./steps";
 
 // ─── Pure helpers over serializable step results ─────────────────────────
@@ -76,7 +83,8 @@ const noProgress: StopCondition<ToolSet> = ({ steps }) =>
 
 function deriveOutcome(
   steps: ReadonlyArray<unknown>,
-  input: LoopInput
+  input: LoopInput,
+  deadlineMs: number
 ): { status: LoopStatus; lastError: string } {
   const reports = extractReports(steps);
   if (reports.some((r) => r.done)) {
@@ -84,6 +92,12 @@ function deriveOutcome(
   }
   if (detectNoProgressFromReports(reports)) {
     return { status: "stuck", lastError: "No progress across the last 3 steps." };
+  }
+  if (detectPastDeadline(steps, deadlineMs)) {
+    return {
+      status: "timeout",
+      lastError: `Exceeded the ${Math.round(LOOP_WALL_CLOCK_MS / 3_600_000)}h wall-clock deadline.`,
+    };
   }
   if (steps.length >= stepBudget(input)) {
     return {
@@ -127,11 +141,25 @@ export async function loopWorkflow(input: LoopInput): Promise<LoopResult> {
 
   let status: LoopStatus;
   let lastError: string;
+
+  // Wall-clock deadline (loop start + LOOP_WALL_CLOCK_MS), mirrored into the
+  // durable record by initLoop. The workflow sandbox freezes Date.now() at
+  // run start, so the stop condition reads the real clock from each completed
+  // step's response timestamp (see guards.detectPastDeadline).
+  const deadlineMs = Date.parse(input.startedAt) + LOOP_WALL_CLOCK_MS;
+  const pastDeadline: StopCondition<ToolSet> = ({ steps }) =>
+    detectPastDeadline(steps, deadlineMs);
+
   try {
     const result = await agent.stream({
       prompt: buildLoopPrompt(input),
       writable: getWritable<ModelCallStreamPart>(),
-      stopWhen: [loopReportedDone, noProgress, isStepCount(stepBudget(input))],
+      stopWhen: [
+        loopReportedDone,
+        noProgress,
+        pastDeadline,
+        isStepCount(stepBudget(input)),
+      ],
       // No `maxOutputTokens` (project-wide prohibition) and no `timeout` (the
       // workflow sandbox lacks the AbortSignal global the SDK's timeout uses) —
       // the loop worker is thinking-disabled and fast by construction.
@@ -139,10 +167,23 @@ export async function loopWorkflow(input: LoopInput): Promise<LoopResult> {
       sendFinish: false,
       preventClose: true,
     });
-    ({ status, lastError } = deriveOutcome(result.steps, input));
+    ({ status, lastError } = deriveOutcome(result.steps, input, deadlineMs));
   } catch (err) {
+    // Classify with the SAME classifier as the chat turn. Transient
+    // infrastructure failures and platform-killed steps are RETHROWN so the
+    // workflow queue redelivers the run — that is what makes the loop durable.
+    // (A run that dies for good is later reaped from "running" →
+    // "interrupted" by the next loop's initLoop.) Only deterministic,
+    // terminal failures stamp `failed` and return normally.
+    const classified = classifyWorkflowError(err);
+    console.error(
+      `[Loop:${input.loopId}][agent.stream] classified=${classified.kind}\n${formatErrorDetail(err)}`,
+    );
+    if (classified.kind === "transient" || classified.kind === "timeout") {
+      throw err;
+    }
     status = "failed";
-    lastError = err instanceof Error ? err.message : "unknown error";
+    lastError = classified.userMessage ?? errorMessage(err);
   }
 
   const { iterations } = await finalizeLoop(input, status, lastError);

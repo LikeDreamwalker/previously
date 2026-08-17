@@ -116,3 +116,47 @@ describe("detectNoProgressFromReports", () => {
     expect(detectNoProgressFromReports(reports)).toBe(true);
   });
 });
+
+// ─── Wall-clock deadline guard (B4) ──────────────────────────────────────────
+
+describe("detectPastDeadline / stepFinishedAtMs", () => {
+  const DEADLINE = Date.parse("2026-08-16T12:00:00.000Z");
+
+  function stepAt(iso: string) {
+    return { response: { timestamp: new Date(iso) } };
+  }
+
+  it("false when there are no steps", async () => {
+    const { detectPastDeadline } = await import("@/lib/loops/guards");
+    expect(detectPastDeadline([], DEADLINE)).toBe(false);
+  });
+
+  it("false when the latest step finished before the deadline", async () => {
+    const { detectPastDeadline } = await import("@/lib/loops/guards");
+    const steps = [stepAt("2026-08-16T10:00:00.000Z"), stepAt("2026-08-16T11:59:59.000Z")];
+    expect(detectPastDeadline(steps, DEADLINE)).toBe(false);
+  });
+
+  it("true when the latest step finished at/after the deadline", async () => {
+    const { detectPastDeadline } = await import("@/lib/loops/guards");
+    expect(detectPastDeadline([stepAt("2026-08-16T12:00:00.000Z")], DEADLINE)).toBe(true);
+    expect(detectPastDeadline([stepAt("2026-08-16T13:30:00.000Z")], DEADLINE)).toBe(true);
+  });
+
+  it("accepts string/number timestamps (post-serialization shapes)", async () => {
+    const { detectPastDeadline } = await import("@/lib/loops/guards");
+    expect(
+      detectPastDeadline([{ response: { timestamp: "2026-08-16T12:00:01.000Z" } }], DEADLINE),
+    ).toBe(true);
+    expect(
+      detectPastDeadline([{ response: { timestamp: DEADLINE + 1000 } }], DEADLINE),
+    ).toBe(true);
+  });
+
+  it("ignores steps without a usable timestamp", async () => {
+    const { detectPastDeadline, stepFinishedAtMs } = await import("@/lib/loops/guards");
+    expect(detectPastDeadline([{ response: {} }], DEADLINE)).toBe(false);
+    expect(stepFinishedAtMs({})).toBeNull();
+    expect(stepFinishedAtMs({ response: { timestamp: "not a date" } })).toBeNull();
+  });
+});

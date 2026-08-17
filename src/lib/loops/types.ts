@@ -15,7 +15,14 @@ export type LoopStatus =
   | "completed"
   | "stuck"
   | "timeout"
-  | "failed";
+  | "failed"
+  | "interrupted";
+
+/** Hard wall-clock cap for a loop run — a stuck loop can't outlive this. */
+export const LOOP_WALL_CLOCK_MS = 2 * 60 * 60 * 1000; // 2h
+
+/** A "running" record untouched for this long is a zombie (the run died). */
+export const LOOP_ZOMBIE_MS = 4 * 60 * 60 * 1000; // 4h
 
 export interface LoopStep {
   /** 1-based index of this step within the loop. */
@@ -55,6 +62,8 @@ export interface LoopRun {
   status: LoopStatus;
   startedAt: string;
   updatedAt: string;
+  /** ISO 8601 wall-clock deadline (startedAt + LOOP_WALL_CLOCK_MS). */
+  deadlineAt?: string;
   sliceOrigin: string | null;
   tags: string[];
   iterations: number;
