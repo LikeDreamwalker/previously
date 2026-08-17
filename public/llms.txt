@@ -1,28 +1,11 @@
-# Previously — Agent Documentation (llms.txt)
+# Previously (llms.txt)
 #
 # Previously is a lightweight cloud agent with episodic memory.
-# Official site: https://previously.ldwid.com
-# Official docs: https://previously.ldwid.com/docs (en/zh), markdown in content/docs/.
-#
-# Index for AI tools (Claude Code, Cursor, etc.) — one link per page,
-# with a short label so an agent can read what it needs on-demand.
+# Docs have moved to the official site — the in-app /docs routes
+# permanently redirect there.
 
-## Overview
-- Introduction: https://previously.ldwid.com/en/docs/introduction (content/docs/en/introduction.md)
-- Why Previously: https://previously.ldwid.com/en/docs/why (content/docs/en/why.md)
-
-## Concepts
-- The Timeline: https://previously.ldwid.com/en/docs/timeline (content/docs/en/timeline.md)
-- Slices: https://previously.ldwid.com/en/docs/slices (content/docs/en/slices.md)
-- Strands: https://previously.ldwid.com/en/docs/strands (content/docs/en/strands.md)
-- Memory Model: https://previously.ldwid.com/en/docs/memory-model (content/docs/en/memory-model.md)
-- Recall: https://previously.ldwid.com/en/docs/recall (content/docs/en/recall.md)
-
-## Guides
-- Getting Started: https://previously.ldwid.com/en/docs/getting-started (content/docs/en/getting-started.md)
-- Deployment: https://previously.ldwid.com/en/docs/deployment (content/docs/en/deployment.md)
-
-## Reference
-- Configuration: https://previously.ldwid.com/en/docs/configuration (content/docs/en/configuration.md)
-- Architecture: https://previously.ldwid.com/en/docs/architecture (content/docs/en/architecture.md)
-- FAQ: https://previously.ldwid.com/en/docs/faq (content/docs/en/faq.md)
+## Docs
+- Documentation (en): https://previously.ldwid.com/en/docs/introduction
+- Documentation (zh): https://previously.ldwid.com/zh/docs/introduction
+- Machine-readable index: https://previously.ldwid.com/llms.txt
+- Full docs text: https://previously.ldwid.com/llms-full.txt

@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { formatErrorDetail } from "@/lib/chat/workflow-errors";
 
 /**
- * Route-level error boundary for the locale segment (chat / docs). Catches
+ * Route-level error boundary for the locale segment (chat / settings). Catches
  * render errors that escape the component-level boundaries (e.g. React's
  * minified #185 render loop) and surfaces the FULL error detail — name / stack /
  * cause — plus a full console.error, instead of the opaque production frame.

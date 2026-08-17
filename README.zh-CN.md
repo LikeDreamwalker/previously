@@ -181,7 +181,7 @@ Previously 生来就是自托管的。它是一个部署在 Vercel 上的 Next.j
 
 ## 文档
 
-完整文档在 **[previously.ldwid.com/docs](https://previously.ldwid.com/docs)**——纯 Markdown，可直接在 GitHub 阅读，也可在应用内 `/docs` 浏览。关键页面：
+完整文档在 **[previously.ldwid.com/docs](https://previously.ldwid.com/docs)**（中英双语）。应用内 `/docs` 路径已永久重定向至官网。关键页面：
 
 - [简介](https://previously.ldwid.com/docs/introduction) — Previously 是什么、如何工作
 - [切片与线索](https://previously.ldwid.com/docs/slices) — 核心记忆模型
@@ -189,7 +189,7 @@ Previously 生来就是自托管的。它是一个部署在 Vercel 上的 Next.j
 - [部署](https://previously.ldwid.com/docs/deployment) — 模板、配置、部署
 - [常见问题](https://previously.ldwid.com/docs/faq)
 
-文档源文件在 [`content/docs/`](content/docs/)——可直接在 GitHub 阅读，任何 AI 工具也能通过 [`llms.txt`](public/llms.txt) 结构化访问。
+面向 AI 工具，文档站提供机器可读索引 [`llms.txt`](https://previously.ldwid.com/llms.txt)（全文版见 [`llms-full.txt`](https://previously.ldwid.com/llms-full.txt)）。
 
 ---
 

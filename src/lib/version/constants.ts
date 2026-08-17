@@ -15,7 +15,6 @@ export const UPSTREAM_REPO_REF = "heads/main";
 // "memory/", "tasks/", "sessions/" are intentionally excluded — they hold user data.
 export const SYNC_CODE_DIRS = [
   "src/",
-  "content/",
   "public/",
   "messages/",
   "scripts/",
