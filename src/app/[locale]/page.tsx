@@ -1,9 +1,9 @@
-import { Suspense } from "react";
 import { setRequestLocale } from "next-intl/server";
 import { setDemoPersona } from "@/lib/demo/demo-fs";
 import { resolveDataSource } from "@/lib/data-source/resolve";
 import { ChatPage } from "@/components/chat/chat-page";
-import { HeroSection } from "@/components/chat/hero-section";
+import { ClientErrorCapture } from "@/components/chat/client-error-capture";
+import { DebugErrorBoundary } from "@/components/ui/error-boundary";
 import { loadUserConfig } from "@/lib/config/loader";
 
 type SearchParams = Promise<{ persona?: string }>;
@@ -29,19 +29,20 @@ export default async function HomePage({
   // and the underlying GitHub read rides the readFile cache, so this is cheap.
   const config = await loadUserConfig();
 
+  // One page: the timeline wheel (left) + the conversation / empty briefing
+  // (right). The hero was removed — the "Previously On" title card now lives
+  // in the empty briefing (see empty-briefing.tsx).
   return (
-    <ChatPage initialConfig={config}>
-      {/* Static title — never flashes, always visible */}
-      <div className="h-screen flex flex-col items-center justify-center text-center font-[family-name:var(--font-raleway)]">
-        <div className="text-6xl sm:text-7xl md:text-8xl lg:text-9xl font-light text-foreground leading-none tracking-tighter">
-          Previously on
-        </div>
-        <Suspense fallback={<div className="mt-3 h-10 w-48 rounded-lg bg-muted animate-pulse" />}>
-          <div className="mt-3">
-            <HeroSection personaId={persona} />
-          </div>
-        </Suspense>
-      </div>
-    </ChatPage>
+    <>
+      {/* Window-level error listeners — catch anything the SDK transport or
+          React swallows and log it with full detail. */}
+      <ClientErrorCapture />
+      {/* Render-loop / render-phase errors (e.g. minified React #185) surface
+          here with the full stack + component stack instead of an opaque
+          frame. */}
+      <DebugErrorBoundary label="chat-page">
+        <ChatPage initialConfig={config} />
+      </DebugErrorBoundary>
+    </>
   );
 }

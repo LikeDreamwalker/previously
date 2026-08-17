@@ -1,5 +1,6 @@
 /**
- * Tests for io-helpers batch mode — startBatch, flushBatch, read-your-writes.
+ * Tests for io-helpers batch mode — createBatch, flushBatch, read-your-writes,
+ * and per-batch isolation (B1: no module-global batch state).
  *
  * Runs against the LOCAL filesystem backend (no GitHub), so we can verify
  * the batch queuing semantics without network calls.
@@ -63,18 +64,18 @@ function readOnDisk(relPath: string): string | null {
 
 describe("io-helpers batch mode (local backend)", () => {
   it("queues writes during batch and commits on flush", async () => {
-    const { startBatch, flushBatch, fsWriteFile } = await importFresh();
+    const { createBatch, flushBatch, fsWriteFile } = await importFresh();
 
-    startBatch();
+    const batch = createBatch();
 
-    await fsWriteFile("memory/test/a.md", "content A");
-    await fsWriteFile("memory/test/b.md", "content B");
+    await fsWriteFile("memory/test/a.md", "content A", batch);
+    await fsWriteFile("memory/test/b.md", "content B", batch);
 
     // Writes should NOT be on disk yet
     expect(readOnDisk("memory/test/a.md")).toBeNull();
     expect(readOnDisk("memory/test/b.md")).toBeNull();
 
-    await flushBatch("batch commit");
+    await flushBatch(batch, "batch commit");
 
     // After flush, files should be on disk
     expect(readOnDisk("memory/test/a.md")).toBe("content A");
@@ -82,61 +83,97 @@ describe("io-helpers batch mode (local backend)", () => {
   });
 
   it("read-your-writes: fsReadFile sees pending writes during batch", async () => {
-    const { startBatch, flushBatch, fsWriteFile, fsReadFile } =
+    const { createBatch, flushBatch, fsWriteFile, fsReadFile } =
       await importFresh();
 
     // Pre-seed a file on disk
     writeOnDisk("memory/test/existing.md", "old content");
 
-    startBatch();
+    const batch = createBatch();
 
-    await fsWriteFile("memory/test/new.md", "new content");
+    await fsWriteFile("memory/test/new.md", "new content", batch);
 
     // Reading a queued write should return the new content
-    const result = await fsReadFile("memory/test/new.md");
+    const result = await fsReadFile("memory/test/new.md", batch);
     expect(result).toBe("new content");
 
     // Reading an unmodified file should still hit disk
-    const existing = await fsReadFile("memory/test/existing.md");
+    const existing = await fsReadFile("memory/test/existing.md", batch);
     expect(existing).toBe("old content");
 
-    await flushBatch("batch");
+    await flushBatch(batch, "batch");
   });
 
   it("read-your-writes: second write overwrites first in same batch", async () => {
-    const { startBatch, flushBatch, fsWriteFile, fsReadFile } =
+    const { createBatch, flushBatch, fsWriteFile, fsReadFile } =
       await importFresh();
 
-    startBatch();
+    const batch = createBatch();
 
-    await fsWriteFile("memory/test/index.json", "v1");
+    await fsWriteFile("memory/test/index.json", "v1", batch);
     // Simulate read-modify-write pattern (like updateMonthlyIndex)
-    const current = await fsReadFile("memory/test/index.json");
+    const current = await fsReadFile("memory/test/index.json", batch);
     const updated = `v2 (was ${current})`;
-    await fsWriteFile("memory/test/index.json", updated);
+    await fsWriteFile("memory/test/index.json", updated, batch);
 
     // Read should see the latest write
-    expect(await fsReadFile("memory/test/index.json")).toBe("v2 (was v1)");
+    expect(await fsReadFile("memory/test/index.json", batch)).toBe("v2 (was v1)");
 
-    await flushBatch("batch");
+    await flushBatch(batch, "batch");
 
     // Disk should have the final version
     expect(readOnDisk("memory/test/index.json")).toBe("v2 (was v1)");
   });
 
+  it("concurrent batches are isolated — one turn never sees/flushes another's writes", async () => {
+    const { createBatch, flushBatch, fsWriteFile, fsReadFile } =
+      await importFresh();
+
+    const batchA = createBatch();
+    const batchB = createBatch();
+
+    await fsWriteFile("memory/test/turn-a.md", "turn A", batchA);
+    await fsWriteFile("memory/test/turn-b.md", "turn B", batchB);
+
+    // B does not see A's queued write (and vice versa)
+    await expect(fsReadFile("memory/test/turn-a.md", batchB)).rejects.toThrow();
+    expect(await fsReadFile("memory/test/turn-a.md", batchA)).toBe("turn A");
+
+    // Flushing A commits ONLY A's writes
+    await flushBatch(batchA, "turn A commit");
+    expect(readOnDisk("memory/test/turn-a.md")).toBe("turn A");
+    expect(readOnDisk("memory/test/turn-b.md")).toBeNull();
+
+    // B's queue is untouched and still flushable
+    await flushBatch(batchB, "turn B commit");
+    expect(readOnDisk("memory/test/turn-b.md")).toBe("turn B");
+  });
+
   it("empty batch is a no-op", async () => {
-    const { startBatch, flushBatch, fsReadFile } = await importFresh();
+    const { createBatch, flushBatch, fsReadFile } = await importFresh();
 
-    startBatch();
-    await flushBatch("empty batch");
+    await flushBatch(createBatch(), "empty batch");
 
-    // Should not throw, state should be clean
-    // Subsequent reads should work normally
+    // Should not throw; subsequent reads work normally
     writeOnDisk("memory/test/x.md", "hello");
     expect(await fsReadFile("memory/test/x.md")).toBe("hello");
   });
 
-  it("writes go directly to disk when not batching", async () => {
+  it("flush failure keeps the queue so the caller can retry", async () => {
+    const { createBatch, flushBatch, fsWriteFile } = await importFresh();
+
+    const batch = createBatch();
+    // A path outside the whitelist makes writeFileLocal throw.
+    await fsWriteFile("memory/test/ok.md", "ok", batch);
+    batch.entries.set("../outside.md", "bad");
+
+    await expect(flushBatch(batch, "will fail")).rejects.toThrow();
+    // Entries survive the failure — the finalize self-heal relies on this.
+    expect(batch.entries.size).toBe(2);
+    expect(batch.entries.get("memory/test/ok.md")).toBe("ok");
+  });
+
+  it("writes go directly to disk when no batch is passed", async () => {
     const { fsWriteFile } = await importFresh();
 
     await fsWriteFile("memory/test/direct.md", "direct write");

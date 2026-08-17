@@ -20,7 +20,7 @@ Every chat turn itself runs inside a durable Vercel Workflow run (`src/app/api/c
 **Key principles**:
 - Code + data coexist in one repo. Code is agent-read-only, data directories are agent-read-write.
 - Execution is stateless and event-driven. State lives entirely in GitHub files, not in a database.
-- Memory is layered: L0/L1 bundled at build time, L2 fetched on-demand at runtime.
+- The agent's identity constitution (`identity/agent/`) is bundled at build time via `scripts/generate-identity.mjs`; all memory data (slices, timeline, strands, user card) is fetched at runtime from GitHub/local fs.
 
 ## Commands
 
@@ -60,17 +60,17 @@ Every chat turn itself runs inside a durable Vercel Workflow run (`src/app/api/c
 
 ### Chat Component Architecture
 
-Three-phase message rendering (M8). See `src/components/chat/CLAUDE.md` for full details.
+Streamed message-part rendering. See `src/components/chat/CLAUDE.md` for full details.
 
-1. **`ChatPage`** (`chat-page.tsx`) — Main container, useChat hook, TimelinePanel, MessageScroller
-2. **`ChatMessage`** — Three-phase rendering: Recall → Reasoning → Response
-3. **`RecallPhase`** — Flash recall results with expandable matched slices (ToolLayout + History icon)
-4. **`ThinkingSteps`** — Pro reasoning block (ToolLayout + Brain icon, MarkdownRenderer)
-5. **`ToolRenderer`** — Dispatches to per-tool renderers (MemoryToolRenderer, DefaultRenderer, etc.)
-6. **`ToolLayout`** — Shared expandable card with status icon/name/summary/expanded content
-7. **`ChatInput`** — Text area + submit/stop
-8. **`MarkdownRenderer`** — `react-markdown` + `remark-gfm` + `rehype-highlight`
-9. **`FileNamePill`** — File path pill with icon (used by tool renderers)
+1. **`ChatPage`** (`chat-page.tsx`) — Main container, useChat hook (WorkflowChatTransport), TimelineWheel
+2. **`ChatMessage`** — Classifies `UIMessage` parts (text / reasoning / tool / data-phase / data-evolution) in a single pass, rendered in stream order
+3. **`ThinkingSteps`** — Reasoning block (Brain icon, streaming subtitle)
+4. **`PhaseIndicator`** — `data-phase` parts (slicing, housekeeping, etc.)
+5. **`EvolutionIndicator`** — Per-bubble card-evolution status (`data-evolution` chunks)
+6. **`ToolRenderer`** — Dispatches to per-tool renderers (RecallToolRenderer, MemoryToolRenderer, ListFilesRenderer, WebSearchRenderer, LoopToolRenderer, DefaultRenderer)
+7. **`ToolLayout`** — Shared expandable card with status icon/name/summary/expanded content
+8. **`ChatInput`** — Text area + image attachments + submit/stop
+9. **`MarkdownRenderer`** — `react-markdown` + `remark-gfm` + `rehype-highlight`
 
 ### Skills System
 
@@ -78,7 +78,6 @@ Three-phase message rendering (M8). See `src/components/chat/CLAUDE.md` for full
 - **Discovery**: `src/lib/skills/discovery.ts` — scans directories, parses YAML frontmatter
 - **Loading**: `src/lib/skills/loader.ts` — extracts body, substitutes `$ARGUMENTS`
 - **Registry**: `src/lib/skills/registry.ts` — programmatic + discovered skills
-- **Built-in**: `/create-memory` — creates memory nodes in `memory/nodes/`
 
 ### Providers
 
@@ -94,27 +93,30 @@ Three-phase message rendering (M8). See `src/components/chat/CLAUDE.md` for full
 
 | Module | Path | Purpose |
 |--------|------|---------|
-| Capabilities | `src/lib/capabilities.ts` | Global app-mode checks: isAIConfigured, isDemo, canWrite, getRepoConfig |
-| Loop Engine | `src/lib/loops/` | Durable background task execution with Vercel Workflow |
+| Capabilities | `src/lib/capabilities.ts` | Global app-mode checks: isAIConfigured, isDemo, canWrite, getRepoConfig (delegates data-source decisions to `src/lib/data-source/resolve.ts`) |
+| Loop Engine | `src/app/api/loops/loop-workflow.ts` | Durable background task execution with Vercel Workflow; run persistence in `src/lib/loops/` (store, guards, types) |
 | GitHub Tools | `src/lib/tools/` | readFile/writeFile/listFiles via Octokit |
 | Path Whitelist | `src/lib/whitelist/` | Security boundary: memory/tasks/sessions only |
-| Memory System | `src/lib/memory/` | Markdown nodes with YAML frontmatter + scoring |
-| Context Assembler | `src/lib/context/` | 6-layer context assembly with token budget (legacy — superseded by the per-turn system prompt assembly in the chat workflow) |
+| Origin Guard | `src/lib/security/origin-guard.ts` | Same-origin guard on POST mutation endpoints (`/api/chat`, `/api/loops`, `/api/episodic/flush`); optional `ACCESS_SECRET` key check for non-browser callers |
 | Session Manager | `src/lib/session/` | In-memory session state with sliding window (legacy) |
 | Model Registry | `src/lib/models/` | models.dev-driven catalog, provider dispatch, worker model resolution |
-| Turn Priming | `src/lib/turn-priming.ts` | Per-turn engineering brief (time/timezone, continuity tier, strand links, intent) injected at the top of the system prompt |
-| Turn Analyzer | `src/lib/episodic/flash/turn-analyzer.ts` | The one worker-model call in housekeeping: message tags + semantic hint + intent + (on close) slice marking |
+| Time Rendering | `src/lib/time/relative.ts` + `src/lib/episodic/time-localize.ts` | Locale-aware relative-time annotations on slices/timeline/card reads, computed against the user's timezone |
+| Turn Priming | `src/lib/turn-priming.ts` | Per-turn engineering brief (time/timezone, date-anchor table, continuity tier, strand links, overdue Horizon items, intent) injected at the top of the system prompt |
+| Turn Analyzer | `src/lib/episodic/flash/turn-analyzer.ts` | The one worker-model call in housekeeping: message tags + semantic hint + intent + `memory_worthy` / `memory_update` + (on close) slice marking and the `evolve_card.worth` gate |
 
 ### Episodic Memory (M8 — Time-Slice System)
 
-The episodic memory subsystem (`src/lib/episodic/`, see `src/lib/episodic/CLAUDE.md`) is the L2 memory layer:
+The episodic memory subsystem (`src/lib/episodic/`, see `src/lib/episodic/CLAUDE.md`) is the memory layer:
 
-- **Structure**: `memory/episodic/slices/YYYY/MM/DD/HHMM.md` — one file per time slice (a day is a directory), YAML frontmatter + conversation turns
+- **Structure**: `memory/episodic/slices/YYYY/MM/DD/HHMM/timeline/core.md` — one directory per time slice (`timeline/core.md` + `agent.md` + a `previously.md` card snapshot), YAML frontmatter + conversation turns
 - **Worker/main split**: The resolved WORKER model (`src/lib/models/worker.ts` — a cheap tier derived from the main model's provider, configurable in config.json) runs the housekeeping calls: recall scanning, and the unified turn analyze (message tags + semantic hint + intent + slice marking). The main model handles the user-facing reply.
 - **Close-time marking**: when a slice closes, the housekeeping analyze call produces its `focus` / `summary` / refined `tags` / `emotional_tone`, written into the frontmatter before the slice persists — so the global timeline and recall see real descriptions, not "(none)".
-- **Slicing**: time-driven — 30 minutes of inactivity closes the current slice, plus a turn-count capacity cap and context-loss detection.
-- **Strands** (semantic layer): a slice carries `tags` (keywords); a **strand** is a keyword woven through all the slices that carry it. `memory/episodic/strands.json` maps each strand → its slice paths ("the whole history of that thing" across time) — the thin, lossless semantic-memory index over the episodic slices. Built at slice-close via `updateStrands`; a richer first-class strand (rolling summary + recall integration) is a future milestone.
-- **DEMO_MODE**: `DEMO_MODE=true` redirects `memory/` reads to `memory/demo/personal_14/` (Caleb persona, 30+ slices). Writes go to real `memory/`.
+- **Slicing**: time-driven — 30 minutes of inactivity closes the current slice, a 20-turn capacity cap, and context-loss detection (`context_lost`).
+- **Write discipline**: batched writes go through an explicit `WriteBatch` (`createBatch()` → `flushBatch()`, `io-helpers.ts`); housekeeping/finalizeTurn on the same slice serialize through a per-sliceId mutex (`slice-mutex.ts`); write conflicts self-heal via append-only turn merge (`turn-merge.ts`).
+- **Timeline**: per-slice `timeline/core.md` + `agent.md` are woven into the global timeline (`timeline/weave.ts`, `timeline/store.ts`, `timeline/render.ts`); `flash/global-timeline.ts` aggregates slice summaries and `flash/backfill-marks.ts` backfills close-time markings on historical slices.
+- **Card evolution**: at a slice boundary the Previously Agent edits the card through validated mutation tools (`card-session.ts`); there is no mechanical card pass — expiry/caps/overdue handling are the agent's decisions, enforced inside the tools.
+- **Strands** (semantic layer): a slice carries `tags` (keywords); a **strand** is a keyword woven through all the slices that carry it. `memory/episodic/strands.json` maps each strand → its slice paths ("the whole history of that thing" across time) — the thin, lossless semantic-memory index over the episodic slices. Built at slice-close via `updateStrands`; `flash/strand-consolidator.ts` merges near-duplicate strands; a richer first-class strand (rolling summary + recall integration) is a future milestone.
+- **Demo data source**: `STORAGE=demo` (or auto-detected when no `GITHUB_TOKEN` and not dev) makes memory reads read-only against remote benchmark data. There is no `DEMO_MODE` env var — data-source resolution lives in `src/lib/data-source/resolve.ts`.
 
 ### Model Layer (multi-provider + worker tier)
 
@@ -127,26 +129,25 @@ The episodic memory subsystem (`src/lib/episodic/`, see `src/lib/episodic/CLAUDE
 
 ### Chat Rendering
 
-The chat component tree (`src/components/chat/`, see `src/components/chat/CLAUDE.md`) renders messages in three phases:
+The chat component tree (`src/components/chat/`, see `src/components/chat/CLAUDE.md`) renders each assistant message as typed `UIMessage` parts in stream order:
 
-1. **Recall Phase** — `RecallPhase` (History icon, ToolLayout). Shows Flash recall results with matched slices, reasoning, and tags.
-2. **Reasoning Phase** — `ThinkingSteps` (Brain icon, ToolLayout). Pro's internal reasoning before responding.
-3. **Response Phase** — `Bubble` containing tool calls (ToolRenderer, inline order) + Markdown text.
+1. **Evolution status** — `EvolutionIndicator` at the top of the latest assistant bubble, driven by `data-evolution` chunks.
+2. **Reasoning** — `ThinkingSteps` (Brain icon), consecutive reasoning parts merged into one block.
+3. **Phases** — `PhaseIndicator` for `data-phase` parts (slicing, housekeeping, etc.).
+4. **Tool calls** — `ToolRenderer` dispatches to per-tool renderers; recall renders as `RecallToolRenderer` with matched slices.
+5. **Response text** — `MarkdownRenderer` blocks interleaved in natural stream order.
 
-Tool calls use friendly outer labels (`Recalling in detail...`, `Recalling more...`) with real tool names in expanded view.
+Tool calls use friendly outer labels with real tool names in expanded view.
 
 ## Project Documentation
 
+`doc/` is gitignored — it holds local design docs and release notes only.
+
 | File | Purpose |
 |------|---------|
-| `doc/project-info.md` | Project soul: one-liner, architecture, current focus |
-| `doc/requirements.md` | Feature specs in BDD/Gherkin format |
-| `doc/solution.md` | Technical solution with option comparisons |
-| `doc/roadmap.md` | Milestone + task breakdown |
-| `doc/design/` | Per-milestone design documents |
-| `doc/preferences.md` | Development preferences and constraints |
-| `doc/dev.md` | Dev commands, references, and development log |
-| `doc/progress.md` | Current task status and history |
+| `doc/design/` | Per-milestone design documents (`v0.5-previously-agent.md`, `v0.7-memory-card.md`, `v0.8-timeline.md`) |
+| `doc/v0.5-changelog.md` / `doc/v0.5-release-notes.md` | v0.5 changelog + release notes |
+| `doc/v0.7-changelog.md` / `doc/v0.7-release-notes.md` | v0.7 changelog + release notes |
 
 ## Testing
 
@@ -182,27 +183,35 @@ Tool calls use friendly outer labels (`Recalling in detail...`, `Recalling more.
 
 ### Capabilities module
 
-`src/lib/capabilities.ts` is the single source of truth for app-mode checks. All engineering-side code (tool executors, server components, API routes) should import from here instead of reading `process.env` directly. The AI model layer does NOT import capabilities — it learns about limitations through tool-executor rejections.
+`src/lib/capabilities.ts` is the single source of truth for app-mode checks; data-source decisions delegate to `src/lib/data-source/resolve.ts` (`STORAGE=local|github|demo`, auto-detected when unset). All engineering-side code (tool executors, server components, API routes) should import from here instead of reading `process.env` directly. The AI model layer does NOT import capabilities — it learns about limitations through tool-executor rejections.
 
 ```
-DEEPSEEK_API_KEY set?
-├─ NO  → App non-functional. Show setup guidance.
-└─ YES → GITHUB_TOKEN set?
-          ├─ NO  → Demo mode: can chat, CANNOT write, CANNOT loop.
-          └─ YES → Production: full read/write, loops available.
+STORAGE set?                          (auto-detect when unset)
+├─ local   → Local filesystem: full read/write (dev default)
+├─ github  → GitHub API: full read/write, loops available (needs GITHUB_TOKEN)
+└─ demo    → Remote benchmark data: read-only, CANNOT write, CANNOT loop
+AI calls require at least one configured provider key (see getConfiguredProviders()).
 ```
 
-## Current Phase (v0.7)
+## Current Phase (v0.8)
 
-**Goal**: Memory-layer redesign — previously.md becomes a compact **user card** (structured identity head + one rolling profile paragraph + 7-day recent items + a delta-only self-model list) edited in place; belief evolution fires **once per closed slice** (plus an explicit user-confirmed trigger) instead of every turn; all read tools pre-render the user's local time; trivial turns are semantically gated from tags/strands; and the model can surface a confirm bubble to fold a durable user preference into memory.
+**Goal**: Timeline-centric memory — the per-slice `timeline/core.md` + `agent.md` files are woven into a navigable global timeline; the user card is **v5** (Identity head / Past: rolling profile paragraph + anchor facts / Now: agent-expired hooks / Horizon: future commitments with `by` dates / Self-model: delta from DIRECTIVES) with hard caps enforced inside the agent's mutation tools (`card-session.ts`: Now ≤ 5, anchors ≤ 8, Horizon ≤ 5, self-model ≤ 10, profile ≤ 2400 chars); and every mutation endpoint sits behind the same-origin guard.
 
-Branch: `feature/v0.6-background-first`
+Branch: `feature/v0.8-timeline`
 
-Key pieces: `src/lib/episodic/time-localize.ts` (server-side local-time annotation), the card format in `previously-format.ts` + `applyCardUpdate` in `previously-updater.ts`, the slice-close evolution trigger in `chat-page.tsx` / `evolution/*`, the `memory_worthy` semantic gate in `turn-analyzer.ts`, and the `suggestMemoryUpdate` tool + confirm bubble.
+Key pieces:
+
+- **Durable turn**: every chat turn runs in a Vercel Workflow run (`src/app/api/chat/turn-workflow.ts`) via AI SDK's `WorkflowAgent` with `stopWhen: isStepCount(20)`; timed-out steps are re-invoked with a continuation nudge under a hard cap (bounded continuations).
+- **Evolution triggers**: at a slice boundary the turn analyzer's `evolve_card.worth` gate decides whether the Previously Agent (worker model) runs; a legacy (pre-v5) card forces a run so format migration never waits. The agent edits the card through per-entry mutation tools (`card-session.ts`) — over-limit writes are rejected with compression instructions, never silently truncated. An explicit user request or behavioral correction in the analyzer's `memory_update` field widens the fold-in beyond the boundary trigger.
+- **Timeline subsystem**: `src/lib/episodic/timeline/` (weave / store / render / enumerate) plus `flash/global-timeline.ts` and `flash/backfill-marks.ts`.
+- **Time rendering**: all read tools and the system prompt annotate ISO timestamps with the user's local/relative time (`src/lib/time/relative.ts`, `time-localize.ts`); `turn-priming.ts` injects a precomputed date-anchor table so the model never does date arithmetic.
+- **Endpoint origin guard**: `src/lib/security/origin-guard.ts` blocks non-same-origin POSTs to `/api/chat`, `/api/loops`, `/api/episodic/flush`; when `ACCESS_SECRET` is set, non-browser callers must send `x-access-key`.
 
 ## Constraints
 
 - Agent tools operate on whitelisted paths only: `memory/`, `tasks/`, `sessions/`
+- The flush/episodic write path is further constrained to the active slice's timeline files (strict slice-id validation in `src/app/api/episodic/flush/route.ts`)
+- API mutation endpoints (`POST /api/chat`, `/api/loops`, `/api/episodic/flush`) are same-origin guarded — see `src/lib/security/origin-guard.ts`; non-browser callers need `x-access-key` when `ACCESS_SECRET` is set
 - `src/` directory is agent-read-only — no tool may modify it
 - GitHub token is scoped to a single repository with contents read/write only
 - All path validation is server-side; client is untrusted

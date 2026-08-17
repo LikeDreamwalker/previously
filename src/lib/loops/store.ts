@@ -9,10 +9,21 @@
 import matter from "gray-matter";
 import { writeFile as writeFileGitHub } from "@/lib/tools/writeFile";
 import { readFile as readFileGitHub } from "@/lib/tools/readFile";
-import { readFileLocal, writeFileLocal } from "@/lib/tools/local-fs";
+import {
+  readFileLocal,
+  writeFileLocal,
+  listFilesLocal,
+} from "@/lib/tools/local-fs";
+import { getOctokit } from "@/lib/github/client";
 import { getRepoConfig } from "@/lib/capabilities";
+import { getDefaultBranch } from "@/lib/tools/batch-write";
 import { resolveDataSource } from "@/lib/data-source/resolve";
-import type { LoopRun, LoopStatus, LoopStep } from "./types";
+import {
+  LOOP_ZOMBIE_MS,
+  type LoopRun,
+  type LoopStatus,
+  type LoopStep,
+} from "./types";
 
 /**
  * Write/update the loop record file. Idempotent: writeFile resolves the
@@ -61,6 +72,9 @@ export async function readLoopRun(path: string): Promise<LoopRun | null> {
       status: (data.status ?? "running") as LoopStatus,
       startedAt: typeof data.started_at === "string" ? data.started_at : "",
       updatedAt: typeof data.updated_at === "string" ? data.updated_at : "",
+      ...(typeof data.deadline_at === "string" && data.deadline_at
+        ? { deadlineAt: data.deadline_at }
+        : {}),
       sliceOrigin:
         typeof data.slice_origin === "string" ? data.slice_origin : null,
       tags: Array.isArray(data.tags) ? (data.tags as string[]) : [],
@@ -91,6 +105,7 @@ export function serializeLoop(run: LoopRun): string {
     status: run.status,
     started_at: run.startedAt,
     updated_at: run.updatedAt,
+    ...(run.deadlineAt ? { deadline_at: run.deadlineAt } : {}),
     iterations: run.iterations,
     max_iterations: run.maxIterations,
     tags: run.tags,
@@ -123,4 +138,97 @@ function renderStep(s: LoopStep): string {
     s.result,
     "",
   ].join("\n");
+}
+
+// ─── Enumeration + zombie reaping ────────────────────────────────────────────
+
+const LOOPS_ROOT = "memory/loops";
+
+/**
+ * List every loop record file (`memory/loops/YYYY/MM/DD/<loopId>.md`).
+ * GitHub: one recursive tree call. Local: a shallow date-shaped walk.
+ */
+export async function listLoopFiles(): Promise<string[]> {
+  if (resolveDataSource() === "github") {
+    const { owner, repo } = getRepoConfig();
+    const octokit = getOctokit();
+    const branch = await getDefaultBranch();
+    const { data: ref } = await octokit.rest.git.getRef({
+      owner,
+      repo,
+      ref: `heads/${branch}`,
+    });
+    const { data: tree } = await octokit.rest.git.getTree({
+      owner,
+      repo,
+      tree_sha: ref.object.sha,
+      recursive: "1",
+    });
+    return (tree.tree ?? [])
+      .filter(
+        (item) =>
+          item.type === "blob" &&
+          typeof item.path === "string" &&
+          item.path.startsWith(`${LOOPS_ROOT}/`) &&
+          item.path.endsWith(".md"),
+      )
+      .map((item) => item.path as string);
+  }
+
+  const out: string[] = [];
+  const safeList = async (p: string) => {
+    try {
+      return await listFilesLocal(p);
+    } catch {
+      return [];
+    }
+  };
+  const isPair = (n: string) => /^\d{2}$/.test(n);
+  for (const y of await safeList(LOOPS_ROOT)) {
+    if (y.type !== "dir" || !/^\d{4}$/.test(y.name)) continue;
+    for (const m of await safeList(y.path)) {
+      if (m.type !== "dir" || !isPair(m.name)) continue;
+      for (const d of await safeList(m.path)) {
+        if (d.type !== "dir" || !isPair(d.name)) continue;
+        for (const f of await safeList(d.path)) {
+          if (f.type === "file" && f.name.endsWith(".md")) out.push(f.path);
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Reap zombie records: a loop whose run died without finalizing (platform
+ * kill, exhausted redeliveries) would otherwise read as "running" forever.
+ * Any record still `running` whose last update is older than LOOP_ZOMBIE_MS
+ * is stamped `interrupted`. Returns the reaped loop ids. Best-effort — the
+ * caller (initLoop) treats a reaper failure as non-fatal.
+ */
+export async function reapZombieLoops(currentLoopId: string): Promise<string[]> {
+  const reaped: string[] = [];
+  const now = Date.now();
+  for (const path of await listLoopFiles()) {
+    const run = await readLoopRun(path);
+    if (!run || run.status !== "running" || run.loopId === currentLoopId) {
+      continue;
+    }
+    const lastUpdate = Date.parse(run.updatedAt || run.startedAt);
+    if (Number.isNaN(lastUpdate) || now - lastUpdate < LOOP_ZOMBIE_MS) {
+      continue;
+    }
+    await writeLoopFile(
+      path,
+      serializeLoop({
+        ...run,
+        status: "interrupted",
+        lastError:
+          run.lastError ||
+          "The loop run stopped without a final status (interrupted by a deploy or platform kill) and was reaped after going stale.",
+      }),
+    );
+    reaped.push(run.loopId);
+  }
+  return reaped;
 }

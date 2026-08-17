@@ -20,13 +20,14 @@ const mockOctokit = vi.hoisted(() => {
     createCommit: vi.fn(),
     updateRef: vi.fn(),
   };
-  return api;
+  return { git: api, reposGet: vi.fn() };
 });
 
 vi.mock("@/lib/github/client", () => ({
   getOctokit: () => ({
     rest: {
-      git: mockOctokit,
+      git: mockOctokit.git,
+      repos: { get: mockOctokit.reposGet },
     },
   }),
 }));
@@ -42,10 +43,19 @@ vi.mock("@/lib/capabilities", () => ({
 
 // ── Test subject ───────────────────────────────────────────────────────
 
-import { commitBatchToGitHub, type BatchEntry } from "@/lib/tools/batch-write";
+import {
+  commitBatchToGitHub,
+  isRefConflictError,
+  _resetDefaultBranchCache,
+  type BatchEntry,
+} from "@/lib/tools/batch-write";
 
 beforeEach(() => {
   vi.clearAllMocks();
+  _resetDefaultBranchCache();
+  mockOctokit.reposGet.mockResolvedValue({
+    data: { default_branch: "main" },
+  });
 });
 
 describe("commitBatchToGitHub", () => {
@@ -61,22 +71,22 @@ describe("commitBatchToGitHub", () => {
   ];
 
   function setupMocks() {
-    mockOctokit.getRef.mockResolvedValue({
+    mockOctokit.git.getRef.mockResolvedValue({
       data: { object: { sha: HEAD_SHA } },
     });
-    mockOctokit.getCommit.mockResolvedValue({
+    mockOctokit.git.getCommit.mockResolvedValue({
       data: { tree: { sha: BASE_TREE_SHA } },
     });
-    mockOctokit.createBlob
+    mockOctokit.git.createBlob
       .mockResolvedValueOnce({ data: { sha: BLOB_SHAS[0] } })
       .mockResolvedValueOnce({ data: { sha: BLOB_SHAS[1] } });
-    mockOctokit.createTree.mockResolvedValue({
+    mockOctokit.git.createTree.mockResolvedValue({
       data: { sha: NEW_TREE_SHA },
     });
-    mockOctokit.createCommit.mockResolvedValue({
+    mockOctokit.git.createCommit.mockResolvedValue({
       data: { sha: NEW_COMMIT_SHA },
     });
-    mockOctokit.updateRef.mockResolvedValue({ data: {} });
+    mockOctokit.git.updateRef.mockResolvedValue({ data: {} });
   }
 
   it("makes the correct API call sequence: getRef → getCommit → blobs → tree → commit → updateRef", async () => {
@@ -85,28 +95,28 @@ describe("commitBatchToGitHub", () => {
     const sha = await commitBatchToGitHub(entries, "Test batch commit");
 
     // 1. Get HEAD ref
-    expect(mockOctokit.getRef).toHaveBeenCalledWith({
+    expect(mockOctokit.git.getRef).toHaveBeenCalledWith({
       owner: "test-owner",
       repo: "test-repo",
       ref: "heads/main",
     });
 
     // 2. Get HEAD commit (for base tree)
-    expect(mockOctokit.getCommit).toHaveBeenCalledWith({
+    expect(mockOctokit.git.getCommit).toHaveBeenCalledWith({
       owner: "test-owner",
       repo: "test-repo",
       commit_sha: HEAD_SHA,
     });
 
     // 3. Create blobs for each file
-    expect(mockOctokit.createBlob).toHaveBeenCalledTimes(2);
-    expect(mockOctokit.createBlob).toHaveBeenNthCalledWith(1, {
+    expect(mockOctokit.git.createBlob).toHaveBeenCalledTimes(2);
+    expect(mockOctokit.git.createBlob).toHaveBeenNthCalledWith(1, {
       owner: "test-owner",
       repo: "test-repo",
       content: entries[0].content,
       encoding: "utf-8",
     });
-    expect(mockOctokit.createBlob).toHaveBeenNthCalledWith(2, {
+    expect(mockOctokit.git.createBlob).toHaveBeenNthCalledWith(2, {
       owner: "test-owner",
       repo: "test-repo",
       content: entries[1].content,
@@ -114,7 +124,7 @@ describe("commitBatchToGitHub", () => {
     });
 
     // 4. Create tree with base_tree (inherits unchanged files)
-    expect(mockOctokit.createTree).toHaveBeenCalledWith({
+    expect(mockOctokit.git.createTree).toHaveBeenCalledWith({
       owner: "test-owner",
       repo: "test-repo",
       base_tree: BASE_TREE_SHA,
@@ -125,7 +135,7 @@ describe("commitBatchToGitHub", () => {
     });
 
     // 5. Create commit with HEAD as parent
-    expect(mockOctokit.createCommit).toHaveBeenCalledWith({
+    expect(mockOctokit.git.createCommit).toHaveBeenCalledWith({
       owner: "test-owner",
       repo: "test-repo",
       message: "Test batch commit",
@@ -134,7 +144,7 @@ describe("commitBatchToGitHub", () => {
     });
 
     // 6. Fast-forward update
-    expect(mockOctokit.updateRef).toHaveBeenCalledWith({
+    expect(mockOctokit.git.updateRef).toHaveBeenCalledWith({
       owner: "test-owner",
       repo: "test-repo",
       ref: "heads/main",
@@ -153,11 +163,76 @@ describe("commitBatchToGitHub", () => {
 
   it("propagates API errors (caller should retry)", async () => {
     setupMocks();
-    mockOctokit.createBlob.mockReset();
-    mockOctokit.createBlob.mockRejectedValue(new Error("Network error"));
+    mockOctokit.git.createBlob.mockReset();
+    mockOctokit.git.createBlob.mockRejectedValue(new Error("Network error"));
 
     await expect(
       commitBatchToGitHub(entries, "will fail"),
     ).rejects.toThrow("Network error");
+  });
+});
+
+describe("default branch resolution (D8a)", () => {
+  const entries: BatchEntry[] = [
+    { path: "memory/x.md", content: "x" },
+  ];
+
+  function setupGitMocks() {
+    mockOctokit.git.getRef.mockResolvedValue({
+      data: { object: { sha: "head" } },
+    });
+    mockOctokit.git.getCommit.mockResolvedValue({
+      data: { tree: { sha: "tree" } },
+    });
+    mockOctokit.git.createBlob.mockResolvedValue({ data: { sha: "blob" } });
+    mockOctokit.git.createTree.mockResolvedValue({ data: { sha: "newtree" } });
+    mockOctokit.git.createCommit.mockResolvedValue({
+      data: { sha: "newcommit" },
+    });
+    mockOctokit.git.updateRef.mockResolvedValue({ data: {} });
+  }
+
+  it("uses the repo's default branch instead of hardcoding heads/main", async () => {
+    setupGitMocks();
+    mockOctokit.reposGet.mockResolvedValue({
+      data: { default_branch: "master" },
+    });
+
+    await commitBatchToGitHub(entries, "commit");
+
+    expect(mockOctokit.git.getRef).toHaveBeenCalledWith(
+      expect.objectContaining({ ref: "heads/master" }),
+    );
+    expect(mockOctokit.git.updateRef).toHaveBeenCalledWith(
+      expect.objectContaining({ ref: "heads/master", force: false }),
+    );
+  });
+
+  it("caches the default branch per process (repos.get called once)", async () => {
+    setupGitMocks();
+
+    await commitBatchToGitHub(entries, "first");
+    await commitBatchToGitHub(entries, "second");
+
+    expect(mockOctokit.reposGet).toHaveBeenCalledTimes(1);
+    expect(mockOctokit.reposGet).toHaveBeenCalledWith({
+      owner: "test-owner",
+      repo: "test-repo",
+    });
+  });
+});
+
+describe("isRefConflictError", () => {
+  it("detects non-fast-forward rejections by status and message", () => {
+    expect(isRefConflictError({ status: 422, message: "Update is not a fast forward" })).toBe(true);
+    expect(isRefConflictError({ status: 409 })).toBe(true);
+    expect(isRefConflictError(new Error("Not a fast forward"))).toBe(true);
+  });
+
+  it("rejects unrelated errors", () => {
+    expect(isRefConflictError(new Error("Network error"))).toBe(false);
+    expect(isRefConflictError({ status: 500, message: "boom" })).toBe(false);
+    expect(isRefConflictError(null)).toBe(false);
+    expect(isRefConflictError("string")).toBe(false);
   });
 });

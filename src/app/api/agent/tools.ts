@@ -16,6 +16,8 @@ import { tool } from "ai";
 import { z } from "zod";
 import {
   readSliceExecute,
+  readSliceSummaryExecute,
+  readTimelineWindowExecute,
   listSlicesExecute,
   readTimelineExecute,
   readStrandExecute,
@@ -95,10 +97,12 @@ export const conceptTools = {
   readSlice: tool({
     description:
       "Read a time slice's conversation record (core timeline). " +
-      "Use this when you need to see the full detail of a specific time slice " +
-      "that Flash surfaced in its recall summary. " +
+      "LAST RESORT for memory access — prefer readSliceSummary (cheapest: " +
+      "frontmatter only) for a relevance check and readTimelineWindow (date " +
+      "window of the catalog) for orientation. Reach readSlice only when you " +
+      "need the actual conversation text. " +
       "Use the optional `range` parameter to fetch only specific turns instead " +
-      "of the entire slice — saves context. " +
+      "of the entire slice — a full slice is the most expensive option. " +
       "`search` matches keywords across the slice (misses return the full slice " +
       "with a note); `lines` reads a 1-indexed line range like a code file.",
     inputSchema: z.object({
@@ -152,6 +156,48 @@ export const conceptTools = {
     }),
     contextSchema: toolContextSchema,
     execute: readSliceExecute,
+  }),
+  readSliceSummary: tool({
+    description:
+      "Read a slice's summary (frontmatter only): focus, summary, tags, tone, " +
+      "turn count, open loops, decisions. The CHEAPEST way to check what a " +
+      "slice is about before reading any turns. Prefer this over readSlice for " +
+      "relevance checks; only read turns (readSlice with a range) when the " +
+      "summary says the exact content matters.",
+    inputSchema: z.object({
+      sliceId: z
+        .string()
+        .describe("Slice ID in YYYY-MM-DD-HHMM format, e.g. '2026-07-24-1500'."),
+    }),
+    contextSchema: toolContextSchema,
+    execute: readSliceSummaryExecute,
+  }),
+  readTimelineWindow: tool({
+    description:
+      "Read the timeline catalog over a date window (inclusive, YYYY-MM-DD) — " +
+      "one compact pointer line per slice (id · focus · tags · turns). " +
+      "Use this to orient by time: 'what happened this week / last month', or " +
+      "when the user references a period. A line is a pointer, not content — " +
+      "open a slice with readSliceSummary / readSlice when it looks relevant.",
+    inputSchema: z.object({
+      from: z
+        .string()
+        .optional()
+        .describe("Start date YYYY-MM-DD (inclusive). Omit for 'from the beginning'."),
+      to: z
+        .string()
+        .optional()
+        .describe("End date YYYY-MM-DD (inclusive). Omit for 'up to now'."),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(50)
+        .optional()
+        .describe("Max slices to list (default 20)."),
+    }),
+    contextSchema: toolContextSchema,
+    execute: readTimelineWindowExecute,
   }),
   listSlices: tool({
     description:
@@ -242,14 +288,17 @@ export const conceptTools = {
 
 // ─── Chat tool set ───────────────────────────────────────────────────────
 //
-// The CHAT agent gets only the "pointed read" concept tools (read a slice /
-// belief / cognition it was given an id for) plus the delegation tools
-// (`recall` hands the actual search to the Flash recall engine; webSearch /
-// thinkDeep). startLoop is commented out (background loops disabled). The
-// exploration tools (readTimeline / listSlices / listStrands / readStrand) are
-// the recall engine's job — the main agent does not browse memory itself.
+// The CHAT agent gets the granular memory tools — the cheap pointers first
+// (recall / readTimelineWindow / readSliceSummary), readSlice as the last
+// resort for actual text — plus readPreviously / readAgentTimeline and the
+// delegation tools (`recall` hands the actual search to the Flash recall
+// engine; webSearch / thinkDeep). startLoop is commented out (background loops
+// disabled). The raw browse tools (listSlices / listStrands / readStrand) stay
+// the recall engine's job — the main agent does not walk directories itself.
 export const chatTools = {
   readSlice: conceptTools.readSlice,
+  readSliceSummary: conceptTools.readSliceSummary,
+  readTimelineWindow: conceptTools.readTimelineWindow,
   readPreviously: conceptTools.readPreviously,
   readAgentTimeline: conceptTools.readAgentTimeline,
   recall: tool({
@@ -260,8 +309,9 @@ export const chatTools = {
       "their history. Returns POINTERS — which slices are relevant and why " +
       "(slice ids, relevance, reasons) — plus recommended reads with suggested " +
       "priorities. It never returns conversation content. " +
-      "Decide whether to open slices with readSlice (optionally with a range) — " +
-      "the summaries may already be enough to answer. " +
+      "Timeline lines and card summaries are only enough to decide WHETHER to " +
+      "dig — never enough to QUOTE. Open the slice with readSlice (optionally " +
+      "with a range) before citing specifics from a past event. " +
       "If the search returns NO relevant matches, do NOT call recall again for " +
       "this topic — there is no past context to find; answer from the conversation " +
       "and your knowledge.",
@@ -421,6 +471,8 @@ export const loopTools = {
 export function buildChatToolsContext(ctx: ToolContext): Record<keyof typeof chatTools, ToolContext> {
   return {
     readSlice: ctx,
+    readSliceSummary: ctx,
+    readTimelineWindow: ctx,
     readPreviously: ctx,
     readAgentTimeline: ctx,
     recall: ctx,
@@ -437,6 +489,8 @@ export function buildLoopToolsContext(
 ): Record<keyof typeof conceptTools, ToolContext> & { loopReport: LoopToolContext } {
   return {
     readSlice: memoryCtx,
+    readSliceSummary: memoryCtx,
+    readTimelineWindow: memoryCtx,
     listSlices: memoryCtx,
     readTimeline: memoryCtx,
     readStrand: memoryCtx,

@@ -8,6 +8,11 @@
       "day": "日"
     }
   },
+  "errorBoundary": {
+    "title": "客户端渲染错误 — 完整详情如下",
+    "consoleHint": "完整错误与组件堆栈也已打印到浏览器控制台。",
+    "fullError": "完整错误详情"
+  },
   "nav": {
     "dashboard": "仪表盘",
     "chat": "聊天",
@@ -17,7 +22,8 @@
     "docs": "文档",
     "settings": "设置",
     "expand": "展开",
-    "collapse": "收起"
+    "collapse": "收起",
+    "timelineToggle": "切换时间线"
   },
   "theme": {
     "light": "浅色",
@@ -123,7 +129,9 @@
     "code": {
       "fallbackLanguage": "代码",
       "copyTooltip": "复制代码",
-      "copiedTooltip": "已复制"
+      "copiedTooltip": "已复制",
+      "expandAll": "展开全部 {count} 行",
+      "collapse": "收起"
     },
     "evolution": {
       "reading": "正在读取记忆...",
@@ -140,7 +148,8 @@
       "superseded": "↻{count} 取代",
       "previouslyOn": "前情提要",
       "clickToView": "点击查看",
-      "thoughts": "思考"
+      "thoughts": "思考",
+      "applied": "正在应用更新..."
     },
     "phase": {
       "thinking": "正在思考…",
@@ -205,6 +214,7 @@
     ]
   },
   "timeline": {
+    "drawerTitle": "时间线",
     "row": {
       "charCount": "{value} 字",
       "collapse": "收起",
@@ -316,5 +326,38 @@
     "emptyTitle": "暂无任务",
     "emptyDesc": "使用聊天在 tasks/ 中创建任务文件。agent 可以帮你跟踪任务状态。",
     "placeholderPreview": "任务内容将从 GitHub 加载。（frontmatter 解析即将推出。）"
+  },
+  "emptyBriefing": {
+    "eyebrow": "PREVIOUSLY ON",
+    "eyebrowWithName": "PREVIOUSLY ON {name}",
+    "fallbackName": "YOU",
+    "lastTopic": "上次聊到",
+    "openLoops": "还欠着的事",
+    "pickUp": "可以接着聊",
+    "viewFull": "查看完整前情提要",
+    "chipContinue": "继续:{topic}",
+    "chipLoops": "看看我的待办清单",
+    "chipTopic": "聊聊 {topic}",
+    "loading": "加载中…"
+  },
+  "relative": {
+    "now": "现在",
+    "moments": { "before": "片刻前", "after": "片刻后" },
+    "prefixAfter": "",
+    "minute": { "before": "分钟前", "after": "分钟后" },
+    "hour": { "before": "小时前", "after": "小时后" },
+    "day": { "before": "天前", "after": "天后" },
+    "week": { "before": "周前", "after": "周后" },
+    "month": { "before": "个月前", "after": "个月后" },
+    "year": { "before": "年前", "after": "年后" }
+  },
+  "markdown": {
+    "alert": {
+      "note": "备注",
+      "tip": "提示",
+      "important": "重要",
+      "warning": "注意",
+      "caution": "警告"
+    }
   }
 }

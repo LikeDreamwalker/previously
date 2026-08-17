@@ -1,10 +1,11 @@
-import { memo, isValidElement, useMemo } from "react";
+import { memo, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
 import rehypeHighlight from "rehype-highlight";
+import rehypeKatex from "rehype-katex";
 import rehypeSlug from "rehype-slug";
 import type { Components } from "react-markdown";
-import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
 import { Separator } from "@/components/ui/separator";
 import {
   Table,
@@ -15,17 +16,16 @@ import {
   TableCell,
 } from "@/components/ui/table";
 import { CodeBlock } from "./code-block";
+import { MermaidBlock } from "./mermaid-block";
+import { MarkdownBlockquote, extractText } from "@/components/markdown/admonition";
+import { remarkCodeFilename } from "@/lib/markdown/remark-code-filename";
 import { cn } from "@/lib/utils";
 
-function extractText(children: React.ReactNode): string {
-  if (typeof children === "string") return children;
-  if (typeof children === "number") return String(children);
-  if (Array.isArray(children)) return children.map(extractText).join("");
-  if (isValidElement(children))
-    return extractText(
-      (children.props as { children?: React.ReactNode }).children,
-    );
-  return "";
+/** Parse a fence meta string (```ts:app/page.tsx or ```ts filename="x.ts"). */
+function parseFilename(meta: unknown): string | undefined {
+  if (typeof meta !== "string" || !meta.trim()) return undefined;
+  const m = /(?:^|\s)(?:filename=)?["']?([\w./-]+\.[A-Za-z0-9]+)["']?/.exec(meta);
+  return m?.[1];
 }
 
 /** Factory for streaming-safe components. */
@@ -49,7 +49,7 @@ function createComponents(isStreaming: boolean): Components {
 
   return {
     /* ── Code (inline + block) ──────────────────────────────────── */
-    code({ className, children, ...props }) {
+    code({ className, children, node, ...props }) {
       const match = /language-(\w+)/.exec(className ?? "");
       const codeStr = extractText(children).replace(/\n$/, "");
 
@@ -61,12 +61,27 @@ function createComponents(isStreaming: boolean): Components {
         );
       }
 
+      const lang = match[1];
+
+      // Mermaid diagrams render once the fence is complete; mid-stream the
+      // partial source would just fail to parse, so show it as code instead.
+      if (lang === "mermaid") {
+        return isStreaming ? (
+          <CodeBlock language="mermaid" code={codeStr} isStreaming />
+        ) : (
+          <MermaidBlock code={codeStr} />
+        );
+      }
+
       return (
         <CodeBlock
-          language={match[1]}
+          language={lang}
           code={codeStr}
+          filename={parseFilename(node?.data?.meta)}
           isStreaming={isStreaming}
-        />
+        >
+          {children}
+        </CodeBlock>
       );
     },
 
@@ -120,17 +135,9 @@ function createComponents(isStreaming: boolean): Components {
       return <ol>{children}</ol>;
     },
 
-    /* ── Blockquote → shadcn Alert ──────────────────────────────── */
+    /* ── Blockquote (incl. GitHub-style alerts) ─────────────────── */
     blockquote({ children }) {
-      // Extract plain text for the description — children may contain
-      // nested paragraphs, which AlertDescription handles naturally.
-      return (
-        <Alert variant="default" className="my-0">
-          <AlertDescription className="text-muted-foreground">
-            {children}
-          </AlertDescription>
-        </Alert>
-      );
+      return <MarkdownBlockquote>{children}</MarkdownBlockquote>;
     },
 
     /* ── Horizontal rule → shadcn Separator ─────────────────────── */
@@ -151,7 +158,8 @@ interface MarkdownRendererProps {
  *
  * Uses typeset CSS (typeset.css) for all typography rhythm — heading
  * sizes, paragraph spacing, list indentation, inline code, etc. — and
- * shadcn/ui components (Table, Alert, Separator) for structural elements.
+ * shadcn/ui components (Table, Separator) for structural elements.
+ * Math ($…$/$$…$$) renders via KaTeX; ```mermaid fences render as diagrams.
  *
  * Stable components are created once with streaming always enabled, so
  * react-markdown never rebuilds the component tree when `isStreaming`
@@ -173,8 +181,8 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
       )}
     >
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeHighlight, rehypeSlug]}
+        remarkPlugins={[remarkGfm, remarkMath, remarkCodeFilename]}
+        rehypePlugins={[rehypeHighlight, rehypeKatex, rehypeSlug]}
         components={comps}
       >
         {content}

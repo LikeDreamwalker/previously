@@ -280,4 +280,39 @@ describe("extractAllAssistantText", () => {
     expect(extractAllAssistantText([assistant("")])).toBe("");
     expect(extractAllAssistantText([assistant([{ type: "text", text: "   " }])])).toBe("");
   });
+
+  it("bounded by startIndex — returns only this run's assistant text, never the input history (v0.8 regression)", () => {
+    const history: ModelMessage[] = [
+      { role: "user", content: "我们之前聊过公司注册" } as ModelMessage,
+      assistant("之前的整段回复"),
+      { role: "user", content: "继续" } as ModelMessage,
+      assistant("之前回复的尾巴"),
+    ];
+    // SDK composition of result.messages: [system(0), ...history, ...this run's steps]
+    const system: ModelMessage = { role: "system", content: "SOUL + card" } as ModelMessage;
+    const thisRun: ModelMessage[] = [
+      { role: "user", content: "那地址要求呢" } as ModelMessage,
+      assistant("中间查证"),
+      msg("tool", [
+        { type: "tool-result", toolCallId: "tc1", toolName: "recall", output: "x", isError: false },
+      ]),
+      assistant("最终回复"),
+    ];
+    const messages = [system, ...history, ...thisRun];
+
+    const result = extractAllAssistantText(messages, 1 + history.length);
+
+    expect(result).toBe("中间查证\n\n最终回复");
+    expect(result).not.toContain("之前的整段回复");
+    expect(result).not.toContain("之前回复的尾巴");
+  });
+
+  it("default startIndex (0) still collects all assistant text — existing behavior preserved", () => {
+    const messages: ModelMessage[] = [
+      { role: "user", content: "hi" } as ModelMessage,
+      assistant("旧回复"),
+      assistant("新回复"),
+    ];
+    expect(extractAllAssistantText(messages)).toBe("旧回复\n\n新回复");
+  });
 });

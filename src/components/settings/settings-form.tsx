@@ -8,6 +8,7 @@ import { checkForUpdate, type UpdateInfo } from "@/lib/version/actions";
 import { syncFromUpstream, type SyncResult } from "@/lib/version/sync";
 import { APP_VERSION } from "@/lib/version/constants";
 import type { UserConfig } from "@/lib/config/types";
+import { formatErrorDetail } from "@/lib/chat/workflow-errors";
 
 export function SettingsForm({
   initialConfig,
@@ -139,6 +140,7 @@ function VersionSection() {
         setSyncError(result.error ?? "Sync failed. Please try again.");
       }
     } catch (e) {
+      console.error("[SettingsForm] sync failed:", formatErrorDetail(e));
       setSyncError(
         e instanceof Error ? e.message : "An unexpected error occurred during sync.",
       );

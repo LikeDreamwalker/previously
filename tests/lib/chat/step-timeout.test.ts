@@ -87,3 +87,60 @@ describe("withStepTimeout", () => {
     clearSpy.mockRestore();
   });
 });
+
+describe("withStepTimeout cancellation (C3)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("aborts the signal when the deadline hits", async () => {
+    vi.useFakeTimers();
+    let observedAbort = false;
+    const pending = withStepTimeout(
+      (signal) =>
+        new Promise<string>((resolve) => {
+          signal.addEventListener("abort", () => {
+            observedAbort = true;
+            resolve("stopped-early");
+          });
+        }),
+      100,
+    );
+    await vi.advanceTimersByTimeAsync(100);
+    const result = await pending;
+
+    expect(result.ok).toBe(false);
+    expect(result.timedOut).toBe(true);
+    expect(observedAbort).toBe(true);
+  });
+
+  it("does not abort the signal on a fast success", async () => {
+    let captured: AbortSignal | null = null;
+    const result = await withStepTimeout(async (signal) => {
+      captured = signal;
+      return "done";
+    }, 1_000);
+
+    expect(result.ok).toBe(true);
+    expect(captured!.aborted).toBe(false);
+  });
+
+  it("lets the loser check signal.aborted to skip a late commit", async () => {
+    vi.useFakeTimers();
+    let committed = false;
+    const pending = withStepTimeout(async (signal) => {
+      await new Promise((r) => setTimeout(r, 500));
+      if (signal.aborted) throw new Error("aborted — write skipped");
+      committed = true;
+      return "committed";
+    }, 100);
+
+    await vi.advanceTimersByTimeAsync(100);
+    const result = await pending;
+    expect(result.timedOut).toBe(true);
+
+    // Let the loser finish — it must observe the abort and skip its write.
+    await vi.advanceTimersByTimeAsync(500);
+    expect(committed).toBe(false);
+  });
+});

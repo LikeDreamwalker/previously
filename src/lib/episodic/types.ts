@@ -62,6 +62,9 @@ export interface SliceFrontmatter {
   loops: string[];
   /** Emotional tone assessed by Flash on freeze */
   emotional_tone?: EmotionalTone;
+  /** The signal that closed this slice (persisted since v0.8; legacy closed
+   *  slices lack it and read back as "user_explicit"). */
+  closed_by?: SlicingSignal;
 }
 
 // ─── Time Slice (in-memory) ──────────────────────────────────────────

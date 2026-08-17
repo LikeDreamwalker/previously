@@ -26,7 +26,8 @@ import type {
   LoopStatus,
   LoopStep,
 } from "@/lib/loops/types";
-import { readLoopRun, serializeLoop, writeLoopFile } from "@/lib/loops/store";
+import { readLoopRun, reapZombieLoops, serializeLoop, writeLoopFile } from "@/lib/loops/store";
+import { LOOP_WALL_CLOCK_MS } from "@/lib/loops/types";
 import type { ToolContext } from "@/app/api/agent/tool-executors";
 
 import { resolveDataSource } from "@/lib/data-source/resolve";
@@ -49,6 +50,9 @@ async function writeRecord(
     status,
     startedAt: input.startedAt,
     updatedAt: new Date().toISOString(),
+    deadlineAt: new Date(
+      Date.parse(input.startedAt) + LOOP_WALL_CLOCK_MS,
+    ).toISOString(),
     sliceOrigin: input.sliceOrigin,
     tags: input.tags,
     iterations: steps.length,
@@ -112,6 +116,21 @@ export async function initLoop(
   if (USE_DEMO) {
     throw new Error(
       "Loops are not available in demo mode. Deploy your own instance to unlock background loops."
+    );
+  }
+
+  // Reap zombie records first: a previous run that died without finalizing
+  // (platform kill, exhausted redeliveries) would otherwise show "running"
+  // forever. Best-effort — a reaper failure must not block this loop's start.
+  try {
+    const reaped = await reapZombieLoops(input.loopId);
+    if (reaped.length > 0) {
+      console.log(`[Loop] reaped stale running loops: ${reaped.join(", ")}`);
+    }
+  } catch (err) {
+    console.warn(
+      "[Loop] zombie reaping failed (continuing):",
+      err instanceof Error ? err.message : err,
     );
   }
 

@@ -18,6 +18,52 @@ export interface BatchEntry {
   content: string;
 }
 
+// ─── Default branch resolution (cached per process) ─────────────────────
+
+let defaultBranchCache: { key: string; branch: string } | null = null;
+
+/**
+ * The repo's default branch (usually "main", but not always — the old code
+ * hardcoded `heads/main` and broke on repos whose default branch differs).
+ * Resolved once per process via repos.get and cached.
+ */
+async function resolveDefaultBranch(
+  octokit: ReturnType<typeof getOctokit>,
+  owner: string,
+  repo: string,
+): Promise<string> {
+  const key = `${owner}/${repo}`;
+  if (defaultBranchCache?.key === key) return defaultBranchCache.branch;
+  const { data } = await octokit.rest.repos.get({ owner, repo });
+  const branch = data.default_branch || "main";
+  defaultBranchCache = { key, branch };
+  return branch;
+}
+
+/** Test-only: drop the cached default branch. */
+export function _resetDefaultBranchCache(): void {
+  defaultBranchCache = null;
+}
+
+/** The configured repo's default branch (cached per process). */
+export async function getDefaultBranch(): Promise<string> {
+  const { owner, repo } = getRepoConfig();
+  return resolveDefaultBranch(getOctokit(), owner, repo);
+}
+
+/**
+ * True when a commit failed because the ref moved under us (non-fast-forward
+ * updateRef) — the signal for the caller to re-read, merge, and retry.
+ */
+export function isRefConflictError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const e = err as { status?: unknown; message?: unknown };
+  const message = typeof e.message === "string" ? e.message : "";
+  if (/not a fast.?forward/i.test(message)) return true;
+  // GitHub returns 422 for a rejected ref update, 409 for some race shapes.
+  return e.status === 422 || e.status === 409;
+}
+
 /**
  * Commit multiple file changes as a SINGLE git commit via the Git Data API.
  * Uses `base_tree` so only the changed files are included — the new tree
@@ -31,12 +77,14 @@ export async function commitBatchToGitHub(
 ): Promise<string> {
   const { owner, repo } = getRepoConfig();
   const octokit = getOctokit();
+  const branch = await resolveDefaultBranch(octokit, owner, repo);
+  const headRef = `heads/${branch}`;
 
   // 1. Get current HEAD
   const { data: ref } = await octokit.rest.git.getRef({
     owner,
     repo,
-    ref: "heads/main",
+    ref: headRef,
   });
   const headSha = ref.object.sha;
 
@@ -87,7 +135,7 @@ export async function commitBatchToGitHub(
   await octokit.rest.git.updateRef({
     owner,
     repo,
-    ref: "heads/main",
+    ref: headRef,
     sha: newCommit.sha,
     force: false,
   });

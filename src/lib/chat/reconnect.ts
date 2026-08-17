@@ -23,3 +23,38 @@ export function dropTrailingAssistantMessages(
   while (end > 0 && messages[end - 1].role === "assistant") end--;
   return messages.slice(0, end);
 }
+
+export interface ArrivalDecision {
+  /** Passed to useChat's `resume` — re-attach to the in-flight run's stream. */
+  shouldResume: boolean;
+  /** Passed to useChat's `messages` — the conversation the live view opens with. */
+  initialMessages: UIMessage[];
+}
+
+/**
+ * The mount-time arrival decision — the pure half (side effects like reading /
+ * clearing localStorage live in the caller).
+ *
+ * The rule is one-dimensional: the live view restores ONLY in-flight work.
+ * `runActive` is the server's verdict on the persisted run ("pending" /
+ * "running" — see isChatRunActive); the client never infers slice boundaries
+ * from timestamps or silence windows.
+ *
+ * - Run still active → genuine reconnect: keep the working conversation, but
+ *   drop the trailing partial assistant turn (the replay rebuilds it).
+ * - Anything else (no run, or a terminal one) → fresh arrival: open blank so
+ *   the arrival briefing greets the user. Completed conversation is NOT
+ *   restored into the live view — it belongs to its slice on the timeline.
+ */
+export function decideArrival(
+  runActive: boolean,
+  stored: readonly UIMessage[],
+): ArrivalDecision {
+  if (runActive) {
+    return {
+      shouldResume: true,
+      initialMessages: dropTrailingAssistantMessages(stored),
+    };
+  }
+  return { shouldResume: false, initialMessages: [] };
+}

@@ -181,7 +181,7 @@ Storage has three modes, controlled by `STORAGE`:
 
 ## Documentation
 
-Full docs live at **[previously.ldwid.com/docs](https://previously.ldwid.com/docs)** — plain Markdown, readable on GitHub, browsable in-app at `/docs`. Key pages:
+Full docs live at **[previously.ldwid.com/docs](https://previously.ldwid.com/docs)** (en/zh). In-app `/docs` URLs permanently redirect there. Key pages:
 
 - [Introduction](https://previously.ldwid.com/docs/introduction) — what Previously is and how it works
 - [Slices & Strands](https://previously.ldwid.com/docs/slices) — the core memory model
@@ -189,7 +189,7 @@ Full docs live at **[previously.ldwid.com/docs](https://previously.ldwid.com/doc
 - [Deployment](https://previously.ldwid.com/docs/deployment) — template, configure, deploy
 - [FAQ](https://previously.ldwid.com/docs/faq)
 
-The docs source lives in [`content/docs/`](content/docs/) — readable directly on GitHub, and consumable by any AI tool via [`llms.txt`](public/llms.txt).
+For AI tools, the docs site serves a machine-readable index at [`llms.txt`](https://previously.ldwid.com/llms.txt) (plus the full text at [`llms-full.txt`](https://previously.ldwid.com/llms-full.txt)).
 
 ---
 

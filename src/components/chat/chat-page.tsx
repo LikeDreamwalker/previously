@@ -10,41 +10,117 @@ import { ChatSection } from "./chat-section";
 import { LoopWatcher } from "./loop-watcher";
 import { buildMockSteps } from "@/lib/chat/mock-stream";
 import type { EvolutionState } from "./evolution-indicator";
-import { HorizontalTimeline } from "./horizontal-timeline";
 import { HistoricalChatView } from "./historical-chat-view";
+import { RelativeTimeReadout } from "./relative-time";
+import { EmptyBriefing } from "./empty-briefing";
+import { TimelineWheel } from "./timeline-wheel";
+import { ResizableSplit } from "./resizable-split";
+import { useTimelineOverlay } from "./timeline-overlay-context";
+import { AnimatePresence, motion } from "motion/react";
 import {
+  getBriefingIdentity,
   getEpisodicState,
-  getMoreSlices,
   getSliceContent,
   type SliceSummary,
   type SliceContent,
 } from "@/lib/episodic/actions";
 import { getCached, setCache } from "@/lib/chat/slice-cache";
-import { dropTrailingAssistantMessages } from "@/lib/chat/reconnect";
-import { NumberTicker } from "@/components/ui/number-ticker";
-import { TextGenerateEffect } from "@/components/ui/text-generate-effect";
+import {
+  decideArrival,
+  type ArrivalDecision,
+} from "@/lib/chat/reconnect";
+import { isChatRunActive } from "@/lib/chat/actions";
 import { saveUserConfig } from "@/lib/config/actions";
 import type { UserConfig } from "@/lib/config/types";
-import { useTranslations } from "next-intl";
+import { useTranslations, useLocale } from "next-intl";
 import { toast } from "sonner";
+import { formatErrorDetail } from "@/lib/chat/workflow-errors";
 
 interface ChatPageProps {
-  children: React.ReactNode;
   /** Server-preloaded user config (RSC) — seeds model/thinking/effort so the
    *  chat starts on the real values instead of flashing defaults. */
   initialConfig?: UserConfig;
 }
 
-export function ChatPage({ children, initialConfig }: ChatPageProps) {
-  return <Inner initialConfig={initialConfig}>{children}</Inner>;
+export function ChatPage({ initialConfig }: ChatPageProps) {
+  // Mount-time arrival decision. Only the SERVER can say whether the persisted
+  // run is still in flight, so this verdict is async — Inner (and therefore
+  // useChat) mounts only after it lands, keeping useChat's init a synchronous,
+  // once-only snapshot. Until then nothing renders (the header is outside this
+  // tree, so the page chrome still shows).
+  const [arrival, setArrival] = useState<ArrivalDecision | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    resolveArrival().then((d) => {
+      if (!cancelled) setArrival(d);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  if (!arrival) return null;
+  return (
+    <Inner
+      initialConfig={initialConfig}
+      shouldResume={arrival.shouldResume}
+      initialMessages={arrival.initialMessages}
+    />
+  );
+}
+
+/**
+ * The one-shot arrival verdict, side effects included. The rule: the live view
+ * restores ONLY in-flight work.
+ *
+ * - The persisted run is still pending/running → genuine reconnect: keep the
+ *   working conversation (the replay rebuilds its trailing partial turn).
+ * - Anything else (no run, terminal run) → fresh arrival: CLEAR the stash so
+ *   completed conversation never resurrects in the live view — it already
+ *   lives in its slice on the timeline, and the arrival briefing carries the
+ *   continuity ("上次聊到", suggested follow-ups).
+ *
+ * A failed status check (offline / server down) fails neutral: open blank but
+ * DON'T clear the stash, so the next visit can retry the verdict.
+ */
+async function resolveArrival(): Promise<ArrivalDecision> {
+  const runId = readStoredRunId();
+  let active = false;
+  if (runId) {
+    try {
+      active = await isChatRunActive(runId);
+    } catch {
+      return { shouldResume: false, initialMessages: [] };
+    }
+  }
+  if (active) {
+    return decideArrival(true, readStoredMessages());
+  }
+  clearStoredRunId();
+  clearStoredChatId();
+  clearStoredMessages();
+  return decideArrival(false, []);
 }
 
 // ─── Reconnect persistence ────────────────────────────────────────────────
 // The durable workflow run's id is persisted so a reloaded or backgrounded tab
 // (phone lock / app switch) can re-attach to the SAME run's stream and replay
-// whatever it missed. Cleared when a turn completes cleanly. Guarded so a
-// private-mode / SSR environment (no localStorage) degrades to no-op.
+// whatever it missed — but only while the run is actually in flight (the
+// mount-time arrival decision asks the server, see resolveArrival). Cleared on
+// a clean turn end and on any fresh arrival. Guarded so a private-mode / SSR
+// environment (no localStorage) degrades to no-op.
 const RUN_ID_KEY = "previously:activeRunId";
+const CHAT_ID_KEY = "previously:chatId";
+
+// ─── Sending window (v0.8) ────────────────────────────────────────────────
+// The client keeps the full conversation for rendering, but only the LAST N
+// messages travel to the server each turn. Everything earlier is already
+// stored in the current slice; if the agent needs deeper context it reads it
+// via recall / readSliceSummary / readTimelineWindow — it must NOT be handed
+// the whole client history (that is the context-bloat + storage-accumulation
+// source). The UI never trims; only the wire payload does.
+const SEND_MESSAGE_WINDOW = 10; // ~5 turns of working memory
+/** Cap the persisted conversation so a long session can't overflow localStorage. */
+const PERSIST_MESSAGE_CAP = 200;
 
 function readStoredRunId(): string | null {
   if (typeof localStorage === "undefined") return null;
@@ -71,78 +147,67 @@ function clearStoredRunId(): void {
   }
 }
 
-// ─── Gap calculator ──────────────────────────────────────────────────
+function clearStoredChatId(): void {
+  try {
+    localStorage.removeItem(CHAT_ID_KEY);
+  } catch {
+    /* best-effort */
+  }
+}
 
-type GapInfo =
-  | { count: number; unitKey: string }
-  | { special: string }
-  | null;
+// ─── Conversation persistence (official single-turn resume pattern) ───────
+// The chat-session-modeling / resumable-streams docs: the client owns the
+// conversation and restores it via `initialMessages` when a run is resumed, so
+// the stream resume only reconciles the LAST message instead of replaying the
+// whole run into an empty store (which pushes a full copy per chunk →
+// duplicated, growing message list). We persist the rendered UIMessage[] to
+// localStorage. A fresh arrival CLEARS the stash (see resolveArrival) — the
+// live view never resurrects completed conversation.
+const STORED_MESSAGES_KEY = "previously:messages";
 
-function getGapInfo(fromISO: string, now: number): GapInfo {
-  const from = new Date(fromISO).getTime();
-  if (Number.isNaN(from) || now < from) return null;
-  const minutes = Math.floor((now - from) / 60_000);
-  if (minutes < 5) return { special: "moments" };
-  if (minutes < 60) return { count: minutes, unitKey: "minute" };
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return { count: hours, unitKey: "hour" };
-  const days = Math.floor(hours / 24);
-  if (days < 7) return { count: days, unitKey: "day" };
-  if (days < 35) return { count: Math.floor(days / 7), unitKey: "week" };
-  return { count: Math.floor(days / 30), unitKey: "month" };
+function readStoredMessages(): UIMessage[] {
+  if (typeof localStorage === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(STORED_MESSAGES_KEY);
+    return raw ? (JSON.parse(raw) as UIMessage[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeStoredMessages(messages: UIMessage[]): void {
+  try {
+    localStorage.setItem(STORED_MESSAGES_KEY, JSON.stringify(messages));
+  } catch {
+    /* private mode — persistence is best-effort */
+  }
+}
+
+function clearStoredMessages(): void {
+  try {
+    localStorage.removeItem(STORED_MESSAGES_KEY);
+  } catch {
+    /* best-effort */
+  }
 }
 
 // ─── Inner ───────────────────────────────────────────────────────────────
 
-function NowPlaceholder({ gapAnchor }: { gapAnchor: string | null }) {
-  const t = useTranslations("timeline");
-  const [gapInfo, setGapInfo] = useState<GapInfo>(null);
-
-  useEffect(() => {
-    setGapInfo(gapAnchor ? getGapInfo(gapAnchor, Date.now()) : null);
-  }, [gapAnchor]);
-
-  return (
-    <div className="flex flex-col items-center pt-24 pb-20 text-center">
-      {gapInfo && (
-        "special" in gapInfo ? (
-          <p className="mb-5 font-mono text-xs tracking-[0.25em] text-muted-foreground/60">
-            {t(`gap.${gapInfo.special}`)}
-          </p>
-        ) : (
-          <p className="mb-5 font-mono text-xs tracking-[0.25em] text-muted-foreground/60">
-            <NumberTicker
-              value={gapInfo.count}
-              className="text-muted-foreground/60"
-            />
-            {" "}
-            {t(`gap.unit.${gapInfo.unitKey}`, { count: gapInfo.count })}
-          </p>
-        )
-      )}
-      <TextGenerateEffect
-        words={t("panel.now")}
-        className="text-5xl sm:text-6xl font-light tracking-tighter leading-none text-foreground"
-        filter={false}
-        duration={0.3}
-        delay={0.2}
-        animateOnView
-      />
-    </div>
-  );
-}
-
 function Inner({
-  children,
   initialConfig,
+  shouldResume,
+  initialMessages,
 }: {
-  children: React.ReactNode;
   initialConfig?: UserConfig;
+  /** The mount-time arrival verdict (resolveArrival) — see ChatPage. */
+  shouldResume: boolean;
+  initialMessages: UIMessage[];
 }) {
   // ── Model / thinking / effort — reactive, persisted to config.json ─────
   // The single source of truth is memory/user/config.json (cross-device, no
   // localStorage). The RSC page preloads it (initialConfig) so there's no
   // default-flash + mount reconcile; saves still write back via server action.
+  const locale = useLocale();
   const [selectedModel, setSelectedModel] = useState(
     initialConfig?.model.provider ?? "deepseek-v4-flash",
   );
@@ -186,12 +251,29 @@ function Inner({
 
   // ── Timeline state ──────────────────────────────────────────────────────
   const [timelineSlices, setTimelineSlices] = useState<SliceSummary[]>([]);
-  const [timelineHasMore, setTimelineHasMore] = useState(false);
-  const [timelineLoadingMore, setTimelineLoadingMore] = useState(false);
-  const [timelineReady, setTimelineReady] = useState(false);
+  // The most recent slice — its focus / open_loops seed the empty briefing.
+  const [activeSlice, setActiveSlice] = useState<SliceSummary | null>(null);
   const [selectedSliceId, setSelectedSliceId] = useState<string | null>("now");
+  // The slice the user just clicked — drives the wheel's selection glow
+  // IMMEDIATELY (before the time-travel transition lands), so the marker
+  // doesn't lag behind the click by the roll's duration.
+  const [pendingSliceId, setPendingSliceId] = useState<string | null>(null);
+  // The user's display name — feeds the "PREVIOUSLY ON {name}" eyebrow over
+  // the time-travel readout (falls back to "YOU" until it resolves).
+  const [briefingName, setBriefingName] = useState<string>("");
   const [historicalContent, setHistoricalContent] = useState<SliceContent | null>(null);
-  const [historicalLoading, setHistoricalLoading] = useState(false);
+  // The time-travel transition currently playing (if any). While active, the
+  // clock overlay covers the content area and doubles as the loading state.
+  const [transition, setTransition] = useState<{
+    from: string;
+    to: string;
+    sliceId: string;
+  } | null>(null);
+  // Start time of the currently loaded slice — the clock travels FROM here
+  // (or from the live "now" when nothing historical is loaded).
+  const [loadedSliceStart, setLoadedSliceStart] = useState<string | null>(null);
+  // Resolves when the clock animation lands (see handleSelectSlice).
+  const clockLandedRef = useRef<(() => void) | null>(null);
 
   // Persona picked from URL — server actions need it because they can't
   // access searchParams on the server side. Defaults to "personal_14".
@@ -200,73 +282,70 @@ function Inner({
     return new URLSearchParams(window.location.search).get("persona") || "personal_14";
   }, []);
 
-  // Load initial timeline data on mount
+  // Load the newest slice on mount — feeds the NowPlaceholder gap anchor and
+  // the send-window `loadedSliceIds`. The timeline WHEEL loads its own full
+  // catalog independently (see timeline-wheel.tsx).
   useEffect(() => {
     let cancelled = false;
     getEpisodicState(persona)
       .then((data) => {
         if (cancelled) return;
         setTimelineSlices(data.recent);
-        setTimelineHasMore(data.hasMore);
-        setTimelineReady(true);
+        setActiveSlice(data.active);
       })
       .catch(() => {
-        if (!cancelled) setTimelineReady(true);
+        // silently ignore
       });
+    // Resolve the display name for the "PREVIOUSLY ON {name}" eyebrow.
+    getBriefingIdentity(persona)
+      .then((id) => {
+        if (!cancelled) setBriefingName(id.name);
+      })
+      .catch(() => {});
     return () => { cancelled = true; };
   }, [persona]);
 
-  // Load more slices
-  const handleLoadMore = useCallback(async () => {
-    if (timelineLoadingMore || !timelineHasMore) return;
-    const oldest = timelineSlices[timelineSlices.length - 1];
-    if (!oldest) return;
-
-    setTimelineLoadingMore(true);
-    try {
-      const data = await getMoreSlices(oldest.start, 10, persona);
-      setTimelineSlices((prev) => [...prev, ...data.slices]);
-      setTimelineHasMore(data.hasMore);
-    } catch {
-      // silently fail
-    } finally {
-      setTimelineLoadingMore(false);
-    }
-  }, [timelineLoadingMore, timelineHasMore, timelineSlices, persona]);
-
-  // Handle slice selection — keeps old content visible during fetch
+  // Handle slice selection — runs the time-travel clock (which doubles as the
+  // loading state) while the target content fetches in the background, then
+  // swaps in the content and moves the blue selection mark.
   const handleSelectSlice = useCallback(
-    async (sliceId: string) => {
+    async (sliceId: string, toTime?: string) => {
+      if (sliceId === selectedSliceId) return; // already there
+
+      const nowIso = new Date().toISOString();
+      // Travel FROM wherever the viewer currently is (live now, or the last
+      // loaded slice) TO the clicked slice.
+      const from =
+        selectedSliceId !== "now" && loadedSliceStart ? loadedSliceStart : nowIso;
+      const to = toTime ?? (sliceId === "now" ? nowIso : from);
+
+      const clockLanded = new Promise<void>((resolve) => {
+        clockLandedRef.current = resolve;
+      });
+      setTransition({ from, to, sliceId });
+      // Light the wheel's selection marker on the clicked slice right away —
+      // don't wait for the roll to land.
+      setPendingSliceId(sliceId);
+
+      // Fetch in the background while the clock animates.
+      let content: SliceContent | null = null;
+      if (sliceId !== "now") {
+        const cached = getCached(sliceId);
+        content = cached
+          ? cached.content
+          : await getSliceContent(sliceId, persona).catch(() => null);
+        if (content) setCache(sliceId, content, null);
+      }
+
+      // Land on the target: swap content + move the selection.
+      await clockLanded;
       setSelectedSliceId(sliceId);
-
-      if (sliceId === "now") {
-        setHistoricalContent(null);
-        setHistoricalLoading(false);
-        return;
-      }
-
-      const cached = getCached(sliceId);
-      if (cached) {
-        setHistoricalContent(cached.content);
-        setHistoricalLoading(false);
-        return;
-      }
-
-      // Don't clear previous content — keep it visible while loading
-      setHistoricalLoading(true);
-      try {
-        const content = await getSliceContent(sliceId, persona);
-        setHistoricalContent(content);
-        if (content) {
-          setCache(sliceId, content, null);
-        }
-      } catch {
-        // Keep previous content on error, don't wipe it
-      } finally {
-        setHistoricalLoading(false);
-      }
+      setPendingSliceId(null);
+      setHistoricalContent(content);
+      setLoadedSliceStart(sliceId === "now" ? null : content?.start ?? null);
+      setTransition(null);
     },
-    [persona],
+    [persona, selectedSliceId, loadedSliceStart],
   );
 
   // ── Mock demo state ─────────────────────────────────────────────────
@@ -318,49 +397,71 @@ function Inner({
   // Refresh-resume goes through the SDK's own path: `resume: true` calls
   // resumeStream() on mount, and prepareReconnectToStreamRequest redirects it
   // to the durable run (`/api/chat/<runId>/stream?startIndex=0`), which rebuilds
-  // the interrupted turn on a fresh page. Snapshot the decision ONCE at mount —
-  // computing it from localStorage each render would flip false→true when a new
-  // turn stores its runId, and useChat's `resume` effect would re-fire
-  // resumeStream() mid-stream (a second writer → #185). Fresh visits (no run in
-  // flight) stay false so a reconnect never 404s on a brand-new page.
-  const [shouldResume] = useState(() => readStoredRunId() !== null);
-
+  // the interrupted turn on a fresh page. The `shouldResume` / `initialMessages`
+  // verdict arrives as PROPS from ChatPage's one-shot arrival decision (the
+  // server is the only authority on whether the run is still in flight) — never
+  // recompute it from localStorage here: a mid-stream flip would re-fire
+  // useChat's `resume` effect (a second writer → #185), and an unstable
+  // messages array itself trips React #185.
   const {
     messages,
     sendMessage,
     status,
     stop,
     error,
-    resumeStream,
-    setMessages,
   } = useChat({
+    // v5 SDK: initial conversation state is passed as `messages` (ChatInit).
+    messages: initialMessages,
     resume: shouldResume,
+    // v0.8: throttle the UI updates. The resume replay (and heavy streaming)
+    // delivers chunks rapidly; each write() does setStatus + replaceMessage via
+    // useSyncExternalStore, and the per-chunk re-render storm trips React's
+    // #185 "Maximum update depth exceeded". This is the AI SDK's documented fix
+    // (ai-sdk.dev/docs/troubleshooting/react-maximum-update-depth-exceeded).
+    throttle: 50,
     // Clear a stale runId when a reconnect 404s ("Run not available") — the run
     // is gone, so a future reload shouldn't keep retrying it.
     onError: (err) => {
+      console.error("[useChat][onError]", formatErrorDetail(err));
       const msg = err instanceof Error ? err.message : String(err);
       if (/404|Run not available/.test(msg)) {
         clearStoredRunId();
       }
     },
+    // Flush the completed conversation the moment a turn ends, so a refresh
+    // right after finishing never restores a stale copy. The debounced effect
+    // below only writes after a quiet period — during continuous streaming it
+    // may not have written at all, and onChatEnd clears the runId immediately,
+    // so the gap between "finished" and "persisted" would otherwise lose the
+    // just-finished reply.
+    onFinish: ({ messages: finished }) => {
+      writeStoredMessages(finished.slice(-PERSIST_MESSAGE_CAP));
+    },
     transport: new WorkflowChatTransport({
       api: "/api/chat",
-      prepareSendMessagesRequest: (config) => ({
-        api: config.api,
-        headers: config.headers,
-        credentials: config.credentials,
-        body: {
-          messages: config.messages,
-          model: selectedModel,
-          thinking,
-          effort,
-          timezone:
-            typeof Intl !== "undefined"
-              ? Intl.DateTimeFormat().resolvedOptions().timeZone
-              : "UTC",
-          loadedSliceIds: timelineSlices.map((s) => s.slice_id),
-        },
-      }),
+      prepareSendMessagesRequest: (config) => {
+        const sendWindow = config.messages.slice(-SEND_MESSAGE_WINDOW);
+        return {
+          api: config.api,
+          headers: config.headers,
+          credentials: config.credentials,
+          body: {
+            // v0.8: send only the working-memory window — the rest is stored in
+            // the slice and reachable via the memory tools (see SEND_MESSAGE_WINDOW).
+            messages: sendWindow,
+            model: selectedModel,
+            thinking,
+            effort,
+            timezone:
+              typeof Intl !== "undefined"
+                ? Intl.DateTimeFormat().resolvedOptions().timeZone
+                : "UTC",
+            // UI locale — the turn's relative-time annotations follow it.
+            locale,
+            loadedSliceIds: timelineSlices.map((s) => s.slice_id),
+          },
+        };
+      },
       // Persist the durable run id + chat id the moment a turn starts, so a
       // dropped/reloaded tab can re-attach to the same run's stream.
       onChatSendMessage: (response, options) => {
@@ -368,7 +469,7 @@ function Inner({
         if (runId) {
           writeStoredRunId(runId);
           try {
-            localStorage.setItem("previously:chatId", options.chatId);
+            localStorage.setItem(CHAT_ID_KEY, options.chatId);
           } catch {
             /* best-effort */
           }
@@ -391,84 +492,21 @@ function Inner({
     }),
   });
 
-  // ── Reconnect on return to the foreground ────────────────────────────────
-  // When the phone locks / the tab is backgrounded mid-turn, the fetch dies
-  // (status → "error") even though the durable workflow keeps running. On
-  // return, re-attach to the run's stream to replay what was missed. Skip when
-  // the turn is still actively streaming or already finished.
-  //
-  // SINGLE-WRITER GUARD: the focus/visibility handler below is the ONLY manual
-  // reconnect now (refresh-resume is handled by the SDK's `resume: true` above;
-  // same-session drops by the transport's internal auto-reconnect). It fires
-  // only when status is "error" — the previous stream is already dead, so this
-  // resume can't race a live writer. The in-flight guard keeps even two rapid
-  // focus events from starting two resumeStream() calls, which would otherwise
-  // both write the same turn into the message list (duplicate ids → duplicate
-  // keys → React "Maximum update depth exceeded" #185). We also abort any
-  // still-active stream first and drop the partial turn so the startIndex-0
-  // replay rebuilds it cleanly instead of appending a second copy.
-  const reconnectInFlightRef = useRef(false);
-
-  const resetPartialTurn = useCallback(() => {
-    setMessages((prev) => dropTrailingAssistantMessages(prev));
-  }, [setMessages]);
-
-  const resumeWithRetry = useCallback(
-    async (attempts = 3) => {
-      if (reconnectInFlightRef.current) return;
-      reconnectInFlightRef.current = true;
-      try {
-        // Kill any in-flight SDK stream before starting our own.
-        await stop();
-        resetPartialTurn();
-        for (let attempt = 0; attempt < attempts; attempt++) {
-          try {
-            await resumeStream();
-            return;
-          } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            if (/404|Run not available/.test(msg)) {
-              clearStoredRunId();
-              return;
-            }
-            if (!/Failed to fetch/.test(msg) || attempt === attempts - 1) {
-              if (!/Failed to fetch/.test(msg)) {
-                console.warn("[chat] reconnect failed:", msg);
-              }
-              return;
-            }
-            // Transient network error — wait with backoff, then retry.
-            await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
-          }
-        }
-      } finally {
-        reconnectInFlightRef.current = false;
-      }
-    },
-    [resumeStream, stop, resetPartialTurn],
-  );
-
-  const attemptReconnect = useCallback(() => {
-    if (!readStoredRunId()) return;
-    // Only reconnect when the previous stream actually DIED (status "error") —
-    // not while it's still streaming, finished, or a fresh POST is in flight.
-    if (status !== "error") return;
-    void resumeWithRetry();
-  }, [status, resumeWithRetry]);
-
+  // ── Persist the conversation (debounced) so a refresh restores it via
+  // `initialMessages`. Don't let the demo stream (demoMessages) wipe a real
+  // persisted conversation.
+  const firstRenderRef = useRef(true);
   useEffect(() => {
-    if (typeof document === "undefined" || typeof window === "undefined") return;
-    const onVisibility = () => {
-      if (document.visibilityState === "visible") attemptReconnect();
-    };
-    const onFocus = () => attemptReconnect();
-    document.addEventListener("visibilitychange", onVisibility);
-    window.addEventListener("focus", onFocus);
-    return () => {
-      document.removeEventListener("visibilitychange", onVisibility);
-      window.removeEventListener("focus", onFocus);
-    };
-  }, [attemptReconnect]);
+    if (firstRenderRef.current) {
+      firstRenderRef.current = false;
+      return;
+    }
+    if (demoMessages.length > 0) return;
+    const id = setTimeout(() => {
+      writeStoredMessages(messages.slice(-PERSIST_MESSAGE_CAP));
+    }, 100);
+    return () => clearTimeout(id);
+  }, [messages, demoMessages.length]);
 
   const isStreaming = status === "streaming" || demoStreaming;
   const isLoading = status === "submitted" || isStreaming;
@@ -527,11 +565,19 @@ function Inner({
     [lastAssistantId],
   );
 
+  const lastEvolutionDataRef = useRef<string>("");
   const handleSubmit = (message: string) => {
-    if (selectedSliceId !== "now") {
+    if (selectedSliceId !== "now" || transition) {
       setSelectedSliceId("now");
       setHistoricalContent(null);
+      setTransition(null);
+      setPendingSliceId(null);
+      setLoadedSliceStart(null);
     }
+    // Reset the evolution indicator so a new turn never shows the previous
+    // turn's result while its own data-evolution chunks are still in flight.
+    setEvolutionState(null);
+    lastEvolutionDataRef.current = "";
     setLastUserMessageAt(new Date().toISOString());
     sendMessage({ role: "user", parts: [{ type: "text", text: message }] });
     // v0.7b: self-evolution runs INLINE inside housekeeping (the turn's stream
@@ -541,7 +587,6 @@ function Inner({
   // v0.7b: watch the turn stream for data-evolution chunks and drive the
   // EvolutionIndicator from them — the synchronous inline run streams reading →
   // reviewing → result while the turn is processing, so the user sees progress.
-  const lastEvolutionDataRef = useRef<string>("");
   useEffect(() => {
     if (demoStreaming) return;
     const last = messages[messages.length - 1];
@@ -560,63 +605,141 @@ function Inner({
     }
   }, [messages, demoStreaming]);
 
-  const showingLive = selectedSliceId === "now";
+  // Hydration guard: the persisted conversation only exists client-side, so the
+  // server renders the empty state. Keep the FIRST client render matching the
+  // server HTML (empty), then reveal the restored messages after hydration —
+  // otherwise React throws a hydration mismatch (server empty vs client
+  // restored). Once hydrated the flag is irrelevant.
+  const [hydrated, setHydrated] = useState(false);
+  useEffect(() => {
+    setHydrated(true);
+  }, []);
 
+  const showingLive = selectedSliceId === "now";
+  // The "PREVIOUSLY ON" eyebrow over the travel readout — same brand mark as
+  // the empty briefing's title card.
+  const tBrief = useTranslations("emptyBriefing");
+  // Timeline expand — toggled from the header / mini spine / desktop expand
+  // button; collapses on slice select. The same left timeline widens in place
+  // over the content (no separate drawer), with a blur mask over what's behind.
+  const {
+    open: timelineOpen,
+    close: closeTimeline,
+  } = useTimelineOverlay();
+
+  // Picking a slice in the timeline collapses it so the time-travel transition
+  // plays against the content revealed behind.
+  const handleTimelineSelect = useCallback(
+    (sliceId: string, start?: string) => {
+      handleSelectSlice(sliceId, start);
+      closeTimeline();
+    },
+    [handleSelectSlice, closeTimeline],
+  );
   return (
     <>
-      {/* ── Screen 1: Hero — full viewport ─────────────────────────────── */}
-      <section className="h-screen">
-        {children}
-      </section>
-
-      {/* ── Screen 2: Timeline + Content ───────────────────────────────── */}
-      <div>
-        {/* ── Sticky timeline — snaps below AppHeader (fixed h-12) ────────── */}
-        <div className="sticky top-12 z-10 bg-background/90 backdrop-blur-md">
-          <HorizontalTimeline
-            slices={timelineSlices}
-            selectedId={selectedSliceId}
-            onSelect={handleSelectSlice}
-            onLoadMore={handleLoadMore}
-            hasMore={timelineHasMore}
-            loadingMore={timelineLoadingMore}
-          />
-        </div>
-
-        {/* ── Chat content — natural document flow ────────────────────────── */}
-        <div className="min-h-[calc(100vh-12rem)] pb-24">
-        {showingLive ? (
-          allMessages.length === 0 && !isLoading ? (
-            <div className="flex items-center justify-center min-h-[calc(100vh-13rem)]">
-              <NowPlaceholder
-                gapAnchor={timelineSlices[0]?.start ?? null}
+      {/* ── Timeline + Content — a split view: timeline left (fixed width:
+           full wheel on desktop / mini spine on phones), conversation right.
+           Expanding widens the SAME timeline over the content with a blur mask
+           (no separate drawer). The right panel scrolls internally. */}
+      <ResizableSplit
+        expanded={timelineOpen}
+        left={
+          <div className="flex h-full flex-col pl-2 md:pl-5">
+            <div className="min-h-0 flex-1">
+              <TimelineWheel
+                selectedId={selectedSliceId}
+                pendingId={pendingSliceId}
+                onSelect={handleTimelineSelect}
               />
             </div>
+          </div>
+        }
+        right={
+        <AnimatePresence mode="wait">
+          {transition ? (
+            <motion.div
+              key="travel"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.3 }}
+              className="relative flex items-center justify-center overflow-hidden min-h-full"
+            >
+              {/* Soft brand glow behind the travel readout — the same stage-light
+                  as the empty briefing's title card. */}
+              <div
+                aria-hidden
+                className="pointer-events-none absolute left-1/2 top-1/2 h-72 w-72 -translate-x-1/2 -translate-y-1/2 rounded-full bg-brand-500/10 blur-3xl"
+              />
+              <div className="relative flex flex-col items-center gap-3">
+                <span className="font-mono text-[0.65rem] uppercase tracking-[0.35em] text-muted-foreground/60">
+                  {tBrief("eyebrowWithName", { name: briefingName || tBrief("fallbackName") })}
+                </span>
+                <RelativeTimeReadout
+                  timestamp={transition.to}
+                  from={transition.from}
+                  onRollComplete={() => clockLandedRef.current?.()}
+                />
+              </div>
+            </motion.div>
+          ) : showingLive ? (
+            <motion.div
+              key="live"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ duration: 0.3 }}
+              className="h-full"
+            >
+              {(!hydrated || (allMessages.length === 0 && !isLoading)) ? (
+                <EmptyBriefing
+                  persona={persona}
+                  active={activeSlice}
+                  recent={timelineSlices}
+                  onSend={handleSubmit}
+                />
+              ) : (
+                <div className="mx-auto max-w-5xl xl:max-w-7xl pl-0 pr-4 sm:pr-6 lg:pr-8 min-h-full pb-36">
+                  {/* No left padding — the timeline itself is the separator.
+                      pb-36 = safe area clearing the fixed bottom input bar. */}
+                  <ChatSection
+                    messages={allMessages}
+                    isStreaming={isStreaming}
+                    isLoading={isLoading}
+                    error={error}
+                    lastUserMessageAt={lastUserMessageAt}
+                    evolutionState={evolutionState}
+                    isEvolutionTarget={isEvolutionTarget}
+                  />
+                  <LoopWatcher messages={messages} />
+                </div>
+              )}
+            </motion.div>
           ) : (
-            <div className="mx-auto max-w-5xl xl:max-w-7xl px-4 sm:px-6 lg:px-8 min-h-[calc(100vh-13rem)]">
-              <ChatSection
-                messages={allMessages}
-                isStreaming={isStreaming}
-                isLoading={isLoading}
-                error={error}
-                lastUserMessageAt={lastUserMessageAt}
-                evolutionState={evolutionState}
-                isEvolutionTarget={isEvolutionTarget}
+            <motion.div
+              key={`slice-${selectedSliceId ?? "none"}`}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ duration: 0.3 }}
+            >
+              <HistoricalChatView
+                content={historicalContent}
+                loading={false}
               />
-              <LoopWatcher messages={messages} />
-            </div>
-          )
-        ) : (
-          <HistoricalChatView
-            content={historicalContent}
-            loading={historicalLoading}
-          />
-        )}
-      </div>
-      </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+        }>
+      </ResizableSplit>
 
       {/* ── Fixed bottom bar ────────────────────────────────────────────── */}
-      <div className="fixed bottom-0 inset-x-0 z-10">
+      {/* While the timeline is expanded (z-20 panel + translucent blur mask),
+          fade the input out — otherwise the card ghosts through the mask. */}
+      <div
+        className={`fixed bottom-0 inset-x-0 z-10 transition-opacity duration-300 ${
+          timelineOpen ? "pointer-events-none opacity-0" : "opacity-100"
+        }`}
+      >
         <div className="pt-2 pb-[max(0.5rem,env(safe-area-inset-bottom,0.5rem))]">
           <div className="mx-auto w-full md:max-w-2xl px-4 sm:px-6 lg:px-8">
             <ChatInput

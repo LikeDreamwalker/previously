@@ -20,7 +20,12 @@ import type {
   MonthlyIndex,
   StrandIndex,
 } from "./types";
-import { fsReadFile, fsWriteFile, fsListFiles } from "./io-helpers";
+import {
+  fsReadFile,
+  fsWriteFile,
+  fsListFiles,
+  type WriteBatch,
+} from "./io-helpers";
 import {
   newCardTemplate,
   migrateToV3,
@@ -93,13 +98,35 @@ export function createSlice(userMessage: string, timezone: string, turnId: strin
  * so we scan today's directory and return the most recent slice that is still
  * `active`. Returns null if the directory is missing or holds no active slice.
  */
-export async function tryLoadTodaySlice(): Promise<TimeSlice | null> {
+export async function tryLoadTodaySlice(
+  batch?: WriteBatch
+): Promise<TimeSlice | null> {
   const now = new Date();
-  const year = now.getUTCFullYear();
-  const month = String(now.getUTCMonth() + 1).padStart(2, "0");
-  const day = String(now.getUTCDate()).padStart(2, "0");
-  const dir = `memory/episodic/slices/${year}/${month}/${day}`;
+  const today = dirForDate(now);
+  // A conversation that crosses the UTC day boundary (00:00 UTC = 08:00 in
+  // UTC+8 — morning chats) lives in YESTERDAY's directory. Without this
+  // fallback the still-active slice is orphaned: never recovered, never
+  // closed, never reviewed by evolution.
+  const yesterday = dirForDate(new Date(now.getTime() - 86_400_000));
+  return (
+    (await scanDirForActiveSlice(today, batch)) ??
+    (await scanDirForActiveSlice(yesterday, batch))
+  );
+}
 
+/** Slice directory path for a UTC date: memory/episodic/slices/YYYY/MM/DD */
+function dirForDate(d: Date): string {
+  const year = d.getUTCFullYear();
+  const month = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return `memory/episodic/slices/${year}/${month}/${day}`;
+}
+
+/** Scan one day directory for the most recent slice still marked `active`. */
+async function scanDirForActiveSlice(
+  dir: string,
+  batch?: WriteBatch
+): Promise<TimeSlice | null> {
   try {
     const entries = await fsListFiles(dir);
 
@@ -111,7 +138,7 @@ export async function tryLoadTodaySlice(): Promise<TimeSlice | null> {
     for (const d of sliceDirs) {
       try {
         const corePath = `${dir}/${d.name}/timeline/core.md`;
-        const raw = await fsReadFile(corePath);
+        const raw = await fsReadFile(corePath, batch);
         const slice = parseSlice(raw);
         if (slice.status === "active") return slice;
       } catch {
@@ -125,7 +152,7 @@ export async function tryLoadTodaySlice(): Promise<TimeSlice | null> {
       .sort((a, b) => b.name.localeCompare(a.name));
 
     for (const f of files) {
-      const raw = await fsReadFile(f.path);
+      const raw = await fsReadFile(f.path, batch);
       const slice = parseSlice(raw);
       if (slice.status === "active") return slice;
     }
@@ -141,21 +168,26 @@ export async function tryLoadTodaySlice(): Promise<TimeSlice | null> {
  */
 export async function closeSlice(
   slice: TimeSlice,
-  signal: SlicingSignal
+  signal: SlicingSignal,
+  batch?: WriteBatch
 ): Promise<TimeSlice> {
   slice.status = "closed";
-  slice.end = new Date().toISOString();
+  // The end of the conversation is the LAST TURN's timestamp, not the moment
+  // this close executes — closes are lazy (time-silence is detected when the
+  // NEXT session arrives, possibly hours later), so stamping "now" would
+  // fabricate a false end and zero out the continuity gap.
+  slice.end = slice.turns.at(-1)?.timestamp ?? new Date().toISOString();
   slice.closedBy = signal;
 
   // Persist the closed slice body to disk
   const slicePath = getSlicePath(slice);
   const markdown = serializeSlice(slice);
-  await fsWriteFile(slicePath, markdown);
+  await fsWriteFile(slicePath, markdown, batch);
 
   // Run index maintenance
-  await updateMonthlyIndex(slice);
+  await updateMonthlyIndex(slice, batch);
   if (slice.tags.length > 0) {
-    await updateStrands(slice);
+    await updateStrands(slice, batch);
   }
 
   // Clear active if this was the active slice
@@ -257,6 +289,7 @@ export function serializeSlice(slice: TimeSlice): string {
     related_slices: slice.related_slices,
     loops: slice.loops,
     emotional_tone: slice.emotional_tone,
+    closed_by: slice.closedBy,
   };
 
   // Remove undefined fields for clean YAML
@@ -330,9 +363,26 @@ export function parseSlice(raw: string): TimeSlice {
     emotional_tone: frontmatter.emotional_tone as SliceFrontmatter["emotional_tone"],
     turns,
     estimatedTokens,
+    // The real close signal round-trips through frontmatter since v0.8;
+    // legacy closed slices lack `closed_by` and fall back to user_explicit.
     closedBy:
-      frontmatter.status === "closed" ? "user_explicit" : undefined,
+      frontmatter.status === "closed"
+        ? isSlicingSignal(frontmatter.closed_by)
+          ? frontmatter.closed_by
+          : "user_explicit"
+        : undefined,
   };
+}
+
+const SLICING_SIGNALS: readonly SlicingSignal[] = [
+  "time_silence",
+  "user_explicit",
+  "capacity",
+  "context_lost",
+];
+
+function isSlicingSignal(v: unknown): v is SlicingSignal {
+  return typeof v === "string" && (SLICING_SIGNALS as readonly string[]).includes(v);
 }
 
 /**
@@ -439,11 +489,12 @@ export function appendTurn(slice: TimeSlice, turn: Turn): void {
  */
 async function readSliceIndexRaw(
   year: number,
-  month: number
+  month: number,
+  batch?: WriteBatch
 ): Promise<SliceIndexEntry[]> {
   const indexPath = getIndexPath(year, month);
   try {
-    const raw = await fsReadFile(indexPath);
+    const raw = await fsReadFile(indexPath, batch);
     const parsed: MonthlyIndex = JSON.parse(raw);
     return parsed.slices ?? [];
   } catch {
@@ -472,27 +523,28 @@ function cacheSet<T>(store: Map<string, { data: T; ttl: number }>, key: string, 
 
 export async function readSliceIndex(
   year: number,
-  month: number
+  month: number,
+  batch?: WriteBatch
 ): Promise<SliceIndexEntry[]> {
   if (DEMO_MODE) {
     const key = `${getDemoPersona()}:idx:${year}:${month}`;
     const cached = cacheGet(_indexCache, key);
     if (cached) return cached;
-    const data = await readSliceIndexRaw(year, month);
+    const data = await readSliceIndexRaw(year, month, batch);
     cacheSet(_indexCache, key, data);
     return data;
   }
-  return readSliceIndexRaw(year, month);
+  return readSliceIndexRaw(year, month, batch);
 }
 
 /**
  * Read the global strands.json (keyword→slice index).
  * Returns an empty object if the strand index does not exist.
  */
-export async function readStrands(): Promise<StrandIndex> {
+export async function readStrands(batch?: WriteBatch): Promise<StrandIndex> {
   const strandsPath = getStrandsPath();
   try {
-    const raw = await fsReadFile(strandsPath);
+    const raw = await fsReadFile(strandsPath, batch);
     return JSON.parse(raw) as StrandIndex;
   } catch {
     return {};
@@ -536,12 +588,15 @@ export function toIndexEntry(slice: TimeSlice): SliceIndexEntry {
  * Update (or create) the monthly _index.json for the slice's year/month.
  * Upserts the slice's index entry into the existing index.
  */
-export async function updateMonthlyIndex(slice: TimeSlice): Promise<void> {
+export async function updateMonthlyIndex(
+  slice: TimeSlice,
+  batch?: WriteBatch
+): Promise<void> {
   const [yearStr, monthStr] = slice.slice_id.split("-");
   const year = parseInt(yearStr, 10);
   const month = parseInt(monthStr, 10);
 
-  const existing = await readSliceIndex(year, month);
+  const existing = await readSliceIndex(year, month, batch);
   const entry = toIndexEntry(slice);
 
   // Upsert: replace existing entry with same id, or append
@@ -557,7 +612,7 @@ export async function updateMonthlyIndex(slice: TimeSlice): Promise<void> {
 
   const indexPath = getIndexPath(year, month);
   const json = serializeIndex(existing, `${yearStr}-${monthStr}`);
-  await fsWriteFile(indexPath, json);
+  await fsWriteFile(indexPath, json, batch);
 }
 
 /**
@@ -568,8 +623,11 @@ export async function updateMonthlyIndex(slice: TimeSlice): Promise<void> {
  * one exists (never creating a near-duplicate); only a genuinely new tag creates
  * a new key (stored normalized). See `weaveTag` in strands.ts.
  */
-export async function updateStrands(slice: TimeSlice): Promise<void> {
-  const strands = await readStrands();
+export async function updateStrands(
+  slice: TimeSlice,
+  batch?: WriteBatch
+): Promise<void> {
+  const strands = await readStrands(batch);
   const relativePath = extractRelativePath(slice);
 
   for (const tag of slice.tags) {
@@ -578,7 +636,7 @@ export async function updateStrands(slice: TimeSlice): Promise<void> {
 
   const strandsPath = getStrandsPath();
   const json = serializeStrands(strands);
-  await fsWriteFile(strandsPath, json);
+  await fsWriteFile(strandsPath, json, batch);
 }
 
 /**
@@ -598,18 +656,19 @@ function extractRelativePath(slice: TimeSlice): string {
 export async function writeAgentTimeline(
   sliceId: string,
   cognitionContent: string,
+  batch?: WriteBatch,
 ): Promise<{ path: string; created: boolean }> {
   const agentPath = sliceIdToAgentPath(sliceId);
   let existing = "";
   try {
-    existing = await fsReadFile(agentPath);
+    existing = await fsReadFile(agentPath, batch);
   } catch {
     // File doesn't exist yet — will be created
   }
   const fullContent = existing.trimEnd()
     ? existing.trimEnd() + "\n\n" + cognitionContent
     : cognitionContent;
-  return fsWriteFile(agentPath, fullContent);
+  return fsWriteFile(agentPath, fullContent, batch);
 }
 
 /**
@@ -636,9 +695,12 @@ export function emptyPreviouslyTemplate(sliceId: string): string {
  * Returns "" if it doesn't exist yet. Internal — ensurePreviously uses it so
  * it can still detect and persist legacy files.
  */
-async function readPreviouslyRaw(sliceId: string): Promise<string> {
+async function readPreviouslyRaw(
+  sliceId: string,
+  batch?: WriteBatch
+): Promise<string> {
   try {
-    return await fsReadFile(sliceIdToPreviouslyPath(sliceId));
+    return await fsReadFile(sliceIdToPreviouslyPath(sliceId), batch);
   } catch {
     return "";
   }
@@ -663,8 +725,9 @@ export async function readPreviously(sliceId: string): Promise<string> {
 export async function writePreviously(
   sliceId: string,
   content: string,
+  batch?: WriteBatch,
 ): Promise<void> {
-  await fsWriteFile(sliceIdToPreviouslyPath(sliceId), content);
+  await fsWriteFile(sliceIdToPreviouslyPath(sliceId), content, batch);
 }
 
 /**
@@ -672,7 +735,9 @@ export async function writePreviously(
  * calendar days (up to 30). Returns the content migrated to the v3 format,
  * or null if no frozen previously.md exists within the lookback window.
  */
-export async function findMostRecentPreviously(): Promise<string | null> {
+export async function findMostRecentPreviously(
+  batch?: WriteBatch
+): Promise<string | null> {
   const now = new Date();
   const MAX_DAYS = 30;
 
@@ -692,7 +757,7 @@ export async function findMostRecentPreviously(): Promise<string | null> {
       for (const sd of sliceDirs) {
         try {
           const prevPath = `${dir}/${sd.name}/previously.md`;
-          const content = await fsReadFile(prevPath);
+          const content = await fsReadFile(prevPath, batch);
           if (content.trim()) {
             return isCardFormat(content) ? content : migrateToV3(content);
           }
@@ -717,17 +782,22 @@ export async function findMostRecentPreviously(): Promise<string | null> {
 export const CURRENT_PREVIOUSLY_PATH = "memory/episodic/current-previously.md";
 
 /** Read the live card. Returns "" if it doesn't exist yet. */
-export async function readCurrentPreviously(): Promise<string> {
+export async function readCurrentPreviously(
+  batch?: WriteBatch
+): Promise<string> {
   try {
-    return await fsReadFile(CURRENT_PREVIOUSLY_PATH);
+    return await fsReadFile(CURRENT_PREVIOUSLY_PATH, batch);
   } catch {
     return "";
   }
 }
 
 /** Overwrite the live card. */
-export async function writeCurrentPreviously(content: string): Promise<void> {
-  await fsWriteFile(CURRENT_PREVIOUSLY_PATH, content);
+export async function writeCurrentPreviously(
+  content: string,
+  batch?: WriteBatch
+): Promise<void> {
+  await fsWriteFile(CURRENT_PREVIOUSLY_PATH, content, batch);
 }
 
 /**
@@ -740,30 +810,33 @@ export async function writeCurrentPreviously(content: string): Promise<void> {
  * maintained by the inline evolution via `writeCurrentPreviously`. Closed
  * slices keep the snapshot evolution wrote at close.
  */
-export async function ensurePreviously(sliceId: string): Promise<string> {
+export async function ensurePreviously(
+  sliceId: string,
+  batch?: WriteBatch
+): Promise<string> {
   // Live card — what the current conversation injects. Normalize a legacy
   // (v1/v2/v3) card to the user-card structure once; seed from the latest
   // snapshot or a template when it doesn't exist yet.
-  let current = await readCurrentPreviously();
+  let current = await readCurrentPreviously(batch);
   if (current.trim() && !isCardFormat(current)) {
     current = migrateV3ToCard(current, sliceId);
-    await writeCurrentPreviously(current);
+    await writeCurrentPreviously(current, batch);
   } else if (!current.trim()) {
-    const source = await findMostRecentPreviously();
+    const source = await findMostRecentPreviously(batch);
     current = source
       ? isCardFormat(source)
         ? source
         : migrateV3ToCard(source, sliceId)
       : newCardTemplate(sliceId);
-    await writeCurrentPreviously(current);
+    await writeCurrentPreviously(current, batch);
   }
 
   // Copy the live card to this slice's per-slice file (the agent uses the new
   // slice's card). Only writes when they differ — within a slice the live card
   // is stable, so this is a single fresh write at slice creation, then silent.
-  const existing = await readPreviouslyRaw(sliceId);
+  const existing = await readPreviouslyRaw(sliceId, batch);
   if (existing !== current) {
-    await writePreviously(sliceId, current);
+    await writePreviously(sliceId, current, batch);
   }
 
   return current;
@@ -792,19 +865,25 @@ export function clearActiveSlice(): void {
  * This is a checkpoint — the slice remains active and turns continue to append.
  * Called every N turns and on beforeunload flush.
  */
-export async function saveSliceSnapshot(slice: TimeSlice): Promise<void> {
+export async function saveSliceSnapshot(
+  slice: TimeSlice,
+  batch?: WriteBatch
+): Promise<void> {
   const slicePath = getSlicePath(slice);
   const markdown = serializeSlice(slice);
-  await fsWriteFile(slicePath, markdown);
+  await fsWriteFile(slicePath, markdown, batch);
 }
 
 /**
  * Persist _index.json and strands.json for an active slice.
  * Called on snapshot save so browseSlices has entries even for active slices.
  */
-export async function ensureIndexEntries(slice: TimeSlice): Promise<void> {
-  await updateMonthlyIndex(slice);
+export async function ensureIndexEntries(
+  slice: TimeSlice,
+  batch?: WriteBatch
+): Promise<void> {
+  await updateMonthlyIndex(slice, batch);
   if (slice.tags.length > 0) {
-    await updateStrands(slice);
+    await updateStrands(slice, batch);
   }
 }

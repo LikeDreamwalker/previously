@@ -28,11 +28,11 @@ import {
 } from "@/lib/demo/demo-fs";
 
 import { searchViaFlash, type WebSearchResult } from "@/lib/search/flash-search";
-import { isPrivateHost, extractText } from "@/lib/search/fetch-utils";
+import { isPrivateHost, extractText, fetchWithGuard } from "@/lib/search/fetch-utils";
 import { startLoop } from "@/app/api/loops/start-loop";
 import { readLoopRun, serializeLoop, writeLoopFile } from "@/lib/loops/store";
 import { isAIConfigured, canWrite, DEPLOY_GUIDE_URL } from "@/lib/capabilities";
-import type { LoopRun, LoopStep } from "@/lib/loops/types";
+import { LOOP_WALL_CLOCK_MS, type LoopRun, type LoopStep } from "@/lib/loops/types";
 import {
   runRecallSearch,
   type RecallHit,
@@ -44,7 +44,9 @@ import {
   annotateSliceWithLocalTime,
   sliceLocalBanner,
   sliceIdLocalClock,
+  sliceIdRelPhrase,
 } from "@/lib/episodic/time-localize";
+import { normalizeLocale } from "@/lib/time/relative";
 import { formatLocalTime } from "@/lib/turn-priming";
 import {
   splitTurns,
@@ -70,6 +72,10 @@ import {
   reassembleSlice,
   type ParsedTurn,
 } from "@/lib/episodic/turn-parser";
+import matter from "gray-matter";
+import { sliceLine } from "@/lib/episodic/timeline/render";
+import { TIMELINE_INDEX_PATH } from "@/lib/episodic/timeline/store";
+import type { TimelineSliceEntry } from "@/lib/episodic/timeline/types";
 
 // ─── Shared tool contexts ────────────────────────────────────────────────
 
@@ -117,6 +123,8 @@ export interface ToolContext {
   timezone?: string;
   /** The turn's start instant (UTC ISO) — anchors local-time rendering. */
   startedAtIso?: string;
+  /** UI locale ("zh" | "en") — relative-time annotations follow it. */
+  locale?: string;
 }
 
 /**
@@ -269,6 +277,82 @@ export async function readSliceExecute(
     const msg = domainError(e);
     if (msg === null) throw e;
     return `ERROR: ${msg}. This time slice does not exist.`;
+  }
+}
+
+// ── readSliceSummary — frontmatter only (the cheapest relevance check) ──
+
+export async function readSliceSummaryExecute(
+  { sliceId }: { sliceId: string },
+  { context: ctx }: ExecuteOpts<ToolContext>,
+): Promise<string> {
+  "use step";
+  const parsed = parseSliceId(sliceId);
+  if (!parsed) {
+    return "ERROR: Invalid slice ID. Expected format: YYYY-MM-DD-HHMM (e.g. 2026-07-24-1500).";
+  }
+  const path = `memory/episodic/slices/${parsed.y}/${parsed.m}/${parsed.d}/${parsed.hm}/timeline/core.md`;
+  try {
+    const raw = ctx.useDemo
+      ? await readFileDemo(path)
+      : ctx.useGithub
+        ? await readFile(path, ctx.repo, ctx.owner)
+        : await readFileLocal(path);
+    const { data } = matter(raw);
+    const { turns } = parseTurns(raw);
+    const fmt = (v: unknown): string =>
+      Array.isArray(v) && v.length ? v.join("; ") : "(none)";
+    const lines = [
+      `slice ${sliceId}`,
+      `start: ${typeof data.start === "string" ? data.start : "?"}`,
+      `end: ${typeof data.end === "string" ? data.end : "(active)"}`,
+      `turns: ${turns.length}`,
+      `focus: ${typeof data.focus === "string" && data.focus ? data.focus : "(none)"}`,
+      `summary: ${typeof data.summary === "string" && data.summary ? data.summary : "(none)"}`,
+      `tags: ${fmt(data.tags)}`,
+      `tone: ${typeof data.emotional_tone === "string" && data.emotional_tone ? data.emotional_tone : "(none)"}`,
+      `open_loops: ${fmt(data.open_loops)}`,
+      `decisions: ${fmt(data.decisions)}`,
+    ];
+    const note = ctx.timezone ? `\n(时间均为 UTC；本地时区 ${ctx.timezone})` : "";
+    return lines.join("\n") + note;
+  } catch (e) {
+    const msg = domainError(e);
+    if (msg === null) throw e;
+    return `ERROR: ${msg}. This time slice does not exist.`;
+  }
+}
+
+// ── readTimelineWindow — the timeline catalog over a date window ────────
+
+export async function readTimelineWindowExecute(
+  { from, to, limit }: { from?: string; to?: string; limit?: number },
+  { context: ctx }: ExecuteOpts<ToolContext>,
+): Promise<string> {
+  "use step";
+  try {
+    const raw = ctx.useDemo
+      ? await readFileDemo(TIMELINE_INDEX_PATH)
+      : ctx.useGithub
+        ? await readFile(TIMELINE_INDEX_PATH, ctx.repo, ctx.owner)
+        : await readFileLocal(TIMELINE_INDEX_PATH);
+    const idx = JSON.parse(raw) as { slices?: TimelineSliceEntry[] };
+    const slices = (idx.slices ?? [])
+      .filter((s) => {
+        const date = s.id.slice(0, 10); // "YYYY-MM-DD"
+        if (from && date < from) return false;
+        if (to && date > to) return false;
+        return true;
+      })
+      .sort((a, b) => b.id.localeCompare(a.id))
+      .slice(0, limit ?? 20);
+    if (slices.length === 0) {
+      return `(时间线窗口 ${from ?? "开始"} → ${to ?? "现在"} 内没有切片)`;
+    }
+    const windowLabel = `${from ?? "开始"} → ${to ?? "现在"}`;
+    return `时间线窗口 ${windowLabel}（${slices.length} 片，每一行是指针，不是内容——相关就先 readSliceSummary / readSlice）：\n\n${slices.map(sliceLine).join("\n")}`;
+  } catch {
+    return "(时间线目录尚不可用——weave 尚未运行，或演示数据没有目录)";
   }
 }
 
@@ -580,9 +664,8 @@ export async function webFetchExecute(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), WEB_FETCH_TIMEOUT_MS);
   try {
-    const res = await fetch(parsed.toString(), {
+    const res = await fetchWithGuard(parsed.toString(), {
       signal: controller.signal,
-      redirect: "follow",
     });
     if (!res.ok) {
       return `ERROR: HTTP ${res.status} ${res.statusText}`;
@@ -653,6 +736,11 @@ export async function recallExecute(
     // Soft 120s safety net. Recall is best-effort: a timeout returns an empty
     // search rather than failing the step, so the main agent knows nothing was
     // found instead of a hard error.
+    //
+    // Cancellation: withStepTimeout aborts its signal on timeout, but
+    // runRecallSearch's generateText has no abortSignal param to consume it,
+    // so the loser runs to completion in the background. That is harmless
+    // here — recall is read-only and its late result is discarded by the race.
     const workerModel = ctx.workerModel ?? (await resolveWorkerModel());
     const timed = await withStepTimeout(
       () =>
@@ -702,11 +790,21 @@ export async function recallExecute(
         ? "No relevant past conversations were found for this query. This is a definitive result — do NOT call recall again for this topic; answer from the conversation and your knowledge."
         : undefined;
 
-    // Pre-render each hit's local clock (from its UTC-derived slice id) so the
-    // agent knows WHEN a past conversation happened without converting itself.
+    // Pre-render each hit's local clock + relative days (from its UTC-derived
+    // slice id) so the agent knows WHEN a past conversation happened without
+    // converting UTC or doing date arithmetic itself.
     const annotateReason = (reason: string, sliceId: string) => {
-      const clock = ctx.timezone ? sliceIdLocalClock(sliceId, ctx.timezone) : null;
-      return clock ? `${reason}（本地 ${clock}）` : reason;
+      if (!ctx.timezone) return reason;
+      const clock = sliceIdLocalClock(sliceId, ctx.timezone);
+      if (!clock) return reason;
+      const rel = sliceIdRelPhrase(sliceId, ctx.timezone, {
+        nowIso: ctx.startedAtIso,
+        locale: ctx.locale ?? "en",
+      });
+      const inner = rel ? `${clock} · ${rel}` : clock;
+      return normalizeLocale(ctx.locale) === "zh"
+        ? `${reason}（本地 ${inner}）`
+        : `${reason} (local ${inner})`;
     };
     return {
       hits: result.hits.map((h) => ({ ...h, reason: annotateReason(h.reason, h.slice_id) })),
@@ -1229,10 +1327,15 @@ export async function loopReportExecute(
   try {
     // The GitHub/local read-append-write can hang on a network partition; a 30s
     // soft timeout bounds the checkpoint. The loop run file is the accumulator,
-    // so a timed-out checkpoint is safe to retry.
+    // so a timed-out checkpoint is safe to retry. The abort signal stops the
+    // losing work BEFORE its write — otherwise a timed-out checkpoint could
+    // still commit later and duplicate the step the retry already recorded.
     const io = await withStepTimeout(
-      async () => {
+      async (signal) => {
         const existing = await readLoopRun(ctx.filePath);
+        if (signal.aborted) {
+          throw new Error("Checkpoint aborted after timeout — write skipped");
+        }
         const priorSteps: LoopStep[] = existing?.steps ?? [];
         const step: LoopStep = {
           step: priorSteps.length + 1,
@@ -1248,6 +1351,9 @@ export async function loopReportExecute(
           status: "running", // final status is stamped by the workflow's finalizeLoop
           startedAt: ctx.startedAt,
           updatedAt: new Date().toISOString(),
+          deadlineAt:
+            existing?.deadlineAt ??
+            new Date(Date.parse(ctx.startedAt) + LOOP_WALL_CLOCK_MS).toISOString(),
           sliceOrigin: ctx.sliceOrigin,
           tags: ctx.tags,
           iterations: steps.length,
@@ -1255,6 +1361,9 @@ export async function loopReportExecute(
           lastError: existing?.lastError ?? "",
           steps,
         };
+        if (signal.aborted) {
+          throw new Error("Checkpoint aborted after timeout — write skipped");
+        }
         await writeLoopFile(ctx.filePath, serializeLoop(run));
         return { steps, step };
       },

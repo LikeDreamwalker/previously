@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { dropTrailingAssistantMessages } from "@/lib/chat/reconnect";
+import {
+  decideArrival,
+  dropTrailingAssistantMessages,
+} from "@/lib/chat/reconnect";
 import type { UIMessage } from "ai";
 
 // dropTrailingAssistantMessages is the pure half of the reconnect reset: it
@@ -62,5 +65,45 @@ describe("dropTrailingAssistantMessages", () => {
     const out = dropTrailingAssistantMessages([]);
     expect(out).toEqual([]);
     expect(out).not.toBe([]);
+  });
+});
+
+// decideArrival is the pure half of the mount-time arrival verdict: the live
+// view restores ONLY in-flight work (the server said the run is still
+// pending/running); every other arrival opens blank so the arrival briefing
+// greets the user and completed conversation stays on the timeline.
+describe("decideArrival", () => {
+  it("resumes with the working conversation when the run is still active", () => {
+    const stored = [msg("u1", "user"), msg("a1", "assistant")];
+    const d = decideArrival(true, stored);
+    expect(d.shouldResume).toBe(true);
+    // The trailing partial turn is dropped — the replay rebuilds it.
+    expect(ids(d.initialMessages)).toEqual(["u1"]);
+  });
+
+  it("keeps a trailing user message when resuming (reply not started yet)", () => {
+    const stored = [msg("u1", "user"), msg("a1", "assistant"), msg("u2", "user")];
+    const d = decideArrival(true, stored);
+    expect(d.shouldResume).toBe(true);
+    expect(ids(d.initialMessages)).toEqual(["u1", "a1", "u2"]);
+  });
+
+  it("resumes into an empty store when the stash is gone (full replay)", () => {
+    const d = decideArrival(true, []);
+    expect(d.shouldResume).toBe(true);
+    expect(d.initialMessages).toEqual([]);
+  });
+
+  it("opens blank when the run is terminal — completed conversation is NOT restored", () => {
+    const stored = [msg("u1", "user"), msg("a1", "assistant")];
+    const d = decideArrival(false, stored);
+    expect(d.shouldResume).toBe(false);
+    expect(d.initialMessages).toEqual([]);
+  });
+
+  it("opens blank when there is no stash at all", () => {
+    const d = decideArrival(false, []);
+    expect(d.shouldResume).toBe(false);
+    expect(d.initialMessages).toEqual([]);
   });
 });

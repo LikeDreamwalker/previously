@@ -5,15 +5,25 @@
  * client. It runs synchronously inside the turn's housekeeping step, so the
  * new slice's card is always the freshly-evolved one. This function is the
  * callable core: given the current card + the content to fold in, it runs the
- * Previously Agent, applies the updated card with mechanical enforcement, and
- * writes both the live card (current-previously.md) and the per-slice snapshot.
+ * Previously Agent (which edits the card through validated MUTATION tools —
+ * never a whole-file rewrite), and writes both the live card
+ * (current-previously.md) and the per-slice snapshot when the substance moved.
+ *
+ * There is deliberately NO mechanical post-processing of the agent's output:
+ * caps and format are enforced inside the write tools (rejections come back
+ * with compression instructions), so every byte of the final card is the
+ * agent's own decision. Engineering owns the trigger and the write-back;
+ * the model owns the content.
  *
  * Streaming is surfaced via the optional `onProgress` callback so the caller
  * (housekeeping) can push data-evolution chunks to the client — no idle wait.
  */
 import { runPreviouslyAgent, type PreviouslySignal } from "@/lib/episodic/flash/previously-agent";
-import { applyCardUpdate } from "@/lib/episodic/previously-updater";
+import { parseCard } from "@/lib/episodic/previously-format";
+import { sameCardSubstance } from "@/lib/episodic/card-session";
+import { diffCardLines, summarizeCardChanges, type CardChangeSummary, type CardMutation } from "@/lib/episodic/card-diff";
 import { readCurrentPreviously, writeCurrentPreviously, writePreviously } from "@/lib/episodic";
+import type { WriteBatch } from "@/lib/episodic/io-helpers";
 import type { ModelConfig } from "@/lib/models/registry";
 
 export interface CardEvolutionReaders {
@@ -46,6 +56,11 @@ export interface RunCardEvolutionInput {
   readers: CardEvolutionReaders;
   /** Progress callback — wire to the turn stream (data-evolution chunks). */
   onProgress?: (step: "reading" | "reviewing" | "applied") => void;
+  /** The owning turn's write batch — card writes join its single commit. */
+  batch?: WriteBatch;
+  /** The user's local calendar date (YYYY-MM-DD) — Now ages, overdue checks,
+   *  and the default `since` all run on the user's clock, not UTC. */
+  todayDate?: string;
 }
 
 export interface RunCardEvolutionResult {
@@ -53,11 +68,20 @@ export interface RunCardEvolutionResult {
   changed: boolean;
   droppedRecent: number;
   note: string;
+  /** ONE user-language sentence describing what changed — shown in the
+   *  evolution indicator and handed to the core agent. Present when changed. */
+  summary?: string;
+  /** Line-level mutations vs the previous card — the indicator's expanded diff. */
+  mutations?: CardMutation[];
+  /** Semantic change counts (added/reinforced/demoted/removed/superseded) —
+   *  the indicator's collapsed summary. Present when the card moved. */
+  changes?: CardChangeSummary;
+  /** Set when the evolution FAILED — never present on a legitimate no-change. */
+  error?: string;
 }
 
 const VALID_SIGNALS: PreviouslySignal[] = [
   "new_observation",
-  "user_correction",
   "slice_closed",
   "self_reflection",
 ];
@@ -65,7 +89,7 @@ const VALID_SIGNALS: PreviouslySignal[] = [
 export async function runCardEvolution(
   input: RunCardEvolutionInput,
 ): Promise<RunCardEvolutionResult> {
-  const rawCard = await readCurrentPreviously();
+  const rawCard = await readCurrentPreviously(input.batch);
   const baseCard = rawCard.trim() ? rawCard : "";
   const signal: PreviouslySignal = VALID_SIGNALS.includes(input.signal ?? "new_observation")
     ? (input.signal as PreviouslySignal)
@@ -87,9 +111,9 @@ export async function runCardEvolution(
     currentSliceId: input.sliceId,
     closedSliceId: input.closedSliceId,
     previouslyContent: baseCard,
-    agentCognition: "",
     recentTurns: input.recentTurns,
     currentSliceTags: input.currentSliceTags,
+    todayLocal: input.todayDate,
     readSliceFn: input.readers.readSlice,
     readAgentTimelineFn: input.readers.readAgentTimeline,
     readPreviouslyFn: input.readers.readPreviously,
@@ -97,21 +121,43 @@ export async function runCardEvolution(
 
   input.onProgress?.("reviewing");
 
+  // A FAILED worker (unreachable / schema-invalid / no finish call) must not be
+  // presented as "checked, no updates" — surface the failure as an error.
+  if (result.failed) {
+    return { ran: true, changed: false, droppedRecent: 0, note: result.reasoning, error: result.reasoning };
+  }
+
   if (!result.updatedCard.trim()) {
     return { ran: true, changed: false, droppedRecent: 0, note: result.reasoning };
   }
 
-  const applied = applyCardUpdate(baseCard, result.updatedCard, input.sliceId);
-  // Live card — the next turn's conversation reads this.
-  await writeCurrentPreviously(applied.content);
-  // Per-slice snapshot — the closed slice's final card.
-  await writePreviously(input.sliceId, applied.content);
+  // The agent's session serialized the final card; substance comparison
+  // decides whether anything actually moved (stamps refresh on every pass and
+  // are ignored). Skip BOTH writes on a no-op pass — writing an unchanged card
+  // would produce an empty commit entry for nothing. (The per-slice snapshot
+  // is kept fresh by ensurePreviously copying the live card forward each turn.)
+  const changed = !sameCardSubstance(parseCard(baseCard), parseCard(result.updatedCard));
+  if (changed) {
+    // Live card — the next turn's conversation reads this.
+    await writeCurrentPreviously(result.updatedCard, input.batch);
+    // Per-slice snapshot — the closed slice's final card.
+    await writePreviously(input.sliceId, result.updatedCard, input.batch);
+  }
 
   input.onProgress?.("applied");
   return {
     ran: true,
-    changed: applied.changed,
-    droppedRecent: applied.droppedRecent,
+    changed,
+    droppedRecent: 0,
     note: result.reasoning,
+    // The agent's own one-sentence account of what changed — only meaningful
+    // when the card moved.
+    summary: changed && result.summary.trim() ? result.summary.trim() : undefined,
+    // The expanded "what changed" diff + the semantic counts — only meaningful
+    // when the card moved.
+    mutations: changed ? diffCardLines(baseCard, result.updatedCard) : [],
+    changes: changed
+      ? summarizeCardChanges(baseCard, result.updatedCard, 0)
+      : undefined,
   };
 }

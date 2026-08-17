@@ -309,13 +309,15 @@ export function buildMockSteps(): MockStep[] {
 - Preferred handle: no preference stated
 - Pronouns: —
 
-### Profile
+### Past
 A full-stack engineer who thinks in systems. Prefers clean architecture with clear separation of concerns, and a streaming-first UX — hates waiting without feedback. Values time-based organization over topic-based filing.
 
-### Recent
+### Now
 - Redesigning the memory layer — user card + per-slice evolution
 - Streaming UX polish for the chat response flow
-- Exploring durable background loops via Vercel Workflow
+
+### Horizon
+- Ship the v5 card redesign — by: next milestone
 
 ### Self-model
 - diff from baseline: prefers Rust for business logic, React for UI (noted, but the conversation is product-first)`;

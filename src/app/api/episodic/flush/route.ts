@@ -9,7 +9,10 @@
  */
 import { readFile, writeFile } from "@/lib/tools";
 import { readFileLocal, writeFileLocal } from "@/lib/tools/local-fs";
-import { sliceIdToFilePath } from "@/lib/episodic/manager";
+import { sliceIdToFilePath, sliceIdToAgentPath } from "@/lib/episodic/manager";
+import { parseSliceId } from "@/lib/episodic/turn-parser";
+import { isProtectedSystemPath } from "@/lib/whitelist";
+import { guardRequest } from "@/lib/security/origin-guard";
 import { z } from "zod";
 import { getRepoConfig, isDemo } from "@/lib/capabilities";
 import { resolveDataSource } from "@/lib/data-source/resolve";
@@ -17,7 +20,13 @@ import { resolveDataSource } from "@/lib/data-source/resolve";
 // ─── Types ───────────────────────────────────────────────────────────────
 
 const flushRequestSchema = z.object({
-  sliceId: z.string().min(1).max(64),
+  // Strict slice id (YYYY-MM-DD-HHMM) — this value is interpolated into a
+  // file path, so a loose string would be a path-traversal hole.
+  sliceId: z
+    .string()
+    .refine((v) => parseSliceId(v) !== null, {
+      message: "sliceId must be in YYYY-MM-DD-HHMM format",
+    }),
   turns: z
     .array(
       z.object({
@@ -26,7 +35,8 @@ const flushRequestSchema = z.object({
         timestamp: z.string().max(64),
       })
     )
-    .min(1),
+    .min(1)
+    .max(50),
 });
 
 type FlushRequest = z.infer<typeof flushRequestSchema>;
@@ -77,6 +87,8 @@ function buildFreshFrontmatter(sliceId: string): string {
 // ─── Route handler ───────────────────────────────────────────────────────
 
 export async function POST(request: Request) {
+  const blocked = guardRequest(request);
+  if (blocked) return blocked;
   try {
     // Demo mode: flush writes are not persisted — the beforeunload save is
     // irrelevant without a writable backend. Return success so the client
@@ -96,6 +108,24 @@ export async function POST(request: Request) {
 
     // Compute the slice file path (matching getSlicePath in the episodic manager)
     const slicePath = sliceIdToFilePath(sliceId);
+
+    // ── Write-target constraint (defense in depth) ─────────────────────
+    // This endpoint may only ever touch the target slice's own
+    // timeline/core.md (or timeline/agent.md). Two independent layers:
+    //  1. explicit allow-set derived from the validated sliceId, and
+    //  2. isProtectedSystemPath — the write must land inside the
+    //     system-managed episodic zone that generic write tools refuse.
+    // The strict sliceId validation above already makes traversal
+    // impossible; these checks guard against future refactors of the path
+    // helpers silently widening what flush can overwrite.
+    const allowedWriteTargets = new Set([
+      sliceIdToFilePath(sliceId),
+      sliceIdToAgentPath(sliceId),
+    ]);
+    if (!allowedWriteTargets.has(slicePath) || !isProtectedSystemPath(slicePath)) {
+      console.error("[episodic/flush] Refused write target:", slicePath);
+      return Response.json({ error: "Invalid request body" }, { status: 400 });
+    }
 
     // ── Read the existing slice body (if any) ──────────────────────────
     let existingContent = "";

@@ -12,8 +12,12 @@
 import { createUIMessageStreamResponse, type UIMessage } from "ai";
 import { startTurn } from "./start-turn";
 import { createMixedStreamTransform } from "./mixed-stream-transform";
+import { formatErrorDetail } from "@/lib/chat/workflow-errors";
+import { guardRequest } from "@/lib/security/origin-guard";
 
 export async function POST(request: Request): Promise<Response> {
+  const blocked = guardRequest(request);
+  if (blocked) return blocked;
   try {
     const body = (await request.json()) as {
       messages?: unknown;
@@ -21,6 +25,7 @@ export async function POST(request: Request): Promise<Response> {
       thinking?: unknown;
       effort?: unknown;
       timezone?: unknown;
+      locale?: unknown;
     };
 
     const { messages } = body;
@@ -41,6 +46,11 @@ export async function POST(request: Request): Promise<Response> {
           ? (body.effort as "low" | "medium" | "high")
           : undefined,
       timezone: typeof body.timezone === "string" ? body.timezone : undefined,
+      locale:
+        typeof body.locale === "string" &&
+        ["en", "zh"].includes(body.locale)
+          ? body.locale
+          : undefined,
     });
 
     return createUIMessageStreamResponse({
@@ -55,6 +65,9 @@ export async function POST(request: Request): Promise<Response> {
       console.error("[chat] Configuration error:", error.message);
       return new Response(JSON.stringify({ error: "Server configuration error" }), { status: 500, headers: { "Content-Type": "application/json" } });
     }
+    // v0.8: full diagnostic trail for anything the request handler didn't
+    // handle (startTurn failures, workflow-start errors, stream-setup throws).
+    console.error("[chat] POST /api/chat unhandled:", formatErrorDetail(error));
     throw error;
   }
 }

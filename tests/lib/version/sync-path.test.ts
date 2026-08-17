@@ -10,11 +10,6 @@ describe("shouldSyncPath", () => {
     expect(shouldSyncPath("src/components/chat/chat-message.tsx")).toBe(true);
   });
 
-  it("returns true for content/ files", () => {
-    expect(shouldSyncPath("content/docs/en/deployment.md")).toBe(true);
-    expect(shouldSyncPath("content/docs/zh/deployment.md")).toBe(true);
-  });
-
   it("returns true for public/ files", () => {
     expect(shouldSyncPath("public/favicon.ico")).toBe(true);
     expect(shouldSyncPath("public/llms.txt")).toBe(true);
@@ -92,6 +87,11 @@ describe("shouldSyncPath", () => {
 
   it("returns false for sessions/ files", () => {
     expect(shouldSyncPath("sessions/active.json")).toBe(false);
+  });
+
+  it("returns false for content/ files (docs moved to the external site)", () => {
+    expect(shouldSyncPath("content/docs/en/deployment.md")).toBe(false);
+    expect(shouldSyncPath("content/docs/zh/deployment.md")).toBe(false);
   });
 
   // ── Excluded subdirectories (gitignored — belt and suspenders) ──

@@ -8,6 +8,11 @@
       "day": ""
     }
   },
+  "errorBoundary": {
+    "title": "Client render error — full details below",
+    "consoleHint": "The full error and component stack are also logged to the browser console.",
+    "fullError": "Full error details"
+  },
   "nav": {
     "dashboard": "Dashboard",
     "chat": "Chat",
@@ -17,7 +22,8 @@
     "docs": "Docs",
     "settings": "Settings",
     "expand": "Expand",
-    "collapse": "Collapse"
+    "collapse": "Collapse",
+    "timelineToggle": "Toggle timeline"
   },
   "theme": {
     "light": "Light",
@@ -123,7 +129,9 @@
     "code": {
       "fallbackLanguage": "code",
       "copyTooltip": "Copy code",
-      "copiedTooltip": "Copied!"
+      "copiedTooltip": "Copied!",
+      "expandAll": "Show all {count} lines",
+      "collapse": "Collapse"
     },
     "evolution": {
       "reading": "Reading memory...",
@@ -140,7 +148,8 @@
       "superseded": "↻{count} superseded",
       "previouslyOn": "Previously On",
       "clickToView": "Click to view",
-      "thoughts": "Thoughts"
+      "thoughts": "Thoughts",
+      "applied": "Applying update..."
     },
     "phase": {
       "thinking": "Thinking…",
@@ -205,6 +214,7 @@
     ]
   },
   "timeline": {
+    "drawerTitle": "Timeline",
     "row": {
       "charCount": "{value} chars",
       "collapse": "Collapse",
@@ -316,5 +326,56 @@
     "emptyTitle": "No missions yet",
     "emptyDesc": "Use Chat to create task files in tasks/. The agent can help you track mission status.",
     "placeholderPreview": "Task content will load from GitHub. (Frontmatter parsing coming soon.)"
+  },
+  "emptyBriefing": {
+    "eyebrow": "PREVIOUSLY ON",
+    "eyebrowWithName": "PREVIOUSLY ON {name}",
+    "fallbackName": "YOU",
+    "lastTopic": "Where we left off",
+    "openLoops": "Open threads",
+    "pickUp": "Pick up where you left off",
+    "viewFull": "View full previously",
+    "chipContinue": "Continue: {topic}",
+    "chipLoops": "Show my open threads",
+    "chipTopic": "Talk about {topic}",
+    "loading": "Loading…"
+  },
+  "relative": {
+    "now": "Now",
+    "moments": { "before": "moments ago", "after": "in a moment" },
+    "prefixAfter": "in ",
+    "minute": {
+      "before": "{count, plural, one {min ago} other {mins ago}}",
+      "after": "{count, plural, one {min} other {mins}}"
+    },
+    "hour": {
+      "before": "{count, plural, one {hr ago} other {hrs ago}}",
+      "after": "{count, plural, one {hr} other {hrs}}"
+    },
+    "day": {
+      "before": "{count, plural, one {day ago} other {days ago}}",
+      "after": "{count, plural, one {day} other {days}}"
+    },
+    "week": {
+      "before": "{count, plural, one {wk ago} other {wks ago}}",
+      "after": "{count, plural, one {wk} other {wks}}"
+    },
+    "month": {
+      "before": "{count, plural, one {mo ago} other {mos ago}}",
+      "after": "{count, plural, one {mo} other {mos}}"
+    },
+    "year": {
+      "before": "{count, plural, one {yr ago} other {yrs ago}}",
+      "after": "{count, plural, one {yr} other {yrs}}"
+    }
+  },
+  "markdown": {
+    "alert": {
+      "note": "Note",
+      "tip": "Tip",
+      "important": "Important",
+      "warning": "Warning",
+      "caution": "Caution"
+    }
   }
 }

@@ -65,3 +65,34 @@ export function detectNoProgressFromReports(reports: LoopReportLike[]): boolean 
 export function detectNoProgress(steps: LoopStep[]): boolean {
   return detectNoProgressFromReports(steps);
 }
+
+// ─── Wall-clock deadline guard ───────────────────────────────────────────
+
+/**
+ * Extract the real wall-clock finish time of an agent step (ms since epoch),
+ * or null when unavailable. The workflow sandbox freezes `Date.now()` at run
+ * start for deterministic replay, so a deadline check cannot use the local
+ * clock — each completed step's `response.timestamp` is the durable,
+ * real-time source. (After event-log serialization it may arrive as a
+ * string, so both shapes are accepted.)
+ */
+export function stepFinishedAtMs(step: unknown): number | null {
+  const ts = (step as { response?: { timestamp?: unknown } } | null)?.response
+    ?.timestamp;
+  if (ts instanceof Date) return ts.getTime();
+  if (typeof ts === "string" || typeof ts === "number") {
+    const ms = new Date(ts).getTime();
+    return Number.isNaN(ms) ? null : ms;
+  }
+  return null;
+}
+
+/** True when the latest completed step finished at/after the deadline. */
+export function detectPastDeadline(
+  steps: ReadonlyArray<unknown>,
+  deadlineMs: number,
+): boolean {
+  if (steps.length === 0) return false;
+  const last = stepFinishedAtMs(steps[steps.length - 1]);
+  return last !== null && last >= deadlineMs;
+}

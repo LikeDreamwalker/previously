@@ -41,7 +41,9 @@ export {
 //       support dropped. Use sliceIdToTimelineDir / sliceIdToFilePath instead.
 //
 // NOTE: maintenance.ts v1 types (SliceMetadata, applyMetadataUpdates) were
-//       removed in v0.5.1. Use previously-updater.ts (v2) instead.
+//       removed in v0.5.1. Card maintenance / updater passes were removed in
+//       v0.8 — card writes are mutation-tool based (card-session.ts), owned
+//       by the Previously Agent end to end.
 
 export {
   runRecallSearch,
@@ -54,6 +56,7 @@ export type {
 
 export {
   analyzeTurn,
+  shouldRunCardEvolution,
 } from "./flash/turn-analyzer";
 export type {
   TurnAnalysis,
@@ -65,8 +68,6 @@ export type {
 export {
   generateGlobalTimeline,
   updateGlobalTimeline,
-  formatEntry,
-  buildTimelineContent,
 } from "./flash/global-timeline";
 
 export {
@@ -75,14 +76,36 @@ export {
 export type {
   ConsolidationResult,
 } from "./flash/strand-consolidator";
+// ─── v0.8 timeline (first-class derived index) ─────────────────────────
+export {
+  weaveTimeline,
+  readTimelineMd,
+  WEAVE_FRESH_MS,
+} from "./timeline/weave";
+export {
+  renderTimelineMd,
+  buildTimelineBrief,
+  groupByEraAndDay,
+  sliceLine,
+} from "./timeline/render";
+export {
+  readTimelineIndex,
+  sliceEntryFromDisk,
+  upsertTimelineEntry,
+  TIMELINE_INDEX_PATH,
+  TIMELINE_MD_PATH,
+} from "./timeline/store";
 export type {
-  TimelineEntry,
-} from "./flash/global-timeline";
+  TimelineIndex,
+  TimelineSliceEntry,
+  TimelineWeaveResult,
+} from "./timeline/types";
 
 export {
-  startBatch,
+  createBatch,
   flushBatch,
 } from "./io-helpers";
+export type { WriteBatch } from "./io-helpers";
 
 export {
   DEFAULT_TIME_SILENCE_MS,
@@ -98,6 +121,12 @@ export {
   pruneStrands,
   slicePathToMs,
 } from "./strands";
+export {
+  deterministicSliceMark,
+} from "./slice-mark";
+export type {
+  SliceMark,
+} from "./slice-mark";
 export type {
   PruneOptions,
 } from "./strands";

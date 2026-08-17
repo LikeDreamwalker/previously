@@ -10,7 +10,7 @@ import type { ToolRenderState } from "@/lib/chat/tool-state";
 export interface EvolutionState {
   running: boolean;
   step?: string;
-  /** Card update summary: added = card rewritten, removed = stale Recent dropped. */
+  /** Card update summary: added = card rewritten, removed = stale Now items dropped. */
   changes?: {
     added: number;
     reinforced: number;
@@ -19,6 +19,13 @@ export interface EvolutionState {
     superseded: number;
   };
   hasChanges?: boolean;
+  /** The review's reasoning — shown as the indicator's expanded content. */
+  note?: string;
+  /** The agent's one-sentence user-language account of what changed — the
+   *  indicator's headline when present (the abstract counts fall back). */
+  summary?: string;
+  /** The actual line-level card mutations — the expanded diff. */
+  mutations?: Array<{ type: "added" | "removed"; text: string }>;
   error?: string;
 }
 
@@ -62,6 +69,40 @@ export function EvolutionIndicator({ state }: EvolutionIndicatorProps) {
     return null;
   }
 
+  // The expanded body for the terminal states: the actual card diff (added /
+  // removed lines) plus the reviewer's reasoning note. Its presence is what
+  // makes the PhaseIndicator expandable at all (no expandedContent → the card
+  // renders non-clickable by construction).
+  const hasMutations = (state.mutations?.length ?? 0) > 0;
+  const hasNote = Boolean(state.note?.trim());
+  const expandedContent =
+    hasMutations || hasNote ? (
+      <div className="space-y-2">
+        {hasMutations && (
+          <ul className="space-y-1 font-mono text-xs leading-relaxed">
+            {state.mutations!.map((m, i) => (
+              <li
+                key={i}
+                className={
+                  m.type === "added"
+                    ? "text-emerald-600 dark:text-emerald-400"
+                    : "text-red-500/80"
+                }
+              >
+                {m.type === "added" ? "+ " : "− "}
+                {m.text}
+              </li>
+            ))}
+          </ul>
+        )}
+        {hasNote && (
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            {state.note}
+          </p>
+        )}
+      </div>
+    ) : undefined;
+
   // ── Running ──────────────────────────────────────────────────────────────
 
   if (state.running) {
@@ -70,7 +111,9 @@ export function EvolutionIndicator({ state }: EvolutionIndicatorProps) {
         ? t("reading")
         : state.step === "reviewing"
           ? t("reviewing")
-          : undefined;
+          : state.step === "applied"
+            ? t("applied")
+            : undefined;
 
     return (
       <PhaseIndicator
@@ -116,6 +159,7 @@ export function EvolutionIndicator({ state }: EvolutionIndicatorProps) {
         label={t("noChanges")}
         meta={t("noChangesMeta")}
         state={COMPLETED_STATE}
+        expandedContent={expandedContent}
       />
     );
   }
@@ -123,7 +167,7 @@ export function EvolutionIndicator({ state }: EvolutionIndicatorProps) {
   // ── Complete, has changes ────────────────────────────────────────────────
 
   const c = state.changes!;
-  const summary = [
+  const counts = [
     c.added > 0 && t("added", { count: c.added }),
     c.reinforced > 0 && t("reinforced", { count: c.reinforced }),
     c.demoted > 0 && t("demoted", { count: c.demoted }),
@@ -133,12 +177,17 @@ export function EvolutionIndicator({ state }: EvolutionIndicatorProps) {
     .filter(Boolean)
     .join(" · ");
 
+  // The agent's own one-sentence account is the headline when present; the
+  // abstract line counts demote to the meta line (and remain the fallback
+  // headline when the worker gave no summary).
   return (
     <PhaseIndicator
       mode="static"
       icon={<Brain className="h-3.5 w-3.5" />}
-      label={t("evolved", { summary })}
+      label={t("evolved", { summary: state.summary?.trim() || counts })}
+      meta={state.summary?.trim() ? counts : undefined}
       state={COMPLETED_STATE}
+      expandedContent={expandedContent}
     />
   );
 }

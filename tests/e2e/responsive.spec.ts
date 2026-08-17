@@ -17,7 +17,9 @@ test.describe("Responsive - Mobile", () => {
     await page.goto("/en");
     await expect(page.locator("header")).toBeVisible();
     await expect(page.locator('header a[href="/en"]')).toBeVisible();
-    await expect(page.locator('header a[href="/en/docs"]')).toBeVisible();
+    await expect(
+      page.locator('header a[href="https://previously.ldwid.com/en/docs"]'),
+    ).toBeVisible();
     await expect(page.locator('header a[href="/en/settings"]')).toBeVisible();
   });
 

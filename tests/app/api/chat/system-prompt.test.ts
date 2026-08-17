@@ -18,6 +18,7 @@ function build(overrides: Partial<Opts> = {}): string {
     identityPrompt: IDENTITY,
     previouslyContent: PREVIOUSLY,
     turnPriming: PRIMING,
+    timelineBrief: "",
     strandsBlock: STRANDS,
     evolutionNotice: EVOLUTION,
     demoNotice: DEMO,
@@ -55,6 +56,17 @@ describe("assembleSystemPrompt", () => {
     expect(s).not.toContain("Memory topics");
     expect(s).not.toContain("self-evolution");
     expect(s).not.toContain("Demo mode");
+    expect(s).not.toContain("Timeline (recent)");
+  });
+
+  it("renders the timeline brief in the variable tail (after priming, before strands)", () => {
+    const brief =
+      "## Timeline (recent)\n- **2026-08-11-1115** 回顾滴滴时期 · 4轮";
+    const s = build({ timelineBrief: brief });
+    const briefIdx = s.indexOf("## Timeline (recent)");
+    expect(briefIdx).toBeGreaterThan(s.indexOf(PRIMING));
+    expect(briefIdx).toBeLessThan(s.indexOf(STRANDS));
+    expect(s).toContain("2026-08-11-1115");
   });
 
   it("renders the card-freshness header with the date anchor", () => {

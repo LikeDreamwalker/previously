@@ -10,6 +10,7 @@
  */
 import { startLoop } from "./start-loop";
 import { isDemo, DEPLOY_GUIDE_URL } from "@/lib/capabilities";
+import { guardRequest } from "@/lib/security/origin-guard";
 
 interface StartLoopBody {
   goal?: unknown;
@@ -19,6 +20,8 @@ interface StartLoopBody {
 }
 
 export async function POST(request: Request): Promise<Response> {
+  const blocked = guardRequest(request);
+  if (blocked) return blocked;
   let body: StartLoopBody;
   try {
     body = (await request.json()) as StartLoopBody;

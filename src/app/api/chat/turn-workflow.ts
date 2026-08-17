@@ -31,9 +31,11 @@ import type {
   StartedLoopRef,
 } from "@/lib/chat/turn-types";
 import { DEPLOY_GUIDE_URL } from "@/lib/capabilities";
+import { annotateCardTimes } from "@/lib/time/relative";
 import {
   classifyWorkflowError,
   errorMessage,
+  formatErrorDetail,
 } from "@/lib/chat/workflow-errors";
 import {
   housekeeping,
@@ -72,10 +74,23 @@ export function extractFinalText(messages: ModelMessage[]): string {
  * This is what gets stored in the time slice as the agent turn: a faithful
  * text-only snapshot of the turn, keeping both the leading and trailing parts
  * while the tool calls in between are not preserved.
+ *
+ * `startIndex` bounds collection to THIS turn's output: the workflow hands
+ * `agent.stream()` the client history (plus a system message the SDK prepends
+ * at index 0), and `result.messages` echoes all of it back. Without a
+ * startIndex the stored turn would re-capture the entire history every turn —
+ * the v0.7 storage-accumulation bug (each stored agent turn grew into a
+ * monotonic superset of all prior assistant text, and content bled across
+ * slice boundaries). The caller passes `1 + input.modelMessages.length` to
+ * skip the system message + the input history, leaving only this run's steps.
  */
-export function extractAllAssistantText(messages: ModelMessage[]): string {
+export function extractAllAssistantText(
+  messages: ModelMessage[],
+  startIndex = 0,
+): string {
   const parts: string[] = [];
-  for (const m of messages) {
+  for (let i = startIndex; i < messages.length; i++) {
+    const m = messages[i];
     if (m.role !== "assistant") continue;
     if (typeof m.content === "string") {
       if (m.content.trim()) parts.push(m.content.trim());
@@ -356,6 +371,107 @@ export function extractThinkDeepReports(
   return results;
 }
 
+// ─── Timeout continuation (message assembly) ─────────────────────────────
+
+/**
+ * A completed LLM step of an interrupted `agent.stream()` run, captured via
+ * `onStepEnd` (the killed step itself never completes — its in-flight partial
+ * is lost; the client already saw it via the live stream).
+ */
+export interface ContinuationStepSnapshot {
+  /** Assistant text the step produced ("" when it only called tools). */
+  text: string;
+  toolCalls: Array<{ toolCallId: string; toolName: string; input: unknown }>;
+  toolResults: Array<{
+    toolCallId: string;
+    toolName: string;
+    output: unknown;
+    isError?: boolean;
+  }>;
+}
+
+/** Wrap a raw tool output into the ModelMessage tool-result envelope. */
+function toToolResultOutput(
+  result: ContinuationStepSnapshot["toolResults"][number],
+): { type: "text"; value: string } | { type: "error-text"; value: string } | { type: "json"; value: unknown } {
+  if (result.isError) {
+    const value =
+      typeof result.output === "string"
+        ? result.output
+        : (JSON.stringify(result.output) ?? "tool error");
+    return { type: "error-text", value };
+  }
+  if (typeof result.output === "string") {
+    return { type: "text", value: result.output };
+  }
+  try {
+    JSON.stringify(result.output);
+    return { type: "json", value: result.output };
+  } catch {
+    return { type: "text", value: String(result.output) };
+  }
+}
+
+/**
+ * Build the messages for a timeout CONTINUATION re-invocation.
+ *
+ * The naive version fed back only the partial assistant text, DISCARDING the
+ * completed tool calls/results of the interrupted run — so the model either
+ * re-derived them (re-running tools) or hallucinated their outcomes. Here each
+ * completed step that called tools contributes its assistant tool-call message
+ * + the matching tool-result message BEFORE the partial assistant text and the
+ * nudge, so the continuation resumes from the committed context.
+ *
+ * Pure — extracted for unit tests.
+ */
+export function buildTimeoutContinuation(opts: {
+  /** The messages the interrupted stream was invoked with. */
+  history: ModelMessage[];
+  /** Completed steps of the interrupted run (from onStepEnd), in order. */
+  steps: ContinuationStepSnapshot[];
+  /** Joined partial assistant text across those steps ("" when none). */
+  partialText: string;
+  /** The continuation instruction. */
+  nudge: string;
+}): ModelMessage[] {
+  const messages: ModelMessage[] = [...opts.history];
+
+  for (const step of opts.steps) {
+    if (step.toolCalls.length === 0) continue;
+    messages.push({
+      role: "assistant",
+      content: step.toolCalls.map((tc) => ({
+        type: "tool-call" as const,
+        toolCallId: tc.toolCallId,
+        toolName: tc.toolName,
+        input: tc.input,
+      })),
+    });
+    // Only results whose call is actually in the assistant message above.
+    const results = step.toolResults.filter((tr) =>
+      step.toolCalls.some((tc) => tc.toolCallId === tr.toolCallId),
+    );
+    if (results.length > 0) {
+      messages.push({
+        role: "tool",
+        content: results.map((tr) => ({
+          type: "tool-result" as const,
+          toolCallId: tr.toolCallId,
+          toolName: tr.toolName,
+          output: toToolResultOutput(tr),
+        })),
+      } as ModelMessage);
+    }
+  }
+
+  const partial = opts.partialText.trim();
+  if (partial) {
+    messages.push({ role: "assistant", content: partial });
+  }
+  messages.push({ role: "user", content: opts.nudge });
+  return messages;
+}
+
 // ─── System prompt assembly (pure — cache-order matters) ─────────────────
 
 /**
@@ -377,6 +493,8 @@ export function assembleSystemPrompt(opts: {
   previouslyContent: string;
   /** The per-turn brief (timestamp / intent / continuity / semantic links). */
   turnPriming: string;
+  /** Pre-built "## Timeline (recent)…" pointer block, or "" to omit. */
+  timelineBrief: string;
   /** Pre-built "## Memory topics…" block, or "" to omit. */
   strandsBlock: string;
   /** Pre-built "[System] A self-evolution…" notice, or "" to omit. */
@@ -390,6 +508,7 @@ export function assembleSystemPrompt(opts: {
     identityPrompt,
     previouslyContent,
     turnPriming,
+    timelineBrief,
     strandsBlock,
     evolutionNotice,
     demoNotice,
@@ -399,8 +518,9 @@ export function assembleSystemPrompt(opts: {
     identityPrompt,
     `## What I know about the user (inference model — ${dateAnchor})`,
     previouslyContent,
-    "The above is the current profile and operating model — distilled hypotheses, each carrying `refs` to its evidence. If any line seems outdated or contradicts what the user just said, cite its refs and say so; the correction flows into the archive.",
+    "The above is the current profile and operating model — distilled hypotheses, each carrying `refs` to its evidence. If any line seems outdated or contradicts what the user just said, cite its refs and say so; the correction flows into the archive. Every `refs` pointer is a drill-down entry: open the referenced slice with readSlice before citing specifics from a past event — the card answers WHO the user is, not what was said.",
     turnPriming,
+    timelineBrief,
     strandsBlock,
     evolutionNotice,
     demoNotice,
@@ -422,6 +542,7 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
     strandsMenu,
     turnPriming,
     identityPrompt,
+    timelineBrief,
     evolutionResult,
   } = await housekeeping(input);
 
@@ -438,13 +559,23 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
   const dateAnchor = input.startedAtIso.slice(0, 10);
   const systemPrompt = assembleSystemPrompt({
     identityPrompt,
-    previouslyContent,
+    // Relative-time annotations are added to the INJECTED copy only — the
+    // stored card keeps raw ISO dates (see src/lib/time/relative.ts).
+    previouslyContent: annotateCardTimes(
+      previouslyContent,
+      input.startedAtIso,
+      input.clientTimezone,
+      input.locale,
+    ),
     turnPriming,
+    timelineBrief: timelineBrief
+      ? `${timelineBrief}\nTimeline lines are pointers — if a line looks relevant, read the slice (readSliceSummary / readSlice) before answering from it.`
+      : "",
     strandsBlock: strandsMenu
       ? `## Memory topics\n\n${strandsMenu}\nWhen the user mentions these topics, use recall to search for related memories. If a search finds nothing relevant, do not retry it — answer from what you have.`
       : "",
     evolutionNotice: evolutionResult?.ran
-      ? `[System] A self-evolution just completed — the previously card was updated${evolutionResult.changed ? "" : " (no change)"}. The latest card is provided above. Acknowledge this to the user if they asked for it.`
+      ? `[System] A self-evolution just completed — the previously card was updated${evolutionResult.changed ? "" : " (no change)"}.${evolutionResult.summary ? ` What changed: ${evolutionResult.summary}` : ""} The latest card is provided above. Acknowledge this to the user if they asked for it.`
       : "",
     demoNotice: input.useDemo
       ? `## Demo mode (read-only)\n\nYou are running in demo mode. You can browse sample data, recall past conversations, and search the live web — but **writes are not persisted**. No GitHub repo is connected; you are seeing pre-seeded sample memories.\n\nWhen the user asks to save anything, create memories, or start background tasks, tell them naturally:\n- This is demo mode and data cannot be saved\n- They need to deploy their own instance to unlock full read/write and background loop capabilities\n\nDeployment guide: ${DEPLOY_GUIDE_URL}\n\nIt's perfectly normal for users to explore in demo mode — help them understand what this product can do and what they'll get after deploying.`
@@ -470,8 +601,9 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
    * reaches the catch block below where `classifyWorkflowError` decides:
    *   - transient → rethrow (the workflow queue redelivers/retries)
    *   - terminal / model → surface a client-visible explanation
-   *   - timeout / abort → bounded CONTINUATION: feed back the partial text
-   *     (accumulated via `onStepEnd`) plus a nudge and re-invoke agent.stream(),
+   *   - timeout / abort → bounded CONTINUATION: rebuild the messages from the
+   *     interrupted run's completed steps (tool calls + results + partial text,
+   *     captured via `onStepEnd`) plus a nudge and re-invoke agent.stream(),
    *     so the agent picks up where it left off instead of dying silently.
    * This is the same mechanism as the token-cap continuation loop below, just
    * triggered from the failure path.
@@ -483,9 +615,10 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
   const TIMEOUT_CONTINUE_NUDGE =
     "You were interrupted by a timeout. Continue exactly where you left off — do not repeat what you already wrote, and keep your answer focused so it finishes quickly.";
 
-  // Partial assistant text from COMPLETED steps, accumulated for the timeout
-  // continuation so the re-invoked agent can pick up its own prior output.
-  let accumulatedPartialText = "";
+  // Completed-step snapshots of the in-flight stream, accumulated for the
+  // timeout continuation so the re-invoked agent resumes from the COMMITTED
+  // context (tool calls + results + text) instead of re-deriving it.
+  let interruptedSteps: ContinuationStepSnapshot[] = [];
 
   const agent = createChatAgent({
     model: input.modelConfig,
@@ -508,15 +641,37 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
       // Read tools pre-render user-local time from these (see time-localize.ts).
       timezone: input.clientTimezone,
       startedAtIso: input.startedAtIso,
+      locale: input.locale,
     }),
-    // Fire after every COMPLETED LLM step: keep the written text for a possible
-    // timeout continuation. (The killed step itself never completes, so its
-    // in-flight partial is lost — the client already received it via the live
-    // stream, and the continuation works from the committed context.)
-    onStepEnd: ({ text }) => {
-      if (typeof text === "string" && text.trim()) {
-        accumulatedPartialText += text;
-      }
+    // Fire after every COMPLETED LLM step: snapshot its text + tool
+    // calls/results for a possible timeout continuation. (The killed step
+    // itself never completes, so its in-flight partial is lost — the client
+    // already received it via the live stream, and the continuation works
+    // from the committed context.)
+    onStepEnd: (step) => {
+      interruptedSteps.push({
+        text: typeof step.text === "string" ? step.text : "",
+        toolCalls: (step.toolCalls ?? []).map((tc) => ({
+          toolCallId: tc.toolCallId,
+          toolName: tc.toolName,
+          input: tc.input,
+        })),
+        toolResults: (step.toolResults ?? []).map((tr) => {
+          const r = tr as {
+            toolCallId: string;
+            toolName: string;
+            output?: unknown;
+            error?: unknown;
+          };
+          const isError = r.error !== undefined;
+          return {
+            toolCallId: r.toolCallId,
+            toolName: r.toolName,
+            output: isError ? errorMessage(r.error, "tool error") : r.output,
+            ...(isError ? { isError: true } : {}),
+          };
+        }),
+      });
     },
   });
 
@@ -560,6 +715,13 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
       } catch (err) {
         // ── Workflow-error classification → what to do ────────────────────
         const classified = classifyWorkflowError(err);
+        // v0.8: log the FULL error on every agent.stream failure. The classify
+        // branches below reduce it to a short message (or rethrow it without a
+        // word), which leaves transient/timeout/model failures invisible in the
+        // function log — this line is the diagnostic trail for the test env.
+        console.error(
+          `[Turn:${input.turnId}][agent.stream] classified=${classified.kind}\n${formatErrorDetail(err)}`,
+        );
         if (classified.kind === "transient") {
           // Infrastructure blip — let the workflow queue retry the run.
           throw err;
@@ -576,24 +738,30 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
           finalFinishReason = "interrupted";
           break;
         }
-        // timeout (a step was platform-killed / a deadline exceeded) or abort —
-        // the dominant failure mode. Bounded CONTINUATION: feed back the partial
-        // text accumulated from completed steps, nudge the model to finish, and
-        // re-invoke agent.stream() so it picks up where it left off.
+        // timeout (a step was platform-killed / a deadline exceeded) — the
+        // dominant failure mode. Bounded CONTINUATION: rebuild the messages
+        // from the interrupted run's COMPLETED steps — every finished tool
+        // call + its result, then the partial assistant text (segments joined
+        // with a blank line) and the nudge — so the model picks up exactly
+        // where it left off and re-derives nothing.
         if (++timeoutContinuations > MAX_TIMEOUT_CONTINUATIONS) {
           finalFinishReason = "interrupted";
           turnError =
             "The response was interrupted repeatedly by step timeouts. You can send a new message or click continue to try again.";
           break;
         }
-        const partial = accumulatedPartialText.trim();
-        currentMessages = [
-          ...currentMessages,
-          ...(partial
-            ? [{ role: "assistant" as const, content: partial }]
-            : []),
-          { role: "user" as const, content: TIMEOUT_CONTINUE_NUDGE },
-        ];
+        currentMessages = buildTimeoutContinuation({
+          history: currentMessages,
+          steps: interruptedSteps,
+          partialText: interruptedSteps
+            .map((s) => s.text.trim())
+            .filter(Boolean)
+            .join("\n\n"),
+          nudge: TIMEOUT_CONTINUE_NUDGE,
+        });
+        // The snapshots are now committed into currentMessages — clear them so
+        // a LATER timeout carries only THAT run's completed steps.
+        interruptedSteps = [];
         // Loop back to re-invoke agent.stream() with the continuation.
         continue;
       }
@@ -602,11 +770,11 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
       finalMessages = result.messages;
       finalFinishReason = result.finishReason;
 
-      // This iteration's completed text is now committed into currentMessages
-      // (via the continuation feed below) — reset the accumulator so a LATER
+      // This iteration's completed steps are now committed into currentMessages
+      // (via the continuation feed below) — reset the snapshots so a LATER
       // timeout only carries the partial from THAT failing call, not the whole
       // turn's earlier output (which would be redundant in the continuation).
-      accumulatedPartialText = "";
+      interruptedSteps = [];
 
       // Only loop when the model hit the token cap before it was done.
       if (result.finishReason !== "length") break;
@@ -644,15 +812,39 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
     // The stored agent turn is ALL assistant text across the turn (intermediate
     // text + final answer), in order. Tool calls are not preserved — see
     // extractAllAssistantText.
+    //
+    // `1 + input.modelMessages.length` skips the system message the SDK
+    // prepends (index 0) plus the client history handed to the first
+    // agent.stream() call — so only THIS run's assistant text is stored, never
+    // the whole conversation (the v0.7 storage-accumulation bug). Continuations
+    // are covered: the final result.messages is [system, history, ...contN],
+    // and slicing at the original history count captures every continuation's
+    // output while excluding prior turns.
     outcome = {
-      text: extractAllAssistantText(finalMessages),
+      text: extractAllAssistantText(finalMessages, 1 + input.modelMessages.length),
       finishReason: finalFinishReason,
       startedLoops: extractStartedLoops(finalMessages),
       cognition: allCognition,
       error: turnError,
     };
+
+    // v0.8: make a non-stop end visible in the log. Model errors, timeouts and
+    // interruptions otherwise terminate silently — this line records why the
+    // turn ended so the test env can trace it against the detail logs above.
+    if (finalFinishReason !== "stop") {
+      console.error(
+        `[Turn:${input.turnId}][turn] ended=${finalFinishReason} text=${outcome.text.length} chars` +
+          (turnError ? ` error=${turnError.slice(0, 500)}` : ""),
+      );
+    }
   } catch (err) {
     streamError = err;
+    // Full diagnostic trail for anything the agent loop didn't handle (step
+    // failures, extraction bugs, persistence errors). The outcome below only
+    // carries errorMessage's one-liner, so this is where the detail lives.
+    console.error(
+      `[Turn:${input.turnId}][workflow] turn failed\n${formatErrorDetail(err)}`,
+    );
     outcome = {
       text: "",
       finishReason: "error",
