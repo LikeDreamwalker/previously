@@ -8,6 +8,7 @@
     "dev": "next dev --turbopack",
     "prebuild": "node scripts/generate-identity.mjs",
     "build": "next build --turbopack",
+    "build:standalone": "pnpm build && node scripts/pack-standalone.mjs",
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run"

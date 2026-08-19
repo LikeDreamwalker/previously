@@ -12,6 +12,7 @@ A Next.js web application with a server-side LLM agent and a GitHub-backed episo
 
 - `pnpm dev` — Start dev server with Turbopack (port 3000)
 - `pnpm build` — Production build with Turbopack
+- `pnpm build:standalone` — Build + dereference all symlinks in `.next/standalone` (see Packaging below)
 - `pnpm start` — Start production server
 - `pnpm lint` — Run ESLint
 - `pnpm test` — Run vitest
@@ -31,6 +32,10 @@ Three-layer separation:
 - The user card (`memory/episodic/current-previously.md`) is v5 format: Identity / Past (rolling profile paragraph + anchor facts) / Now (7-day expiry hooks) / Horizon (future commitments with `by` dates) / Self-model.
 - Deployment mode is resolved only by `src/lib/mode.ts` (`PREVIOUSLY_MODE=cloud|client`, default `cloud`); in client mode the datasource auto-detect default is `local`. For local storage, whitelisted `memory/` paths re-root at the `MEMORY_ROOT` env var (absolute path) when set — see `getMemoryRoot`/`resolveLocalDataPath` in `src/lib/whitelist/`. `GET /api/version` returns `{ version, mode }` for client compat checks.
 - Client mode additionally registers the chat-only `delegateTask` tool (subscription bridge dispatch): it spawns the operator-controlled `PREVIOUSLY_BRIDGE_CMD` (default `previously bridge-exec`) with a JSON `{ task, context }` payload on stdin and returns its stdout, bounded by `PREVIOUSLY_BRIDGE_TIMEOUT_MS` (default 10 min). Bridge failures surface as structured tool errors, never faked success.
+
+## Packaging (supply chain)
+
+The client deployment ships `.next/standalone`, but Next mirrors the pnpm layout with symlinks — on Windows these come out broken (file-type links to dir targets, absolute links back into the build repo), so the artifact is not relocatable as-built. `scripts/pack-standalone.mjs` replaces every symlink in the standalone tree with the real content of its resolved target, producing a pure file tree (zero symlinks). CI must run `pnpm build:standalone` (build + pack) before packaging the `previously-kernel` artifact.
 
 ## Project Documentation
 
