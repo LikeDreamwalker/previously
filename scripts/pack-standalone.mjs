@@ -23,11 +23,20 @@
  * Detection uses lstat + readlink (never statSync) so broken Windows links
  * are handled. Idempotent: a second run is a no-op. Exits non-zero if any
  * link target is genuinely missing or a true symlink cycle is detected.
+ *
+ * After dereferencing, the script copies `.next/static` and `public/` into
+ * the standalone tree (`.next/standalone/.next/static` and
+ * `.next/standalone/public`). Next's minimal `server.js` does NOT include
+ * these by default — the official docs require copying them manually, and
+ * without them every `/_next/static/*` asset (css/js chunks, fonts) 404s
+ * when the standalone server serves browser pages. A missing `public/` is
+ * tolerated.
  */
 
 import {
   chmodSync,
   copyFileSync,
+  cpSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -198,3 +207,19 @@ if (failures.length > 0) {
 }
 
 console.log(`\npack-standalone: ${ok} symlink(s) dereferenced in ${standaloneDir}`);
+
+// Next's standalone server does not include `.next/static` or `public/` —
+// the docs require copying them in manually so server.js can serve them.
+// Copy AFTER dereferencing so the destinations stay a pure file tree.
+// Idempotent: cpSync overwrites existing files; a missing `public/` is fine.
+for (const [src, dest] of [
+  [join(repoRoot, ".next", "static"), join(standaloneDir, ".next", "static")],
+  [join(repoRoot, "public"), join(standaloneDir, "public")],
+]) {
+  if (!existsSync(src)) {
+    console.log(`pack-standalone: ${src.slice(repoRoot.length + 1)} not found — skipped`);
+    continue;
+  }
+  cpSync(src, dest, { recursive: true, force: true, dereference: true });
+  console.log(`pack-standalone: copied ${src.slice(repoRoot.length + 1)} -> ${dest.slice(repoRoot.length + 1)}`);
+}
