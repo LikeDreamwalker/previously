@@ -11,6 +11,7 @@
  * tool definitions that bind these executors live in ./tools.ts.
  */
 
+import { spawn } from "node:child_process";
 import { streamText, type UIMessageChunk } from "ai";
 import { getWritable } from "workflow";
 // Side effect: register the DeepSeek model class in the step runtime's
@@ -705,6 +706,180 @@ export async function webFetchExecute(
   } finally {
     clearTimeout(timer);
   }
+}
+
+// ── delegateTask — subscription bridge dispatch (client mode only) ───────
+
+const BRIDGE_DEFAULT_CMD = "previously bridge-exec";
+const BRIDGE_DEFAULT_TIMEOUT_MS = 600_000; // 10 min
+const BRIDGE_MAX_OUTPUT_CHARS = 30_000;
+
+export type BridgeFailureReason =
+  | "bridge-not-found"
+  | "spawn-failed"
+  | "timeout"
+  | "exit-code"
+  | "empty-output";
+
+export type DelegateTaskResult =
+  | { status: "ok"; result: string; elapsedMs: number }
+  | {
+      status: "error";
+      reason: BridgeFailureReason;
+      error: string;
+      elapsedMs: number;
+    };
+
+/** Split the bridge command line into argv, honoring double-quoted segments. */
+function splitBridgeCommand(cmd: string): string[] {
+  const parts = cmd.match(/"[^"]*"|[^\s"]+/g) ?? [];
+  return parts.map((p) =>
+    p.startsWith('"') && p.endsWith('"') ? p.slice(1, -1) : p,
+  );
+}
+
+/** Bridge timeout: PREVIOUSLY_BRIDGE_TIMEOUT_MS when a positive number, else 10 min. */
+function bridgeTimeoutMs(): number {
+  const raw = Number(process.env.PREVIOUSLY_BRIDGE_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : BRIDGE_DEFAULT_TIMEOUT_MS;
+}
+
+/**
+ * Spawn the bridge command, pipe the JSON payload to its stdin, and capture
+ * stdout as the result. Never rejects — every outcome (missing binary,
+ * non-zero exit, timeout, empty stdout) becomes a structured error result so
+ * the agent can reason about it instead of burning workflow retries on a
+ * deterministic infrastructure failure (design §8: no faked success).
+ */
+function runBridge(
+  argv: string[],
+  payload: string,
+  timeoutMs: number,
+): Promise<DelegateTaskResult> {
+  const start = Date.now();
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (
+      r:
+        | { status: "ok"; result: string }
+        | { status: "error"; reason: BridgeFailureReason; error: string },
+    ) => {
+      if (settled) return;
+      settled = true;
+      if (timer !== undefined) clearTimeout(timer);
+      resolve({ ...r, elapsedMs: Date.now() - start });
+    };
+
+    const child = spawn(argv[0], argv.slice(1), {
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (d) => {
+      stdout += d;
+    });
+    child.stderr.on("data", (d) => {
+      stderr += d;
+    });
+
+    // Best-effort kill on timeout; if the bridge ignores SIGTERM it still
+    // lingers, but the step has already settled with an honest error.
+    timer = setTimeout(() => {
+      child.kill();
+      finish({
+        status: "error",
+        reason: "timeout",
+        error:
+          `Bridge timed out after ${timeoutMs}ms and was killed ` +
+          `(PREVIOUSLY_BRIDGE_TIMEOUT_MS). The task may be partially done on ` +
+          `the bridge side — verify before retrying.`,
+      });
+    }, timeoutMs);
+
+    child.on("error", (err) => {
+      const missing = (err as NodeJS.ErrnoException).code === "ENOENT";
+      finish({
+        status: "error",
+        reason: missing ? "bridge-not-found" : "spawn-failed",
+        error: missing
+          ? `Bridge command not found: "${argv[0]}". Install the client bridge ` +
+            `or point PREVIOUSLY_BRIDGE_CMD at it.`
+          : `Bridge command failed to start: ${err.message}`,
+      });
+    });
+
+    child.on("close", (code) => {
+      if (code !== 0) {
+        const tail = stderr.trim().slice(-2000);
+        finish({
+          status: "error",
+          reason: "exit-code",
+          error:
+            `Bridge exited with code ${code === null ? "null (killed)" : code}.` +
+            (tail ? ` stderr: ${tail}` : ""),
+        });
+        return;
+      }
+      const out = stdout.trimEnd();
+      if (!out) {
+        finish({
+          status: "error",
+          reason: "empty-output",
+          error: "Bridge exited 0 but produced no output on stdout.",
+        });
+        return;
+      }
+      finish({
+        status: "ok",
+        result:
+          out.length > BRIDGE_MAX_OUTPUT_CHARS
+            ? out.slice(0, BRIDGE_MAX_OUTPUT_CHARS) +
+              `\n\n(Truncated at ${BRIDGE_MAX_OUTPUT_CHARS} characters)`
+            : out,
+      });
+    });
+
+    // The bridge may exit before reading the payload — an EPIPE on stdin is
+    // already reported honestly by the close event's non-zero code.
+    child.stdin.on("error", () => {});
+    child.stdin.write(payload);
+    child.stdin.end();
+  });
+}
+
+/**
+ * delegateTask — hand a self-contained task to the local subscription bridge
+ * (client mode only; the tool itself is registered conditionally in
+ * ./tools.ts). The kernel owns only the dispatch half: the bridge command
+ * (PREVIOUSLY_BRIDGE_CMD, default `previously bridge-exec`) is
+ * operator-controlled env — never tool input — and receives `{ task, context }`
+ * as JSON on stdin; its stdout is the result. The bridge adapters live in the
+ * client repo (doc/design/v0.9-client.md).
+ */
+export async function delegateTaskExecute(
+  { task, context }: { task: string; context?: string },
+  { toolCallId }: ExecuteOpts<ToolContext>,
+): Promise<DelegateTaskResult> {
+  "use step";
+  await emitToolProgress(toolCallId, "delegateTask", "Delegating to the local bridge…", "running");
+
+  const cmd = process.env.PREVIOUSLY_BRIDGE_CMD?.trim() || BRIDGE_DEFAULT_CMD;
+  const result = await runBridge(
+    splitBridgeCommand(cmd),
+    JSON.stringify({ task, context: context ?? null }),
+    bridgeTimeoutMs(),
+  );
+
+  await emitToolProgress(
+    toolCallId,
+    "delegateTask",
+    result.status === "ok" ? "Bridge returned a result" : `Bridge failed: ${result.reason}`,
+    "done",
+  );
+  return result;
 }
 
 // ── recall �?semantic search across past conversation slices ─────────

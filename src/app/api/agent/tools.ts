@@ -14,6 +14,7 @@
 
 import { tool } from "ai";
 import { z } from "zod";
+import { isClientMode } from "@/lib/mode";
 import {
   readSliceExecute,
   readSliceSummaryExecute,
@@ -29,6 +30,7 @@ import {
   recallExecute,
   thinkDeepExecute,
   loopReportExecute,
+  delegateTaskExecute,
   type ToolContext,
   type LoopToolContext,
 } from "./tool-executors";
@@ -445,6 +447,49 @@ export const chatTools = {
   }),
 };
 
+// ─── Client-mode-only tools (subscription bridge) ────────────────────────
+//
+// Registered ONLY in client mode (PREVIOUSLY_MODE=client): the bridge command
+// is a local operator-controlled executable and cloud deployments must never
+// expose it (doc/design/v0.9-client.md §2 — mode changes "who do I talk to",
+// never identity). Chat-only, like recall/webSearch — loops don't get it.
+const delegateTaskTool = tool({
+  description:
+    "Delegate a self-contained task to the local subscription bridge — an " +
+    "operator-installed adapter process that executes the task with the " +
+    "user's own local tools/subscriptions and returns its stdout as the " +
+    "result. Use it for work that needs something local rather than doing it " +
+    "yourself. Embed everything the task needs in `task` and `context` — the " +
+    "bridge has no access to your memory. On failure you get a structured " +
+    "error with a reason (bridge-not-found / spawn-failed / timeout / " +
+    "exit-code / empty-output) — report it honestly, then decide whether to " +
+    "retry, rephrase, or do the work yourself.",
+  inputSchema: z.object({
+    task: z
+      .string()
+      .describe("Self-contained task instruction for the bridge to execute."),
+    context: z
+      .string()
+      .optional()
+      .describe("Supporting context the bridge needs (facts, constraints, inputs)."),
+  }),
+  contextSchema: toolContextSchema,
+  execute: delegateTaskExecute,
+});
+
+/**
+ * The chat tool set for this process: `chatTools`, plus the bridge dispatch
+ * tool when running in client mode. Called at agent construction, inside the
+ * workflow body — process.env is a frozen per-run snapshot there, so the mode
+ * read is deterministic. The union return type (not an optional key) keeps
+ * tool-call inference free of `undefined` for consumers like turn-workflow.
+ */
+export function getChatTools():
+  | typeof chatTools
+  | (typeof chatTools & { delegateTask: typeof delegateTaskTool }) {
+  return isClientMode() ? { ...chatTools, delegateTask: delegateTaskTool } : chatTools;
+}
+
 // ─── Loop tool set ───────────────────────────────────────────────────────
 
 export const loopTools = {
@@ -468,8 +513,10 @@ export const loopTools = {
 // ─── toolsContext builders ───────────────────────────────────────────────
 
 /** Same serializable chat context, fanned out to every chat tool by name. */
-export function buildChatToolsContext(ctx: ToolContext): Record<keyof typeof chatTools, ToolContext> {
-  return {
+export function buildChatToolsContext(
+  ctx: ToolContext,
+): Record<keyof typeof chatTools, ToolContext> & { delegateTask?: ToolContext } {
+  const contexts: Record<keyof typeof chatTools, ToolContext> = {
     readSlice: ctx,
     readSliceSummary: ctx,
     readTimelineWindow: ctx,
@@ -480,6 +527,9 @@ export function buildChatToolsContext(ctx: ToolContext): Record<keyof typeof cha
     webFetch: ctx,
     thinkDeep: ctx,
   };
+  // Keep the context map in lockstep with getChatTools(): a registered tool
+  // must never lack its context entry.
+  return isClientMode() ? { ...contexts, delegateTask: ctx } : contexts;
 }
 
 /** Concept tools share the chat-shaped context; loopReport gets the loop identity. */

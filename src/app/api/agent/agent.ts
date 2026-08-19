@@ -30,7 +30,7 @@ function stripFrontmatter(md: string): string {
   return match ? md.slice(match[0].length).trim() : md.trim();
 }
 import {
-  chatTools,
+  getChatTools,
   loopTools,
   type buildChatToolsContext,
   type buildLoopToolsContext,
@@ -44,7 +44,7 @@ import {
 // provider-specific translation. `ProviderOptions` is exported there too
 // (isomorphic to @ai-sdk/provider's JSONObject shape).
 
-export type ChatToolSet = typeof chatTools;
+export type ChatToolSet = ReturnType<typeof getChatTools>;
 export type LoopToolSet = typeof loopTools;
 export type ChatAgent = WorkflowAgent<ChatToolSet>;
 export type LoopAgent = WorkflowAgent<LoopToolSet>;
@@ -78,7 +78,7 @@ export function createChatAgent(opts: {
     model,
     instructions:
       "You are the user's personal agent with layered episodic memory. Answer from the provided context; use the memory tools to recall details when needed.",
-    tools: chatTools,
+    tools: getChatTools(),
     toolsContext: opts.toolsContext,
     providerOptions: normalizeReasoningEffort(
       opts.model.sdk,
