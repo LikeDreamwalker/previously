@@ -9,6 +9,7 @@
  *
  * When STORAGE is NOT set, auto-detection:
  *
+ *   client mode (PREVIOUSLY_MODE=client) → "local"
  *   GITHUB_TOKEN present  → "github"
  *   NODE_ENV=development  → "local"
  *   otherwise             → "demo"
@@ -17,6 +18,8 @@
  * (which delegates here). No other module reads process.env for data-source
  * decisions — this is the single source of truth.
  */
+
+import { isClientMode } from "@/lib/mode";
 
 export type DataSource = "local" | "github" | "demo";
 
@@ -34,6 +37,9 @@ export function resolveDataSource(): DataSource {
   }
 
   // Auto-detection
+  // Client mode runs against the local filesystem by default (dev or prod);
+  // an explicit STORAGE override still wins above.
+  if (isClientMode()) return "local";
   if (process.env.GITHUB_TOKEN) return "github";
   if (process.env.NODE_ENV === "development") return "local";
   return "demo";

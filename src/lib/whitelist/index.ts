@@ -1,9 +1,62 @@
+import { join, isAbsolute } from "path";
+
 /**
  * Allowed path prefixes for agent file operations.
  * Agents may only read/write files under these directories.
  * src/ is agent-read-only — no tool may modify it.
  */
 const ALLOWED_PATHS = ["memory/", "tasks/", "sessions/"] as const;
+
+/**
+ * Absolute filesystem root for the `memory/` data directory.
+ *
+ * Configured via the MEMORY_ROOT environment variable (must be an absolute
+ * path) — this is how client mode points the kernel at a data repo outside
+ * the code repo (doc/design/v0.9-client.md §3.4). When unset, memory data
+ * lives in the repo's own `memory/` directory, exactly as before.
+ *
+ * Throws when MEMORY_ROOT is set but not absolute — a silently ignored
+ * misconfiguration would look like missing data.
+ */
+export function getMemoryRoot(): string {
+  const configured = process.env.MEMORY_ROOT;
+  if (!configured) {
+    return join(process.cwd(), "memory");
+  }
+  if (!isAbsolute(configured)) {
+    throw new Error(
+      `MEMORY_ROOT must be an absolute path, got: "${configured}"`
+    );
+  }
+  return configured;
+}
+
+/**
+ * Resolve a whitelisted relative path to an absolute filesystem path for
+ * local (non-GitHub) storage. `memory/` paths re-root at MEMORY_ROOT when
+ * configured; everything else stays relative to the repo root. When
+ * MEMORY_ROOT is unset the result is identical to the historical
+ * `join(process.cwd(), rawPath)`.
+ *
+ * The caller MUST have already validated the path with isPathAllowed() —
+ * this function assumes a whitelisted input and does no traversal guarding
+ * of its own.
+ */
+export function resolveLocalDataPath(rawPath: string): string {
+  const memoryRoot = process.env.MEMORY_ROOT;
+  if (!memoryRoot) {
+    return join(/* turbopackIgnore: true */ process.cwd(), rawPath);
+  }
+  const normalized = normalizePath(rawPath);
+  if (normalized === "memory" || normalized.startsWith("memory/")) {
+    // Runtime-configured data root — intentionally outside the traced project.
+    return join(
+      /* turbopackIgnore: true */ getMemoryRoot(),
+      normalized.slice("memory".length)
+    );
+  }
+  return join(/* turbopackIgnore: true */ process.cwd(), normalized);
+}
 
 /**
  * Normalize a user-provided path to prevent traversal attacks.

@@ -3,6 +3,9 @@ import createNextIntlPlugin from "next-intl/plugin";
 import { withWorkflow } from "workflow/next";
 
 const nextConfig: NextConfig = {
+  // Produce .next/standalone — the client deployment packages this self-contained
+  // server bundle (doc/design/v0.9-client.md §6). No effect on cloud deploys.
+  output: "standalone",
   turbopack: {
     root: process.cwd(),
   },

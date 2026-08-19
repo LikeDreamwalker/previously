@@ -29,6 +29,7 @@ Three-layer separation:
 - The agent's identity constitution (`identity/agent/`) is bundled at build time via `scripts/generate-identity.mjs`; all memory data (slices, timeline, strands, user card) is fetched at runtime from GitHub/local fs.
 - Context is assembled dynamically from a timeline of time slices — no growing prompt window.
 - The user card (`memory/episodic/current-previously.md`) is v5 format: Identity / Past (rolling profile paragraph + anchor facts) / Now (7-day expiry hooks) / Horizon (future commitments with `by` dates) / Self-model.
+- Deployment mode is resolved only by `src/lib/mode.ts` (`PREVIOUSLY_MODE=cloud|client`, default `cloud`); in client mode the datasource auto-detect default is `local`. For local storage, whitelisted `memory/` paths re-root at the `MEMORY_ROOT` env var (absolute path) when set — see `getMemoryRoot`/`resolveLocalDataPath` in `src/lib/whitelist/`.
 
 ## Project Documentation
 

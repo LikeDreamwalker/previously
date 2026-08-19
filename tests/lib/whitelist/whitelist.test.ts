@@ -1,5 +1,12 @@
-import { describe, it, expect } from "vitest";
-import { normalizePath, isPathAllowed, getAllowedPaths } from "@/lib/whitelist";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { join, resolve } from "path";
+import {
+  normalizePath,
+  isPathAllowed,
+  getAllowedPaths,
+  getMemoryRoot,
+  resolveLocalDataPath,
+} from "@/lib/whitelist";
 
 describe("normalizePath", () => {
   it("passes through a clean path", () => {
@@ -106,5 +113,71 @@ describe("getAllowedPaths", () => {
     expect(paths).toContain("memory/");
     expect(paths).toContain("tasks/");
     expect(paths).toContain("sessions/");
+  });
+});
+
+describe("MEMORY_ROOT path resolution", () => {
+  const SAVED_ENV = { ...process.env };
+  const ABSOLUTE_ROOT = resolve("/previously-test-data/memory");
+
+  beforeEach(() => {
+    delete process.env.MEMORY_ROOT;
+  });
+
+  afterEach(() => {
+    process.env = { ...SAVED_ENV };
+  });
+
+  describe("getMemoryRoot", () => {
+    it("defaults to the repo's memory/ directory when MEMORY_ROOT is unset", () => {
+      expect(getMemoryRoot()).toBe(join(process.cwd(), "memory"));
+    });
+
+    it("returns the configured absolute path", () => {
+      process.env.MEMORY_ROOT = ABSOLUTE_ROOT;
+      expect(getMemoryRoot()).toBe(ABSOLUTE_ROOT);
+    });
+
+    it("throws when MEMORY_ROOT is not absolute", () => {
+      process.env.MEMORY_ROOT = "relative/path";
+      expect(() => getMemoryRoot()).toThrow(/absolute/);
+    });
+  });
+
+  describe("resolveLocalDataPath", () => {
+    it("resolves under the repo root when MEMORY_ROOT is unset", () => {
+      expect(resolveLocalDataPath("memory/episodic/strands.json")).toBe(
+        join(process.cwd(), "memory/episodic/strands.json")
+      );
+    });
+
+    it("passes the raw path through untouched when MEMORY_ROOT is unset", () => {
+      // Byte-identical to the historical join(process.cwd(), path).
+      expect(resolveLocalDataPath("memory\\episodic\\strands.json")).toBe(
+        join(process.cwd(), "memory\\episodic\\strands.json")
+      );
+    });
+
+    it("re-roots memory/ paths at MEMORY_ROOT when configured", () => {
+      process.env.MEMORY_ROOT = ABSOLUTE_ROOT;
+      expect(resolveLocalDataPath("memory/episodic/strands.json")).toBe(
+        join(ABSOLUTE_ROOT, "episodic/strands.json")
+      );
+    });
+
+    it("maps the bare memory directory to MEMORY_ROOT itself", () => {
+      process.env.MEMORY_ROOT = ABSOLUTE_ROOT;
+      expect(resolveLocalDataPath("memory")).toBe(ABSOLUTE_ROOT);
+    });
+
+    it("keeps tasks/ and sessions/ under the repo root", () => {
+      process.env.MEMORY_ROOT = ABSOLUTE_ROOT;
+      expect(resolveLocalDataPath("tasks/status.md")).toBe(
+        join(process.cwd(), "tasks/status.md")
+      );
+      expect(resolveLocalDataPath("sessions/2025-06-25.md")).toBe(
+        join(process.cwd(), "sessions/2025-06-25.md")
+      );
+    });
   });
 });
