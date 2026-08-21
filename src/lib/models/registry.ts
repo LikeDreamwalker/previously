@@ -60,6 +60,17 @@ export const ALL_MODELS: ModelConfig[] = [
     defaultEffort: "low",
   },
   {
+    id: "deepseek-v4-flash-vision-exp",
+    name: "DeepSeek V4 Flash Vision (Exp)",
+    provider: "deepseek",
+    providerName: "DeepSeek",
+    sdk: "deepseek",
+    envKey: "DEEPSEEK_API_KEY",
+    capabilities: { thinking: true, vision: true, maxTokens: 393216 },
+    defaultThinking: true,
+    defaultEffort: "low",
+  },
+  {
     id: "deepseek-v4-pro",
     name: "DeepSeek V4 Pro",
     provider: "deepseek",

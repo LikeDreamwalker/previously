@@ -25,21 +25,13 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { ProviderIcon, stripProviderPrefix } from "./provider-icon";
 import { getUserConfig, saveUserConfig } from "@/lib/config/actions";
+import { useAvailableModels, type AvailableModel } from "@/hooks/use-available-models";
 
 type EffortLevel = "low" | "medium" | "high";
 
 export interface ModelDefaults {
   thinking: boolean;
   effort: EffortLevel;
-}
-
-interface AvailableModel {
-  id: string;
-  name: string;
-  provider: string;
-  providerName: string;
-  defaultThinking: boolean;
-  defaultEffort: EffortLevel;
 }
 
 interface ModelSelectorProps {
@@ -79,7 +71,7 @@ export function ModelSelector({
   onThinkingChange,
 }: ModelSelectorProps) {
   const t = useTranslations("chat.input");
-  const [models, setModels] = useState<AvailableModel[]>([]);
+  const models = useAvailableModels();
   const [mounted, setMounted] = useState(false);
 
   // ── Advanced worker config state ────────────────────────────────────────
@@ -89,10 +81,6 @@ export function ModelSelector({
 
   useEffect(() => {
     setMounted(true);
-    fetch("/api/models")
-      .then((r) => r.json())
-      .then((data) => setModels(data.models ?? []))
-      .catch(() => setModels([]));
 
     // Worker config comes from config.json.
     getUserConfig()

@@ -1,4 +1,7 @@
-/** Current app version — bump on every release. Single source of truth. */
+/**
+ * Current app version. Single source of truth — DO NOT edit by hand.
+ * Bumped automatically by the OpenFlow release flow on every release.
+ */
 export const APP_VERSION = "0.8.0";
 
 export const GITHUB_RELEASES_API =

@@ -27,6 +27,7 @@ import { resolveAvailableModels } from "@/lib/models/catalog";
 import { resolveWorkerModel } from "@/lib/models/worker";
 import { getRepoConfig } from "@/lib/capabilities";
 import { resolveDataSource } from "@/lib/data-source/resolve";
+import { demoModelLock } from "@/lib/demo/model-lock";
 
 export interface StartTurnArgs {
   /** Raw UI messages from the client. */
@@ -83,14 +84,31 @@ async function resolveModelConfig(id: string): Promise<{
   return { model: fallback.id, modelConfig: fallback };
 }
 
+/**
+ * Drop image/file parts when the resolved model has no vision capability. The
+ * client gates attachments on `supportsVision`, but the client is untrusted —
+ * this is the server-side enforcement.
+ */
+function stripFileParts(messages: UIMessage[]): UIMessage[] {
+  return messages
+    .map((m) => ({
+      ...m,
+      parts: (m.parts ?? []).filter((p) => p.type !== "file"),
+    }))
+    .filter((m) => m.parts.length > 0);
+}
+
 export async function startTurn(
   args: StartTurnArgs
 ): Promise<Awaited<ReturnType<typeof start>>> {
   const config = await loadUserConfig();
-  // Resolve the model id (client override → config default, already migrated
-  // by mergeConfig) to a full ModelConfig, falling back to the deployment
-  // default when the id is unknown/unavailable.
-  const requested = args.model || config.model.provider;
+  // Demo mode: model + thinking intensity are pinned server-side (the demo
+  // runs on the maintainer's key) — client/config preferences are ignored.
+  const lock = demoModelLock();
+  // Resolve the model id (demo lock → client override → config default, already
+  // migrated by mergeConfig) to a full ModelConfig, falling back to the
+  // deployment default when the id is unknown/unavailable.
+  const requested = lock?.model ?? (args.model || config.model.provider);
   const { model, modelConfig } = await resolveModelConfig(requested);
   // The worker tier for housekeeping-class calls (tag extraction, marking,
   // recall, loops) — derived from the main model, see src/lib/models/worker.ts.
@@ -99,8 +117,9 @@ export async function startTurn(
   // what the selector shows / the model's default); the config value is only
   // a fallback for clients that don't send one. This keeps the client's UI in
   // sync with the actual call.
-  const thinking = args.thinking ?? config.model.thinking;
-  const reasoningEffort = args.effort ?? config.model.reasoningEffort;
+  const thinking = lock?.thinking ?? args.thinking ?? config.model.thinking;
+  const reasoningEffort =
+    lock?.effort ?? args.effort ?? config.model.reasoningEffort;
   // Log the resolved model so a switch is verifiable in the server log.
   // `requested` = what the client sent; `model` = what actually runs.
   console.log(
@@ -123,14 +142,24 @@ export async function startTurn(
   // demand via recall. The 1.2× multiplier gives a small buffer beyond the
   // configured limit so short back-and-forth exchanges stay intact.
   const recentLimit = Math.ceil(config.context.recentTurnsLimit * 1.2);
-  const fullMessages = await convertToModelMessages(args.messages);
+  let inbound = args.messages;
+  if (!modelConfig.capabilities.vision) {
+    const hasFiles = args.messages.some((m) =>
+      (m.parts ?? []).some((p) => p.type === "file"),
+    );
+    if (hasFiles) {
+      console.warn(`[Turn] model=${model} has no vision — file parts dropped`);
+      inbound = stripFileParts(args.messages);
+    }
+  }
+  const fullMessages = await convertToModelMessages(inbound);
   const modelMessages = fullMessages.slice(-recentLimit);
   const recentTurns = modelMessages.map((m) => ({
     role: m.role as string,
     content: typeof m.content === "string" ? m.content : JSON.stringify(m.content),
   }));
 
-  const userMessages = args.messages.filter((m) => m.role === "user");
+  const userMessages = inbound.filter((m) => m.role === "user");
   const lastUserMessage = extractLastUserText(userMessages[userMessages.length - 1]);
 
   const input: TurnInput = {

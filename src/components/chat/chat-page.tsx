@@ -6,6 +6,7 @@ import { useMemo, useState, useRef, useCallback, useEffect } from "react";
 import type { UIMessage } from "ai";
 import { ChatInput } from "./chat-input";
 import type { ModelDefaults } from "./model-selector";
+import { useAvailableModels } from "@/hooks/use-available-models";
 import { ChatSection } from "./chat-section";
 import { LoopWatcher } from "./loop-watcher";
 import { buildMockSteps } from "@/lib/chat/mock-stream";
@@ -40,9 +41,11 @@ interface ChatPageProps {
   /** Server-preloaded user config (RSC) — seeds model/thinking/effort so the
    *  chat starts on the real values instead of flashing defaults. */
   initialConfig?: UserConfig;
+  /** The demo model lock is active (DEMO_LOCK) — model/effort controls disable. */
+  demoLocked?: boolean;
 }
 
-export function ChatPage({ initialConfig }: ChatPageProps) {
+export function ChatPage({ initialConfig, demoLocked = false }: ChatPageProps) {
   // Mount-time arrival decision. Only the SERVER can say whether the persisted
   // run is still in flight, so this verdict is async — Inner (and therefore
   // useChat) mounts only after it lands, keeping useChat's init a synchronous,
@@ -62,6 +65,7 @@ export function ChatPage({ initialConfig }: ChatPageProps) {
   return (
     <Inner
       initialConfig={initialConfig}
+      demoLocked={demoLocked}
       shouldResume={arrival.shouldResume}
       initialMessages={arrival.initialMessages}
     />
@@ -191,14 +195,27 @@ function clearStoredMessages(): void {
   }
 }
 
+/** Read a File as a data URL — the transport for image file parts. */
+function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
 // ─── Inner ───────────────────────────────────────────────────────────────
 
 function Inner({
   initialConfig,
+  demoLocked = false,
   shouldResume,
   initialMessages,
 }: {
   initialConfig?: UserConfig;
+  /** Demo model lock active — model + thinking intensity locked server-side. */
+  demoLocked?: boolean;
   /** The mount-time arrival verdict (resolveArrival) — see ChatPage. */
   shouldResume: boolean;
   initialMessages: UIMessage[];
@@ -217,6 +234,13 @@ function Inner({
   const [effort, setEffort] = useState<"low" | "medium" | "high">(
     initialConfig?.model.reasoningEffort ?? "medium",
   );
+
+  // The live catalog (shared fetch with ModelSelector) — gates the image
+  // attach control on the selected model's vision capability.
+  const availableModels = useAvailableModels();
+  const visionSupported =
+    availableModels.find((m) => m.id === selectedModel)?.supportsVision ??
+    false;
 
   // Switching models applies that model's defaults (thinking + effort) so the
   // agent is configured sensibly for the newly selected model.
@@ -566,7 +590,7 @@ function Inner({
   );
 
   const lastEvolutionDataRef = useRef<string>("");
-  const handleSubmit = (message: string) => {
+  const handleSubmit = async (message: string, images: File[]) => {
     if (selectedSliceId !== "now" || transition) {
       setSelectedSliceId("now");
       setHistoricalContent(null);
@@ -579,7 +603,22 @@ function Inner({
     setEvolutionState(null);
     lastEvolutionDataRef.current = "";
     setLastUserMessageAt(new Date().toISOString());
-    sendMessage({ role: "user", parts: [{ type: "text", text: message }] });
+    // Images travel as AI SDK file parts (data URLs) — convertToModelMessages
+    // on the server maps them to the provider's image inputs. The files are
+    // already downscaled/re-encoded by use-image-attachments.
+    const fileParts = await Promise.all(
+      images.map(async (file) => ({
+        type: "file" as const,
+        mediaType: file.type,
+        filename: file.name,
+        url: await fileToDataUrl(file),
+      })),
+    );
+    const parts: UIMessage["parts"] = [
+      ...fileParts,
+      ...(message ? [{ type: "text" as const, text: message }] : []),
+    ];
+    sendMessage({ role: "user", parts });
     // v0.7b: self-evolution runs INLINE inside housekeeping (the turn's stream
     // carries data-evolution chunks) — no separate evolution request here.
   };
@@ -696,7 +735,7 @@ function Inner({
                   persona={persona}
                   active={activeSlice}
                   recent={timelineSlices}
-                  onSend={handleSubmit}
+                  onSend={(msg) => void handleSubmit(msg, [])}
                 />
               ) : (
                 <div className="mx-auto max-w-5xl xl:max-w-7xl pl-0 pr-4 sm:pr-6 lg:pr-8 min-h-full pb-36">
@@ -748,6 +787,8 @@ function Inner({
               onStop={demoStreaming ? stopDemo : stop}
               onDemo={runDemo}
               demoRunning={demoStreaming}
+              visionEnabled={visionSupported}
+              demoLocked={demoLocked}
               currentModelId={selectedModel}
               currentEffort={effort}
               thinking={thinking}
