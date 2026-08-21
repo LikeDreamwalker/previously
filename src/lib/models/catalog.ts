@@ -18,6 +18,7 @@ import {
   ALL_MODELS,
   getModelOverrides,
   getAvailableModels,
+  getBridgeModels,
   resolveModelId,
 } from "./registry";
 import type { ProviderSdk } from "./providers";
@@ -315,6 +316,17 @@ export async function resolveAvailableModels(): Promise<ModelConfig[]> {
     if (seen.has(m.id)) continue;
     seen.add(m.id);
     models.push(m);
+  }
+
+  // Pure subscription mode (client + PREVIOUSLY_BRAIN=bridge): the bridge
+  // main models are available without any provider API key, so they are
+  // appended outside the env-key provider loop above. One entry per agent
+  // CLI, env-selected agent first.
+  for (const bridge of getBridgeModels()) {
+    if (!seen.has(bridge.id)) {
+      seen.add(bridge.id);
+      models.push(bridge);
+    }
   }
 
   cache = { at: now, models };

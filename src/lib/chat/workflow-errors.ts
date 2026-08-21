@@ -159,6 +159,21 @@ export function classifyWorkflowError(err: unknown): ClassifiedWorkflowError {
   }
 
   // ── Model / provider failures — surface to the user ─────────────────────
+  // Bridge main-model failure (client-mode subscription bridge). The
+  // workflow step runtime re-wraps step errors across the VM boundary, so
+  // the stable message prefix (anywhere in the message — the runtime adds a
+  // "Step … failed after N retries:" preamble) is the reliable signal.
+  // Bridge failures are deterministic — the CLI is missing, broken, or hung
+  // — and the step itself is already marked non-retryable (FatalError), so
+  // surface immediately as a model error.
+  if (/Bridge model "[^"]+" failed \(/.test(message)) {
+    return {
+      kind: "model",
+      message,
+      userMessage: `The local subscription bridge failed: ${displayMessage(message)}`,
+    };
+  }
+
   if (MODEL_RE.test(message)) {
     return {
       kind: "model",

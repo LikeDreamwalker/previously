@@ -11,6 +11,7 @@ import { deepseek } from "@ai-sdk/deepseek";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAI } from "@ai-sdk/openai";
 import type { LanguageModel } from "ai";
+import { createBridgeLanguageModel } from "./bridge-model";
 import type { ModelConfig } from "./registry";
 
 let _anthropicProvider: ReturnType<typeof createAnthropic> | null = null;
@@ -49,6 +50,10 @@ export function createModel(config: ModelConfig): LanguageModel {
       return getAnthropicProvider()(config.id);
     case "openai":
       return getOpenaiProvider(config.baseURL, config.envKey)(config.id);
+    case "bridge":
+      // Local subscription bridge (client mode + PREVIOUSLY_BRAIN=bridge) —
+      // the custom LanguageModel shells out to PREVIOUSLY_BRIDGE_CMD.
+      return createBridgeLanguageModel(config.id);
     default:
       // Unknown sdk — fall back to DeepSeek with the id verbatim.
       return deepseek(config.id);

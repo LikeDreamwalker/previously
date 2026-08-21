@@ -62,4 +62,13 @@ describe("createModel", () => {
       baseURL: "https://api.moonshot.ai/v1",
     });
   });
+
+  it("dispatches bridge-sdk models to the subscription bridge model", () => {
+    const model = createModel(cfg("bridge", "bridge/claude"));
+    expect(model).toMatchObject({
+      provider: "previously-bridge",
+      modelId: "bridge/claude",
+      specificationVersion: "v3",
+    });
+  });
 });

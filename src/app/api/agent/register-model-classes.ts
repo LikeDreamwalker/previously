@@ -31,6 +31,7 @@ import { registerSerializationClass } from "workflow/internal/class-serializatio
 import { deepseek } from "@ai-sdk/deepseek";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAI } from "@ai-sdk/openai";
+import { BridgeChatLanguageModel } from "@/lib/models/bridge-model";
 import deepseekPkg from "@ai-sdk/deepseek/package.json";
 import anthropicPkg from "@ai-sdk/anthropic/package.json";
 import openaiPkg from "@ai-sdk/openai/package.json";
@@ -106,4 +107,16 @@ function OpenAIResponsesLanguageModelHost(): void {}
 registerSerializationClass(
   `class//@ai-sdk/openai@${openaiPkg.version}//OpenAIResponsesLanguageModel`,
   OpenAIResponsesLanguageModelHost
+);
+
+// Bridge (local subscription CLI, client mode + PREVIOUSLY_BRAIN=bridge) —
+// our own class, so we register it directly: it carries its own static
+// classId + WORKFLOW_DESERIALIZE (see src/lib/models/bridge-model.ts), and
+// the deserializer just re-news it from the serialized modelId. The bridge
+// command/timeout are read from the step runtime's env at call time.
+registerSerializationClass(
+  BridgeChatLanguageModel.classId,
+  BridgeChatLanguageModel as unknown as Parameters<
+    typeof registerSerializationClass
+  >[1]
 );

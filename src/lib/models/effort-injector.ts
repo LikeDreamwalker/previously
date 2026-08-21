@@ -60,6 +60,9 @@ export function normalizeReasoningEffort(
         return { anthropic: { thinking: { type: "disabled" } } };
       case "openai":
         return { openai: { reasoningEffort: "minimal" } };
+      case "bridge":
+        // The subscription bridge has no reasoning knobs at all.
+        return undefined;
       default:
         // DeepSeek (default) — V4 defaults to thinking ENABLED, so "off" explicit.
         return { deepseek: { thinking: { type: "disabled" } } };
@@ -83,6 +86,9 @@ export function normalizeReasoningEffort(
       };
     case "openai":
       return { openai: { reasoningEffort: effort } };
+    case "bridge":
+      // The subscription bridge has no reasoning knobs at all.
+      return undefined;
     default: {
       // DeepSeek — send exactly the requested effort. No special-casing by
       // model id: V4 Flash preserves `low` as genuine low effort, so the honest

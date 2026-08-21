@@ -46,7 +46,7 @@ const modelConfigSchema = z.object({
   name: z.string(),
   provider: z.string(),
   providerName: z.string(),
-  sdk: z.enum(["deepseek", "anthropic", "openai"]),
+  sdk: z.enum(["deepseek", "anthropic", "openai", "bridge"]),
   envKey: z.string(),
   baseURL: z.string().optional(),
   capabilities: z.object({

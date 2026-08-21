@@ -13,6 +13,110 @@
  */
 
 import type { ProviderSdk } from "./providers";
+import { isClientMode } from "../mode";
+
+// ─── Bridge brain (pure subscription mode) ────────────────────────────────
+//
+// When the client CLI injects PREVIOUSLY_BRAIN=bridge, the user has NO model
+// API keys and the kernel's main model must run through the local subscription
+// bridge (Claude/Codex/Kimi CLI via PREVIOUSLY_BRIDGE_CMD — the spawn contract
+// lives in src/lib/bridge.ts). One `bridge/<agent>` entry per known agent is
+// registered then, gated on client mode + the env pair; cloud mode never sees
+// them. The env-selected agent (PREVIOUSLY_BRAIN_AGENT) is the default — its
+// entry comes first — but every installed agent CLI is selectable, and the
+// model id (`bridge/<agent>`) decides which CLI a given call spawns (see
+// src/lib/models/bridge-model.ts), so switching agents needs no restart.
+
+/** Subscription CLI agents the bridge can drive. */
+export const BRIDGE_AGENTS = ["claude", "codex", "kimi"] as const;
+export type BridgeAgent = (typeof BRIDGE_AGENTS)[number];
+export const BRIDGE_DEFAULT_AGENT: BridgeAgent = "claude";
+
+/** Display names of the subscription CLIs, for hints and tooltips. */
+export const BRIDGE_AGENT_LABELS: Record<BridgeAgent, string> = {
+  claude: "Claude Code",
+  codex: "Codex",
+  kimi: "Kimi",
+};
+
+/**
+ * The selected bridge agent (PREVIOUSLY_BRAIN_AGENT). Unknown values fall
+ * back to the default rather than failing — the env is injected by the
+ * client CLI, and a typo shouldn't take the whole kernel down.
+ */
+export function getBridgeAgent(): BridgeAgent {
+  const raw = process.env.PREVIOUSLY_BRAIN_AGENT?.trim();
+  return (BRIDGE_AGENTS as readonly string[]).includes(raw ?? "")
+    ? (raw as BridgeAgent)
+    : BRIDGE_DEFAULT_AGENT;
+}
+
+/**
+ * Is the "pure subscription" brain active? Only in client mode AND with
+ * PREVIOUSLY_BRAIN=bridge explicitly set — cloud mode is byte-for-byte
+ * unaffected, and a client with real API keys (PREVIOUSLY_BRAIN unset) keeps
+ * the normal AI SDK path.
+ */
+export function isBridgeBrainActive(): boolean {
+  return isClientMode() && process.env.PREVIOUSLY_BRAIN === "bridge";
+}
+
+/**
+ * The bridge agent for a model id: `bridge/<agent>` selects that agent;
+ * anything else (bare `bridge`, unknown agent, non-bridge id) falls back to
+ * the env-selected agent rather than failing — a stale or hand-edited stored
+ * preference shouldn't take the kernel down.
+ */
+export function bridgeAgentFromModelId(id: string): BridgeAgent {
+  const agent = id.startsWith("bridge/") ? id.slice("bridge/".length) : "";
+  return (BRIDGE_AGENTS as readonly string[]).includes(agent)
+    ? (agent as BridgeAgent)
+    : getBridgeAgent();
+}
+
+/** One registry entry per subscription agent CLI. */
+function bridgeModelConfig(agent: BridgeAgent): ModelConfig {
+  return {
+    id: `bridge/${agent}`,
+    name: `${agent.charAt(0).toUpperCase() + agent.slice(1)} (subscription bridge)`,
+    provider: "bridge",
+    providerName: "Subscription Bridge",
+    sdk: "bridge",
+    envKey: "PREVIOUSLY_BRAIN",
+    capabilities: {
+      // The bridge CLI returns plain text — no structured thinking stream,
+      // no vision. maxTokens is a nominal display value; the true output cap
+      // is the bridge's 30KB stdout limit (src/lib/bridge.ts).
+      thinking: false,
+      vision: false,
+      maxTokens: 200_000,
+    },
+    defaultThinking: false,
+    defaultEffort: "low",
+  };
+}
+
+/**
+ * The bridge main-model entries (`bridge/<agent>` for every known agent), or
+ * [] when the bridge brain is not active. The env-selected agent comes first
+ * so getAvailableModels()[0] / getDefaultModelId() resolve to it. envKey is
+ * informational — availability is gated by isBridgeBrainActive(), not by an
+ * API key.
+ */
+export function getBridgeModels(): ModelConfig[] {
+  if (!isBridgeBrainActive()) return [];
+  const first = getBridgeAgent();
+  const rest = BRIDGE_AGENTS.filter((a) => a !== first);
+  return [first, ...rest].map(bridgeModelConfig);
+}
+
+/**
+ * Compat wrapper for the pre-multi-agent shape: the env-selected agent's
+ * entry (= getBridgeModels()[0]), or undefined when inactive.
+ */
+export function getBridgeModel(): ModelConfig | undefined {
+  return getBridgeModels()[0];
+}
 
 export interface ModelCapabilities {
   thinking: boolean;
@@ -133,12 +237,16 @@ export function getModelOverrides(
   return MODEL_OVERRIDES[id];
 }
 
-/** Server-side: curated models whose API key env var is set. */
+/** Server-side: curated models whose API key env var is set, plus the bridge
+ *  brain entries when pure subscription mode is active. */
 export function getAvailableModels(): ModelConfig[] {
-  return ALL_MODELS.filter((m) => !!process.env[m.envKey]);
+  const keyed = ALL_MODELS.filter((m) => !!process.env[m.envKey]);
+  return [...keyed, ...getBridgeModels()];
 }
 
 export function getModel(id: string): ModelConfig | undefined {
+  const bridge = getBridgeModels().find((m) => m.id === id);
+  if (bridge) return bridge;
   return ALL_MODELS.find((m) => m.id === id);
 }
 
