@@ -1,5 +1,6 @@
 import { getTranslations, setRequestLocale } from "next-intl/server";
 import { SettingsForm } from "@/components/settings/settings-form";
+import { ClientSection } from "@/components/settings/client-section";
 import { loadUserConfig } from "@/lib/config/loader";
 import { resolveDataSource, isWritable } from "@/lib/data-source/resolve";
 
@@ -21,11 +22,17 @@ export default async function SettingsPage({
       <p className="text-muted-foreground text-sm mb-8">
         {t("pageSubtitle")}
       </p>
-      <SettingsForm
-        initialConfig={config}
-        dataSource={source}
-        canWrite={canWrite}
-      />
+      <div className="space-y-8">
+        <SettingsForm
+          initialConfig={config}
+          dataSource={source}
+          canWrite={canWrite}
+        />
+        {/* Local client instance panel — renders nothing in cloud mode
+            (its status API answers 404 there). Runtime-gated, because this
+            page is prerendered at build time when mode is still unknown. */}
+        <ClientSection />
+      </div>
     </div>
   );
 }

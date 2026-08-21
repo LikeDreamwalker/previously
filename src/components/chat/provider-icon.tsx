@@ -1,4 +1,5 @@
 import type { SVGProps } from "react";
+import { Terminal } from "lucide-react";
 
 type IconProps = SVGProps<SVGSVGElement>;
 
@@ -220,6 +221,8 @@ const providerIconMap: Record<string, React.FC<IconProps>> = {
   cohere: CohereIcon,
   meta: MetaIcon,
   perplexity: PerplexityIcon,
+  // Subscription bridge — local agent CLIs (Claude Code/Codex/Kimi).
+  bridge: Terminal,
 };
 
 interface ProviderIconProps extends IconProps {

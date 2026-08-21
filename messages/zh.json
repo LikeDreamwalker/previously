@@ -44,6 +44,12 @@
     "toastDesc": "这是一个只读预览，包含预设角色数据。",
     "dismissAction": "知道了"
   },
+  "clientBadge": {
+    "badgeLabel": "本地",
+    "badgeTitle": "你正在本地运行",
+    "badgeDesc": "此 Previously 实例运行在这台机器上。你的数据保存在本地，独立于任何云端部署。",
+    "versionLabel": "内核版本"
+  },
   "persona": {
     "dialogTitle": "选择角色"
   },
@@ -59,8 +65,11 @@
       "modelGroup": {
         "deepseek": "DeepSeek",
         "anthropic": "Anthropic",
-        "openai": "OpenAI"
+        "openai": "OpenAI",
+        "bridge": "订阅桥接"
       },
+      "bridgeHint": "使用你本地的 {agent} 订阅额度。为获得最佳体验(流式输出、工具调用),建议改用 API 模型。",
+      "bridgeNotInstalled": "未安装",
       "thinkingLabel": "深度思考",
       "advanced": "高级",
       "workerLabel": "辅助模型",
@@ -310,6 +319,45 @@
       "heading": "演示模式",
       "description": "你正在浏览一个只读演示，包含预设角色数据。连接你自己的 GitHub 仓库即可解锁完整记忆功能——个人资料编辑、持久化设置和后台任务。",
       "setupLink": "配置指南 →"
+    },
+    "client": {
+      "heading": "Client",
+      "desc": "本内核正以本地客户端实例运行。这里展示本地状态并管理执行设置——保存到客户端主目录（config.json），而非记忆仓库。",
+      "loadFailed": "无法加载客户端状态",
+      "statusHeading": "运行状态",
+      "agentsHeading": "本地 Agent",
+      "agentsDesc": "在本机 PATH 上检测到的 agent CLI。",
+      "agentsLoading": "正在检测本地 agent...",
+      "agentsLoadFailed": "无法检测本地 agent",
+      "agentInstalled": "已安装",
+      "agentNotInstalled": "未安装",
+      "versionLabel": "内核",
+      "homeLabel": "客户端主目录",
+      "homeMissing": "PREVIOUSLY_HOME 未设置——请通过客户端 CLI 启动内核",
+      "memoryRootLabel": "记忆目录",
+      "bridgeLabel": "订阅桥接",
+      "bridgeActive": "已启用——主模型经 {agent} 执行",
+      "bridgeInactive": "未启用——正在使用 API key 模型",
+      "modelsLabel": "可用模型",
+      "modelsEmpty": "无——请配置 API key 或订阅桥接",
+      "executionBackendLabel": "执行后端",
+      "executionBackendPlaceholder": "例如 local（留空 = 不设置）",
+      "brainLabel": "大脑",
+      "brainUnset": "跟随环境变量",
+      "brainApiKey": "API key",
+      "brainBridge": "订阅桥接",
+      "brainEnvLabel": "API key 环境变量名",
+      "brainModelLabel": "模型（可选）",
+      "brainModelPlaceholder": "例如 deepseek-v4-pro",
+      "brainAgentLabel": "桥接 agent",
+      "brainHeading": "大脑来源",
+      "backendHeading": "执行后端",
+      "bridgeAgentNotDetected": "本机未检测到 {agent}——已保存的配置可能在其他机器上有效，或 PATH 已变化。",
+      "save": "保存客户端配置",
+      "saving": "保存中...",
+      "saved": "已保存 ✓",
+      "saveFailed": "保存失败，请重试。",
+      "restartHint": "修改将在客户端 CLI 下次启动内核时生效。"
     }
   },
   "memory": {

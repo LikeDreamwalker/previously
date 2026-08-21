@@ -7,6 +7,7 @@ import { ThemeToggle } from "@/components/chat/theme-toggle";
 import { LocaleToggle } from "@/components/chat/locale-toggle";
 import { VersionBadge } from "@/components/layout/version-badge";
 import { DemoBadge } from "@/components/layout/demo-badge";
+import { ClientBadge } from "@/components/layout/client-badge";
 
 export function AppHeader({ isDemo = false }: { isDemo?: boolean }) {
   const t = useTranslations("nav");
@@ -25,6 +26,7 @@ export function AppHeader({ isDemo = false }: { isDemo?: boolean }) {
 
       <nav className="flex items-center gap-1">
         {isDemo && <DemoBadge />}
+        <ClientBadge />
         <a
           href="https://github.com/previously-lab/agent"
           target="_blank"

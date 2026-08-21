@@ -44,6 +44,12 @@
     "toastDesc": "This is a read-only preview with pre-seeded personas.",
     "dismissAction": "Got it"
   },
+  "clientBadge": {
+    "badgeLabel": "Local",
+    "badgeTitle": "Running locally",
+    "badgeDesc": "This Previously instance runs on this machine. Your data stays local and is independent of any cloud deployment.",
+    "versionLabel": "Kernel version"
+  },
   "persona": {
     "dialogTitle": "Choose a Persona"
   },
@@ -59,8 +65,11 @@
       "modelGroup": {
         "deepseek": "DeepSeek",
         "anthropic": "Anthropic",
-        "openai": "OpenAI"
+        "openai": "OpenAI",
+        "bridge": "Subscription Bridge"
       },
+      "bridgeHint": "Uses your local {agent} subscription quota. For the best experience (streaming, tool use), prefer an API model.",
+      "bridgeNotInstalled": "not installed",
       "thinkingLabel": "Thinking",
       "advanced": "Advanced",
       "workerLabel": "Worker model",
@@ -310,6 +319,45 @@
       "heading": "Demo Mode",
       "description": "You are browsing a read-only demo with pre-seeded persona data. Connect your own GitHub repository to unlock full memory features — profile editing, persistent settings, and background loops.",
       "setupLink": "Setup guide →"
+    },
+    "client": {
+      "heading": "Client",
+      "desc": "This kernel is running as a local client instance. Status and local execution settings — saved to the client home (config.json), not your memory repo.",
+      "loadFailed": "Couldn't load client status",
+      "statusHeading": "Status",
+      "agentsHeading": "Local agents",
+      "agentsDesc": "Agent CLIs detected on this machine's PATH.",
+      "agentsLoading": "Detecting local agents...",
+      "agentsLoadFailed": "Couldn't detect local agents",
+      "agentInstalled": "installed",
+      "agentNotInstalled": "not installed",
+      "versionLabel": "Kernel",
+      "homeLabel": "Client home",
+      "homeMissing": "PREVIOUSLY_HOME is not set — start the kernel through the client CLI",
+      "memoryRootLabel": "Memory directory",
+      "bridgeLabel": "Subscription bridge",
+      "bridgeActive": "active — main model runs via {agent}",
+      "bridgeInactive": "inactive — using API-key models",
+      "modelsLabel": "Available models",
+      "modelsEmpty": "None — configure an API key or the subscription bridge",
+      "executionBackendLabel": "Execution backend",
+      "executionBackendPlaceholder": "e.g. local (empty = unset)",
+      "brainLabel": "Brain",
+      "brainUnset": "Inherit from environment",
+      "brainApiKey": "API key",
+      "brainBridge": "Subscription bridge",
+      "brainEnvLabel": "API key env var",
+      "brainModelLabel": "Model (optional)",
+      "brainModelPlaceholder": "e.g. deepseek-v4-pro",
+      "brainAgentLabel": "Bridge agent",
+      "brainHeading": "Brain",
+      "backendHeading": "Execution backend",
+      "bridgeAgentNotDetected": "{agent} isn't detected on this machine — the saved config may be valid elsewhere, or the PATH changed.",
+      "save": "Save client config",
+      "saving": "Saving...",
+      "saved": "Saved ✓",
+      "saveFailed": "Couldn't save. Try again.",
+      "restartHint": "Changes apply the next time the client CLI starts the kernel."
     }
   },
   "memory": {

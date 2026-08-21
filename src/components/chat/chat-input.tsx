@@ -268,27 +268,30 @@ export function ChatInput({
             onThinkingChange={onThinkingChange}
           />
 
-          {/* Thinking intensity */}
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <button
-                  type="button"
-                  onClick={cycleEffort}
-                  disabled={isLoading || demoRunning}
-                  className="h-7 rounded-full text-muted-foreground hover:text-foreground hover:bg-brand/10 transition-colors flex items-center justify-center gap-1 px-2 disabled:opacity-30"
-                >
-                  <Zap className="h-3 w-3" />
-                  <span className="text-[10px] font-medium leading-none">
-                    {mounted ? effortLabel(currentEffort, currentModelId) : "High"}
-                  </span>
-                </button>
-              }
-            />
-            <TooltipContent side="top">
-              Thinking: {effortLabel(currentEffort, currentModelId)} — click to cycle
-            </TooltipContent>
-          </Tooltip>
+          {/* Thinking intensity — hidden for bridge models: the subscription
+              bridge has no reasoning knobs (see effort-injector.ts). */}
+          {!currentModelId.startsWith("bridge/") && (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <button
+                    type="button"
+                    onClick={cycleEffort}
+                    disabled={isLoading || demoRunning}
+                    className="h-7 rounded-full text-muted-foreground hover:text-foreground hover:bg-brand/10 transition-colors flex items-center justify-center gap-1 px-2 disabled:opacity-30"
+                  >
+                    <Zap className="h-3 w-3" />
+                    <span className="text-[10px] font-medium leading-none">
+                      {mounted ? effortLabel(currentEffort, currentModelId) : "High"}
+                    </span>
+                  </button>
+                }
+              />
+              <TooltipContent side="top">
+                Thinking: {effortLabel(currentEffort, currentModelId)} — click to cycle
+              </TooltipContent>
+            </Tooltip>
+          )}
 
           {/* Settings */}
           <Tooltip>

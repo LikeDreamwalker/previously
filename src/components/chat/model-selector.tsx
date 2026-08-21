@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useTranslations } from "next-intl";
-import { Check, Settings2 } from "lucide-react";
+import { Check, Info, Settings2 } from "lucide-react";
 import {
   Popover,
   PopoverContent,
@@ -40,6 +40,22 @@ interface AvailableModel {
   providerName: string;
   defaultThinking: boolean;
   defaultEffort: EffortLevel;
+  /** Bridge options only: informational copy about the subscription bridge. */
+  hint?: string;
+  /** Bridge options only: whether the agent CLI was detected on PATH. */
+  available?: boolean;
+}
+
+/** Display names of the subscription CLIs (brand names — locale-neutral). */
+const BRIDGE_AGENT_LABELS: Record<string, string> = {
+  claude: "Claude Code",
+  codex: "Codex",
+  kimi: "Kimi",
+};
+
+/** The agent CLI a bridge model id drives (`bridge/codex` → "codex"). */
+function bridgeAgentOf(id: string): string {
+  return id.startsWith("bridge/") ? id.slice("bridge/".length) : "";
 }
 
 interface ModelSelectorProps {
@@ -135,6 +151,9 @@ export function ModelSelector({
   if (models.length <= 1) return null;
 
   const groups = groupByProvider(models);
+  // Thinking/effort are no-ops for the subscription bridge (see
+  // effort-injector.ts) — hide the knobs while a bridge model is selected.
+  const isBridgeSelected = currentModelId.startsWith("bridge/");
 
   return (
     <>
@@ -173,40 +192,82 @@ export function ModelSelector({
               <div className="px-2 py-1 text-[10px] uppercase tracking-wide text-muted-foreground/60">
                 {providerModels[0]?.providerName ?? t(`modelGroup.${provider}`)}
               </div>
-              {providerModels.map((m) => (
-                <button
-                  key={m.id}
-                  type="button"
-                  onClick={() => handleSelect(m)}
-                  className={`w-full text-left px-2 py-1.5 rounded text-xs flex items-center justify-between gap-2 ${
-                    m.id === currentModelId
-                      ? "bg-primary/10 text-primary"
-                      : "hover:bg-muted"
-                  }`}
-                >
-                  <span className="flex min-w-0 items-center gap-1.5">
-                    <ProviderIcon
-                      provider={m.provider}
-                      className="h-3.5 w-3.5 shrink-0"
-                    />
-                    <span className="truncate">{m.name}</span>
-                  </span>
-                  {m.id === currentModelId && <Check className="h-3 w-3 shrink-0" />}
-                </button>
-              ))}
+              {providerModels.map((m) => {
+                const isBridge = m.provider === "bridge";
+                const unavailable = isBridge && m.available === false;
+                return (
+                  <div key={m.id} className="flex items-center gap-0.5">
+                    <button
+                      type="button"
+                      disabled={unavailable}
+                      onClick={() => handleSelect(m)}
+                      className={`min-w-0 flex-1 text-left px-2 py-1.5 rounded text-xs flex items-center justify-between gap-2 ${
+                        m.id === currentModelId
+                          ? "bg-primary/10 text-primary"
+                          : "hover:bg-muted"
+                      } disabled:opacity-50 disabled:hover:bg-transparent`}
+                    >
+                      <span className="flex min-w-0 items-center gap-1.5">
+                        <ProviderIcon
+                          provider={m.provider}
+                          className="h-3.5 w-3.5 shrink-0"
+                        />
+                        <span className="truncate">
+                          {m.name}
+                          {unavailable && (
+                            <span className="text-muted-foreground">
+                              {" "}
+                              · {t("bridgeNotInstalled")}
+                            </span>
+                          )}
+                        </span>
+                      </span>
+                      {m.id === currentModelId && (
+                        <Check className="h-3 w-3 shrink-0" />
+                      )}
+                    </button>
+                    {isBridge && (
+                      <Tooltip>
+                        <TooltipTrigger
+                          render={
+                            <span
+                              tabIndex={0}
+                              className="shrink-0 rounded p-1 text-muted-foreground/70 hover:text-foreground"
+                            >
+                              <Info className="h-3 w-3" />
+                            </span>
+                          }
+                        />
+                        <TooltipContent side="top" className="max-w-56">
+                          {t("bridgeHint", {
+                            agent:
+                              BRIDGE_AGENT_LABELS[bridgeAgentOf(m.id)] ?? m.name,
+                          })}
+                        </TooltipContent>
+                      </Tooltip>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           ))}
 
           <div className="mt-1 flex items-center justify-between gap-2 border-t px-2 pt-2">
-            <span className="text-xs text-muted-foreground">
-              {t("thinkingLabel")}
-            </span>
-            <div className="flex items-center gap-0.5">
-              <Switch
-                size="sm"
-                checked={thinking}
-                onCheckedChange={onThinkingChange}
-              />
+            {!isBridgeSelected && (
+              <span className="text-xs text-muted-foreground">
+                {t("thinkingLabel")}
+              </span>
+            )}
+            <div
+              className={`flex items-center gap-0.5 ${isBridgeSelected ? "ml-auto" : ""}`}
+            >
+              {!isBridgeSelected && (
+                <Switch
+                  size="sm"
+                  checked={thinking}
+                  onCheckedChange={onThinkingChange}
+                />
+              )}
               <Tooltip>
                 <TooltipTrigger
                   render={
@@ -253,7 +314,11 @@ export function ModelSelector({
               <div className="px-2 py-1 text-xs font-medium text-muted-foreground">
                 {t("workerModelLabel")}
               </div>
-              {[...groups.entries()].map(([provider, providerModels]) => (
+              {/* The worker tier never routes to the subscription bridge
+                  (src/lib/models/worker.ts) — don't offer bridge entries. */}
+              {[...groups.entries()]
+                .filter(([provider]) => provider !== "bridge")
+                .map(([provider, providerModels]) => (
                 <div key={provider} className="mb-1">
                   <div className="px-2 py-1 text-[10px] uppercase tracking-wide text-muted-foreground/60">
                     {providerModels[0]?.providerName ?? t(`modelGroup.${provider}`)}
