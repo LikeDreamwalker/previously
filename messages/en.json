@@ -51,6 +51,8 @@
     "input": {
       "placeholder": "Send a message...",
       "attach": "Attach files",
+      "attachUnsupported": "The selected model doesn't support images",
+      "effortLocked": "Thinking intensity is fixed in the demo",
       "settingsTooltip": "Settings",
       "stopTooltip": "Stop generation",
       "sendTooltip": "Send message",

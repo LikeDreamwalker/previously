@@ -39,6 +39,7 @@ Three-layer separation:
 | `doc/design/` | Per-milestone design documents (`v0.5-previously-agent.md`, `v0.7-memory-card.md`, `v0.8-timeline.md`) |
 | `doc/v0.5-changelog.md` / `doc/v0.5-release-notes.md` | v0.5 changelog + release notes |
 | `doc/v0.7-changelog.md` / `doc/v0.7-release-notes.md` | v0.7 changelog + release notes |
+| `doc/v0.8.1-changelog.md` / `doc/v0.8.1-release-notes.md` | v0.8.1 patch changelog + release notes |
 
 ## Constraints
 

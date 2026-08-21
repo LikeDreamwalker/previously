@@ -1,6 +1,7 @@
 import { setRequestLocale } from "next-intl/server";
 import { setDemoPersona } from "@/lib/demo/demo-fs";
 import { resolveDataSource } from "@/lib/data-source/resolve";
+import { demoModelLock } from "@/lib/demo/model-lock";
 import { ChatPage } from "@/components/chat/chat-page";
 import { ClientErrorCapture } from "@/components/chat/client-error-capture";
 import { DebugErrorBoundary } from "@/components/ui/error-boundary";
@@ -19,9 +20,13 @@ export default async function HomePage({
   setRequestLocale(locale);
 
   const { persona } = await searchParams;
-  if (resolveDataSource() === "demo") {
+  const isDemo = resolveDataSource() === "demo";
+  if (isDemo) {
     setDemoPersona(persona || "personal_14");
   }
+  // The model lock is opt-in (DEMO_LOCK=1) — a self-hosted deployment that
+  // happens to run on the demo data source keeps full model/effort control.
+  const demoLocked = demoModelLock() !== null;
 
   // Preload the user config server-side so ChatPage seeds its model/thinking/
   // effort state from real values instead of flashing the defaults and then
@@ -41,7 +46,7 @@ export default async function HomePage({
           here with the full stack + component stack instead of an opaque
           frame. */}
       <DebugErrorBoundary label="chat-page">
-        <ChatPage initialConfig={config} />
+        <ChatPage initialConfig={config} demoLocked={demoLocked} />
       </DebugErrorBoundary>
     </>
   );

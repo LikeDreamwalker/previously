@@ -9,6 +9,7 @@ import { readFileDemo } from "@/lib/demo/demo-fs";
 import { resolveDataSource } from "@/lib/data-source/resolve";
 import { getRepoConfig } from "@/lib/capabilities";
 import { mergeConfig, DEFAULTS } from "./defaults";
+import { demoModelLock } from "@/lib/demo/model-lock";
 import type { UserConfig } from "./types";
 
 const CONFIG_PATH = "memory/user/config.json";
@@ -41,6 +42,24 @@ export function invalidateUserConfigCache(): void {
 }
 
 /**
+ * Clamp the model section to the demo lock when in demo mode, so the client
+ * seeds its UI with the values the server will actually enforce (startTurn
+ * ignores per-request overrides in demo mode).
+ */
+function applyDemoLock(config: UserConfig): UserConfig {
+  const lock = demoModelLock();
+  if (!lock) return config;
+  return {
+    ...config,
+    model: {
+      provider: lock.model,
+      thinking: lock.thinking,
+      reasoningEffort: lock.effort,
+    },
+  };
+}
+
+/**
  * Load the user config, merging any present fields onto defaults. Cached in
  * memory for 60 seconds so repeated reads within a single request stream don't
  * re-fetch from disk / GitHub.
@@ -51,18 +70,18 @@ export async function loadUserConfig(): Promise<UserConfig> {
 
   const raw = await readRaw();
   if (!raw) {
-    cached = DEFAULTS;
+    cached = applyDemoLock(DEFAULTS);
     cacheTtl = now + 60_000;
     return cached;
   }
 
   try {
     const parsed = JSON.parse(raw);
-    cached = mergeConfig(parsed);
+    cached = applyDemoLock(mergeConfig(parsed));
     cacheTtl = now + 60_000;
     return cached;
   } catch {
-    cached = DEFAULTS;
+    cached = applyDemoLock(DEFAULTS);
     cacheTtl = now + 60_000;
     return cached;
   }
