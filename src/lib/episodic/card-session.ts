@@ -101,6 +101,16 @@ export function sameCardSubstance(
 
 const REF_RE = /^\d{4}\/\d{2}\/\d{2}\/\d{4}(-[A-Za-z0-9]+)?$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+/** Slice ids everywhere else are dash-form (YYYY-MM-DD-HHMM) — the worker
+ *  naturally cites them as-is. Accept that form too. */
+const REF_DASH_RE = /^(\d{4})-(\d{2})-(\d{2})-(\d{4}(-[A-Za-z0-9]+)?)$/;
+
+/** Normalize one ref to the canonical slash form; null when unrecognizable. */
+function normalizeRef(ref: string): string | null {
+  if (REF_RE.test(ref)) return ref;
+  const m = REF_DASH_RE.exec(ref.trim());
+  return m ? `${m[1]}/${m[2]}/${m[3]}/${m[4]}` : null;
+}
 
 function checkLength(field: string, text: string, max: number): string | null {
   if (!text.trim()) return `REJECTED: ${field} is empty.`;
@@ -114,9 +124,14 @@ function checkLength(field: string, text: string, max: number): string | null {
 function checkRefs(refs: string[]): string | null {
   if (refs.length === 0)
     return "REJECTED: refs are required — cite the evidence slice (e.g. [\"2026/08/07/0709\"]). No evidence, no write.";
-  const bad = refs.filter((r) => !REF_RE.test(r));
-  if (bad.length > 0)
-    return `REJECTED: malformed refs ${JSON.stringify(bad)} — expected YYYY/MM/DD/HHMM (optionally -turnId).`;
+  // Validate + normalize IN PLACE: dash-form slice ids become slash-form, so a
+  // ref copied verbatim from the slice id no longer bounces.
+  for (let i = 0; i < refs.length; i++) {
+    const normalized = normalizeRef(refs[i]);
+    if (!normalized)
+      return `REJECTED: malformed ref "${refs[i]}" — expected the evidence slice id (YYYY-MM-DD-HHMM, optionally -turnId).`;
+    refs[i] = normalized;
+  }
   return null;
 }
 
@@ -282,8 +297,10 @@ export function sessionPromoteNowToPast(session: CardSession, match: string): st
   if (!hit) return noMatch("Now", match, session.doc.now);
   if (session.doc.past.anchors.length >= PAST_ANCHORS_MAX)
     return `REJECTED: Past anchors are full (${PAST_ANCHORS_MAX}) — remove a stale anchor first, or fold the substance into the profile paragraph with updatePastProfile + removeNow.`;
-  const err = checkLength("Past anchor", hit.text, PAST_ANCHOR_MAX_CHARS);
-  if (err) return err;
+  // No length check: this MOVES text already on the card — rejecting it for a
+  // limit the agent didn't author (legacy over-length items) traps the pass in
+  // a rejection loop it cannot escape. Folding via updatePastProfile remains
+  // the path for compressing the substance.
   session.doc.now = session.doc.now.filter((r) => r !== hit);
   session.doc.past.anchors.push({ text: hit.text, refs: hit.refs });
   session.log.push(`promoteNowToPast: ${hit.text.slice(0, 50)}`);

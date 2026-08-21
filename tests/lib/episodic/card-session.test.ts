@@ -118,8 +118,18 @@ describe("addNow / removeNow / promoteNowToPast", () => {
   it("rejects missing or malformed refs", () => {
     const s = session();
     expect(sessionAddNow(s, "hook", [])).toContain("refs are required");
-    expect(sessionAddNow(s, "hook", ["not-a-ref"])).toContain("malformed refs");
+    expect(sessionAddNow(s, "hook", ["not-a-ref"])).toContain("malformed ref");
     expect(s.doc.now).toEqual([]);
+  });
+
+  it("accepts dash-form slice ids as refs and normalizes them to slash form", () => {
+    // v0.8.1 regression: slice ids are dash-form (YYYY-MM-DD-HHMM) everywhere
+    // the worker sees them, but refs used to require slash form — a verbatim
+    // citation bounced as "malformed" and looped.
+    const s = session();
+    const res = sessionAddNow(s, "hook", ["2026-08-17-0515", "2026-08-16-0900-abc123"]);
+    expect(res).toMatch(/^OK/);
+    expect(s.doc.now[0].refs).toEqual(["2026/08/17/0515", "2026/08/16/0900-abc123"]);
   });
 
   it("rejects a duplicate entry", () => {
@@ -158,6 +168,25 @@ describe("addNow / removeNow / promoteNowToPast", () => {
     sessionAddNow(s, "a hook", REFS);
     expect(sessionPromoteNowToPast(s, "a hook")).toContain("REJECTED");
     expect(s.doc.now).toHaveLength(1); // untouched on rejection
+  });
+
+  it("promotion moves a legacy OVER-LENGTH Now item — a move is not a new write", () => {
+    // v0.8.1: the anchor length cap used to validate the EXISTING text, so a
+    // legacy over-length Now item could never be promoted — an escapeless
+    // rejection loop for content the agent didn't author.
+    const base = serializeCard({
+      sliceId: "2026-08-16-0900",
+      updated: "2026-08-16T09:00:00.000Z",
+      identity: [],
+      past: { profile: "p", anchors: [] },
+      now: [{ text: "x".repeat(400), refs: REFS, since: "2026-08-01" }],
+      horizon: [],
+      selfModel: [],
+    });
+    const s = session(base);
+    expect(sessionPromoteNowToPast(s, "xxx")).toMatch(/^OK/);
+    expect(s.doc.now).toEqual([]);
+    expect(s.doc.past.anchors[0].text).toHaveLength(400);
   });
 });
 

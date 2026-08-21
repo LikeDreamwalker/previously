@@ -276,7 +276,7 @@ When the signal is slice_closed, read the closed slice's agent timeline (\`readA
 
 ## Ref entry format
 
-Every claim carries refs to its evidence slice: \`["2026/08/07/0709"]\` (slice) or \`["2026/08/07/0709-abc123"]\` (slice-turn). Never invent refs — no evidence, no write.
+Every claim carries refs to its evidence slice — cite the slice id exactly as shown: \`["2026-08-07-0709"]\` (slice) or \`["2026-08-07-0709-abc123"]\` (slice-turn). Never invent refs — no evidence, no write.
 
 ## Reformat (legacy only)
 
@@ -343,7 +343,7 @@ async function attemptCall(
           "Admission test: almost certainly still true in 3 years.",
         inputSchema: z.object({
           text: z.string(),
-          refs: z.array(z.string()).describe("Evidence slices, e.g. [\"2026/08/07/0709\"]."),
+          refs: z.array(z.string()).describe("Evidence slice ids, e.g. [\"2026-08-07-0709\"]."),
         }),
         execute: async ({ text, refs }) => sessionAddPastAnchor(session, text, refs),
       }),
