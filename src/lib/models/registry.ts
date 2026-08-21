@@ -31,7 +31,7 @@ export interface ModelConfig {
   sdk: ProviderSdk;
   /** Env var that must be set for this model to be available. */
   envKey: string;
-  /** Base URL for OpenAI-compatible providers; undefined for dedicated SDKs. */
+  /** Base URL for OpenAI-compatible providers (DeepSeek included). */
   baseURL?: string;
   capabilities: ModelCapabilities;
   /** Default thinking state when the user selects this model. */
@@ -55,6 +55,7 @@ export const ALL_MODELS: ModelConfig[] = [
     providerName: "DeepSeek",
     sdk: "deepseek",
     envKey: "DEEPSEEK_API_KEY",
+    baseURL: "https://api.deepseek.com",
     capabilities: { thinking: true, vision: false, maxTokens: 393216 },
     defaultThinking: true,
     defaultEffort: "low",
@@ -66,6 +67,7 @@ export const ALL_MODELS: ModelConfig[] = [
     providerName: "DeepSeek",
     sdk: "deepseek",
     envKey: "DEEPSEEK_API_KEY",
+    baseURL: "https://api.deepseek.com",
     capabilities: { thinking: true, vision: true, maxTokens: 393216 },
     defaultThinking: true,
     defaultEffort: "low",
@@ -77,6 +79,7 @@ export const ALL_MODELS: ModelConfig[] = [
     providerName: "DeepSeek",
     sdk: "deepseek",
     envKey: "DEEPSEEK_API_KEY",
+    baseURL: "https://api.deepseek.com",
     capabilities: { thinking: true, vision: false, maxTokens: 393216 },
     defaultThinking: true,
     // DeepSeek exposes only low/high as meaningful tiers (V4 Pro promotes

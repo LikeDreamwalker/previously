@@ -15,6 +15,7 @@ import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import {
   Activity,
   AlertTriangle,
+  Paperclip,
   XCircle,
 } from "lucide-react";
 import { LoadingTip } from "./loading-tip";
@@ -136,6 +137,7 @@ export const ChatMessage = memo(function ChatMessage({
   evolutionState,
 }: ChatMessageProps) {
   const t = useTranslations("chat.phase");
+  const tChat = useTranslations("chat");
   const isUser = message.role === "user";
   const isAssistant = message.role === "assistant";
   const parts = useMemo(
@@ -193,15 +195,42 @@ export const ChatMessage = memo(function ChatMessage({
       .filter((p) => p.type === "text")
       .map((p) => p.text ?? "")
       .join("\n");
+    // File parts (attachments): images render inline from their data URL;
+    // anything else collapses to a small file chip.
+    const fileParts = parts.filter((p) => p.type === "file" && p.url);
     return (
       <div className="py-1">
         <Message align="end" className="gap-1">
           <MessageContent className="min-w-0">
-            <Bubble variant="secondary">
-              <BubbleContent>
-                <MarkdownRenderer content={userText} />
-              </BubbleContent>
-            </Bubble>
+            {fileParts.length > 0 && (
+              <div className="mb-1 flex flex-wrap justify-end gap-2">
+                {fileParts.map((p, i) =>
+                  p.mediaType?.startsWith("image/") ? (
+                    <img
+                      key={i}
+                      src={p.url}
+                      alt={p.filename ?? tChat("attachment")}
+                      className="max-h-64 max-w-full rounded-lg border border-border object-cover"
+                    />
+                  ) : (
+                    <span
+                      key={i}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-muted px-2 py-1 text-xs text-muted-foreground"
+                    >
+                      <Paperclip className="h-3.5 w-3.5" />
+                      {p.filename ?? tChat("attachment")}
+                    </span>
+                  ),
+                )}
+              </div>
+            )}
+            {(userText || fileParts.length === 0) && (
+              <Bubble variant="secondary">
+                <BubbleContent>
+                  <MarkdownRenderer content={userText} />
+                </BubbleContent>
+              </Bubble>
+            )}
           </MessageContent>
         </Message>
       </div>

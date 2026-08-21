@@ -1235,6 +1235,18 @@ async function runThinkDeepFragment(
               }
             },
           });
+          // Provider warnings (unsupported settings, silent downgrades such as
+          // dropped image parts) never throw — log them so a quiet degradation
+          // is visible in the server log. Promise-only in the SDK, so attach
+          // without touching the control flow.
+          void Promise.resolve(stream.warnings).then((w) => {
+            if (w?.length) {
+              console.warn(
+                `[thinkDeep] model=${modelConfig.id} stream warnings:`,
+                w,
+              );
+            }
+          });
           return await stream.text;
         } finally {
           // Push the final progress line, then release the writer so the step's

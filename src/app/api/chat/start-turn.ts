@@ -89,13 +89,37 @@ async function resolveModelConfig(id: string): Promise<{
  * client gates attachments on `supportsVision`, but the client is untrusted —
  * this is the server-side enforcement.
  */
-function stripFileParts(messages: UIMessage[]): UIMessage[] {
+export function stripFileParts(messages: UIMessage[]): UIMessage[] {
   return messages
     .map((m) => ({
       ...m,
       parts: (m.parts ?? []).filter((p) => p.type !== "file"),
     }))
     .filter((m) => m.parts.length > 0);
+}
+
+/**
+ * Summarize a converted ModelMessage's content as plain text for recentTurns.
+ * NEVER JSON.stringify array content here: file/image parts carry base64 data
+ * URLs, which would embed megabytes into the prompt context. Text parts keep
+ * their text; file parts become [image]/[file]; everything else (tool-call,
+ * tool-result, …) collapses to a short [type] placeholder.
+ */
+export function summarizeModelContent(
+  content: unknown,
+): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return String(content ?? "");
+  return content
+    .map((part) => {
+      const p = part as { type?: string; text?: string; mediaType?: string };
+      if (p.type === "text") return p.text ?? "";
+      if (p.type === "file" || p.type === "image") {
+        return p.mediaType?.startsWith("image/") ? "[image]" : "[file]";
+      }
+      return `[${p.type ?? "part"}]`;
+    })
+    .join("\n");
 }
 
 export async function startTurn(
@@ -156,7 +180,9 @@ export async function startTurn(
   const modelMessages = fullMessages.slice(-recentLimit);
   const recentTurns = modelMessages.map((m) => ({
     role: m.role as string,
-    content: typeof m.content === "string" ? m.content : JSON.stringify(m.content),
+    // Array content must be summarized, not stringified — see
+    // summarizeModelContent (base64 leak).
+    content: summarizeModelContent(m.content),
   }));
 
   const userMessages = inbound.filter((m) => m.role === "user");

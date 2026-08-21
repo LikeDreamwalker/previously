@@ -121,11 +121,11 @@ The episodic memory subsystem (`src/lib/episodic/`, see `src/lib/episodic/CLAUDE
 ### Model Layer (multi-provider + worker tier)
 
 - **Catalog**: models.dev (`https://models.dev/api.json`) is the primary model catalog (`src/lib/models/catalog.ts`), gated by configured API-key env vars and reverse-filtered against each provider's live `/models` endpoint. Falls back to a curated list in `src/lib/models/registry.ts`.
-- **Dispatch**: `src/lib/models/provider.ts` routes by SDK — dedicated `@ai-sdk/deepseek` / `@ai-sdk/anthropic`, OpenAI-compatible catch-all (`@ai-sdk/openai`) for everything else (Kimi, Qwen, ...).
+- **Dispatch**: `src/lib/models/provider.ts` routes by SDK — dedicated `@ai-sdk/anthropic`, OpenAI-compatible for everything else: DeepSeek via `@ai-sdk/openai-compatible` (the dedicated `@ai-sdk/deepseek` dropped image parts), `@ai-sdk/openai` catch-all for the rest (Kimi, Qwen, ...).
 - **Two tiers**:
   - **Main model** — user-selected in the chat toolbar; persists to `memory/user/config.json` (cross-device, no localStorage).
   - **Worker model** — the cheap internal tier (housekeeping analyze, recall search, belief evolution, loops). Resolved by `resolveWorkerModel()` (`src/lib/models/worker.ts`): manual pin → same-provider lightweight → the main model. Configured in the model selector's "Advanced" sheet (auto "keep consistent with the main agent", or a manual pick).
-- **Workflow model deserialization**: `register-model-classes.ts` registers deepseek, anthropic, and openai(-compatible) model hosts so models crossing the workflow→step boundary rebuild correctly.
+- **Workflow model deserialization**: `register-model-classes.ts` registers anthropic, openai, and openai-compatible (DeepSeek) model hosts so models crossing the workflow→step boundary rebuild correctly.
 
 ### Chat Rendering
 

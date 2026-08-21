@@ -71,6 +71,7 @@
       "workerModelLabel": "Worker model",
       "workerSave": "Save"
     },
+    "attachment": "Attachment",
     "actions": {
       "copy": "Copy",
       "copied": "Copied",

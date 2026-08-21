@@ -649,6 +649,16 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
     // already received it via the live stream, and the continuation works
     // from the committed context.)
     onStepEnd: (step) => {
+      // Provider warnings (unsupported settings, silent downgrades such as
+      // dropped image parts) never throw — log them so a quiet degradation is
+      // visible in the server log.
+      const stepWarnings = (step as { warnings?: unknown[] }).warnings;
+      if (stepWarnings?.length) {
+        console.warn(
+          `[Turn:${input.turnId}] model=${input.model} step warnings:`,
+          stepWarnings,
+        );
+      }
       interruptedSteps.push({
         text: typeof step.text === "string" ? step.text : "",
         toolCalls: (step.toolCalls ?? []).map((tc) => ({

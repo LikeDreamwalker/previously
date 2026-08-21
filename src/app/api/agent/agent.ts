@@ -6,9 +6,9 @@
  * agent loop then runs in the Workflow runtime, so every LLM call and every
  * tool call is an individually durable, auto-retried step.
  *
- * Import-graph discipline: pure JS only (WorkflowAgent + deepseek provider
- * factory are object construction, no I/O). All Node I/O lives behind the
- * "use step" tool executors bound in ./tools.
+ * Import-graph discipline: pure JS only (WorkflowAgent + provider factories
+ * are object construction, no I/O). All Node I/O lives behind the "use step"
+ * tool executors bound in ./tools.
  */
 
 import {

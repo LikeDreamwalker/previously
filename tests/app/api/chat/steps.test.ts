@@ -82,8 +82,10 @@ vi.mock("ai", async () => {
   };
 });
 
-vi.mock("@ai-sdk/deepseek", () => ({
-  deepseek: vi.fn((id: string) => ({ modelId: id })),
+vi.mock("@ai-sdk/openai-compatible", () => ({
+  createOpenAICompatible: vi.fn(
+    () => (id: string) => ({ modelId: id }),
+  ),
 }));
 
 // The run's writable: collects everything written for assertions.

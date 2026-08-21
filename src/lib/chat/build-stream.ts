@@ -17,6 +17,10 @@ export type AnyPart = {
   output?: unknown;
   text?: string;
   data?: unknown;
+  /** File parts (user attachments): data URL + media metadata. */
+  mediaType?: string;
+  url?: string;
+  filename?: string;
 };
 
 /** One sub-step inside the housekeeping card (slice / tags / context / strands). */
