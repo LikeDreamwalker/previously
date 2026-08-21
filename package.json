@@ -8,15 +8,17 @@
     "dev": "next dev --turbopack",
     "prebuild": "node scripts/generate-identity.mjs",
     "build": "next build --turbopack",
-    "build:standalone": "pnpm build && node scripts/pack-standalone.mjs",
+    "build:standalone": "node scripts/build-standalone.mjs",
     "start": "next start",
     "lint": "eslint",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.12",
     "@ai-sdk/deepseek": "^3.0.11",
     "@ai-sdk/openai": "^4.0.25",
+    "@ai-sdk/provider": "^4.0.4",
     "@ai-sdk/react": "^4.0.23",
     "@ai-sdk/workflow": "^1.0.22",
     "@base-ui/react": "^1.3.0",
