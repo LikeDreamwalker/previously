@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import type { TimeSlice } from "@/lib/episodic";
-import type { TurnInput } from "@/lib/chat/turn-types";
+import type { TurnInput, TurnOutcome } from "@/lib/chat/turn-types";
 
 // ── Mock the step dependencies ──────────────────────────────────────────
 
@@ -98,6 +98,7 @@ const workflowMock = vi.hoisted(() => {
         },
         releaseLock: () => {},
       }),
+      close: async () => {},
     })),
   };
 });
@@ -472,5 +473,69 @@ describe("cross-day continuity (readMostRecentClosedSlice)", () => {
 
     await housekeeping(makeInput("first ever"));
     expect(contextSummaries().join(" ")).toContain("continuity: none");
+  });
+});
+
+describe("turn idempotency (workflow redelivery)", () => {
+  const outcome: TurnOutcome = {
+    text: "agent reply",
+    finishReason: "stop",
+    startedLoops: [],
+    cognition: "",
+  };
+
+  it("does not re-append the user turn when housekeeping re-runs with the same turnId", async () => {
+    // Disk state after a first run that committed but whose result was lost:
+    // the user turn is already persisted, keyed by turnId.
+    const disk = makeSlice({
+      turns: [
+        { timestamp: "t0", role: "user", content: "earlier", turnId: "prev-id" },
+        { timestamp: "t1", role: "agent", content: "reply", turnId: "prev-id" },
+        { timestamp: "t2", role: "user", content: "follow up", turnId: "test-id" },
+      ],
+    });
+    episodic.tryLoadTodaySlice.mockResolvedValue(disk);
+
+    // Include an assistant message so the context continuity check passes.
+    const input = makeInput("follow up", {
+      modelMessages: [
+        { role: "assistant", content: "reply" },
+      ] as unknown as TurnInput["modelMessages"],
+    });
+    const { slice } = await housekeeping(input);
+
+    expect(slice.turns).toHaveLength(3);
+    expect(
+      slice.turns.filter((t) => t.role === "user" && t.turnId === "test-id"),
+    ).toHaveLength(1);
+    expect(episodic.appendTurn).not.toHaveBeenCalled();
+  });
+
+  it("does not re-append the agent turn when finalizeTurn re-runs with the same turnId", async () => {
+    const slice = makeSlice({
+      turns: [
+        { timestamp: "t0", role: "user", content: "hi", turnId: "test-id" },
+        { timestamp: "t1", role: "agent", content: "agent reply", turnId: "test-id" },
+      ],
+    });
+
+    await finalizeTurn(slice, outcome, "test-id");
+
+    expect(slice.turns.filter((t) => t.role === "agent")).toHaveLength(1);
+    expect(episodic.appendTurn).not.toHaveBeenCalled();
+  });
+
+  it("stores exactly one user turn and one agent turn even when both steps are redelivered", async () => {
+    // First delivery: fresh slice, user turn minted by createSlice.
+    episodic.tryLoadTodaySlice.mockResolvedValue(null);
+    const { slice } = await housekeeping(makeInput("hello world"));
+
+    // Agent turn appended once, then the whole finalize step is redelivered
+    // against the same slice state (same turnId).
+    await finalizeTurn(slice, outcome, "test-id");
+    await finalizeTurn(slice, outcome, "test-id");
+
+    expect(slice.turns.filter((t) => t.role === "user")).toHaveLength(1);
+    expect(slice.turns.filter((t) => t.role === "agent")).toHaveLength(1);
   });
 });

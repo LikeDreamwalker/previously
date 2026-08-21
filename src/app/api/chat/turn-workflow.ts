@@ -501,6 +501,12 @@ export function assembleSystemPrompt(opts: {
   evolutionNotice: string;
   /** Pre-built "## Demo mode…" block, or "" to omit. */
   demoNotice: string;
+  /**
+   * Pre-built "## Subscription bridge…" limitation notice (bridge main model
+   * has no kernel tools), or ""/undefined to omit. Optional so existing
+   * callers/tests are unaffected.
+   */
+  bridgeNotice?: string;
   /** "YYYY-MM-DD" — anchors the card-freshness header. */
   dateAnchor: string;
 }): string {
@@ -512,6 +518,7 @@ export function assembleSystemPrompt(opts: {
     strandsBlock,
     evolutionNotice,
     demoNotice,
+    bridgeNotice,
     dateAnchor,
   } = opts;
   return [
@@ -524,6 +531,7 @@ export function assembleSystemPrompt(opts: {
     strandsBlock,
     evolutionNotice,
     demoNotice,
+    bridgeNotice ?? "",
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -580,6 +588,19 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
     demoNotice: input.useDemo
       ? `## Demo mode (read-only)\n\nYou are running in demo mode. You can browse sample data, recall past conversations, and search the live web — but **writes are not persisted**. No GitHub repo is connected; you are seeing pre-seeded sample memories.\n\nWhen the user asks to save anything, create memories, or start background tasks, tell them naturally:\n- This is demo mode and data cannot be saved\n- They need to deploy their own instance to unlock full read/write and background loop capabilities\n\nDeployment guide: ${DEPLOY_GUIDE_URL}\n\nIt's perfectly normal for users to explore in demo mode — help them understand what this product can do and what they'll get after deploying.`
       : "",
+    // Bridge main model (client mode, PREVIOUSLY_BRAIN=bridge): the model is
+    // a local subscription CLI spawned by the Previously client, so NO kernel
+    // tools are mounted for this turn (see createChatAgent). The prompt blocks
+    // above still name recall/readSlice, so say explicitly that they are not
+    // available here — an unannounced tool-less model would hallucinate calls
+    // to them. Memory access instead happens on the bridge side: the client
+    // spawns the CLI in a per-call skills workspace whose instruction files
+    // (CLAUDE.md / AGENTS.md) explain how to read Previously's read-only
+    // markdown memory (client repo's affair, not kernel tools).
+    bridgeNotice:
+      input.modelConfig.sdk === "bridge"
+        ? `## Subscription bridge mode\n\nYou are running as the user's local subscription CLI, invoked by the Previously client. Your working directory contains an instruction file (CLAUDE.md or AGENTS.md) explaining how to read Previously's memory — read it first; the memory is read-only markdown on disk. Do not try to save or update memory yourself — conversation persistence is handled outside your process. The kernel tools mentioned elsewhere in this prompt (recall, readSlice, webSearch, delegateTask, …) are NOT available to you here, so do not attempt to call them. Your final reply is rendered verbatim in a chat UI — output only the answer, no preamble or meta-commentary.`
+        : "",
     dateAnchor,
   });
 

@@ -14,6 +14,12 @@
  *                 from the models.dev catalog otherwise)
  *   fallback    → the main model itself (same provider, always correct)
  *
+ * Single brain switch (client mode, PREVIOUSLY_BRAIN=bridge): when the main
+ * model runs on the local subscription bridge, EVERYTHING uses the bridge —
+ * the worker tier is the SAME bridge model as the main chat, not a separate
+ * configuration. A manual pin is still honored when set (the escape hatch);
+ * only the auto path defers to the bridge.
+ *
  * Also provides `workerProviderOptions`: the "thinking disabled" provider
  * options shape per SDK, since worker calls are always cheap structured tasks.
  */
@@ -49,8 +55,8 @@ export async function resolveMainModelFromConfig(): Promise<ModelConfig> {
 
 /**
  * Resolve the worker model for a turn. When `main` is omitted, it is derived
- * from the user config. Resolution order: manual pin → same-provider
- * lightweight → the main model itself.
+ * from the user config. Resolution order: manual pin → bridge main model as-is
+ * (single brain switch) → same-provider lightweight → the main model itself.
  */
 export async function resolveWorkerModel(
   main?: ModelConfig,
@@ -58,11 +64,19 @@ export async function resolveWorkerModel(
   const mainModel = main ?? (await resolveMainModelFromConfig());
   const config = await loadUserConfig();
 
-  // Manual pin — an explicit user choice wins over every heuristic.
+  // Manual pin — an explicit user choice wins over every heuristic, bridge
+  // mode included (the escape hatch for a separate worker configuration).
   if (config.worker?.mode === "manual" && config.worker.provider) {
     const pinned = await resolveModelById(config.worker.provider);
     if (pinned && process.env[pinned.envKey]) return pinned;
   }
+
+  // Single brain switch: when the main model runs on the subscription bridge
+  // (sdk "bridge"), the worker is the SAME bridge model — there is no separate
+  // worker configuration in bridge mode. Honest cost: every worker call (tag
+  // extraction, recall, belief evolution) is a minute-scale CLI subprocess
+  // billed to the user's subscription quota; there is no cheap tier here.
+  if (mainModel.sdk === "bridge") return mainModel;
 
   // Auto — same-provider lightweight, curated first, catalog heuristic second.
   const curatedId = WORKER_IDS[mainModel.provider];
@@ -71,7 +85,9 @@ export async function resolveWorkerModel(
     if (curated && process.env[curated.envKey]) return curated;
   }
   const available = await resolveAvailableModels();
-  const sameProvider = available.filter((m) => m.provider === mainModel.provider);
+  const sameProvider = available.filter(
+    (m) => m.provider === mainModel.provider,
+  );
   const light = sameProvider
     .filter((m) => !m.capabilities.thinking)
     .sort((a, b) => a.capabilities.maxTokens - b.capabilities.maxTokens)[0];

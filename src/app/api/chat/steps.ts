@@ -489,9 +489,17 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   await emitPhase("tags", false, appliedTags);
 
   // ── 5. Append user turn ───────────────────────────────────────────────
+  // Dedup by turnId (user and agent turns of a round share it — scope the
+  // check to role): a redelivered workflow run finds its user turn already
+  // persisted and skips the append. Legacy turns parsed from old files carry
+  // no turnId, so the content check below stays as the fallback (mirrors the
+  // turnKey fallback in lib/episodic/turn-merge.ts).
   const isNewSlice =
     slice.turns.length === 1 && slice.turns[0].content === lastUserMessage;
-  if (!isNewSlice) {
+  const userTurnRecorded =
+    !!input.turnId &&
+    slice.turns.some((t) => t.role === "user" && t.turnId === input.turnId);
+  if (!isNewSlice && !userTurnRecorded) {
     appendTurn(slice, {
       timestamp: new Date().toISOString(),
       role: "user",
@@ -762,8 +770,8 @@ async function flushTurnBatch(
  *
  * The agent streamed with `sendFinish: false` + `preventClose: true`, so this
  * step owns the stream tail — finish-step / finish, then close. Retries are
- * safe: the slice arrives by value, so re-running appends to the same base
- * copy and the snapshot write is idempotent.
+ * safe: the agent-turn append is deduped by turnId, and the snapshot write is
+ * idempotent.
  */
 export async function finalizeTurn(
   slice: TimeSlice,
@@ -781,7 +789,15 @@ export async function finalizeTurn(
   // 1. Episodic persistence (the old onFinish branches). `outcome.text` is the
   // agent's FULL assistant text for the turn (intermediate + final), so the
   // stored slice keeps both ends; tool calls are not preserved.
-  if (outcome.finishReason === "stop") {
+  // Idempotent under redelivery: when this turnId's agent turn is already in
+  // the slice (a retried run re-executing against persisted disk state), skip
+  // the append. User and agent turns share the turnId — scope by role.
+  const agentTurnRecorded =
+    !!turnId &&
+    slice.turns.some((t) => t.role === "agent" && t.turnId === turnId);
+  if (agentTurnRecorded) {
+    console.log(`[Episodic] Agent turn ${turnId} already persisted — skipping append`);
+  } else if (outcome.finishReason === "stop") {
     appendTurn(slice, {
       timestamp: new Date().toISOString(),
       role: "agent",
