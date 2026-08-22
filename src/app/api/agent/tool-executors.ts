@@ -59,9 +59,10 @@ import {
   getBridgeTimeoutMs,
   runBridge,
   splitBridgeCommand,
+  BRIDGE_PROTOCOL_VERSION,
   type BridgeRunResult,
 } from "@/lib/bridge";
-import { resolveMainModelFromConfig } from "@/lib/models/worker";
+import { resolveMainModelFromConfig } from "@/lib/models/resolve";
 import { resolveSubAgentModel } from "@/lib/agents/sub-agent-runner";
 import { createModel } from "@/lib/models/provider";
 import { normalizeReasoningEffort } from "@/lib/models/effort-injector";
@@ -714,7 +715,11 @@ export async function delegateTaskExecute(
   const cmd = getBridgeCommand();
   const result = await runBridge(
     splitBridgeCommand(cmd),
-    JSON.stringify({ task, context: context ?? null }),
+    JSON.stringify({
+      task,
+      context: context ?? null,
+      protocol: BRIDGE_PROTOCOL_VERSION,
+    }),
     getBridgeTimeoutMs(),
   );
 
@@ -724,6 +729,12 @@ export async function delegateTaskExecute(
     result.status === "ok" ? "Bridge returned a result" : `Bridge failed: ${result.reason}`,
     "done",
   );
+  // Protocol-2 activity events are display data for the kernel UI — strip
+  // them so they don't bloat the model-facing tool result.
+  if (result.status === "ok" && result.events) {
+    const { events: _events, ...rest } = result;
+    return rest;
+  }
   return result;
 }
 

@@ -5,7 +5,6 @@ import { WorkflowChatTransport } from "@ai-sdk/workflow";
 import { useMemo, useState, useRef, useCallback, useEffect } from "react";
 import type { UIMessage } from "ai";
 import { ChatInput } from "./chat-input";
-import type { ModelDefaults } from "./model-selector";
 import { useAvailableModels } from "@/hooks/use-available-models";
 import { ChatSection } from "./chat-section";
 import { buildMockSteps } from "@/lib/chat/mock-stream";
@@ -36,14 +35,12 @@ import { toast } from "sonner";
 import { formatErrorDetail } from "@/lib/chat/workflow-errors";
 
 interface ChatPageProps {
-  /** Server-preloaded user config (RSC) — seeds model/thinking/effort so the
-   *  chat starts on the real values instead of flashing defaults. */
+  /** Server-preloaded user config (RSC) — seeds the selected model so the
+   *  chat starts on the real value instead of flashing defaults. */
   initialConfig?: UserConfig;
-  /** The demo model lock is active (DEMO_LOCK) — model/effort controls disable. */
-  demoLocked?: boolean;
 }
 
-export function ChatPage({ initialConfig, demoLocked = false }: ChatPageProps) {
+export function ChatPage({ initialConfig }: ChatPageProps) {
   // Mount-time arrival decision. Only the SERVER can say whether the persisted
   // run is still in flight, so this verdict is async — Inner (and therefore
   // useChat) mounts only after it lands, keeping useChat's init a synchronous,
@@ -63,7 +60,6 @@ export function ChatPage({ initialConfig, demoLocked = false }: ChatPageProps) {
   return (
     <Inner
       initialConfig={initialConfig}
-      demoLocked={demoLocked}
       shouldResume={arrival.shouldResume}
       initialMessages={arrival.initialMessages}
     />
@@ -207,30 +203,23 @@ function fileToDataUrl(file: File): Promise<string> {
 
 function Inner({
   initialConfig,
-  demoLocked = false,
   shouldResume,
   initialMessages,
 }: {
   initialConfig?: UserConfig;
-  /** Demo model lock active — model + thinking intensity locked server-side. */
-  demoLocked?: boolean;
   /** The mount-time arrival verdict (resolveArrival) — see ChatPage. */
   shouldResume: boolean;
   initialMessages: UIMessage[];
 }) {
-  // ── Model / thinking / effort — reactive, persisted to config.json ─────
+  // ── Model selection — reactive, persisted to config.json ─────────────
   // The single source of truth is memory/user/config.json (cross-device, no
   // localStorage). The RSC page preloads it (initialConfig) so there's no
   // default-flash + mount reconcile; saves still write back via server action.
+  // Thinking/effort are NOT client state: the server pins thinking ON at low
+  // effort for every turn (see start-turn.ts).
   const locale = useLocale();
   const [selectedModel, setSelectedModel] = useState(
     initialConfig?.model.provider ?? "deepseek-v4-flash",
-  );
-  const [thinking, setThinking] = useState(
-    initialConfig?.model.thinking ?? true,
-  );
-  const [effort, setEffort] = useState<"low" | "medium" | "high">(
-    initialConfig?.model.reasoningEffort ?? "medium",
   );
 
   // The live catalog (shared fetch with ModelSelector) — gates the image
@@ -240,32 +229,11 @@ function Inner({
     availableModels.find((m) => m.id === selectedModel)?.supportsVision ??
     false;
 
-  // Switching models applies that model's defaults (thinking + effort) so the
-  // agent is configured sensibly for the newly selected model.
-  const handleModelChange = useCallback(
-    (modelId: string, defaults: ModelDefaults) => {
-      setSelectedModel(modelId);
-      setThinking(defaults.thinking);
-      setEffort(defaults.effort);
-      void saveUserConfig({
-        model: {
-          provider: modelId,
-          thinking: defaults.thinking,
-          reasoningEffort: defaults.effort,
-        },
-      });
-    },
-    [],
-  );
-
-  const handleEffortChange = useCallback((next: "low" | "medium" | "high") => {
-    setEffort(next);
-    void saveUserConfig({ model: { reasoningEffort: next } });
-  }, []);
-
-  const handleThinkingChange = useCallback((next: boolean) => {
-    setThinking(next);
-    void saveUserConfig({ model: { thinking: next } });
+  const handleModelChange = useCallback((modelId: string) => {
+    setSelectedModel(modelId);
+    void saveUserConfig({
+      model: { provider: modelId },
+    });
   }, []);
 
   const [lastUserMessageAt, setLastUserMessageAt] = useState<string | null>(null);
@@ -471,8 +439,6 @@ function Inner({
             // the slice and reachable via the memory tools (see SEND_MESSAGE_WINDOW).
             messages: sendWindow,
             model: selectedModel,
-            thinking,
-            effort,
             timezone:
               typeof Intl !== "undefined"
                 ? Intl.DateTimeFormat().resolvedOptions().timeZone
@@ -744,13 +710,8 @@ function Inner({
               onDemo={runDemo}
               demoRunning={demoStreaming}
               visionEnabled={visionSupported}
-              demoLocked={demoLocked}
               currentModelId={selectedModel}
-              currentEffort={effort}
-              thinking={thinking}
               onModelChange={handleModelChange}
-              onEffortChange={handleEffortChange}
-              onThinkingChange={handleThinkingChange}
             />
           </div>
         </div>

@@ -58,7 +58,6 @@
       "placeholder": "发送消息…",
       "attach": "附件",
       "attachUnsupported": "当前模型不支持图片输入",
-      "effortLocked": "演示模式下思维强度已固定",
       "settingsTooltip": "设置",
       "stopTooltip": "停止生成",
       "sendTooltip": "发送消息",
@@ -72,7 +71,7 @@
       },
       "bridgeHint": "使用你本地的 {agent} 订阅额度。为获得最佳体验(流式输出、工具调用),建议改用 API 模型。",
       "bridgeNotInstalled": "未安装",
-      "thinkingLabel": "深度思考"
+      "bridgeConfigure": "去配置"
     },
     "attachment": "附件",
     "actions": {
@@ -303,11 +302,6 @@
         "failRetry": "同步失败。请检查 GitHub token 权限后重试。"
       }
     },
-    "form": {
-      "modelSection": "对话模型",
-      "thinkingLabel": "推理思考",
-      "thinkingDesc": "在聊天中显示模型推理"
-    },
     "error": {
       "title": "加载设置失败",
       "message": "无法加载设置。"
@@ -350,6 +344,16 @@
       "brainHeading": "大脑来源",
       "backendHeading": "执行后端",
       "bridgeAgentNotDetected": "本机未检测到 {agent}——已保存的配置可能在其他机器上有效，或 PATH 已变化。",
+      "agentParamsHeading": "Agent 参数",
+      "agentParamsDesc": "每个 agent CLI 的默认模型与思维强度——每次桥接调用时传给 CLI。留空 = 使用 CLI 自身默认值。",
+      "agentModelLabel": "默认模型",
+      "agentModelPlaceholder": "CLI 默认",
+      "agentEffortLabel": "思维强度",
+      "agentEffortDefault": "CLI 默认",
+      "agentEffortLow": "低",
+      "agentEffortMedium": "中",
+      "agentEffortHigh": "高",
+      "agentEffortUnsupported": "不支持思维强度",
       "save": "保存客户端配置",
       "saving": "保存中...",
       "saved": "已保存 ✓",

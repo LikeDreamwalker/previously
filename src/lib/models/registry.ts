@@ -4,8 +4,12 @@
  * The PRIMARY catalog is models.dev (see ./catalog): it lists every provider's
  * models with reasoning/context metadata, and each provider carries its own
  * env var name and baseURL. This file holds the FALLBACK list used when
- * models.dev is unreachable, plus curated overrides (defaultThinking /
- * defaultEffort) applied on top of models.dev entries for known model ids.
+ * models.dev is unreachable.
+ *
+ * Thinking/effort defaults: every user-selectable model defaults to thinking
+ * ON (where the capability exists) at LOW effort — fast responses are the
+ * product rule; deep thinking is thinkDeep's job. startTurn pins these values
+ * server-side regardless of the request body or stored config.
  *
  * The Anthropic IDs below mirror the `AnthropicModelId` union shipped inside
  * `@ai-sdk/anthropic` (Anthropic has no list-models API endpoint; the SDK is
@@ -186,10 +190,7 @@ export const ALL_MODELS: ModelConfig[] = [
     baseURL: "https://api.deepseek.com",
     capabilities: { thinking: true, vision: false, maxTokens: 393216 },
     defaultThinking: true,
-    // DeepSeek exposes only low/high as meaningful tiers (V4 Pro promotes
-    // low/medium to high server-side) — the UI cycles between these two, so
-    // the stored default must live inside that set.
-    defaultEffort: "high",
+    defaultEffort: "low",
   },
   // ── Anthropic (curated from @ai-sdk/anthropic's AnthropicModelId union) ─
   {
@@ -212,7 +213,7 @@ export const ALL_MODELS: ModelConfig[] = [
     envKey: "ANTHROPIC_API_KEY",
     capabilities: { thinking: true, vision: true, maxTokens: 200000 },
     defaultThinking: true,
-    defaultEffort: "medium",
+    defaultEffort: "low",
   },
   {
     id: "claude-opus-4-8",
@@ -223,33 +224,9 @@ export const ALL_MODELS: ModelConfig[] = [
     envKey: "ANTHROPIC_API_KEY",
     capabilities: { thinking: true, vision: true, maxTokens: 200000 },
     defaultThinking: true,
-    defaultEffort: "high",
+    defaultEffort: "low",
   },
 ];
-
-/**
- * Curated metadata overrides keyed by model id, applied on top of models.dev
- * entries. Thinking is NOT overridden here — it derives from the model's
- * capability (models.dev `reasoning`), so every thinking-capable model defaults
- * to thinking ON. These only pin the effort level where we want a specific
- * value rather than the `reasoning ? "medium" : "low"` heuristic.
- */
-const MODEL_OVERRIDES: Record<
-  string,
-  Partial<Pick<ModelConfig, "defaultThinking" | "defaultEffort">>
-> = {
-  "deepseek-v4-flash": { defaultEffort: "low" },
-  // Pro's medium is promoted to high server-side, so pin it inside the
-  // low/high UI set rather than an unreachable middle tier.
-  "deepseek-v4-pro": { defaultEffort: "high" },
-};
-
-/** Curated override for a known model id, if any. */
-export function getModelOverrides(
-  id: string,
-): Partial<Pick<ModelConfig, "defaultThinking" | "defaultEffort">> | undefined {
-  return MODEL_OVERRIDES[id];
-}
 
 /** Server-side: curated models whose API key env var is set, plus the bridge
  *  brain entries when pure subscription mode is active. */

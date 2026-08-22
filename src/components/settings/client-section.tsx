@@ -36,6 +36,7 @@ interface ClientConfig {
   exists: boolean;
   executionBackend: string | null;
   brain: Brain | null;
+  agents: Record<string, { model?: string; effort?: string }> | null;
 }
 
 /** One row of GET /api/client/agents. */
@@ -70,6 +71,9 @@ export function ClientSection() {
   const [brainEnv, setBrainEnv] = useState("");
   const [brainModel, setBrainModel] = useState("");
   const [brainAgent, setBrainAgent] = useState<string>("claude");
+  // ── Per-agent bridge params (empty string = unset → CLI default) ──
+  const [agentModels, setAgentModels] = useState<Record<string, string>>({});
+  const [agentEfforts, setAgentEfforts] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [savedMsg, setSavedMsg] = useState("");
 
@@ -117,6 +121,15 @@ export function ClientSection() {
           setBrainType("bridge");
           setBrainAgent(c.brain.agent);
         }
+        const models: Record<string, string> = {};
+        const efforts: Record<string, string> = {};
+        for (const a of BRIDGE_AGENTS) {
+          const entry = c.agents?.[a];
+          if (entry?.model) models[a] = entry.model;
+          if (entry?.effort) efforts[a] = entry.effort;
+        }
+        setAgentModels(models);
+        setAgentEfforts(efforts);
       } catch (e) {
         if (!cancelled) {
           setLoadError(e instanceof Error ? e.message : String(e));
@@ -142,12 +155,26 @@ export function ClientSection() {
           : brainType === "bridge"
             ? { type: "bridge", agent: brainAgent }
             : null;
+      // The UI owns the `agents` field like it owns `brain`: the posted
+      // object is the full desired state (null clears it). Values for
+      // agents not detected on this machine are kept from the loaded config
+      // (state is initialized for all agents; rows render only for installed).
+      const agents: Record<string, { model?: string; effort?: string }> = {};
+      for (const a of BRIDGE_AGENTS) {
+        const model = agentModels[a]?.trim();
+        const effort = agentEfforts[a];
+        const entry: { model?: string; effort?: string } = {};
+        if (model) entry.model = model;
+        if (a !== "kimi" && effort) entry.effort = effort;
+        if (entry.model || entry.effort) agents[a] = entry;
+      }
       const res = await fetch("/api/client/config", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           executionBackend: executionBackend.trim() || null,
           brain,
+          agents: Object.keys(agents).length > 0 ? agents : null,
         }),
       });
       const body = (await res.json()) as ClientConfig & { error?: string };
@@ -178,6 +205,8 @@ export function ClientSection() {
   /** The saved bridge agent isn't installed on this machine. */
   const configuredAgentMissing =
     agents !== null && detection(brainAgent)?.found === false;
+  /** Agents detected as installed — the only ones that get a params row. */
+  const installedAgents = BRIDGE_AGENTS.filter((a) => detection(a)?.found === true);
 
   return (
     <section className="rounded-lg border border-border p-4">
@@ -343,6 +372,56 @@ export function ClientSection() {
               </div>
             )}
           </div>
+
+          {/* ── Agent 参数 / Agent parameters (installed agents only) ── */}
+          {installedAgents.length > 0 && (
+            <div className="space-y-2">
+              <h4 className={subHeadingClass}>{t("agentParamsHeading")}</h4>
+              <p className={subDescClass}>{t("agentParamsDesc")}</p>
+              <div className="space-y-3">
+                {installedAgents.map((a) => (
+                  <div key={a} className="space-y-1">
+                    <span className="text-xs font-medium font-mono">{a}</span>
+                    <div className="grid grid-cols-2 gap-3">
+                      <label className="block space-y-1">
+                        <span className={labelClass}>{t("agentModelLabel")}</span>
+                        <input
+                          type="text"
+                          value={agentModels[a] ?? ""}
+                          onChange={(e) =>
+                            setAgentModels((prev) => ({ ...prev, [a]: e.target.value }))
+                          }
+                          placeholder={t("agentModelPlaceholder")}
+                          className={inputClass}
+                        />
+                      </label>
+                      {a !== "kimi" ? (
+                        <label className="block space-y-1">
+                          <span className={labelClass}>{t("agentEffortLabel")}</span>
+                          <select
+                            value={agentEfforts[a] ?? ""}
+                            onChange={(e) =>
+                              setAgentEfforts((prev) => ({ ...prev, [a]: e.target.value }))
+                            }
+                            className={inputClass}
+                          >
+                            <option value="">{t("agentEffortDefault")}</option>
+                            <option value="low">{t("agentEffortLow")}</option>
+                            <option value="medium">{t("agentEffortMedium")}</option>
+                            <option value="high">{t("agentEffortHigh")}</option>
+                          </select>
+                        </label>
+                      ) : (
+                        <p className="self-end pb-2 text-xs text-muted-foreground/60">
+                          {t("agentEffortUnsupported")}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* ── 执行后端 / Execution backend ── */}
           <div className="space-y-1">

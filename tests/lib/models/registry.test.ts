@@ -3,7 +3,6 @@ import {
   ALL_MODELS,
   getAvailableModels,
   getModel,
-  getModelOverrides,
   resolveModelId,
   getDefaultModelId,
 } from "@/lib/models/registry";
@@ -48,8 +47,13 @@ describe("model registry", () => {
     }
   });
 
-  it("does not override thinking in curated overrides (derives from capability)", () => {
-    expect(getModelOverrides("deepseek-v4-flash")?.defaultThinking).toBeUndefined();
+  it("defaults effort to LOW for every user-selectable model", () => {
+    // Fast responses are the product rule; deep thinking is thinkDeep's job.
+    // startTurn pins effort=low server-side regardless — the catalog default
+    // must agree so the UI seed and the actual call never diverge.
+    for (const m of ALL_MODELS) {
+      expect(m.defaultEffort).toBe("low");
+    }
   });
 
   // ─── getAvailableModels (env-gated) ─────────────────────────────────

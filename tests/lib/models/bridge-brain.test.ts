@@ -5,11 +5,7 @@
  * unaffected. All three agent CLIs register as selectable models; the
  * env-selected agent is the default (its entry comes first).
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-
-// Worker resolution loads the user config — stub the loader (no config I/O).
-const loader = vi.hoisted(() => ({ loadUserConfig: vi.fn() }));
-vi.mock("@/lib/config/loader", () => ({ loadUserConfig: loader.loadUserConfig }));
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 
 import {
   BRIDGE_AGENTS,
@@ -23,7 +19,6 @@ import {
   isBridgeBrainActive,
 } from "@/lib/models/registry";
 import { __resetCatalogCache, resolveAvailableModels } from "@/lib/models/catalog";
-import { resolveWorkerModel } from "@/lib/models/worker";
 
 const SAVED_ENV = { ...process.env };
 
@@ -51,7 +46,6 @@ function activateBridge(agent?: string) {
 
 beforeEach(() => {
   clearEnv();
-  loader.loadUserConfig.mockResolvedValue({ worker: { mode: "auto", provider: "" } });
 });
 
 afterEach(() => {
@@ -183,38 +177,5 @@ describe("registry integration", () => {
     clearEnv();
     const cloudModels = await resolveAvailableModels();
     expect(cloudModels.some((m) => m.provider === "bridge")).toBe(false);
-  });
-});
-
-describe("worker tier in pure subscription mode", () => {
-  it("follows the single brain switch — the worker IS the bridge main model", async () => {
-    activateBridge();
-    const main = getModel("bridge/claude");
-    expect(main).toBeDefined();
-    const worker = await resolveWorkerModel(main);
-    // Bridge mode has no separate worker configuration: housekeeping/recall/
-    // evolution run on the same bridge model as the main chat (each call is a
-    // CLI subprocess on the user's subscription quota — no cheap tier exists).
-    expect(worker.sdk).toBe("bridge");
-    expect(worker).toBe(main);
-  });
-
-  it("still honors an explicit manual pin in bridge mode (the escape hatch)", async () => {
-    activateBridge();
-    process.env.ANTHROPIC_API_KEY = "sk-ant";
-    loader.loadUserConfig.mockResolvedValue({
-      worker: { mode: "manual", provider: "claude-opus-4-8" },
-    });
-    const worker = await resolveWorkerModel(getModel("bridge/claude"));
-    expect(worker.id).toBe("claude-opus-4-8");
-  });
-
-  it("honors a manual pin to another bridge agent in bridge mode", async () => {
-    activateBridge("claude");
-    loader.loadUserConfig.mockResolvedValue({
-      worker: { mode: "manual", provider: "bridge/kimi" },
-    });
-    const worker = await resolveWorkerModel(getModel("bridge/claude"));
-    expect(worker.id).toBe("bridge/kimi");
   });
 });

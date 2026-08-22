@@ -169,7 +169,6 @@ function makeInput(lastUserMessage: string, overrides: Partial<TurnInput> = {}):
     config: {
       slicing: { maxSliceMinutes: 30, maxTurnsPerSlice: 40 },
       model: { provider: "deepseek-v4-flash", thinking: true, reasoningEffort: "medium" as const },
-      worker: { mode: "auto" as const, provider: "" },
     },
     owner: "local",
     repo: "local",

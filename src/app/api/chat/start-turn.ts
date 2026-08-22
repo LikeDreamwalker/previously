@@ -33,9 +33,9 @@ export interface StartTurnArgs {
   messages: UIMessage[];
   /** Optional model override; falls back to the user config default. */
   model?: string;
-  /** Optional thinking override; only `false` disables the config default. */
+  /** Ignored — thinking is pinned ON server-side (see below). */
   thinking?: boolean;
-  /** Optional reasoning effort override. */
+  /** Ignored — effort is pinned to "low" server-side (see below). */
   effort?: "low" | "medium" | "high";
   /** Client-reported timezone, used when minting a new slice. */
   timezone?: string;
@@ -133,13 +133,15 @@ export async function startTurn(
   // deployment default when the id is unknown/unavailable.
   const requested = lock?.model ?? (args.model || config.model.provider);
   const { model, modelConfig } = await resolveModelConfig(requested);
-  // The client's explicit thinking value wins when sent (it always reflects
-  // what the selector shows / the model's default); the config value is only
-  // a fallback for clients that don't send one. This keeps the client's UI in
-  // sync with the actual call.
-  const thinking = lock?.thinking ?? args.thinking ?? config.model.thinking;
-  const reasoningEffort =
-    lock?.effort ?? args.effort ?? config.model.reasoningEffort;
+  // Thinking is pinned ON at LOW effort for every turn — fast responses are the
+  // product rule; deep thinking is thinkDeep's job (it keeps its own
+  // model-chosen effort). Client-sent thinking/effort and the stored config
+  // values are IGNORED. The demo lock wins when active (it pins its own
+  // model/thinking/effort for the maintainer's-key demo). Thinking follows the
+  // model's capability — a non-thinking model (bridge, non-reasoning catalog
+  // entries) stays off.
+  const thinking = lock?.thinking ?? modelConfig.capabilities.thinking;
+  const reasoningEffort = lock?.effort ?? "low";
   // Log the resolved model so a switch is verifiable in the server log.
   // `requested` = what the client sent; `model` = what actually runs.
   console.log(

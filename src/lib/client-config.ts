@@ -4,8 +4,9 @@
  *
  * PREVIOUSLY_HOME is the client state root injected by the client CLI
  * (~/.previously). Its config.json is owned by the client but the kernel may
- * read it (status display) and update two fields (executionBackend, brain)
- * from the settings UI. Unknown fields are preserved verbatim on write.
+ * read it (status display) and update three fields (executionBackend, brain,
+ * agents) from the settings UI. Unknown fields are preserved verbatim on
+ * write.
  *
  * Honesty rules: a missing PREVIOUSLY_HOME is reported as null fields, a
  * missing file as exists:false, an unreadable/corrupt file as a thrown error
@@ -20,6 +21,19 @@ import { BRIDGE_AGENTS, type BridgeAgent } from "@/lib/models/registry";
 export type ClientBrain =
   | { type: "api-key"; env: string; model?: string }
   | { type: "bridge"; agent: BridgeAgent };
+
+/** Thinking effort a bridge agent CLI accepts. Kimi has no effort knob. */
+export type BridgeEffort = "low" | "medium" | "high";
+export const BRIDGE_EFFORTS: readonly BridgeEffort[] = ["low", "medium", "high"];
+
+/** Per-agent bridge defaults: model for every agent, effort for claude/codex. */
+export interface AgentConfig {
+  model?: string;
+  effort?: BridgeEffort;
+}
+
+/** The `agents` field of the client config, keyed by bridge agent. */
+export type ClientAgents = Partial<Record<BridgeAgent, AgentConfig>>;
 
 /**
  * The client config.json shape. Only the fields the kernel understands are
@@ -45,6 +59,8 @@ export interface ClientConfigSnapshot {
   exists: boolean;
   executionBackend: string | null;
   brain: ClientBrain | null;
+  /** Per-agent bridge defaults, or null when absent/unrecognizable. */
+  agents: ClientAgents | null;
 }
 
 /** Error with an HTTP status hint for the route layer (400 = caller error). */
@@ -88,12 +104,37 @@ function parseBrain(raw: unknown): ClientBrain | null {
   return null;
 }
 
+/** Lenient read-side agents parse: only structurally recognized entries surface. */
+function parseAgents(raw: unknown): ClientAgents | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const input = raw as Record<string, unknown>;
+  const agents: ClientAgents = {};
+  for (const name of BRIDGE_AGENTS) {
+    const entry = input[name];
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const e = entry as Record<string, unknown>;
+    const parsed: AgentConfig = {};
+    if (typeof e.model === "string" && e.model.trim()) parsed.model = e.model;
+    if (
+      name !== "kimi" &&
+      typeof e.effort === "string" &&
+      (BRIDGE_EFFORTS as readonly string[]).includes(e.effort)
+    ) {
+      parsed.effort = e.effort as BridgeEffort;
+    }
+    if (parsed.model !== undefined || parsed.effort !== undefined) {
+      agents[name] = parsed;
+    }
+  }
+  return Object.keys(agents).length > 0 ? agents : null;
+}
+
 /** Read the current client config. Never fabricates state. */
 export async function readClientConfig(): Promise<ClientConfigSnapshot> {
   const home = getPreviouslyHome();
   const path = getClientConfigPath();
   if (!home || !path) {
-    return { home, path, exists: false, executionBackend: null, brain: null };
+    return { home, path, exists: false, executionBackend: null, brain: null, agents: null };
   }
 
   let raw: ClientConfigFile;
@@ -101,7 +142,7 @@ export async function readClientConfig(): Promise<ClientConfigSnapshot> {
     raw = JSON.parse(await readFile(path, "utf8")) as ClientConfigFile;
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") {
-      return { home, path, exists: false, executionBackend: null, brain: null };
+      return { home, path, exists: false, executionBackend: null, brain: null, agents: null };
     }
     throw new ClientConfigError(
       `Could not read ${path}: ${e instanceof Error ? e.message : String(e)}`,
@@ -116,6 +157,7 @@ export async function readClientConfig(): Promise<ClientConfigSnapshot> {
     executionBackend:
       typeof raw.executionBackend === "string" ? raw.executionBackend : null,
     brain: parseBrain(raw.brain),
+    agents: parseAgents(raw.agents),
   };
 }
 
@@ -156,12 +198,70 @@ function validateBrain(input: unknown): ClientBrain {
 }
 
 /**
+ * Strict write-side agents validation. Returns the value to store. Each key
+ * must be a known bridge agent; each entry accepts `model` (non-empty string)
+ * for every agent and `effort` (low|medium|high) for claude/codex only — the
+ * Kimi CLI has no effort knob, so `kimi.effort` is rejected, not dropped.
+ */
+function validateAgents(input: unknown): ClientAgents {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new ClientConfigError(
+      'agents must be an object like { "claude": { "model": "…", "effort": "low" } }',
+    );
+  }
+  const input2 = input as Record<string, unknown>;
+  const agents: ClientAgents = {};
+  for (const [name, value] of Object.entries(input2)) {
+    if (!(BRIDGE_AGENTS as readonly string[]).includes(name)) {
+      throw new ClientConfigError(
+        `agents.${name} — unknown agent (expected one of: ${BRIDGE_AGENTS.join(", ")})`,
+      );
+    }
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new ClientConfigError(`agents.${name} must be an object`);
+    }
+    const entry = value as Record<string, unknown>;
+    for (const key of Object.keys(entry)) {
+      if (key !== "model" && key !== "effort") {
+        throw new ClientConfigError(`agents.${name}.${key} is not a supported field`);
+      }
+    }
+    const parsed: AgentConfig = {};
+    if (entry.model !== undefined) {
+      if (typeof entry.model !== "string" || !entry.model.trim()) {
+        throw new ClientConfigError(`agents.${name}.model must be a non-empty string`);
+      }
+      parsed.model = entry.model.trim();
+    }
+    if (entry.effort !== undefined) {
+      if (
+        typeof entry.effort !== "string" ||
+        !(BRIDGE_EFFORTS as readonly string[]).includes(entry.effort)
+      ) {
+        throw new ClientConfigError(
+          `agents.${name}.effort must be one of: ${BRIDGE_EFFORTS.join(", ")}`,
+        );
+      }
+      if (name === "kimi") {
+        throw new ClientConfigError("agents.kimi.effort is not supported by the Kimi CLI");
+      }
+      parsed.effort = entry.effort as BridgeEffort;
+    }
+    if (parsed.model !== undefined || parsed.effort !== undefined) {
+      agents[name as BridgeAgent] = parsed;
+    }
+  }
+  return agents;
+}
+
+/**
  * Field update tri-state per key: absent → leave unchanged; null → clear
- * (executionBackend → null, brain → field removed); value → validate + set.
+ * (executionBackend → null, brain/agents → field removed); value → validate + set.
  */
 export interface ClientConfigPatch {
   executionBackend?: string | null;
   brain?: ClientBrain | null;
+  agents?: ClientAgents | null;
 }
 
 /**
@@ -195,6 +295,10 @@ export async function writeClientConfig(
   if ("brain" in patch) {
     brain = patch.brain === null ? null : validateBrain(patch.brain);
   }
+  let agents: ClientAgents | null | undefined;
+  if ("agents" in patch) {
+    agents = patch.agents === null ? null : validateAgents(patch.agents);
+  }
 
   let raw: ClientConfigFile = {};
   try {
@@ -218,6 +322,10 @@ export async function writeClientConfig(
   if (brain !== undefined) {
     if (brain === null) delete merged.brain;
     else merged.brain = brain;
+  }
+  if (agents !== undefined) {
+    if (agents === null) delete merged.agents;
+    else merged.agents = agents;
   }
 
   try {

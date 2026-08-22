@@ -9,7 +9,6 @@ const current: UserConfig = {
     thinking: true,
     reasoningEffort: "low",
   },
-  worker: { mode: "manual", provider: "deepseek-v4-flash" },
   onboarded: false,
   datasource: "demo",
 };
@@ -22,10 +21,9 @@ describe("mergeConfigOverrides", () => {
     });
     expect(result.onboarded).toBe(true);
     expect(result.datasource).toBe("own");
-    // The existing model/worker/slicing must survive untouched.
+    // The existing model/slicing must survive untouched.
     expect(result.model.provider).toBe("deepseek-v4-flash");
     expect(result.model.reasoningEffort).toBe("low");
-    expect(result.worker.mode).toBe("manual");
     expect(result.slicing.maxSliceMinutes).toBe(30);
     expect(result.slicing.maxTurnsPerSlice).toBe(50);
   });
@@ -33,12 +31,9 @@ describe("mergeConfigOverrides", () => {
   it("deep-merges nested overrides while keeping untouched siblings", () => {
     const result = mergeConfigOverrides(current, {
       model: { provider: "deepseek-v4-pro" },
-      worker: { mode: "auto" },
     });
     expect(result.model.provider).toBe("deepseek-v4-pro");
     expect(result.model.thinking).toBe(true); // sibling survives
-    expect(result.worker.mode).toBe("auto");
-    expect(result.worker.provider).toBe("deepseek-v4-flash"); // sibling survives
     expect(result.onboarded).toBe(false); // untouched top-level stays
   });
 });

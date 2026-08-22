@@ -7,15 +7,36 @@
  *   - stdout becomes the generated text (doGenerate + one-shot doStream)
  *   - bridge failures propagate as thrown model errors — never fake output
  */
-import { describe, it, expect, beforeEach, afterAll } from "vitest";
+import { describe, it, expect, beforeEach, afterAll, vi } from "vitest";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
-import type { LanguageModelV3Prompt } from "@ai-sdk/provider";
+import type {
+  LanguageModelV3CallOptions,
+  LanguageModelV3FunctionTool,
+  LanguageModelV3Prompt,
+} from "@ai-sdk/provider";
+
+// The bridge model writes live data-phase chunks to the workflow run's
+// writable; capture them here (same mocking pattern as sub-agent-runner
+// tests).
+const workflow = vi.hoisted(() => {
+  const writer = {
+    write: vi.fn(async (_chunk: unknown) => {}),
+    releaseLock: vi.fn(),
+  };
+  return {
+    writer,
+    getWritable: vi.fn(() => ({ getWriter: () => writer })),
+  };
+});
+vi.mock("workflow", () => ({ getWritable: workflow.getWritable }));
 
 import {
   BridgeChatLanguageModel,
   createBridgeLanguageModel,
   promptToBridgePayload,
+  buildBridgeToolInstruction,
+  extractBridgeToolCall,
 } from "@/lib/models/bridge-model";
 
 const FIXTURES = fileURLToPath(
@@ -35,6 +56,9 @@ const SAVED_ENV = {
 beforeEach(() => {
   delete process.env.PREVIOUSLY_BRIDGE_CMD;
   delete process.env.PREVIOUSLY_BRIDGE_TIMEOUT_MS;
+  workflow.writer.write.mockClear();
+  workflow.writer.releaseLock.mockClear();
+  workflow.getWritable.mockClear();
 });
 
 afterAll(() => {
@@ -214,5 +238,360 @@ describe("BridgeChatLanguageModel", () => {
     const revived = deserialize(serialize(model)) as BridgeChatLanguageModel;
     expect(revived).toBeInstanceOf(BridgeChatLanguageModel);
     expect(revived.modelId).toBe("bridge/kimi");
+  });
+});
+
+// ─── S3: text tool protocol (structured reports) ───────────────────────────
+
+const RECALL_REPORT_TOOL: LanguageModelV3FunctionTool = {
+  type: "function",
+  name: "recallReport",
+  description: "Report your recall findings.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      hits: { type: "array" },
+      confidence: { type: "number" },
+      reasoning: { type: "string" },
+      recommended_reads: { type: "array" },
+    },
+    required: ["hits", "confidence", "reasoning", "recommended_reads"],
+  },
+};
+
+const SEARCH_TOOL: LanguageModelV3FunctionTool = {
+  type: "function",
+  name: "readGlobalTimeline",
+  description: "Read the global timeline index.",
+  inputSchema: { type: "object", properties: {} },
+};
+
+function withTools(
+  toolChoice?: LanguageModelV3CallOptions["toolChoice"],
+): Partial<LanguageModelV3CallOptions> {
+  return {
+    tools: [SEARCH_TOOL, RECALL_REPORT_TOOL],
+    ...(toolChoice ? { toolChoice } : {}),
+  };
+}
+
+describe("buildBridgeToolInstruction", () => {
+  it("is null without tools or with toolChoice none", () => {
+    expect(buildBridgeToolInstruction({ prompt: PROMPT })).toBeNull();
+    expect(
+      buildBridgeToolInstruction({
+        prompt: PROMPT,
+        tools: [RECALL_REPORT_TOOL],
+        toolChoice: { type: "none" },
+      }),
+    ).toBeNull();
+  });
+
+  it("lists every offered function tool with description and JSON schema", () => {
+    const instruction = buildBridgeToolInstruction({
+      prompt: PROMPT,
+      ...withTools({ type: "auto" }),
+    })!;
+    expect(instruction).toContain("recallReport: Report your recall findings.");
+    expect(instruction).toContain("readGlobalTimeline");
+    expect(instruction).toContain(JSON.stringify(RECALL_REPORT_TOOL.inputSchema));
+    expect(instruction).toContain('{"tool": "<name>", "input": {...}}');
+    // auto → plain text is allowed
+    expect(instruction).toContain("plain text only");
+  });
+
+  it("states the MUST requirement for required / pinned tool choice", () => {
+    const required = buildBridgeToolInstruction({
+      prompt: PROMPT,
+      ...withTools({ type: "required" }),
+    })!;
+    expect(required).toContain("You MUST end your reply with a JSON tool call");
+    const pinned = buildBridgeToolInstruction({
+      prompt: PROMPT,
+      ...withTools({ type: "tool", toolName: "recallReport" }),
+    })!;
+    expect(pinned).toContain('for "recallReport"');
+  });
+});
+
+describe("extractBridgeToolCall", () => {
+  const NAMES = new Set(["recallReport", "readGlobalTimeline"]);
+
+  it("extracts the JSON tail and keeps the preceding prose as text", () => {
+    const raw =
+      'Findings below.\n{"tool":"recallReport","input":{"hits":[],"confidence":0.5}}';
+    const extracted = extractBridgeToolCall(raw, NAMES);
+    expect(extracted).toEqual({
+      text: "Findings below.",
+      toolCall: {
+        toolName: "recallReport",
+        input: { hits: [], confidence: 0.5 },
+      },
+    });
+  });
+
+  it("handles nested braces inside the input object", () => {
+    const raw =
+      '{"tool":"recallReport","input":{"hits":[{"slice_id":"2026-08-22-0340","reason":"a } b"}]}}';
+    const extracted = extractBridgeToolCall(raw, NAMES);
+    expect(extracted?.text).toBe("");
+    expect(extracted?.toolCall.toolName).toBe("recallReport");
+  });
+
+  it("returns null without a JSON tail or for unoffered tool names", () => {
+    expect(extractBridgeToolCall("plain answer", NAMES)).toBeNull();
+    expect(
+      extractBridgeToolCall('{"tool":"otherTool","input":{}}', NAMES),
+    ).toBeNull();
+    expect(
+      extractBridgeToolCall("prose then {not json}", NAMES),
+    ).toBeNull();
+  });
+
+  it("honors the forced tool name", () => {
+    const raw = '{"tool":"readGlobalTimeline","input":{}}';
+    expect(extractBridgeToolCall(raw, NAMES, "recallReport")).toBeNull();
+    expect(extractBridgeToolCall(raw, NAMES, "readGlobalTimeline")?.toolCall.toolName)
+      .toBe("readGlobalTimeline");
+  });
+
+  it("defaults a missing input to an empty object", () => {
+    const extracted = extractBridgeToolCall('{"tool":"recallReport"}', NAMES);
+    expect(extracted?.toolCall.input).toEqual({});
+  });
+});
+
+describe("BridgeChatLanguageModel tool protocol", () => {
+  it("appends the tool instruction and protocol version to the stdin payload", async () => {
+    process.env.PREVIOUSLY_BRIDGE_CMD = bridgeCmd("bridge-echo-payload.mjs");
+    const model = new BridgeChatLanguageModel("bridge/claude");
+    const result = await model.doGenerate({
+      prompt: PROMPT,
+      ...withTools({ type: "auto" }),
+    });
+    const text = result.content.find((p) => p.type === "text");
+    const payload = JSON.parse((text as { text: string }).text);
+    expect(payload.protocol).toBe(2);
+    expect(payload.task).toContain("summarize my week");
+    expect(payload.task).toContain("[Tool protocol");
+    expect(payload.task).toContain("recallReport");
+    // Function tools are now supported — no "unsupported tools" warning.
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("parses the JSON tail into a tool-call content part (required)", async () => {
+    process.env.PREVIOUSLY_BRIDGE_CMD = bridgeCmd("bridge-report.mjs");
+    const model = new BridgeChatLanguageModel("bridge/claude");
+    const result = await model.doGenerate({
+      prompt: PROMPT,
+      ...withTools({ type: "required" }),
+    });
+
+    expect(result.finishReason).toEqual({ unified: "tool-calls", raw: undefined });
+    const text = result.content.find((p) => p.type === "text");
+    expect((text as { text: string }).text).toBe(
+      "Here are my findings from the timeline.",
+    );
+    const call = result.content.find((p) => p.type === "tool-call") as {
+      toolCallId: string;
+      toolName: string;
+      input: string;
+    };
+    expect(call.toolName).toBe("recallReport");
+    expect(call.toolCallId).toMatch(/^bridge-call-/);
+    expect(JSON.parse(call.input)).toEqual({
+      hits: [],
+      confidence: 0.5,
+      reasoning: "nothing matched",
+      recommended_reads: [],
+    });
+  });
+
+  it("doStream replays a report as tool-input parts + tool-call", async () => {
+    process.env.PREVIOUSLY_BRIDGE_CMD = bridgeCmd("bridge-report.mjs");
+    const model = new BridgeChatLanguageModel("bridge/claude");
+    const { stream } = await model.doStream({
+      prompt: PROMPT,
+      ...withTools({ type: "tool", toolName: "recallReport" }),
+    });
+
+    const parts: Array<Record<string, unknown>> = [];
+    const reader = stream.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      parts.push(value as Record<string, unknown>);
+    }
+
+    expect(parts.map((p) => p.type)).toEqual([
+      "stream-start",
+      "text-start",
+      "text-delta",
+      "text-end",
+      "tool-input-start",
+      "tool-input-delta",
+      "tool-input-end",
+      "tool-call",
+      "finish",
+    ]);
+    const call = parts.find((p) => p.type === "tool-call")!;
+    expect(call.toolName).toBe("recallReport");
+    const inputDelta = parts.find((p) => p.type === "tool-input-delta")!;
+    expect(inputDelta.id).toBe(call.toolCallId);
+    expect(JSON.parse(inputDelta.delta as string)).toMatchObject({
+      confidence: 0.5,
+    });
+    const finish = parts.find((p) => p.type === "finish")!;
+    expect(finish.finishReason).toEqual({ unified: "tool-calls", raw: undefined });
+  });
+
+  it("keeps plain-text answers as text under toolChoice auto (no fake calls)", async () => {
+    process.env.PREVIOUSLY_BRIDGE_CMD = bridgeCmd("bridge-ok.mjs");
+    const model = new BridgeChatLanguageModel("bridge/claude");
+    const result = await model.doGenerate({
+      prompt: PROMPT,
+      ...withTools({ type: "auto" }),
+    });
+    expect(result.finishReason).toEqual({ unified: "stop", raw: undefined });
+    expect(result.content.every((p) => p.type === "text")).toBe(true);
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain("ok:summarize my week");
+  });
+
+  it("keeps a JSON tail naming an unoffered tool as text under auto", async () => {
+    process.env.PREVIOUSLY_BRIDGE_CMD = bridgeCmd("bridge-report-wrong-tool.mjs");
+    const model = new BridgeChatLanguageModel("bridge/claude");
+    const result = await model.doGenerate({
+      prompt: PROMPT,
+      ...withTools({ type: "auto" }),
+    });
+    expect(result.finishReason.unified).toBe("stop");
+    expect(result.content.every((p) => p.type === "text")).toBe(true);
+    expect((result.content[0] as { text: string }).text).toContain(
+      "notAnOfferedTool",
+    );
+  });
+
+  it("throws invalid-report when a required report tail is missing", async () => {
+    process.env.PREVIOUSLY_BRIDGE_CMD = bridgeCmd("bridge-ok.mjs");
+    const model = new BridgeChatLanguageModel("bridge/claude");
+    const err = await model
+      .doGenerate({ prompt: PROMPT, ...withTools({ type: "required" }) })
+      .catch((e) => e);
+    expect(err.name).toBe("FatalError");
+    expect(err.fatal).toBe(true);
+    expect(err.reason).toBe("invalid-report");
+    expect(err.message).toContain("invalid-report");
+  });
+
+  it("throws invalid-report when the pinned tool's tail names a different tool", async () => {
+    process.env.PREVIOUSLY_BRIDGE_CMD = bridgeCmd("bridge-report-wrong-tool.mjs");
+    const model = new BridgeChatLanguageModel("bridge/claude");
+    await expect(
+      model.doGenerate({
+        prompt: PROMPT,
+        ...withTools({ type: "tool", toolName: "recallReport" }),
+      }),
+    ).rejects.toThrow(/invalid-report[\s\S]*recallReport/);
+  });
+
+  it("warns about provider-executed tools (they cannot ride the bridge)", async () => {
+    process.env.PREVIOUSLY_BRIDGE_CMD = bridgeCmd("bridge-ok.mjs");
+    const model = new BridgeChatLanguageModel("bridge/claude");
+    const result = await model.doGenerate({
+      prompt: PROMPT,
+      tools: [
+        RECALL_REPORT_TOOL,
+        { type: "provider", id: "openai.web_search", name: "web_search", args: {} } as never,
+      ],
+    });
+    expect(result.warnings).toEqual([
+      expect.objectContaining({ type: "unsupported", feature: "tools" }),
+    ]);
+  });
+});
+
+// ─── S4: live protocol-2 events → data-phase ───────────────────────────────
+
+describe("BridgeChatLanguageModel live events", () => {
+  it("forwards protocol-2 events as data-phase chunks and settles the phase", async () => {
+    process.env.PREVIOUSLY_BRIDGE_CMD = bridgeCmd("bridge-proto2.mjs");
+    const model = new BridgeChatLanguageModel("bridge/claude");
+    const result = await model.doGenerate({ prompt: PROMPT });
+    const text = result.content.find((p) => p.type === "text");
+    expect((text as { text: string }).text).toBe("the final answer");
+
+    const writes = workflow.writer.write.mock.calls.map(
+      (c) => c[0] as Record<string, unknown>,
+    );
+    expect(writes.length).toBeGreaterThan(0);
+    for (const w of writes) {
+      expect(w.type).toBe("data-phase");
+      expect(w.id).toBe("phase-bridge");
+      expect(w.data).toMatchObject({ phase: "stageWorking" });
+    }
+    // The final frame settles the indicator (running: false) with the full
+    // summaries list (consecutive start→ok duplicates collapsed).
+    const last = writes[writes.length - 1].data as {
+      running: boolean;
+      summaries: string[];
+    };
+    expect(last.running).toBe(false);
+    expect(last.summaries).toEqual(["Read memory/2026-08-22-0340.md"]);
+    expect(workflow.writer.releaseLock).toHaveBeenCalled();
+  });
+
+  it("writes no data-phase for legacy plain-text CLIs (no phantom phase)", async () => {
+    process.env.PREVIOUSLY_BRIDGE_CMD = bridgeCmd("bridge-ok.mjs");
+    const model = new BridgeChatLanguageModel("bridge/claude");
+    await model.doGenerate({ prompt: PROMPT });
+    expect(workflow.getWritable).not.toHaveBeenCalled();
+    expect(workflow.writer.write).not.toHaveBeenCalled();
+  });
+});
+
+describe("BridgeChatLanguageModel sub-agent loop (recall pattern)", () => {
+  it("executes server-side kernel tools and feeds results back as transcript text", async () => {
+    process.env.PREVIOUSLY_BRIDGE_CMD = bridgeCmd("bridge-recall-loop.mjs");
+    const { streamText, tool, isStepCount } = await import("ai");
+    const { z } = await import("zod");
+
+    let executed = 0;
+    const result = streamText({
+      model: new BridgeChatLanguageModel("bridge/claude"),
+      prompt: "find past chats about gardening",
+      tools: {
+        readGlobalTimeline: tool({
+          description: "Read the global timeline index.",
+          inputSchema: z.object({}),
+          execute: async () => {
+            executed++;
+            return "TIMELINE: 2026-08-22-0340 gardening chat";
+          },
+        }),
+        recallReport: tool({
+          description: "Report your recall findings.",
+          inputSchema: z.object({
+            hits: z.array(z.unknown()),
+            confidence: z.number(),
+            reasoning: z.string(),
+            recommended_reads: z.array(z.unknown()),
+          }),
+        }),
+      },
+      toolChoice: "auto",
+      stopWhen: isStepCount(8),
+    });
+
+    const toolCalls = await result.toolCalls;
+    // Round 1: the CLI "called" readGlobalTimeline → executed server-side.
+    expect(executed).toBe(1);
+    // Round 2: its result rode the transcript back; the CLI then reported.
+    const report = toolCalls.find((tc) => tc.toolName === "recallReport");
+    expect(report).toBeDefined();
+    expect(report!.input).toMatchObject({
+      confidence: 0.4,
+      reasoning: "searched the timeline",
+    });
   });
 });

@@ -182,6 +182,73 @@ describe("POST /api/client/config", () => {
     expect("brain" in onDisk).toBe(false);
   });
 
+  it("writes per-agent params and surfaces them in the snapshot", async () => {
+    await writeFile(
+      join(home, "config.json"),
+      JSON.stringify({ storage: "local", apiKeys: { X: "sk-secret" } }),
+    );
+    const res = await configPOST(
+      post({
+        agents: {
+          claude: { model: "claude-opus-4-8", effort: "high" },
+          kimi: { model: "kimi-for-coding" },
+        },
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.agents).toEqual({
+      claude: { model: "claude-opus-4-8", effort: "high" },
+      kimi: { model: "kimi-for-coding" },
+    });
+    // Unmanaged fields are preserved; secrets never leave the server.
+    const onDisk = JSON.parse(await readFile(join(home, "config.json"), "utf8"));
+    expect(onDisk.storage).toBe("local");
+    expect(JSON.stringify(body)).not.toContain("sk-secret");
+  });
+
+  it("leaves agents unchanged when the patch omits it (tri-state)", async () => {
+    await writeFile(
+      join(home, "config.json"),
+      JSON.stringify({ agents: { codex: { model: "gpt-5.4", effort: "low" } } }),
+    );
+    const res = await configPOST(post({ executionBackend: "local" }));
+    expect(res.status).toBe(200);
+    const onDisk = JSON.parse(await readFile(join(home, "config.json"), "utf8"));
+    expect(onDisk.agents).toEqual({ codex: { model: "gpt-5.4", effort: "low" } });
+  });
+
+  it("clears agents with explicit null", async () => {
+    await writeFile(
+      join(home, "config.json"),
+      JSON.stringify({ agents: { claude: { model: "claude-opus-4-8" } } }),
+    );
+    const res = await configPOST(post({ agents: null }));
+    expect(res.status).toBe(200);
+    expect((await res.json()).agents).toBeNull();
+    const onDisk = JSON.parse(await readFile(join(home, "config.json"), "utf8"));
+    expect("agents" in onDisk).toBe(false);
+  });
+
+  it("rejects invalid agents values with a 400 and writes nothing", async () => {
+    for (const agents of [
+      "claude",
+      { gpt: { model: "x" } }, // unknown agent
+      { claude: "opus" }, // non-object entry
+      { claude: { model: "" } }, // empty model
+      { claude: { model: 42 } }, // non-string model
+      { claude: { effort: "max" } }, // bad effort enum
+      { kimi: { effort: "low" } }, // kimi has no effort knob
+      { codex: { thinking: true } }, // unsupported field
+    ]) {
+      const res = await configPOST(post({ agents }));
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toBeTruthy();
+    }
+    const res = await configGET();
+    expect((await res.json()).exists).toBe(false);
+  });
+
   it("rejects invalid values with a 400 and writes nothing", async () => {
     for (const bad of [
       { executionBackend: "" },

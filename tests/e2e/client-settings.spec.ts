@@ -59,4 +59,55 @@ test.describe("Settings — Client section", () => {
       expect(["claude", "codex", "kimi"]).toContain(raw.brain?.agent);
     }
   });
+
+  // The "Agent parameters" block renders one model/effort row per locally
+  // INSTALLED CLI (client-section.tsx, installedAgents) — never assume a
+  // specific CLI is present; work with whatever rows render.
+  test("saves a per-agent default model to PREVIOUSLY_HOME/config.json", async ({
+    page,
+  }) => {
+    await page.goto("/en/settings");
+
+    const section = page.locator("section", {
+      has: page.getByRole("heading", { name: "Client", exact: true }),
+    });
+    await expect(section).toBeVisible();
+
+    // Wait for PATH detection to settle — the params rows render only once
+    // the probe lands (probes are timeout-bounded, worst case a few seconds).
+    await expect(
+      section.getByText("Detecting local agents"),
+    ).toBeHidden({ timeout: 30_000 });
+
+    const paramsHeading = section.getByRole("heading", {
+      name: "Agent parameters",
+      exact: true,
+    });
+    if (!(await paramsHeading.isVisible())) {
+      // No agent CLI installed on this machine — the block is empty by design.
+      test.skip(true, "no bridge agent CLI installed — no params rows render");
+    }
+
+    // First rendered row: the font-mono span holds the agent name, the row's
+    // only <input> is the model field (effort is a <select>).
+    const block = paramsHeading.locator("xpath=..");
+    const firstRow = block.locator("span.font-mono").first().locator("xpath=..");
+    const agentName = (await block.locator("span.font-mono").first().textContent())?.trim();
+    expect(agentName).toBeTruthy();
+
+    const modelInput = firstRow.locator("input").first();
+    await modelInput.fill("e2e-default-model");
+
+    await section
+      .getByRole("button", { name: "Save client config" })
+      .click();
+    // Exact text — see the brain test above for why a loose match is unsafe.
+    await expect(section.getByText("Saved ✓", { exact: true })).toBeVisible();
+
+    // Real persistence to the client home on disk.
+    const raw = JSON.parse(
+      await readFile(path.join(E2E_HOME, "config.json"), "utf8"),
+    ) as { agents?: Record<string, { model?: string }> };
+    expect(raw.agents?.[agentName!]?.model).toBe("e2e-default-model");
+  });
 });

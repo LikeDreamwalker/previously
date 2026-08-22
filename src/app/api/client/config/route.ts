@@ -2,12 +2,13 @@
  * GET/POST /api/client/config — read/update PREVIOUSLY_HOME/config.json
  * (client mode only; 404 in cloud mode).
  *
- * The kernel manages exactly two fields of the client-owned file:
- * `executionBackend` (string | null) and `brain` ({ type: "api-key", env,
- * model? } | { type: "bridge", agent }). All other fields pass through
- * untouched. POST is same-origin guarded like every mutation endpoint
- * (src/lib/security/origin-guard.ts). Validation and write failures are
- * reported honestly — never a fake "saved".
+ * The kernel manages exactly three fields of the client-owned file:
+ * `executionBackend` (string | null), `brain` ({ type: "api-key", env,
+ * model? } | { type: "bridge", agent }), and `agents` (per-agent bridge
+ * defaults: { model?, effort? } — effort for claude/codex only). All other
+ * fields pass through untouched. POST is same-origin guarded like every
+ * mutation endpoint (src/lib/security/origin-guard.ts). Validation and write
+ * failures are reported honestly — never a fake "saved".
  */
 
 import { isClientMode } from "@/lib/mode";
@@ -55,7 +56,7 @@ export async function POST(request: Request): Promise<Response> {
   }
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return Response.json(
-      { error: "Body must be a JSON object with optional executionBackend / brain fields" },
+      { error: "Body must be a JSON object with optional executionBackend / brain / agents fields" },
       { status: 400 },
     );
   }
@@ -68,9 +69,12 @@ export async function POST(request: Request): Promise<Response> {
   if ("brain" in input) {
     patch.brain = input.brain as ClientConfigPatch["brain"];
   }
-  if (!("executionBackend" in input) && !("brain" in input)) {
+  if ("agents" in input) {
+    patch.agents = input.agents as ClientConfigPatch["agents"];
+  }
+  if (!("executionBackend" in input) && !("brain" in input) && !("agents" in input)) {
     return Response.json(
-      { error: "Nothing to update — provide executionBackend and/or brain" },
+      { error: "Nothing to update — provide executionBackend, brain and/or agents" },
       { status: 400 },
     );
   }

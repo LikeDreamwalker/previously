@@ -6,8 +6,8 @@
  * Previously this mapping was duplicated (and drifted) across three call
  * sites: the chat agent factory (`agent.ts buildProviderOptions`), the
  * thinkDeep sub-agent (`tool-executors.ts subAgentProviderOptions`), and the
- * worker tier (`worker.ts workerProviderOptions`). This module replaced all
- * three; the v0.9 unified sub-agent runner routes every sub-agent through
+ * old worker tier. This module replaced all of them; the v0.9 unified
+ * sub-agent runner routes every sub-agent through
  * `normalizeReasoningEffort` with thinking ON (default effort "low"), and the
  * worker tier's always-disabled shape was removed with its last call site.
  *

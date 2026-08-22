@@ -57,7 +57,7 @@ import { getWritable } from "workflow";
 import type { z } from "zod";
 import { createModel } from "@/lib/models/provider";
 import { normalizeReasoningEffort } from "@/lib/models/effort-injector";
-import { resolveMainModelFromConfig } from "@/lib/models/worker";
+import { resolveMainModelFromConfig } from "@/lib/models/resolve";
 import type { ModelConfig } from "@/lib/models/registry";
 import type { ProviderSdk } from "@/lib/models/providers";
 import { withStepTimeout } from "@/lib/chat/step-timeout";

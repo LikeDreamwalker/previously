@@ -16,7 +16,6 @@
 import type { ModelConfig } from "./registry";
 import {
   ALL_MODELS,
-  getModelOverrides,
   getAvailableModels,
   getBridgeModels,
   resolveModelId,
@@ -169,7 +168,7 @@ const SOURCES: ProviderSource[] = [
     envKeys: ["ANTHROPIC_API_KEY"],
     sdk: "anthropic",
     list: anthropicList,
-    defaults: { thinking: true, vision: true, maxTokens: 200000, effort: "medium" },
+    defaults: { thinking: true, vision: true, maxTokens: 200000, effort: "low" },
   },
   {
     key: "openai",
@@ -253,7 +252,6 @@ function buildConfig(
   const curated = ALL_MODELS.find((m) => m.id === normalized);
   if (curated) return curated;
 
-  const override = getModelOverrides(normalized);
   return {
     id: normalized,
     name: name ?? normalized,
@@ -268,7 +266,7 @@ function buildConfig(
       maxTokens: source.defaults.maxTokens,
     },
     defaultThinking: source.defaults.thinking,
-    defaultEffort: override?.defaultEffort ?? source.defaults.effort,
+    defaultEffort: source.defaults.effort,
   };
 }
 

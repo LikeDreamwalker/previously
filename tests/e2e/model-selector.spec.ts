@@ -33,4 +33,36 @@ test.describe("Model selector — subscription bridge group", () => {
       popover.locator("button").filter({ hasText: "(subscription bridge)" }),
     ).toHaveCount(3);
   });
+
+  // Thinking is always ON at low effort (pinned server-side in
+  // start-turn.ts) — the effort cycle button (Zap icon) and the thinking
+  // switch row were removed from the chat UI. These are negative assertions
+  // against locale-independent hooks: the lucide icon class and the ARIA
+  // role of the Base UI Switch.
+  test("locked thinking/effort UX — no effort button, no thinking switch", async ({
+    page,
+  }) => {
+    await page.goto("/en");
+
+    // (a) No effort cycle button anywhere in the chat input area.
+    const chatInput = page.locator(".rounded-2xl", {
+      has: page.getByPlaceholder("Send a message..."),
+    });
+    await expect(chatInput).toBeVisible();
+    await expect(chatInput.locator("svg.lucide-zap")).toHaveCount(0);
+
+    // (b) The model selector popover has no thinking switch row.
+    const trigger = page.getByRole("button", {
+      name: /Claude \(subscription bridge\)/,
+    });
+    await expect(trigger).toBeVisible();
+    await trigger.click();
+
+    const popover = page.locator('[data-slot="popover-content"]');
+    await expect(
+      popover.getByText("Subscription Bridge", { exact: true }),
+    ).toBeVisible();
+    await expect(popover.locator('[role="switch"]')).toHaveCount(0);
+    await expect(popover.getByText("Thinking", { exact: true })).toHaveCount(0);
+  });
 });

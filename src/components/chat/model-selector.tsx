@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useTranslations } from "next-intl";
+import { Link } from "@/i18n/navigation";
 import { Check, Info } from "lucide-react";
 import {
   Popover,
@@ -13,16 +14,8 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { Switch } from "@/components/ui/switch";
 import { ProviderIcon, stripProviderPrefix } from "./provider-icon";
 import { useAvailableModels, type AvailableModel } from "@/hooks/use-available-models";
-
-type EffortLevel = "low" | "medium" | "high";
-
-export interface ModelDefaults {
-  thinking: boolean;
-  effort: EffortLevel;
-}
 
 /** Display names of the subscription CLIs (brand names — locale-neutral). */
 const BRIDGE_AGENT_LABELS: Record<string, string> = {
@@ -39,10 +32,7 @@ function bridgeAgentOf(id: string): string {
 interface ModelSelectorProps {
   /** Currently selected model id (from ChatPage state). */
   currentModelId: string;
-  /** Thinking on/off — owned by ChatPage, toggled here. */
-  thinking: boolean;
-  onModelChange: (modelId: string, defaults: ModelDefaults) => void;
-  onThinkingChange: (thinking: boolean) => void;
+  onModelChange: (modelId: string) => void;
 }
 
 /** Group a model list by provider, preserving order. */
@@ -58,19 +48,18 @@ function groupByProvider(models: AvailableModel[]): Map<string, AvailableModel[]
 
 /**
  * Model selector for the chat toolbar. Fetches the server-side model catalog
- * (/api/models — env-gated) and shows a grouped picker plus a thinking toggle.
+ * (/api/models — env-gated) and shows a grouped picker.
  * Hides entirely when there are 0 or 1 models to choose from.
  *
  * The selection persists to memory/user/config.json (ChatPage owns the model
- * state). v0.9: the "Advanced" worker-pin sheet was removed — every sub-agent
- * now runs on the main model via the unified sub-agent runner, so the worker
- * pin had no production consumer (see src/lib/models/worker.ts).
+ * state). There is no thinking/effort UI: thinking is always ON at low effort
+ * (pinned server-side in start-turn.ts); deep thinking is thinkDeep's job.
+ * v0.9: the "Advanced" worker-pin sheet was removed — every sub-agent runs on
+ * the main model via the unified sub-agent runner (see src/lib/models/resolve.ts).
  */
 export function ModelSelector({
   currentModelId,
-  thinking,
   onModelChange,
-  onThinkingChange,
 }: ModelSelectorProps) {
   const t = useTranslations("chat.input");
   const models = useAvailableModels();
@@ -91,10 +80,7 @@ export function ModelSelector({
 
   const handleSelect = useCallback(
     (m: AvailableModel) => {
-      onModelChange(m.id, {
-        thinking: m.defaultThinking,
-        effort: m.defaultEffort,
-      });
+      onModelChange(m.id);
     },
     [onModelChange],
   );
@@ -102,9 +88,6 @@ export function ModelSelector({
   if (models.length <= 1) return null;
 
   const groups = groupByProvider(models);
-  // Thinking/effort are no-ops for the subscription bridge (see
-  // effort-injector.ts) — hide the knobs while a bridge model is selected.
-  const isBridgeSelected = currentModelId.startsWith("bridge/");
 
   return (
     <>
@@ -120,6 +103,7 @@ export function ModelSelector({
                   >
                     <ProviderIcon
                       provider={current?.provider ?? ""}
+                      id={current?.id}
                       className="h-3 w-3 shrink-0"
                     />
                     <span className="text-[10px] font-medium leading-none max-w-[72px] truncate">
@@ -161,6 +145,7 @@ export function ModelSelector({
                       <span className="flex min-w-0 items-center gap-1.5">
                         <ProviderIcon
                           provider={m.provider}
+                          id={m.id}
                           className="h-3.5 w-3.5 shrink-0"
                         />
                         <span className="truncate">
@@ -177,6 +162,14 @@ export function ModelSelector({
                         <Check className="h-3 w-3 shrink-0" />
                       )}
                     </button>
+                    {unavailable && (
+                      <Link
+                        href="/settings"
+                        className="shrink-0 rounded px-1 text-[10px] text-muted-foreground/70 underline-offset-2 hover:text-foreground hover:underline"
+                      >
+                        {t("bridgeConfigure")}
+                      </Link>
+                    )}
                     {isBridge && (
                       <Tooltip>
                         <TooltipTrigger
@@ -202,19 +195,6 @@ export function ModelSelector({
               })}
             </div>
           ))}
-
-          {!isBridgeSelected && (
-            <div className="mt-1 flex items-center justify-between gap-2 border-t px-2 pt-2">
-              <span className="text-xs text-muted-foreground">
-                {t("thinkingLabel")}
-              </span>
-              <Switch
-                size="sm"
-                checked={thinking}
-                onCheckedChange={onThinkingChange}
-              />
-            </div>
-          )}
         </PopoverContent>
       </Popover>
     </>
