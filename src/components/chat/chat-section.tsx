@@ -6,7 +6,6 @@ import type { UIMessage } from "ai";
 import { ChatMessage } from "./chat-message";
 import { LoadingTip } from "./loading-tip";
 import { Message, MessageContent } from "@/components/ui/message";
-import type { EvolutionState } from "./evolution-indicator";
 import { useTranslations } from "next-intl";
 import { formatErrorDetail } from "@/lib/chat/workflow-errors";
 
@@ -16,8 +15,6 @@ interface ChatSectionProps {
   isLoading: boolean;
   error: Error | undefined;
   lastUserMessageAt: string | null;
-  evolutionState: EvolutionState | null;
-  isEvolutionTarget: (messageId: string) => boolean;
 }
 
 export const ChatSection = memo(function ChatSection({
@@ -26,8 +23,6 @@ export const ChatSection = memo(function ChatSection({
   isLoading,
   error,
   lastUserMessageAt,
-  evolutionState,
-  isEvolutionTarget,
 }: ChatSectionProps) {
   const lastMessage = messages[messages.length - 1];
   const hasAssistant = messages.some((m) => m.role === "assistant");
@@ -50,9 +45,6 @@ export const ChatSection = memo(function ChatSection({
             message.id === lastMessage?.id
               ? (lastUserMessageAt ?? undefined)
               : undefined
-          }
-          evolutionState={
-            isEvolutionTarget(message.id) ? evolutionState : null
           }
         />
       ))}

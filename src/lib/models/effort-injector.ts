@@ -6,9 +6,10 @@
  * Previously this mapping was duplicated (and drifted) across three call
  * sites: the chat agent factory (`agent.ts buildProviderOptions`), the
  * thinkDeep sub-agent (`tool-executors.ts subAgentProviderOptions`), and the
- * worker tier (`worker.ts workerProviderOptions`). This module replaces the
- * first two; the worker keeps its always-disabled shape (it has no effort
- * axis — worker calls are cheap structured tasks by construction).
+ * worker tier (`worker.ts workerProviderOptions`). This module replaced all
+ * three; the v0.9 unified sub-agent runner routes every sub-agent through
+ * `normalizeReasoningEffort` with thinking ON (default effort "low"), and the
+ * worker tier's always-disabled shape was removed with its last call site.
  *
  * Why provider-specific:
  *   - deepseek: `thinking.type` (adaptive|enabled|disabled) + `reasoningEffort`

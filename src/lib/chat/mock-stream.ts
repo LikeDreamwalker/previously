@@ -40,6 +40,158 @@ export function buildMockSteps(): MockStep[] {
   const steps: MockStep[] = [];
 
   // ═══════════════════════════════════════════════════════════════════
+  // Phase 0 — Housekeeping (the prep card: slice / analyze / tags /
+  // context / strands) with the standalone card-evolution card at its
+  // natural stream position between context and strands
+  // ═══════════════════════════════════════════════════════════════════
+
+  const emitPhase = (phase: string, running: boolean, summaries?: string[]) => ({
+    apply: (msg: UIMessage) => {
+      const p = cloneParts(msg);
+      p.push({
+        type: "data-phase",
+        id: `phase-${phase}`,
+        data: { phase, running, compact: true, summaries },
+      });
+      return setMsg(p);
+    },
+  });
+
+  steps.push({ delay: 500, ...emitPhase("slice", true) });
+  steps.push({ delay: 700, ...emitPhase("slice", false, ["2026-07-25-1101"]) });
+  steps.push({ delay: 400, ...emitPhase("analyze", true) });
+  steps.push({
+    delay: 900,
+    ...emitPhase("analyze", false, ["episodic-memory", "streaming-ux"]),
+  });
+  steps.push({ delay: 300, ...emitPhase("tags", true) });
+  steps.push({
+    delay: 400,
+    ...emitPhase("tags", false, ["episodic-memory", "streaming-ux"]),
+  });
+  steps.push({ delay: 500, ...emitPhase("context", true) });
+
+  // Card evolution (data-evolution) — its own stream-positioned card (between
+  // context and strands), streaming the Previously Agent's live thinking line:
+  // reading → reviewing → result. buildStream folds each frame into the single
+  // "evolution" item (last chunk wins).
+  steps.push({
+    delay: 600,
+    apply: (msg) => {
+      const p = cloneParts(msg);
+      p.push({
+        type: "data-evolution",
+        id: uid("evolution"),
+        data: {
+          status: "running",
+          step: "reading",
+          live: "翻开 2026-07-24 的切片，找这周聊过的偏好…",
+          liveStage: "thinking",
+        },
+      });
+      return setMsg(p);
+    },
+  });
+
+  steps.push({
+    delay: 900,
+    apply: (msg) => {
+      const p = cloneParts(msg);
+      const evo = p.find(
+        (x: AnyPart) => x.type === "data-evolution",
+      ) as AnyPart;
+      if (evo) {
+        evo.data = {
+          status: "running",
+          step: "reading",
+          live: "找到了——时间优先的整理偏好上周已经强化过一次。",
+          liveStage: "thinking",
+        };
+      }
+      return setMsg(p);
+    },
+  });
+
+  steps.push({
+    delay: 800,
+    apply: (msg) => {
+      const p = cloneParts(msg);
+      const evo = p.find(
+        (x: AnyPart) => x.type === "data-evolution",
+      ) as AnyPart;
+      if (evo) {
+        evo.data = {
+          status: "running",
+          step: "reviewing",
+          live: "kickoff-prep 那条 Now 过期了，审查是否值得沉淀…",
+          liveStage: "thinking",
+        };
+      }
+      return setMsg(p);
+    },
+  });
+
+  steps.push({
+    delay: 700,
+    apply: (msg) => {
+      const p = cloneParts(msg);
+      const evo = p.find(
+        (x: AnyPart) => x.type === "data-evolution",
+      ) as AnyPart;
+      if (evo) {
+        evo.data = {
+          status: "running",
+          step: "reviewing",
+          live: "结论：保留偏好强化，删掉过期项。",
+          liveStage: "writing",
+        };
+      }
+      return setMsg(p);
+    },
+  });
+
+  steps.push({
+    delay: 1100,
+    apply: (msg) => {
+      const p = cloneParts(msg);
+      const evo = p.find(
+        (x: AnyPart) => x.type === "data-evolution",
+      ) as AnyPart;
+      if (evo) {
+        evo.data = {
+          status: "done",
+          changes: {
+            added: 1,
+            reinforced: 1,
+            demoted: 0,
+            removed: 1,
+            superseded: 0,
+          },
+          hasChanges: true,
+          summary:
+            "Noted the time-first organization preference; dropped the stale kickoff-prep item.",
+          note: "The user reiterated a systems-thinking, time-first organizational preference — reinforced the Past profile. The kickoff-prep Now item expired.",
+          mutations: [
+            {
+              type: "added",
+              text: "Now: Shipping the pure-time slicing milestone",
+            },
+            { type: "removed", text: "Now: Kickoff prep (expired)" },
+          ],
+        };
+      }
+      return setMsg(p);
+    },
+  });
+
+  steps.push({
+    delay: 400,
+    ...emitPhase("context", false, ["continuity: same_day"]),
+  });
+  steps.push({ delay: 300, ...emitPhase("strands", true) });
+  steps.push({ delay: 600, ...emitPhase("strands", false, ["12 strands"]) });
+
+  // ═══════════════════════════════════════════════════════════════════
   // Phase 1 — Reasoning (thinking aloud)
   // ═══════════════════════════════════════════════════════════════════
 
@@ -209,7 +361,7 @@ export function buildMockSteps(): MockStep[] {
       p[p.length - 1].output = `## Slice 2026-07-24-1500
 
 **Focus**: Episodic memory architecture redesign
-**Summary**: The user and agent worked through the design of a time-slice based episodic memory system. Key decisions: pure time-driven slicing (30min silence = close), strand-based semantic indexing, worker/main split for recall vs deep reasoning. The slice has 7 turns and 5 decisions recorded.
+**Summary**: The user and agent worked through the design of a time-slice based episodic memory system. Key decisions: pure time-driven slicing (30min slice age cap = close), strand-based semantic indexing, a unified sub-agent runner for recall and deep reasoning. The slice has 7 turns and 5 decisions recorded.
 
 **Turns**:
 1. user: "I want to redesign how we store conversations" — started the memory redesign discussion
@@ -221,10 +373,10 @@ export function buildMockSteps(): MockStep[] {
 7. user: "This is clean. Let's do it." — final decision recorded
 
 **Decisions**:
-- 30-minute time silence closes slice
-- Max 40 turns per slice (safety cap)
+- Slice closes 30 minutes after it starts (pure age cap)
+- Max 50 turns per slice (safety cap)
 - Strands built at slice-close via updateStrands
-- Worker model maintains metadata; the main model does deep recall`;
+- One unified runner maintains metadata; the main model does deep recall`;
       return setMsg(p);
     },
   });
@@ -416,6 +568,37 @@ A full-stack engineer who thinks in systems. Prefers clean architecture with cle
     },
   });
 
+  // 4c. currentTime — the watch check (v0.9): precise now + slice progress
+  steps.push({
+    delay: 600,
+    apply: (msg) => {
+      const p = cloneParts(msg);
+      p.push({
+        type: "tool-currentTime",
+        toolCallId: uid("tc-time"),
+        toolName: "currentTime",
+        state: "output-available",
+        input: {},
+        output: [
+          "Now: 25 Jul 2026, 19:12 (Asia/Shanghai, UTC+8)",
+          "UTC: 2026-07-25T11:12:00.000Z",
+          "",
+          "This slice (2026-07-25-1101):",
+          "- Started: 25 Jul 2026, 19:01 (Asia/Shanghai) · UTC 2026-07-25T11:01:00.000Z",
+          "- Running for 11 min — 19 min left of the 30-minute cap, then this slice auto-closes.",
+          "",
+          "Date anchors:",
+          "- Today: 2026-07-25 (Sat)",
+          "- This week's Monday: 2026-07-20",
+          "- Last week: 2026-07-13 (Mon) → 2026-07-19 (Sun)",
+          "- Tomorrow: 2026-07-26 (Sun)",
+          "- This weekend: 2026-07-25 (Sat) → 2026-07-26 (Sun)",
+        ].join("\n"),
+      });
+      return setMsg(p);
+    },
+  });
+
   // ═══════════════════════════════════════════════════════════════════
   // Phase 5 — Text response (rich markdown streaming)
   // ═══════════════════════════════════════════════════════════════════
@@ -427,7 +610,7 @@ A full-stack engineer who thinks in systems. Prefers clean architecture with cle
 
     "The stack: **Next.js 16** + **React 19** + **TypeScript 6** + **Tailwind CSS 4** + **shadcn/ui** on the frontend, with **Vercel Workflow** powering durable agent execution and **GitHub** as the single source of truth.\n\n",
 
-    "## Architecture Highlights\n\n### 1. Episodic Memory (Time-Slice System)\n\nYour memory is organized into **time slices** — one file per conversation window under `memory/episodic/slices/YYYY/MM/DD/HHMM.md`. A slice closes after 30 minutes of inactivity or 40 turns (safety cap).\n\n",
+    "## Architecture Highlights\n\n### 1. Episodic Memory (Time-Slice System)\n\nYour memory is organized into **time slices** — one file per conversation window under `memory/episodic/slices/YYYY/MM/DD/HHMM.md`. A slice closes 30 minutes after it starts, or at 50 turns (safety cap).\n\n",
 
     "Each slice carries metadata (focus, summary, tags, emotional tone, decisions, open loops). The **worker model** maintains it; **strands** — keyword-based indexes — weave through every slice carrying a given tag, creating a thin semantic layer over the episodic store.\n\n",
 
@@ -437,13 +620,11 @@ A full-stack engineer who thinks in systems. Prefers clean architecture with cle
 
     "Tool calls use `ToolLayout` — a shared expandable card pattern with spinner/dot/error states and CSS grid animation for expand/collapse. Each tool gets a dedicated renderer.\n\n",
 
-    "### 4. Background Loops\n\nDurable background tasks run as separate Vercel Workflow runs. The `startLoop` tool spawns them from chat, and `LoopWatcher` on the client subscribes to their progress. Each loop calls `loopReport` to checkpoint progress back to the repository.\n\n",
-
     "> **Key insight**: GitHub files are the single source of truth for memory. Workflow is only the execution container — never a store. There is intentionally no database or KV.\n\n",
 
     "## Current Status (v0.7)\n\nWe're on branch `feature/v0.6-background-first`, working on:\n\n1. **User card** — previously.md is now a compact identity + profile + recent + self-model card, edited in place\n2. **Per-slice evolution** — belief evolution fires once per closed slice, not every turn\n3. **Time localization** — read tools pre-render your local time, so the agent never has to convert timezones itself\n4. **Semantic gate** — trivial turns no longer pollute tags and strands\n\n",
 
-    "Here's the config driving the slicing behavior:\n\n```typescript\n// From lib/episodic/slicer.ts\nconst config = {\n  slicing: {\n    timeSilenceMinutes: 30,  // Close slice after 30min idle\n    maxTurnsPerSlice: 40,    // Safety cap for marathon sessions\n  },\n};\n\nfunction checkTimeSilence(\n  lastActivity: number,\n  silenceMs: number\n): boolean {\n  return Date.now() - lastActivity > silenceMs;\n}\n```\n\n",
+    "Here's the config driving the slicing behavior:\n\n```typescript\n// From lib/episodic/slicer.ts\nconst config = {\n  slicing: {\n    maxSliceMinutes: 30,     // Close slice 30min after it starts\n    maxTurnsPerSlice: 50,    // Safety cap for marathon sessions\n  },\n};\n\nfunction checkSliceAge(\n  startIso: string,\n  maxMs: number\n): boolean {\n  return Date.now() - new Date(startIso).getTime() >= maxMs;\n}\n```\n\n",
 
     "## What's Next\n\n- [ ] First-class strands — a rolling summary + recall integration for each strand\n- [ ] Explicit memory-update confirmations — the agent proposes, you approve\n- [ ] Richer cross-slice navigation on the horizontal timeline\n- [ ] More demo personas for the read-only demo\n\n",
 
@@ -467,64 +648,6 @@ A full-stack engineer who thinks in systems. Prefers clean architecture with cle
       },
     });
   }
-
-  // ═══════════════════════════════════════════════════════════════════
-  // Phase 6 — Self-evolution (v0.7 data-evolution part)
-  // ═══════════════════════════════════════════════════════════════════
-
-  steps.push({
-    delay: 800,
-    apply: (msg) => {
-      const p = cloneParts(msg);
-      p.push({
-        type: "data-evolution",
-        id: uid("evolution"),
-        data: {
-          running: true,
-          step: "reading",
-        },
-      });
-      return setMsg(p);
-    },
-  });
-
-  steps.push({
-    delay: 900,
-    apply: (msg) => {
-      const p = cloneParts(msg);
-      const evo = p.find(
-        (x: AnyPart) => x.type === "data-evolution",
-      ) as AnyPart;
-      if (evo) {
-        evo.data = { running: true, step: "reviewing" };
-      }
-      return setMsg(p);
-    },
-  });
-
-  steps.push({
-    delay: 1000,
-    apply: (msg) => {
-      const p = cloneParts(msg);
-      const evo = p.find(
-        (x: AnyPart) => x.type === "data-evolution",
-      ) as AnyPart;
-      if (evo) {
-        evo.data = {
-          running: false,
-          changes: {
-            added: 1,
-            reinforced: 1,
-            demoted: 0,
-            removed: 1,
-            superseded: 0,
-          },
-          hasChanges: true,
-        };
-      }
-      return setMsg(p);
-    },
-  });
 
   return steps;
 }

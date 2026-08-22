@@ -8,9 +8,7 @@ import { ChatInput } from "./chat-input";
 import type { ModelDefaults } from "./model-selector";
 import { useAvailableModels } from "@/hooks/use-available-models";
 import { ChatSection } from "./chat-section";
-import { LoopWatcher } from "./loop-watcher";
 import { buildMockSteps } from "@/lib/chat/mock-stream";
-import type { EvolutionState } from "./evolution-indicator";
 import { HistoricalChatView } from "./historical-chat-view";
 import { RelativeTimeReadout } from "./relative-time";
 import { EmptyBriefing } from "./empty-briefing";
@@ -271,7 +269,6 @@ function Inner({
   }, []);
 
   const [lastUserMessageAt, setLastUserMessageAt] = useState<string | null>(null);
-  const [evolutionState, setEvolutionState] = useState<EvolutionState | null>(null);
 
   // ── Timeline state ──────────────────────────────────────────────────────
   const [timelineSlices, setTimelineSlices] = useState<SliceSummary[]>([]);
@@ -575,21 +572,6 @@ function Inner({
     }
   }, [allMessages, t]);
 
-  // Pre-compute the last assistant message ID so isEvolutionTarget doesn't
-  // copy and reverse the entire messages array on every render per message.
-  const lastAssistantId = useMemo(() => {
-    for (let i = allMessages.length - 1; i >= 0; i--) {
-      if (allMessages[i].role === "assistant") return allMessages[i].id;
-    }
-    return null;
-  }, [allMessages]);
-
-  const isEvolutionTarget = useCallback(
-    (id: string) => lastAssistantId === id,
-    [lastAssistantId],
-  );
-
-  const lastEvolutionDataRef = useRef<string>("");
   const handleSubmit = async (message: string, images: File[]) => {
     if (selectedSliceId !== "now" || transition) {
       setSelectedSliceId("now");
@@ -598,10 +580,6 @@ function Inner({
       setPendingSliceId(null);
       setLoadedSliceStart(null);
     }
-    // Reset the evolution indicator so a new turn never shows the previous
-    // turn's result while its own data-evolution chunks are still in flight.
-    setEvolutionState(null);
-    lastEvolutionDataRef.current = "";
     setLastUserMessageAt(new Date().toISOString());
     // Images travel as AI SDK file parts (data URLs) — convertToModelMessages
     // on the server maps them to the provider's image inputs. The files are
@@ -621,28 +599,9 @@ function Inner({
     sendMessage({ role: "user", parts });
     // v0.7b: self-evolution runs INLINE inside housekeeping (the turn's stream
     // carries data-evolution chunks) — no separate evolution request here.
+    // v0.9: buildStream folds those chunks into the housekeeping card, so the
+    // client needs no evolution-specific state at all.
   };
-
-  // v0.7b: watch the turn stream for data-evolution chunks and drive the
-  // EvolutionIndicator from them — the synchronous inline run streams reading →
-  // reviewing → result while the turn is processing, so the user sees progress.
-  useEffect(() => {
-    if (demoStreaming) return;
-    const last = messages[messages.length - 1];
-    if (!last || last.role !== "assistant") return;
-    let found: EvolutionState | undefined;
-    for (const p of last.parts) {
-      if (p.type === "data-evolution") {
-        found = (p as { data?: EvolutionState }).data ?? found;
-      }
-    }
-    if (!found) return;
-    const key = JSON.stringify(found);
-    if (key !== lastEvolutionDataRef.current) {
-      lastEvolutionDataRef.current = key;
-      setEvolutionState(found);
-    }
-  }, [messages, demoStreaming]);
 
   // Hydration guard: the persisted conversation only exists client-side, so the
   // server renders the empty state. Keep the FIRST client render matching the
@@ -747,10 +706,7 @@ function Inner({
                     isLoading={isLoading}
                     error={error}
                     lastUserMessageAt={lastUserMessageAt}
-                    evolutionState={evolutionState}
-                    isEvolutionTarget={isEvolutionTarget}
                   />
-                  <LoopWatcher messages={messages} />
                 </div>
               )}
             </motion.div>

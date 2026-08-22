@@ -63,13 +63,7 @@
         "anthropic": "Anthropic",
         "openai": "OpenAI"
       },
-      "thinkingLabel": "Thinking",
-      "advanced": "Advanced",
-      "workerLabel": "Worker model",
-      "workerSameAsAgent": "Keep consistent with the main agent",
-      "workerSameAsAgentDesc": "The worker runs cheap internal tasks (recall, tagging, slice marking). On, it follows a lightweight model from your main provider.",
-      "workerModelLabel": "Worker model",
-      "workerSave": "Save"
+      "thinkingLabel": "Thinking"
     },
     "attachment": "Attachment",
     "actions": {
@@ -91,6 +85,7 @@
       "readStrandDone": "Followed \"{name}\"",
       "readPreviously": "Reading 前情提要…",
       "readAgentTimeline": "Viewing cognition…",
+      "currentTime": "Checked the time",
       "recallRunning": "Recalling \"{query}\"…",
       "recallDone": "Recalled {count} conversations about \"{query}\"",
       "recallHits": "{count} conversation{count, plural, one {} other {s}} found",
@@ -108,7 +103,6 @@
       "listRunning": "Browsing…",
       "listDone": "Found {count} items",
       "sources": "{count} sources",
-      "startLoop": "Starting a background loop",
       "thinkDeep": "Reasoning fragment",
       "thinkDeepRunning": "Reasoning about \"{question}\"…",
       "thinkDeepDone": "Reasoned about \"{question}\"",
@@ -124,8 +118,6 @@
       "demoted": "demoted",
       "removed": "removed",
       "superseded": "superseded",
-      "loopFile": "Loop file",
-      "loopId": "Loop ID",
       "items": "{count} items",
       "conversations": "{count} conversations"
     },
@@ -152,7 +144,8 @@
       "previouslyOn": "Previously On",
       "clickToView": "Click to view",
       "thoughts": "Thoughts",
-      "applied": "Applying update..."
+      "applied": "Applying update...",
+      "partial": "(partial update)"
     },
     "phase": {
       "thinking": "Thinking…",
@@ -171,6 +164,8 @@
       "viewPreviously": "View previously.md →",
       "previouslyTitle": "前情提要 · Previously.md",
       "slice": "Managing time slice…",
+      "analyze": "Analyzing this turn…",
+      "analyzed": "Turn analyzed",
       "tags": "Extracting tags…",
       "tagged": "Tags extracted",
       "context": "Loading your profile…",
@@ -198,7 +193,7 @@
       "backgroundDone": "Your answer is ready"
     },
     "loadingTips": [
-      "Your conversations are saved as time slices — 30 minutes of silence closes one and starts the next",
+      "Your conversations are saved as time slices — a slice closes 30 minutes after it starts and the next one begins",
       "The agent works after you're done — not always-on, but results are waiting when you return",
       "Every slice is a plain Markdown file — human-readable, git-diffable, no proprietary format",
       "GitHub is the only database — your memory lives in your own repo, no external storage",
@@ -276,9 +271,8 @@
     "config": {
       "heading": "Agent behaviour",
       "desc": "Tune how the agent slices, recalls, and manages context. Saved to your memory repo — no redeploy needed.",
-      "maxTurnsPerSlice": "Max turns per slice",
-      "timeSilenceMinutes": "Silence timeout (min)",
-      "recentTurnsLimit": "Recent turns in context",
+      "maxSliceMinutes": "Slice duration (min)",
+      "maxTurnsPerSlice": "Max turns per slice (safety cap)",
       "save": "Save config",
       "saving": "Saving...",
       "saved": "Saved ✓",

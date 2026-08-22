@@ -570,6 +570,30 @@ describe("closedBy round-trip", () => {
   });
 });
 
+// ─── evolutionSummary round-trip (v0.9 slice-level prompt freeze) ─────────
+
+describe("evolutionSummary round-trip", () => {
+  it("persists the birth-evolution summary in frontmatter and parses it back", () => {
+    const slice = {
+      ...sampleSlice,
+      evolutionSummary: "sharpened the profile around work stress",
+    };
+    const md = serializeSlice(slice);
+    expect(md).toContain(
+      "evolution_summary: sharpened the profile around work stress",
+    );
+    expect(parseSlice(md).evolutionSummary).toBe(
+      "sharpened the profile around work stress",
+    );
+  });
+
+  it("omits the field when no evolution ran and reads back undefined", () => {
+    const md = serializeSlice({ ...sampleSlice, evolutionSummary: undefined });
+    expect(md).not.toContain("evolution_summary");
+    expect(parseSlice(md).evolutionSummary).toBeUndefined();
+  });
+});
+
 // ─── KNOWN LIMITATION pin: turn-header collision ─────────────────────────
 //
 // parseTurns' header regex (/^## Turn (\S+) — (\S+) \((\w+)\)$/gm) matches ANY

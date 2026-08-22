@@ -3,7 +3,7 @@
  * readTimelineWindow (catalog over a date window). Local mode; the read layer
  * is an in-memory Map.
  */
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const local = vi.hoisted(() => {
   const files = new Map<string, string>();
@@ -34,10 +34,16 @@ vi.mock("@/lib/demo/demo-fs", () => ({
   }),
   listFilesDemo: vi.fn(async () => []),
 }));
+vi.mock("@/lib/config/loader", () => ({
+  loadUserConfig: vi.fn(async () => ({
+    slicing: { maxSliceMinutes: 30, maxTurnsPerSlice: 50 },
+  })),
+}));
 
 import {
   readSliceSummaryExecute,
   readTimelineWindowExecute,
+  currentTimeExecute,
   type ToolContext,
 } from "@/app/api/agent/tool-executors";
 
@@ -187,5 +193,56 @@ describe("readTimelineWindowExecute", () => {
   it("degrades gracefully when the catalog is missing", async () => {
     const out = await readTimelineWindowExecute({}, opts());
     expect(out).toContain("尚不可用");
+  });
+});
+
+describe("currentTimeExecute", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    // 2026-08-22 is a Saturday; 08:35 in Asia/Shanghai (UTC+8).
+    vi.setSystemTime(new Date("2026-08-22T00:35:00.000Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("reports local time + UTC and slice progress against the cap", async () => {
+    const out = await currentTimeExecute(
+      {},
+      opts({ sliceId: "2026-08-22-0015", locale: "en" }),
+    );
+    expect(out).toContain("Now: 22 Aug 2026, 08:35");
+    expect(out).toContain("Asia/Shanghai");
+    expect(out).toContain("UTC+08:00");
+    expect(out).toContain("UTC: 2026-08-22T00:35:00.000Z");
+    expect(out).toContain("This slice (2026-08-22-0015)");
+    expect(out).toContain("Started: 22 Aug 2026, 08:15");
+    expect(out).toContain("Running for 20 min — 10 min left of the 30-minute cap");
+  });
+
+  it("includes a fresh date-anchor table with weekdays", async () => {
+    const out = await currentTimeExecute(
+      {},
+      opts({ sliceId: "2026-08-22-0015", locale: "en" }),
+    );
+    expect(out).toContain("Date anchors:");
+    expect(out).toContain("Today: 2026-08-22 (Sat)");
+    expect(out).toContain("Tomorrow: 2026-08-23 (Sun)");
+  });
+
+  it("flags a slice that is past its time cap", async () => {
+    vi.setSystemTime(new Date("2026-08-22T01:00:00.000Z"));
+    const out = await currentTimeExecute(
+      {},
+      opts({ sliceId: "2026-08-22-0015", locale: "en" }),
+    );
+    expect(out).toContain("Running for 45 min — past the 30-minute cap");
+  });
+
+  it("still reports the clock when the slice id is unparseable", async () => {
+    const out = await currentTimeExecute({}, opts({ sliceId: "bogus" }));
+    expect(out).toContain("Now:");
+    expect(out).not.toContain("This slice");
   });
 });

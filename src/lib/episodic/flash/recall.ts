@@ -1,18 +1,26 @@
 /**
- * Flash Recall Search — a mini-agent that Pro calls to search past conversations.
+ * Flash Recall Search — a sub-agent that Pro calls to search past conversations.
  *
  * This is NOT a workflow step. It runs inside a single WorkflowAgent tool call
- * (recallExecute in tool-executors.ts). The sub-agent uses generateText with
- * maxSteps to do a focused exploration: global timeline → check strands → deep-read
- * slices → structured report.
+ * (recallExecute in tool-executors.ts) on the unified sub-agent runner
+ * (src/lib/agents/sub-agent-runner.ts): the turn's MAIN model with thinking ON
+ * (effort "low"), an 8-step cap, and a 120s wall-clock budget. The sub-agent
+ * does a focused exploration: global timeline → check strands → timeline
+ * windows → structured recallReport.
  *
- * Flash ONLY returns pointers (which slices, which turns, why relevant).
+ * Recall ONLY returns pointers (which slices, which turns, why relevant).
  * The EXECUTOR passes those pointers straight back to Pro, which then calls
- * readSlice for any content it wants. Flash never produces semantic summaries
+ * readSlice for any content it wants. Recall never produces semantic summaries
  * of episodic content.
+ *
+ * Error contract: the runner never throws, so runRecallSearch re-throws
+ * non-timeout failures (an Error carrying the runner's message) and lets the
+ * executor's triage (tool-triage.ts) separate transient failures — rethrown
+ * for the step's auto-retry — from deterministic ones (empty-result
+ * degradation). Timeouts degrade in place to an empty result, as before.
  */
 
-import { generateText, tool, isStepCount } from "ai";
+import { tool } from "ai";
 import { z } from "zod";
 import { tolerantBounded01 } from "@/lib/chat/tolerant-schemas";
 import { fsReadFile } from "../io-helpers";
@@ -21,9 +29,12 @@ import { generateGlobalTimeline } from "@/lib/episodic/flash/global-timeline";
 import { sliceLine } from "@/lib/episodic/timeline/render";
 import { TIMELINE_INDEX_PATH } from "@/lib/episodic/timeline/store";
 import type { TimelineIndex, TimelineSliceEntry } from "@/lib/episodic/timeline/types";
-import { createModel } from "@/lib/models/provider";
-import { workerProviderOptions } from "@/lib/models/worker";
 import type { ModelConfig } from "@/lib/models/registry";
+import {
+  runSubAgent,
+  type SubAgentProgressRef,
+} from "@/lib/agents/sub-agent-runner";
+import { buildSubAgentSystem } from "@/lib/agents/prompts";
 
 // ─── Types ──────────────────────────────────────────────────────────────
 
@@ -106,14 +117,15 @@ export interface RecallSearchInput {
   repo: string;
   useGithub: boolean;
   useDemo: boolean;
-  /** Available strands (keyword tag → slice paths). Flash auto-traces matching ones. */
+  /** Available strands (keyword tag → slice paths). Recall auto-traces matching ones. */
   strandsContext?: Record<string, string[]>;
-  /** The worker model to run the recall search on (resolved from config). */
+  /** The model to run the recall search on — the turn's MAIN model, resolved
+   *  by the caller via `resolveSubAgentModel(ctx)` (v0.9 unified runner). */
   model: ModelConfig;
-  /** Live exploration callback — fired as the sub-agent starts each tool, so
-   *  the caller can stream real progress ("Reading global timeline…",
-   *  "Tracing strand X…") instead of a static status line. */
-  onProgress?: (text: string) => void;
+  /** Progress routing ref — the runner streams each exploration step
+   *  ("Reading global timeline…", "Tracing strand X…") onto the shared
+   *  data-tool-progress channel. */
+  progress?: SubAgentProgressRef;
 }
 
 // ─── Global timeline path ──────────────────────────────────────────────
@@ -273,63 +285,74 @@ async function readTimelineWindowImpl(from?: string, to?: string): Promise<strin
 
 // ─── Structured output schema: recallReport ─────────────────────────
 
+/** Zod input schema — also the runner's report-validation schema. */
+const recallReportInputSchema = z.object({
+  hits: z
+    .array(
+      z.object({
+        slice_id: z
+          .string()
+          .describe("Slice ID in YYYY-MM-DD-HHMM format"),
+        relevance: tolerantBounded01
+          .describe("How relevant this slice is to the query, 0-1"),
+        reason: z
+          .string()
+          .describe("One-line explanation of why this slice is relevant"),
+      }),
+    )
+    .describe("Relevant slices found. Empty if nothing matches."),
+
+  confidence: tolerantBounded01
+    .describe("Your confidence in the completeness of this recall, 0-1"),
+
+  reasoning: z
+    .string()
+    .describe("Brief explanation of your search strategy and what you found"),
+
+  recommended_reads: z
+    .array(
+      z.object({
+        slice_id: z
+          .string()
+          .describe("Slice ID in YYYY-MM-DD-HHMM format"),
+        priority: z
+          .enum(["high", "medium", "low"])
+          .describe("How strongly you recommend the main agent read this slice."),
+        reason: z
+          .string()
+          .describe("One line: why this slice is worth reading for the query."),
+        note: z
+          .string()
+          .optional()
+          .describe("Optional: what to look for inside the slice, if you can tell from its summary."),
+      }),
+    )
+    .max(5)
+    .describe(
+      "Slices the main agent should consider opening with readSlice. " +
+      "You did NOT read these slices' content — base this on the timeline summary, " +
+      "strand overlap, and tag relevance. Rank by likely usefulness.",
+    ),
+});
+
+type RecallReport = z.infer<typeof recallReportInputSchema>;
+
 const recallReportSchema = tool({
   description:
     "Report your recall findings. Call this ONCE you have gathered enough context.",
-  inputSchema: z.object({
-    hits: z
-      .array(
-        z.object({
-          slice_id: z
-            .string()
-            .describe("Slice ID in YYYY-MM-DD-HHMM format"),
-          relevance: tolerantBounded01
-            .describe("How relevant this slice is to the query, 0-1"),
-          reason: z
-            .string()
-            .describe("One-line explanation of why this slice is relevant"),
-        }),
-      )
-      .describe("Relevant slices found. Empty if nothing matches."),
-
-    confidence: tolerantBounded01
-      .describe("Your confidence in the completeness of this recall, 0-1"),
-
-    reasoning: z
-      .string()
-      .describe("Brief explanation of your search strategy and what you found"),
-
-    recommended_reads: z
-      .array(
-        z.object({
-          slice_id: z
-            .string()
-            .describe("Slice ID in YYYY-MM-DD-HHMM format"),
-          priority: z
-            .enum(["high", "medium", "low"])
-            .describe("How strongly you recommend the main agent read this slice."),
-          reason: z
-            .string()
-            .describe("One line: why this slice is worth reading for the query."),
-          note: z
-            .string()
-            .optional()
-            .describe("Optional: what to look for inside the slice, if you can tell from its summary."),
-        }),
-      )
-      .max(5)
-      .describe(
-        "Slices the main agent should consider opening with readSlice. " +
-        "You did NOT read these slices' content — base this on the timeline summary, " +
-        "strand overlap, and tag relevance. Rank by likely usefulness.",
-      ),
-  }),
+  inputSchema: recallReportInputSchema,
 });
 
 // ─── Agent setup ──────────────────────────────────────────────────────
 
-const RECALL_SYSTEM_PROMPT = `You are the recall search engine for a personal AI platform.
-Your job: find past conversations relevant to a search query and advise the main agent on what to read.
+/**
+ * The recall sub-agent's static role block — the system prompt is
+ * `buildSubAgentSystem(RECALL_ROLE)` (shared static base + this block), so
+ * every recall call shares one prefix for provider prompt caches. All
+ * per-call content (query, current slice, strands hint) lives in the user
+ * prompt.
+ */
+const RECALL_ROLE = `You are the recall search engine: find past conversations relevant to a search query and advise the main agent on what to read.
 
 You work from POINTERS ONLY — the timeline holds one compact line per slice (id · focus · tags · turns). You NEVER read slice content (no readSlice tool). Your value is fast, accurate navigation over the memory index.
 
@@ -410,19 +433,28 @@ async function loadValidSliceIds(): Promise<Set<string> | null> {
   }
 }
 
+/** Wall-clock budget for one recall run (runner SDK timeout + backstop). */
+const RECALL_TIMEOUT_MS = 120_000;
+
 /**
- * Run the recall search mini-agent using AI SDK v7 native multi-step.
+ * Run the recall search sub-agent on the unified runner (runSubAgent).
  *
- * `stopWhen: isStepCount(MAX_STEPS)` tells generateText to loop: after each
- * tool call, feed the result back to the model and continue, up to MAX_STEPS
- * turns. This gives Flash time to explore (timeline → strands → deep-read)
- * and then call recallReport. `prepareStep` forces recallReport on the final
- * step if the model hasn't called it yet, so a report is always produced.
+ * The runner owns the loop: `stopWhen: isStepCount(MAX_STEPS)` lets the model
+ * explore (timeline → window → strands) and then call recallReport, and the
+ * `prepareStep` passthrough forces recallReport on the final step if the
+ * model hasn't called it yet, so a report is always produced.
+ *
+ * The runner never throws. Non-timeout failures are RE-THROWN here as plain
+ * Errors carrying the runner's message, so recallExecute's triage
+ * (tool-triage.ts) can rethrow transient failures for the step's auto-retry
+ * and degrade only deterministic ones — a catch-all at this layer would
+ * swallow transient errors a retry could fix. Timeouts keep the old
+ * semantics: degrade in place to an empty result.
  */
 export async function runRecallSearch(
   input: RecallSearchInput,
 ): Promise<RecallSearchOutput> {
-  const { query, currentSliceId, strandsContext, onProgress } = input;
+  const { query, currentSliceId, strandsContext, progress } = input;
 
   const strandsHint = strandsContext && Object.keys(strandsContext).length > 0
     ? `
@@ -446,158 +478,151 @@ IMPORTANT: You MUST end by calling recallReport. Even if nothing matches, call i
   // hallucinated pointers before they reach the main agent.
   const validSliceIds = await loadValidSliceIds();
 
-  try {
-    const result = await generateText({
-      model: createModel(input.model),
-      system: RECALL_SYSTEM_PROMPT,
-      prompt: userPrompt,
-      temperature: 0.1,
-      tools: {
-        readGlobalTimeline: tool({
-          description:
-            "Read the global timeline index — pointer lines for the newest " +
-            "conversation slices (with the total count). Always start here to " +
-            "see what's available; use readTimelineWindow to reach older slices.",
-          inputSchema: z.object({}),
-          execute: async () => readGlobalTimelineImpl(),
+  const res = await runSubAgent<RecallReport>({
+    model: input.model,
+    system: buildSubAgentSystem(RECALL_ROLE),
+    prompt: userPrompt,
+    temperature: 0.1,
+    tools: {
+      readGlobalTimeline: tool({
+        description:
+          "Read the global timeline index — pointer lines for the newest " +
+          "conversation slices (with the total count). Always start here to " +
+          "see what's available; use readTimelineWindow to reach older slices.",
+        inputSchema: z.object({}),
+        execute: async () => readGlobalTimelineImpl(),
+      }),
+      readStrand: tool({
+        description:
+          "Follow a strand (keyword tag) that threads through multiple time slices. " +
+          "Returns all slice paths carrying that tag. Use this to trace a topic across time.",
+        inputSchema: z.object({
+          strand: z.string().describe("The strand (tag) to follow."),
         }),
-        readStrand: tool({
-          description:
-            "Follow a strand (keyword tag) that threads through multiple time slices. " +
-            "Returns all slice paths carrying that tag. Use this to trace a topic across time.",
-          inputSchema: z.object({
-            strand: z.string().describe("The strand (tag) to follow."),
-          }),
-          execute: async ({ strand }: { strand: string }) => {
-            const content = await readStrandImpl(strand);
-            return content;
-          },
+        execute: async ({ strand }: { strand: string }) => {
+          const content = await readStrandImpl(strand);
+          return content;
+        },
+      }),
+      readTimelineWindow: tool({
+        description:
+          "Read the timeline catalog over a date window (inclusive, YYYY-MM-DD) — " +
+          "one compact pointer line per slice. Use this when the query is about " +
+          "a time period ('what happened around mid-2025') to scope the search.",
+        inputSchema: z.object({
+          from: z
+            .string()
+            .optional()
+            .describe("Start date YYYY-MM-DD (inclusive). Omit for the beginning."),
+          to: z
+            .string()
+            .optional()
+            .describe("End date YYYY-MM-DD (inclusive). Omit for now."),
         }),
-        readTimelineWindow: tool({
-          description:
-            "Read the timeline catalog over a date window (inclusive, YYYY-MM-DD) — " +
-            "one compact pointer line per slice. Use this when the query is about " +
-            "a time period ('what happened around mid-2025') to scope the search.",
-          inputSchema: z.object({
-            from: z
-              .string()
-              .optional()
-              .describe("Start date YYYY-MM-DD (inclusive). Omit for the beginning."),
-            to: z
-              .string()
-              .optional()
-              .describe("End date YYYY-MM-DD (inclusive). Omit for now."),
-          }),
-          execute: async ({ from, to }: { from?: string; to?: string }) =>
-            readTimelineWindowImpl(from, to),
-        }),
-        recallReport: recallReportSchema,
-      },
-      // Stream the sub-agent's exploration trail live: each tool the recall
-      // engine starts surfaces as a progress line to the caller (which feeds
-      // it into the data-tool-progress channel). Throttle-free — tool steps
-      // are discrete ~1-5Hz events, far under the 40ms write throttle.
-      onToolExecutionStart: ({ toolCall }) => {
-        if (!onProgress) return;
-        const name = toolCall.toolName;
-        if (name === "readGlobalTimeline") {
-          onProgress("Reading global timeline…");
-        } else if (name === "readTimelineWindow") {
-          onProgress("Scoping timeline window…");
-        } else if (name === "readStrand") {
-          const strand =
-            typeof toolCall.input === "object" &&
-            toolCall.input !== null &&
-            "strand" in toolCall.input
-              ? String((toolCall.input as { strand?: unknown }).strand ?? "")
-              : "";
-          onProgress(strand ? `Tracing strand: ${strand}…` : "Tracing a strand…");
-        } else if (name === "recallReport") {
-          onProgress("Compiling recall report…");
-        }
-      },
-      toolChoice: "auto",
-      stopWhen: isStepCount(MAX_STEPS),
-      // Last-resort guarantee: if the model burned the budget exploring
-      // without reporting, force recallReport on the final step.
-      prepareStep: prepareRecallStep,
-      providerOptions: workerProviderOptions(input.model.sdk),
-    });
-
-    // Extract the recallReport tool call
-    const toolCalls = (result.toolCalls ?? []) as Array<{
-      toolName: string;
-      input: unknown;
-    }>;
-
-    for (const tc of toolCalls) {
-      if (tc.toolName === "recallReport") {
-        const report = tc.input as {
-          hits?: RecallHit[];
-          confidence?: number;
-          reasoning?: string;
-          recommended_reads?: Array<{
-            slice_id: string;
-            priority?: "high" | "medium" | "low";
-            reason?: string;
-            note?: string;
-          }>;
-        };
-        const rawHits = report.hits ?? [];
-        const pastHits = excludeCurrentSlice(rawHits, currentSliceId);
-        const hits = filterKnownSliceIds(pastHits, validSliceIds);
-        const recommendedReads = filterKnownSliceIds(
-          excludeCurrentSlice(
-            normalizeRecommendedReads(report.recommended_reads),
-            currentSliceId,
-          ),
-          validSliceIds,
-        );
-        // If the model's only "evidence" was the current slice, the search
-        // genuinely found nothing from the past — zero the confidence rather
-        // than report a false hit with a confident score.
-        const droppedCurrent = rawHits.length - pastHits.length;
-        const confidence =
-          droppedCurrent > 0 && hits.length === 0
-            ? 0
-            : report.confidence ?? 0.5;
-        const reasoning =
-          droppedCurrent > 0
-            ? `${
-                report.reasoning ?? ""
-              } [Excluded current slice ${currentSliceId} — the ongoing conversation is not a past memory.]`.trim()
-            : report.reasoning ?? "";
-
-        console.log(
-          `[Recall] Found ${hits.length} hits (${droppedCurrent} current-slice excluded), ${recommendedReads.length} recommended reads, confidence=${confidence.toFixed(2)}`,
-        );
-        return { hits, confidence, reasoning, recommendedReads };
+        execute: async ({ from, to }: { from?: string; to?: string }) =>
+          readTimelineWindowImpl(from, to),
+      }),
+      recallReport: recallReportSchema,
+    },
+    toolChoice: "auto",
+    reportToolName: "recallReport",
+    reportSchema: recallReportInputSchema,
+    maxSteps: MAX_STEPS,
+    timeoutMs: RECALL_TIMEOUT_MS,
+    // Last-resort guarantee: if the model burned the budget exploring
+    // without reporting, force recallReport on the final step.
+    prepareStep: prepareRecallStep,
+    progress,
+    // Stream the sub-agent's exploration trail live: each tool the recall
+    // engine starts surfaces as a progress line on the run's
+    // data-tool-progress channel. Tool steps are discrete ~1-5Hz events, far
+    // under the emitter's 40ms write throttle.
+    onToolProgress: ({ toolName, input: toolInput }) => {
+      if (toolName === "readGlobalTimeline") {
+        return { line: "Reading global timeline…", stage: "thinking" };
       }
-    }
+      if (toolName === "readTimelineWindow") {
+        return { line: "Scoping timeline window…", stage: "thinking" };
+      }
+      if (toolName === "readStrand") {
+        const strand =
+          typeof toolInput === "object" &&
+          toolInput !== null &&
+          "strand" in toolInput
+            ? String((toolInput as { strand?: unknown }).strand ?? "")
+            : "";
+        return {
+          line: strand ? `Tracing strand: ${strand}…` : "Tracing a strand…",
+          stage: "thinking",
+        };
+      }
+      if (toolName === "recallReport") {
+        return { line: "Compiling recall report…", stage: "thinking" };
+      }
+      return undefined;
+    },
+  });
 
-    // recallReport not called — model may have produced text instead
+  if (!res.ok) {
+    if (res.timedOut) {
+      // Soft-timeout degradation (unchanged semantics): an empty search so the
+      // main agent knows nothing was found instead of a hard error.
+      console.warn(`[Recall] ${res.error}`);
+      return {
+        hits: [],
+        confidence: 0,
+        reasoning: res.error ?? "Recall search timed out",
+        recommendedReads: [],
+      };
+    }
+    // Re-throw for the executor's triage: transient failures get the step's
+    // auto-retry; deterministic ones degrade to an empty result there.
+    throw new Error(res.error ?? "Recall search failed");
+  }
+
+  const report = res.report;
+  if (!report) {
+    // recallReport not called (or failed validation) — model may have
+    // produced text instead.
     console.warn(
       "[Recall] recallReport not called. Final text:",
-      result.text?.slice(0, 200) ?? "(no text)",
+      res.text?.slice(0, 200) ?? "(no text)",
     );
     return {
       hits: [],
       confidence: 0,
-      reasoning: result.text
-        ? `Model responded without calling recallReport: ${result.text.slice(0, 200)}`
+      reasoning: res.text
+        ? `Model responded without calling recallReport: ${res.text.slice(0, 200)}`
         : "Model did not call recallReport",
       recommendedReads: [],
     };
-  } catch (err) {
-    console.warn(
-      "[Recall] Search failed, returning empty:",
-      err instanceof Error ? err.message : err,
-    );
-    return {
-      hits: [],
-      confidence: 0,
-      reasoning: `Recall search failed: ${err instanceof Error ? err.message : "unknown error"}`,
-      recommendedReads: [],
-    };
   }
+
+  const rawHits = report.hits ?? [];
+  const pastHits = excludeCurrentSlice(rawHits, currentSliceId);
+  const hits = filterKnownSliceIds(pastHits, validSliceIds);
+  const recommendedReads = filterKnownSliceIds(
+    excludeCurrentSlice(
+      normalizeRecommendedReads(report.recommended_reads),
+      currentSliceId,
+    ),
+    validSliceIds,
+  );
+  // If the model's only "evidence" was the current slice, the search
+  // genuinely found nothing from the past — zero the confidence rather
+  // than report a false hit with a confident score.
+  const droppedCurrent = rawHits.length - pastHits.length;
+  const confidence =
+    droppedCurrent > 0 && hits.length === 0 ? 0 : report.confidence ?? 0.5;
+  const reasoning =
+    droppedCurrent > 0
+      ? `${
+          report.reasoning ?? ""
+        } [Excluded current slice ${currentSliceId} — the ongoing conversation is not a past memory.]`.trim()
+      : report.reasoning ?? "";
+
+  console.log(
+    `[Recall] Found ${hits.length} hits (${droppedCurrent} current-slice excluded), ${recommendedReads.length} recommended reads, confidence=${confidence.toFixed(2)}`,
+  );
+  return { hits, confidence, reasoning, recommendedReads };
 }

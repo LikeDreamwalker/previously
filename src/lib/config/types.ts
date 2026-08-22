@@ -5,15 +5,10 @@
  */
 
 export interface SlicingConfig {
+  /** Force-close the active slice this many minutes after it starts. */
+  maxSliceMinutes: number;
   /** Force-close the active slice after this many turns (safety net). */
   maxTurnsPerSlice: number;
-  /** Minutes of inactivity before a time-silence split triggers. */
-  timeSilenceMinutes: number;
-}
-
-export interface ContextConfig {
-  /** How many recent conversation turns to include in the assembled prompt. */
-  recentTurnsLimit: number;
 }
 
 export interface ModelConfig {
@@ -27,7 +22,7 @@ export interface ModelConfig {
 
 /**
  * The auxiliary "worker" model — used for cheap internal calls (tag extraction,
- * slice marking, recall search, belief evolution, loop workers). Distinct from
+ * slice marking, recall search, belief evolution). Distinct from
  * the main chat model so the user can keep a fast/cheap tier behind the scenes.
  */
 export interface WorkerConfig {
@@ -40,7 +35,6 @@ export interface WorkerConfig {
 
 export interface UserConfig {
   slicing: SlicingConfig;
-  context: ContextConfig;
   model: ModelConfig;
   worker: WorkerConfig;
   /** Has the user completed the onboarding welcome flow? */

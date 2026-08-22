@@ -8,11 +8,8 @@ import { resolveModelId } from "@/lib/models/registry";
  */
 export const DEFAULTS: UserConfig = {
   slicing: {
-    maxTurnsPerSlice: 20,
-    timeSilenceMinutes: 15,
-  },
-  context: {
-    recentTurnsLimit: 20,
+    maxSliceMinutes: 30,
+    maxTurnsPerSlice: 50,
   },
   model: {
     provider: "deepseek-v4-pro",
@@ -42,7 +39,6 @@ export function mergeConfig(overrides: Partial<UserConfig>): UserConfig {
   if (worker.provider) worker.provider = resolveModelId(worker.provider);
   return {
     slicing: { ...DEFAULTS.slicing, ...overrides.slicing },
-    context: { ...DEFAULTS.context, ...overrides.context },
     model,
     worker,
     onboarded: overrides.onboarded ?? DEFAULTS.onboarded,
@@ -63,7 +59,6 @@ export function mergeConfigOverrides(
   return mergeConfig({
     ...overrides,
     slicing: { ...current.slicing, ...overrides.slicing },
-    context: { ...current.context, ...overrides.context },
     model: { ...current.model, ...overrides.model },
     worker: { ...current.worker, ...overrides.worker },
   });

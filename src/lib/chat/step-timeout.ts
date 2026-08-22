@@ -8,7 +8,7 @@
  * work. When the deadline hits the signal is ABORTED, so the underlying
  * operation can stop itself instead of running to completion in the
  * background (an unstopped race loser can still commit a late write — e.g.
- * loopReport's "timed out, will retry" checkpoint landing twice). Work that
+ * a "timed out, will retry" write landing twice). Work that
  * can't consume the signal should at least check `signal.aborted` before its
  * committing write.
  *

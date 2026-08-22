@@ -14,7 +14,7 @@
  * functions in ./steps, imported here by reference only.
  *
  * GitHub remains the source of truth for memory: the steps write slices,
- * indexes, strands, notes, and loop files straight to the repo. The workflow is
+ * indexes, strands, and notes straight to the repo. The workflow is
  * only the execution container that makes the turn durable and resumable.
  *
  * Lives under src/app so the `withWorkflow` loader (which scans app/src/app by
@@ -28,10 +28,13 @@ import { buildChatToolsContext } from "@/app/api/agent/tools";
 import type {
   TurnInput,
   TurnOutcome,
-  StartedLoopRef,
 } from "@/lib/chat/turn-types";
 import { DEPLOY_GUIDE_URL } from "@/lib/capabilities";
-import { annotateCardTimes } from "@/lib/time/relative";
+import { annotateCardTimes, localDateKey } from "@/lib/time/relative";
+import {
+  findOverdueHorizonItems,
+  parseCard,
+} from "@/lib/episodic/previously-format";
 import {
   classifyWorkflowError,
   errorMessage,
@@ -76,13 +79,13 @@ export function extractFinalText(messages: ModelMessage[]): string {
  * while the tool calls in between are not preserved.
  *
  * `startIndex` bounds collection to THIS turn's output: the workflow hands
- * `agent.stream()` the client history (plus a system message the SDK prepends
- * at index 0), and `result.messages` echoes all of it back. Without a
- * startIndex the stored turn would re-capture the entire history every turn —
- * the v0.7 storage-accumulation bug (each stored agent turn grew into a
- * monotonic superset of all prior assistant text, and content bled across
- * slice boundaries). The caller passes `1 + input.modelMessages.length` to
- * skip the system message + the input history, leaving only this run's steps.
+ * `agent.stream()` the slice-aligned history window (plus a system message
+ * the SDK prepends at index 0), and `result.messages` echoes all of it back.
+ * Without a startIndex the stored turn would re-capture the entire history
+ * every turn — the v0.7 storage-accumulation bug (each stored agent turn grew
+ * into a monotonic superset of all prior assistant text, and content bled
+ * across slice boundaries). The caller passes `1 + historyWindow.length` to
+ * skip the system message + the input window, leaving only this run's steps.
  */
 export function extractAllAssistantText(
   messages: ModelMessage[],
@@ -207,68 +210,6 @@ function summarizeToolInput(input: unknown): string {
   return entries
     .map(([k, v]) => `${k}: ${typeof v === "string" ? `"${v.slice(0, 80)}${v.length > 80 ? "…" : ""}"` : JSON.stringify(v)}`)
     .join(", ");
-}
-
-/**
- * Successful startLoop tool results → slice writeback refs.
- *
- * Extracted from the agent's MESSAGE history, not `result.steps`: after the
- * workflow serialization boundary a step's `content` carries only the
- * tool-call part (the tool RESULT lands in a `role: "tool"` message), so the
- * `toolResults` getter on steps is always empty here. Tags come from the
- * matching assistant tool-call input; the loopId from the tool result.
- */
-function extractStartedLoops(messages: ModelMessage[]): StartedLoopRef[] {
-  const tagsByCallId = new Map<string, string[]>();
-  const refs: StartedLoopRef[] = [];
-
-  for (const m of messages) {
-    if (!Array.isArray(m.content)) continue;
-
-    if (m.role === "assistant") {
-      for (const part of m.content) {
-        const p = part as {
-          type?: string;
-          toolCallId?: string;
-          toolName?: string;
-          input?: { tags?: unknown };
-        };
-        if (
-          p.type === "tool-call" &&
-          p.toolName === "startLoop" &&
-          typeof p.toolCallId === "string"
-        ) {
-          const tags = Array.isArray(p.input?.tags)
-            ? p.input.tags.filter((t): t is string => typeof t === "string")
-            : [];
-          tagsByCallId.set(p.toolCallId, tags);
-        }
-      }
-    } else if (m.role === "tool") {
-      for (const part of m.content) {
-        const p = part as {
-          type?: string;
-          toolCallId?: string;
-          toolName?: string;
-          output?: unknown;
-        };
-        if (p.type !== "tool-result" || p.toolName !== "startLoop") continue;
-        // ModelMessage tool-result output is wrapped ({ type: 'json', value }).
-        const raw = p.output as { value?: unknown } | undefined;
-        const value = (
-          raw && typeof raw === "object" && "value" in raw ? raw.value : raw
-        ) as { ok?: unknown; loopId?: unknown } | undefined;
-        if (!value || value.ok !== true || typeof value.loopId !== "string") {
-          continue;
-        }
-        refs.push({
-          loopId: value.loopId,
-          tags: tagsByCallId.get(p.toolCallId ?? "") ?? [],
-        });
-      }
-    }
-  }
-  return refs;
 }
 
 /**
@@ -472,46 +413,113 @@ export function buildTimeoutContinuation(opts: {
   return messages;
 }
 
-// ─── System prompt assembly (pure — cache-order matters) ─────────────────
+// ─── Slice-aligned history window (pure) ─────────────────────────────────
 
 /**
- * Assemble the turn's system prompt. Order is a CACHE decision, not just
- * layout: the provider's prompt cache reuses the longest byte-identical
- * PREFIX across requests. So the STABLE blocks come first (identity
- * constitution, previously card — they barely change across turns), and the
- * VARIABLE blocks last (the per-turn brief, strands menu, evolution notice,
- * demo notice). A changing tail never invalidates the long cacheable head.
+ * Cut the slice-aligned history window from the client's message history.
+ *
+ * The client remains the source of conversation history, but the model only
+ * needs what belongs to the CURRENT slice (v0.9): walk the history from the
+ * tail until `userTurnsInSlice` user messages are covered — one slice turn ≈
+ * one user message plus everything that followed it (assistant text, tool
+ * calls/results). A brand-new slice therefore sends just the current user
+ * message; a continuing slice resends exactly its own turns, so the request
+ * prefix grows append-only within the slice (prefix-cache friendly).
+ *
+ * `maxMessages` is a pure safety valve (maxTurnsPerSlice × 2) — the slice's
+ * capacity signal normally closes it long before the cap matters. When the
+ * client's tail is too short to cover the slice's turns, degrade to ALL
+ * given messages; the context_lost heuristic in housekeeping (steps.ts
+ * checkContextLost) already handles the genuinely-mismatched cases.
+ */
+export function sliceAlignedWindow(
+  modelMessages: ModelMessage[],
+  userTurnsInSlice: number,
+  maxMessages: number,
+): ModelMessage[] {
+  const target = Math.max(1, userTurnsInSlice);
+  let start = 0; // default: client history too short → everything given
+  let usersSeen = 0;
+  for (let i = modelMessages.length - 1; i >= 0; i--) {
+    if (modelMessages[i].role === "user") {
+      usersSeen++;
+      if (usersSeen >= target) {
+        start = i;
+        break;
+      }
+    }
+  }
+  let windowed = modelMessages.slice(start);
+  if (windowed.length > maxMessages) {
+    windowed = windowed.slice(-maxMessages);
+    // Don't open mid-exchange: drop leading non-user messages so the window
+    // starts on a user turn.
+    const firstUser = windowed.findIndex((m) => m.role === "user");
+    if (firstUser > 0) windowed = windowed.slice(firstUser);
+  }
+  return windowed;
+}
+
+// ─── System prompt assembly (pure — slice-level freeze) ──────────────────
+
+/**
+ * Assemble the turn's system prompt. v0.9: the prompt is FROZEN at slice
+ * level — every block is anchored to the slice's start, so the assembled
+ * string is byte-identical on every turn of a slice and the provider's
+ * automatic prefix cache (DeepSeek) is reused across all of them. The cache
+ * reset lands exactly where it costs nothing: at the slice boundary, in sync
+ * with the card evolution.
+ *
+ * Layer order (most stable first — prefix caching matches from the first
+ * byte to the first difference):
+ *   L0 identityPrompt  — SOUL + "who you're assisting" + DIRECTIVES
+ *   L1 previously card — annotated relative to the SLICE-HEAD date; changes
+ *                        only when an evolution rewrites the card
+ *   L2 static rules    — the fixed card/tooling conventions below
+ *   L2b overdueBlock   — Horizon items past their `by` date, derived from the
+ *                        RAW card + the slice-head local date: both frozen, so
+ *                        the derived block is frozen too
+ *   L3 sliceHeadBlock  — slice-start snapshot: local time, date anchors,
+ *                        birth continuity, birth-evolution summary, drift hint
+ *   L4 timelineBrief   — frozen mode: absolute dates, slices closed before
+ *                        this one began
+ *   L5 strandsBlock + demoNotice — low-frequency / static
+ *
+ * Nothing per-turn remains: the `Sent:` timestamp, intent, emotional register
+ * and semantic links were retired in v0.9 (the analyzer still runs; its
+ * output feeds housekeeping decisions and agent.md). Precise "now" questions
+ * go through the currentTime tool.
  *
  * The full assembled string is also fanned out to thinkDeep sub-agents as
  * `baseSystemPrompt`, so their calls share the same prefix the main agent
  * warmed.
  */
 export function assembleSystemPrompt(opts: {
-  /** SOUL + "who you're assisting" + DIRECTIVES — stable across turns. */
+  /** SOUL + "who you're assisting" + DIRECTIVES — stable across slices. */
   identityPrompt: string;
   /** The user card (previously.md) — changes only on evolution. */
   previouslyContent: string;
-  /** The per-turn brief (timestamp / intent / continuity / semantic links). */
-  turnPriming: string;
-  /** Pre-built "## Timeline (recent)…" pointer block, or "" to omit. */
+  /** Frozen slice-head snapshot block (L3), from buildSliceHeadBlock. */
+  sliceHeadBlock: string;
+  /** Pre-built frozen "## Timeline (recent)…" pointer block, or "" to omit. */
   timelineBrief: string;
   /** Pre-built "## Memory topics…" block, or "" to omit. */
   strandsBlock: string;
-  /** Pre-built "[System] A self-evolution…" notice, or "" to omit. */
-  evolutionNotice: string;
   /** Pre-built "## Demo mode…" block, or "" to omit. */
   demoNotice: string;
-  /** "YYYY-MM-DD" — anchors the card-freshness header. */
+  /** Pre-built overdue-Horizon block (L2b), or "" when nothing is overdue. */
+  overdueBlock: string;
+  /** "YYYY-MM-DD" slice-head local date — anchors the card-freshness header. */
   dateAnchor: string;
 }): string {
   const {
     identityPrompt,
     previouslyContent,
-    turnPriming,
+    sliceHeadBlock,
     timelineBrief,
     strandsBlock,
-    evolutionNotice,
     demoNotice,
+    overdueBlock,
     dateAnchor,
   } = opts;
   return [
@@ -519,14 +527,39 @@ export function assembleSystemPrompt(opts: {
     `## What I know about the user (inference model — ${dateAnchor})`,
     previouslyContent,
     "The above is the current profile and operating model — distilled hypotheses, each carrying `refs` to its evidence. If any line seems outdated or contradicts what the user just said, cite its refs and say so; the correction flows into the archive. Every `refs` pointer is a drill-down entry: open the referenced slice with readSlice before citing specifics from a past event — the card answers WHO the user is, not what was said.",
-    turnPriming,
+    overdueBlock,
+    sliceHeadBlock,
     timelineBrief,
     strandsBlock,
-    evolutionNotice,
     demoNotice,
   ]
     .filter(Boolean)
     .join("\n\n");
+}
+
+/**
+ * L2b — overdue Horizon commitments. Derived from the RAW card and the
+ * slice-head local date (both frozen for the slice's life), so the derived
+ * block is byte-stable within the slice too. The card itself carries the
+ * substance (and the `（已逾期 N 天）` annotations); this block restores the
+ * pre-v0.9 "proactively ask about outcomes" nudge without any per-turn input.
+ */
+export function buildOverdueBlock(
+  rawCard: string,
+  dateAnchor: string,
+  locale?: string,
+): string {
+  const doc = rawCard.trim() ? parseCard(rawCard) : null;
+  if (!doc) return "";
+  const overdue = findOverdueHorizonItems(doc, dateAnchor);
+  if (overdue.length === 0) return "";
+  const zh = locale === "zh";
+  const items = overdue
+    .map((h) => (zh ? `「${h.text}」（by ${h.by}）` : `"${h.text}" (by ${h.by})`))
+    .join(zh ? "；" : "; ");
+  return zh
+    ? `## 逾期承诺\n以下 Horizon 事项已超过其 by 日期——当它们和当下话题相关时，自然地询问用户结果；不要没头没尾地主动追问：${items}`
+    : `## Overdue commitments\nThese Horizon items are past their "by" date — when one is relevant to the conversation, naturally ask the user how it turned out; never nag unprompted: ${items}`;
 }
 
 // ─── The workflow ────────────────────────────────────────────────────────
@@ -540,48 +573,72 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
     slice,
     previouslyContent,
     strandsMenu,
-    turnPriming,
+    sliceHeadBlock,
     identityPrompt,
     timelineBrief,
-    evolutionResult,
   } = await housekeeping(input);
 
   // ── Assemble system prompt ──────────────────────────────────────────────
 
-  // Order (standing → beliefs → situational): the STABLE blocks first — the
-  // identity constitution (SOUL + "who you're assisting" + DIRECTIVES) then the
-  // previously card (changes only on evolution). Together they form the long
-  // cacheable prefix the provider's prompt cache reuses across turns instead of
-  // re-processing every turn. The VARIABLE blocks come last — the turn brief
-  // (timestamp / intent / continuity / semantic links), the strands menu, the
-  // evolution notice, the demo notice — so a changing tail never invalidates
-  // the stable prefix.
-  const dateAnchor = input.startedAtIso.slice(0, 10);
+  // v0.9 slice-level freeze: EVERY input is anchored to the slice's start —
+  // the card annotations and freshness header use the slice-head local date,
+  // the L3 snapshot / timeline brief are built frozen in housekeeping. Within
+  // a slice the assembled string is byte-identical turn over turn, so the
+  // provider's prefix cache is reused on every call; the cache resets only at
+  // the slice boundary (in sync with the card evolution) or when a mid-slice
+  // explicit evolution rewrites the card.
+  const dateAnchor =
+    localDateKey(slice.start, input.clientTimezone) ?? slice.start.slice(0, 10);
   const systemPrompt = assembleSystemPrompt({
     identityPrompt,
     // Relative-time annotations are added to the INJECTED copy only — the
-    // stored card keeps raw ISO dates (see src/lib/time/relative.ts).
+    // stored card keeps raw ISO dates (see src/lib/time/relative.ts). Anchored
+    // to the slice start: the phrases are day-granular, so they can't drift
+    // within the slice's 30-minute life.
     previouslyContent: annotateCardTimes(
       previouslyContent,
-      input.startedAtIso,
+      slice.start,
       input.clientTimezone,
       input.locale,
     ),
-    turnPriming,
+    sliceHeadBlock,
     timelineBrief: timelineBrief
       ? `${timelineBrief}\nTimeline lines are pointers — if a line looks relevant, read the slice (readSliceSummary / readSlice) before answering from it.`
       : "",
     strandsBlock: strandsMenu
       ? `## Memory topics\n\n${strandsMenu}\nWhen the user mentions these topics, use recall to search for related memories. If a search finds nothing relevant, do not retry it — answer from what you have.`
       : "",
-    evolutionNotice: evolutionResult?.ran
-      ? `[System] A self-evolution just completed — the previously card was updated${evolutionResult.changed ? "" : " (no change)"}.${evolutionResult.summary ? ` What changed: ${evolutionResult.summary}` : ""} The latest card is provided above. Acknowledge this to the user if they asked for it.`
-      : "",
     demoNotice: input.useDemo
-      ? `## Demo mode (read-only)\n\nYou are running in demo mode. You can browse sample data, recall past conversations, and search the live web — but **writes are not persisted**. No GitHub repo is connected; you are seeing pre-seeded sample memories.\n\nWhen the user asks to save anything, create memories, or start background tasks, tell them naturally:\n- This is demo mode and data cannot be saved\n- They need to deploy their own instance to unlock full read/write and background loop capabilities\n\nDeployment guide: ${DEPLOY_GUIDE_URL}\n\nIt's perfectly normal for users to explore in demo mode — help them understand what this product can do and what they'll get after deploying.`
+      ? `## Demo mode (read-only)\n\nYou are running in demo mode. You can browse sample data, recall past conversations, and search the live web — but **writes are not persisted**. No GitHub repo is connected; you are seeing pre-seeded sample memories.\n\nWhen the user asks to save anything or create memories, tell them naturally:\n- This is demo mode and data cannot be saved\n- They need to deploy their own instance to unlock full read/write capabilities\n\nDeployment guide: ${DEPLOY_GUIDE_URL}\n\nIt's perfectly normal for users to explore in demo mode — help them understand what this product can do and what they'll get after deploying.`
       : "",
+    // Derived from the RAW card + the slice-head local date — both frozen, so
+    // this block is byte-stable within the slice (see buildOverdueBlock).
+    overdueBlock: buildOverdueBlock(
+      previouslyContent,
+      dateAnchor,
+      input.locale,
+    ),
     dateAnchor,
   });
+
+  // ── Slice-aligned history window (v0.9) ────────────────────────────────
+  // The client still supplies the history, but the model only receives the
+  // CURRENT slice's turns: N user turns in the slice → the tail of the client
+  // history covering those N user messages. A fresh slice (just closed /
+  // first turn) sends only the current user message. Within a slice the
+  // prefix grows append-only, keeping the provider cache warm; context_lost
+  // mismatches were already handled by housekeeping (a new slice → N = 1).
+  const userTurnsInSlice = slice.turns.filter((t) => t.role === "user").length;
+  const historyWindow = sliceAlignedWindow(
+    input.modelMessages,
+    userTurnsInSlice,
+    input.config.slicing.maxTurnsPerSlice * 2,
+  );
+  if (historyWindow.length !== input.modelMessages.length) {
+    console.log(
+      `[Turn:${input.turnId}] history window: ${historyWindow.length}/${input.modelMessages.length} messages (slice ${slice.slice_id}, ${userTurnsInSlice} user turns)`,
+    );
+  }
 
   // ── Pro agent ──────────────────────────────────────────────────────────
 
@@ -634,9 +691,8 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
       // The full assembled system prompt — thinkDeep sub-agents reuse it as
       // their prefix so provider prompt-cache hits span main + sub calls.
       baseSystemPrompt: systemPrompt,
-      workerModel: input.workerModel,
-      // The turn's resolved main model — thinkDeep reuses it (shared context)
-      // instead of re-resolving config from GitHub on every fragment step.
+      // The turn's resolved main model — all sub-agents reuse it (shared
+      // context) instead of re-resolving config from GitHub on every step.
       mainModel: input.modelConfig,
       // Read tools pre-render user-local time from these (see time-localize.ts).
       timezone: input.clientTimezone,
@@ -699,7 +755,7 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
     let allCognition = "";
     let finalFinishReason = "stop";
     let finalMessages: ModelMessage[] = [];
-    let currentMessages = input.modelMessages;
+    let currentMessages = historyWindow;
     let continuations = 0;
     let timeoutContinuations = 0;
     /** Client-visible explanation when the turn ends as a terminal error. */
@@ -823,17 +879,16 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
     // text + final answer), in order. Tool calls are not preserved — see
     // extractAllAssistantText.
     //
-    // `1 + input.modelMessages.length` skips the system message the SDK
-    // prepends (index 0) plus the client history handed to the first
-    // agent.stream() call — so only THIS run's assistant text is stored, never
-    // the whole conversation (the v0.7 storage-accumulation bug). Continuations
-    // are covered: the final result.messages is [system, history, ...contN],
-    // and slicing at the original history count captures every continuation's
-    // output while excluding prior turns.
+    // `1 + historyWindow.length` skips the system message the SDK
+    // prepends (index 0) plus the slice-aligned history window handed to the
+    // first agent.stream() call — so only THIS run's assistant text is stored,
+    // never the whole conversation (the v0.7 storage-accumulation bug).
+    // Continuations are covered: the final result.messages is
+    // [system, history, ...contN], and slicing at the original window count
+    // captures every continuation's output while excluding prior turns.
     outcome = {
-      text: extractAllAssistantText(finalMessages, 1 + input.modelMessages.length),
+      text: extractAllAssistantText(finalMessages, 1 + historyWindow.length),
       finishReason: finalFinishReason,
-      startedLoops: extractStartedLoops(finalMessages),
       cognition: allCognition,
       error: turnError,
     };
@@ -858,7 +913,6 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
     outcome = {
       text: "",
       finishReason: "error",
-      startedLoops: [],
       cognition: "",
       error: errorMessage(err, "The workflow run failed."),
     };

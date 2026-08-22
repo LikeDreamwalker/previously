@@ -132,3 +132,74 @@ describe("buildTimelineBrief", () => {
     expect(brief).toContain("**2026-08-11-1115** 回顾滴滴时期绩效背锅");
   });
 });
+
+describe("buildTimelineBrief — frozen mode (v0.9, asOfSliceId)", () => {
+  const CURRENT = "2026-08-17-1400";
+
+  it("lists only slices CLOSED before the current slice began", () => {
+    const brief = buildTimelineBrief(
+      index([
+        entry({ id: "2026-08-10-1839", date: "2026-08-10", focus: "地址研究" }),
+        entry({ id: "2026-08-11-1115", date: "2026-08-11", focus: "滴滴反思" }),
+        // The current slice itself (active, same id) — excluded.
+        entry({ id: CURRENT, date: "2026-08-17", status: "active", focus: "当前片" }),
+        // A slice started after the current one — excluded even if closed.
+        entry({ id: "2026-08-17-1600", date: "2026-08-17", focus: "更晚的片" }),
+        // An ACTIVE slice started before ours (other device) — excluded.
+        entry({ id: "2026-08-12-0900", date: "2026-08-12", status: "active", focus: "进行中的片" }),
+      ]),
+      { asOfSliceId: CURRENT, timezone: "Asia/Shanghai", locale: "zh" },
+    );
+    expect(brief).toContain("滴滴反思");
+    expect(brief).toContain("地址研究");
+    expect(brief).not.toContain("当前片");
+    expect(brief).not.toContain("更晚的片");
+    expect(brief).not.toContain("进行中的片");
+  });
+
+  it("annotates with ABSOLUTE local dates — no relative phrasing, byte-stable", () => {
+    const brief = buildTimelineBrief(index([entry()]), {
+      asOfSliceId: CURRENT,
+      timezone: "Asia/Shanghai",
+      locale: "zh",
+    });
+    expect(brief).toContain("**2026-08-11-1115**（08-11 周二）");
+    expect(brief).not.toContain("天前");
+  });
+
+  it("renders the en absolute annotation", () => {
+    const brief = buildTimelineBrief(index([entry()]), {
+      asOfSliceId: CURRENT,
+      timezone: "Asia/Shanghai",
+      locale: "en",
+    });
+    expect(brief).toContain("**2026-08-11-1115** (08-11 Tue)");
+  });
+
+  it("computes totals from the fixed pool, not the drifting catalog counters", () => {
+    const idx = index([
+      entry({ id: "2026-08-10-1839", date: "2026-08-10", focus: "地址研究", needs_marking: true }),
+      entry({ id: "2026-08-11-1115", date: "2026-08-11", focus: "滴滴反思" }),
+      // Newer slice inflating the catalog counters — must not leak into the brief.
+      entry({ id: "2026-08-18-0900", date: "2026-08-18", focus: "新片", needs_marking: true }),
+    ]);
+    const brief = buildTimelineBrief(idx, {
+      asOfSliceId: CURRENT,
+      timezone: "Asia/Shanghai",
+      locale: "zh",
+      recent: 1,
+    });
+    expect(brief).toContain("往前共 2 片"); // pool size, not slice_count (3)
+    expect(brief).toContain("1 片尚未生成摘要"); // only the pool's dry slice
+  });
+
+  it("is byte-identical when the catalog grows newer slices mid-slice", () => {
+    const base = [entry({ id: "2026-08-11-1115", date: "2026-08-11" })];
+    const grown = [
+      ...base,
+      entry({ id: "2026-08-17-1500", date: "2026-08-17", status: "active", focus: "别的设备" }),
+    ];
+    const opts = { asOfSliceId: CURRENT, timezone: "Asia/Shanghai", locale: "zh" } as const;
+    expect(buildTimelineBrief(index(grown), opts)).toBe(buildTimelineBrief(index(base), opts));
+  });
+});

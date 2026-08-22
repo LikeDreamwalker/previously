@@ -23,7 +23,55 @@ export type AnyPart = {
   filename?: string;
 };
 
-/** One sub-step inside the housekeeping card (slice / tags / context / strands). */
+/**
+ * The `data-evolution` payload streamed during housekeeping — the inline card
+ * evolution run (Previously Agent). Progress chunks carry
+ * `{ status: "running", step, live?, liveStage? }` (`live` is the Previously
+ * Agent's realtime thinking line); the terminal chunk carries the result
+ * (changes / summary / note / mutations / error / partial) with
+ * `status: "done"`.
+ *
+ * Backward compatibility: chunks streamed before the `status` field existed
+ * carry `{ running: boolean, step? }` instead — `status` is then inferred
+ * from `running`.
+ */
+export type EvolutionStepData = {
+  /** Lifecycle status. Absent on legacy chunks — inferred from `running`. */
+  status?: "running" | "done";
+  /** Legacy running flag (pre-`status` chunks). */
+  running?: boolean;
+  /** Mid-run progress step: reading / reviewing / applied. */
+  step?: string;
+  /** The Previously Agent's realtime thinking line, streamed while running. */
+  live?: string;
+  /** Stage of the live line — drives the subtitle tone. */
+  liveStage?: "thinking" | "writing";
+  /** Card update counts: added = card rewritten, removed = stale Now items dropped. */
+  changes?: {
+    added: number;
+    reinforced: number;
+    demoted: number;
+    removed: number;
+    superseded: number;
+  };
+  hasChanges?: boolean;
+  /** The review's reasoning — the expanded content. */
+  note?: string;
+  /** The agent's one-sentence user-language account of what changed — the
+   *  headline when present (the abstract counts fall back). */
+  summary?: string;
+  /** The actual line-level card mutations — the expanded diff. */
+  mutations?: Array<{ type: "added" | "removed"; text: string }>;
+  error?: string;
+  /** Set when the run was cut short — only part of the update was applied. */
+  partial?: boolean;
+};
+
+/**
+ * One sub-step inside the housekeeping card (slice / analyze / tags / context /
+ * strands). Card evolution is NOT a sub-step — it is its own StreamItem
+ * (see the "evolution" kind below).
+ */
 export type HousekeepingStep = {
   phase: string;
   running: boolean;
@@ -46,6 +94,13 @@ export type StreamItem =
       streamingStage?: string;
     }
   | { kind: "housekeeping"; steps: HousekeepingStep[] }
+  | {
+      kind: "evolution";
+      /** Normalized lifecycle flag — derived from `status`, or legacy `running`. */
+      running: boolean;
+      /** The latest data-evolution chunk's payload (last chunk wins). */
+      data: EvolutionStepData;
+    }
   | {
       kind: "phase";
       phase: string;
@@ -104,8 +159,10 @@ export function deriveAgentStage(parts: readonly AnyPart[]): AgentStage | null {
 /**
  * Classifies a message's parts into renderable StreamItems in natural order.
  *
- * The consecutive `compact` housekeeping phases (slice / tags / context /
- * strands) are merged into ONE `housekeeping` item with a running checklist —
+ * The consecutive `compact` housekeeping phases (slice / analyze / tags /
+ * context / strands) are merged into ONE `housekeeping` item with a running
+ * checklist, while `data-evolution` chunks become their OWN `evolution` item
+ * at the position they arrive (between the context and strands phases) —
  * the wire format stays untouched (reconnect replay is unaffected); only the
  * client presentation groups them.
  */
@@ -221,6 +278,30 @@ export function buildStream(
               summaries: d.summaries,
             });
           }
+        }
+      }
+    } else if (p.type === "data-evolution") {
+      // Inline card evolution (Previously Agent) — its OWN stream item at the
+      // natural arrival position (between the housekeeping context and strands
+      // phases). While running it carries the step + the agent's realtime
+      // thinking line (`live`); the terminal chunk carries the summary,
+      // mutations diff, note, error, and the partial flag.
+      flushText();
+      const d = p.data as EvolutionStepData | undefined;
+      if (d) {
+        // Legacy chunks predate `status` — infer it from the old `running`
+        // flag so replays of pre-status streams still classify correctly.
+        const running =
+          d.status !== undefined ? d.status === "running" : (d.running ?? false);
+        const existing = items.find(
+          (it): it is Extract<StreamItem, { kind: "evolution" }> =>
+            it.kind === "evolution",
+        );
+        if (existing) {
+          existing.running = running;
+          existing.data = d;
+        } else {
+          items.push({ kind: "evolution", running, data: d });
         }
       }
     } else if (p.type === "data-turn-status") {

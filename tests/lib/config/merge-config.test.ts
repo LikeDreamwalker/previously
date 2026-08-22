@@ -3,8 +3,7 @@ import { mergeConfigOverrides } from "@/lib/config/defaults";
 import type { UserConfig } from "@/lib/config/types";
 
 const current: UserConfig = {
-  slicing: { maxTurnsPerSlice: 20, timeSilenceMinutes: 15 },
-  context: { recentTurnsLimit: 20 },
+  slicing: { maxSliceMinutes: 30, maxTurnsPerSlice: 50 },
   model: {
     provider: "deepseek-v4-flash",
     thinking: true,
@@ -23,12 +22,12 @@ describe("mergeConfigOverrides", () => {
     });
     expect(result.onboarded).toBe(true);
     expect(result.datasource).toBe("own");
-    // The existing model/worker/slicing/context must survive untouched.
+    // The existing model/worker/slicing must survive untouched.
     expect(result.model.provider).toBe("deepseek-v4-flash");
     expect(result.model.reasoningEffort).toBe("low");
     expect(result.worker.mode).toBe("manual");
-    expect(result.slicing.maxTurnsPerSlice).toBe(20);
-    expect(result.context.recentTurnsLimit).toBe(20);
+    expect(result.slicing.maxSliceMinutes).toBe(30);
+    expect(result.slicing.maxTurnsPerSlice).toBe(50);
   });
 
   it("deep-merges nested overrides while keeping untouched siblings", () => {

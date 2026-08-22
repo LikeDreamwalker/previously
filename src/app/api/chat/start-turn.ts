@@ -24,7 +24,6 @@ import {
   type ModelConfig,
 } from "@/lib/models/registry";
 import { resolveAvailableModels } from "@/lib/models/catalog";
-import { resolveWorkerModel } from "@/lib/models/worker";
 import { getRepoConfig } from "@/lib/capabilities";
 import { resolveDataSource } from "@/lib/data-source/resolve";
 import { demoModelLock } from "@/lib/demo/model-lock";
@@ -134,9 +133,6 @@ export async function startTurn(
   // deployment default when the id is unknown/unavailable.
   const requested = lock?.model ?? (args.model || config.model.provider);
   const { model, modelConfig } = await resolveModelConfig(requested);
-  // The worker tier for housekeeping-class calls (tag extraction, marking,
-  // recall, loops) — derived from the main model, see src/lib/models/worker.ts.
-  const workerModel = await resolveWorkerModel(modelConfig);
   // The client's explicit thinking value wins when sent (it always reflects
   // what the selector shows / the model's default); the config value is only
   // a fallback for clients that don't send one. This keeps the client's UI in
@@ -162,10 +158,10 @@ export async function startTurn(
   // negligible for a time slice's lifetime).
   const turnId = crypto.randomBytes(4).toString("base64url");
 
-  // Only send recent messages to the model; older context is retrieved on
-  // demand via recall. The 1.2× multiplier gives a small buffer beyond the
-  // configured limit so short back-and-forth exchanges stay intact.
-  const recentLimit = Math.ceil(config.context.recentTurnsLimit * 1.2);
+  // The full client history goes to the WORKFLOW — the slice-aligned window
+  // is cut there (sliceAlignedWindow in turn-workflow.ts, v0.9 Phase 1.4).
+  // This is only a broad payload cap guarding against a misbehaving client.
+  const MAX_HISTORY_MESSAGES = 200;
   let inbound = args.messages;
   if (!modelConfig.capabilities.vision) {
     const hasFiles = args.messages.some((m) =>
@@ -177,7 +173,7 @@ export async function startTurn(
     }
   }
   const fullMessages = await convertToModelMessages(inbound);
-  const modelMessages = fullMessages.slice(-recentLimit);
+  const modelMessages = fullMessages.slice(-MAX_HISTORY_MESSAGES);
   const recentTurns = modelMessages.map((m) => ({
     role: m.role as string,
     // Array content must be summarized, not stringified — see
@@ -194,7 +190,6 @@ export async function startTurn(
     lastUserMessage,
     model,
     modelConfig,
-    workerModel,
     thinking,
     reasoningEffort,
     clientTimezone,
