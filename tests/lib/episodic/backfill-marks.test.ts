@@ -1,15 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const ai = vi.hoisted(() => ({ generateText: vi.fn() }));
+const ai = vi.hoisted(() => ({ streamText: vi.fn() }));
 vi.mock("ai", async () => {
   const actual = await vi.importActual("ai");
-  return { ...actual, generateText: ai.generateText };
+  return { ...actual, streamText: ai.streamText };
 });
 vi.mock("@/lib/models/provider", () => ({
   createModel: vi.fn((c: unknown) => ({ _mock: c })),
-}));
-vi.mock("@/lib/models/worker", () => ({
-  workerProviderOptions: vi.fn(() => ({})),
 }));
 
 const io = vi.hoisted(() => ({
@@ -113,10 +110,21 @@ function mockReads(idx: TimelineIndex | null) {
   });
 }
 
+/** A StreamTextResult stand-in resolving to the given tool calls. */
+function streamWith(toolCalls: Array<{ toolName: string; input: unknown }>) {
+  return {
+    text: Promise.resolve(""),
+    toolCalls: Promise.resolve(toolCalls),
+    reasoningText: Promise.resolve(undefined),
+    sources: Promise.resolve([]),
+    warnings: Promise.resolve([]),
+  };
+}
+
 function mockMarking(focus = "Launch planning", summary = "Planned the launch") {
-  ai.generateText.mockResolvedValue({
-    toolCalls: [{ toolName: "markOutput", input: { focus, summary } }],
-  });
+  ai.streamText.mockResolvedValue(
+    streamWith([{ toolName: "markOutput", input: { focus, summary } }]),
+  );
 }
 
 const batch = (): WriteBatch => ({ entries: new Map<string, string>() });
@@ -167,7 +175,7 @@ describe("backfillDrySliceMarks", () => {
     });
 
     expect(marked).toBe(0);
-    expect(ai.generateText).not.toHaveBeenCalled();
+    expect(ai.streamText).not.toHaveBeenCalled();
   });
 
   it("is bounded at BACKFILL_MAX_PER_TURN candidates", async () => {
@@ -185,7 +193,7 @@ describe("backfillDrySliceMarks", () => {
     });
 
     expect(marked).toBe(BACKFILL_MAX_PER_TURN);
-    expect(ai.generateText).toHaveBeenCalledTimes(BACKFILL_MAX_PER_TURN);
+    expect(ai.streamText).toHaveBeenCalledTimes(BACKFILL_MAX_PER_TURN);
   });
 
   it("returns 0 when there is no catalog yet", async () => {
@@ -205,13 +213,13 @@ describe("backfillDrySliceMarks", () => {
         { id: "2026-01-02-0000", dry: true },
       ]),
     );
-    ai.generateText
+    ai.streamText
       .mockRejectedValueOnce(new Error("worker down"))
-      .mockResolvedValueOnce({
-        toolCalls: [
+      .mockResolvedValueOnce(
+        streamWith([
           { toolName: "markOutput", input: { focus: "F2", summary: "S2" } },
-        ],
-      });
+        ]),
+      );
     const b = batch();
 
     const marked = await backfillDrySliceMarks({

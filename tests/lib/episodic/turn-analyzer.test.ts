@@ -1,15 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const ai = vi.hoisted(() => ({ generateText: vi.fn() }));
+const ai = vi.hoisted(() => ({ streamText: vi.fn() }));
 vi.mock("ai", async () => {
   const actual = await vi.importActual("ai");
-  return { ...actual, generateText: ai.generateText };
+  return { ...actual, streamText: ai.streamText };
 });
 vi.mock("@/lib/models/provider", () => ({
   createModel: vi.fn((c: unknown) => ({ _mock: c })),
-}));
-vi.mock("@/lib/models/worker", () => ({
-  workerProviderOptions: vi.fn(() => ({})),
 }));
 
 import { analyzeTurn, shouldRunCardEvolution } from "@/lib/episodic/flash/turn-analyzer";
@@ -27,8 +24,26 @@ const model: ModelConfig = {
   defaultEffort: "low",
 };
 
+/** A StreamTextResult stand-in resolving to the given report tool call. */
 function makeToolCall(input: unknown) {
-  return { toolCalls: [{ toolName: "analyzeOutput", input }] };
+  return {
+    text: Promise.resolve(""),
+    toolCalls: Promise.resolve([{ toolName: "analyzeOutput", input }]),
+    reasoningText: Promise.resolve(undefined),
+    sources: Promise.resolve([]),
+    warnings: Promise.resolve([]),
+  };
+}
+
+/** A StreamTextResult stand-in with no tool calls at all. */
+function noToolCall() {
+  return {
+    text: Promise.resolve(""),
+    toolCalls: Promise.resolve([]),
+    reasoningText: Promise.resolve(undefined),
+    sources: Promise.resolve([]),
+    warnings: Promise.resolve([]),
+  };
 }
 
 beforeEach(() => {
@@ -37,7 +52,7 @@ beforeEach(() => {
 
 describe("analyzeTurn", () => {
   it("parses message tags, semantic hint, intent, and close marking from the tool call", async () => {
-    ai.generateText.mockResolvedValue(
+    ai.streamText.mockResolvedValue(
       makeToolCall({
         message_tags: {
           reuse: ["rust"],
@@ -93,7 +108,7 @@ describe("analyzeTurn", () => {
   });
 
   it("passes through memory_worthy for a trivial turn", async () => {
-    ai.generateText.mockResolvedValue(
+    ai.streamText.mockResolvedValue(
       makeToolCall({
         message_tags: { reuse: [], create: [] },
         semantic_hint: { strands: [], reason: "" },
@@ -107,7 +122,7 @@ describe("analyzeTurn", () => {
   });
 
   it("extracts an explicit memory update request", async () => {
-    ai.generateText.mockResolvedValue(
+    ai.streamText.mockResolvedValue(
       makeToolCall({
         message_tags: { reuse: [], create: [] },
         semantic_hint: { strands: [], reason: "" },
@@ -125,7 +140,7 @@ describe("analyzeTurn", () => {
   });
 
   it("extracts an explicit behavioral correction as a memory update (self_model)", async () => {
-    ai.generateText.mockResolvedValue(
+    ai.streamText.mockResolvedValue(
       makeToolCall({
         message_tags: { reuse: [], create: [] },
         semantic_hint: { strands: [], reason: "" },
@@ -143,7 +158,7 @@ describe("analyzeTurn", () => {
   });
 
   it("omits memory_update when the user did not explicitly ask", async () => {
-    ai.generateText.mockResolvedValue(
+    ai.streamText.mockResolvedValue(
       makeToolCall({
         message_tags: { reuse: [], create: [] },
         semantic_hint: { strands: [], reason: "" },
@@ -157,7 +172,7 @@ describe("analyzeTurn", () => {
   });
 
   it("omits closed marking when no slice is closing", async () => {
-    ai.generateText.mockResolvedValue(
+    ai.streamText.mockResolvedValue(
       makeToolCall({
         message_tags: { reuse: [], create: [] },
         semantic_hint: { strands: [], reason: "" },
@@ -172,7 +187,7 @@ describe("analyzeTurn", () => {
   });
 
   it("parses the emotional register and normalizes a missing register to neutral", async () => {
-    ai.generateText.mockResolvedValue(
+    ai.streamText.mockResolvedValue(
       makeToolCall({
         message_tags: { reuse: [], create: [] },
         semantic_hint: { strands: [], reason: "" },
@@ -190,7 +205,7 @@ describe("analyzeTurn", () => {
   });
 
   it("returns an empty analysis when the model fails", async () => {
-    ai.generateText.mockRejectedValue(new Error("boom"));
+    ai.streamText.mockRejectedValue(new Error("boom"));
     const result = await analyzeTurn({ model, userMessage: "x", existingStrandNames: [] });
     expect(result).toEqual({
       messageTags: { reuse: [], create: [] },
@@ -201,13 +216,38 @@ describe("analyzeTurn", () => {
   });
 
   it("returns an empty analysis when the tool call is missing", async () => {
-    ai.generateText.mockResolvedValue({ toolCalls: [] });
+    ai.streamText.mockResolvedValue(noToolCall());
     const result = await analyzeTurn({ model, userMessage: "x", existingStrandNames: [] });
     expect(result.messageTags).toEqual({ reuse: [], create: [] });
   });
 
+  it("sends a static shared-base system prompt and dynamic content in the user prompt", async () => {
+    ai.streamText.mockResolvedValue(
+      makeToolCall({
+        message_tags: { reuse: [], create: [] },
+        semantic_hint: { strands: [], reason: "" },
+        intent: { type: "chat", reason: "chat" },
+        memory_worthy: false,
+        emotional_signal: { intensity: "none", register: "neutral", note: "" },
+      }),
+    );
+    await analyzeTurn({ model, userMessage: "hello world", existingStrandNames: ["rust"] });
+
+    const arg = ai.streamText.mock.calls.at(-1)?.[0] as {
+      system: string;
+      prompt: string;
+    };
+    // Static: shared sub-agent base + role instructions live in system.
+    expect(arg.system).toContain("sub-agent of the Previously memory system");
+    expect(arg.system).toContain("memory analyzer");
+    expect(arg.system).not.toContain("hello world");
+    // Dynamic: the message and topic list live in the user prompt.
+    expect(arg.prompt).toContain('Message: "hello world"');
+    expect(arg.prompt).toContain("rust");
+  });
+
   it("maps evolve_card when a slice is closing", async () => {
-    ai.generateText.mockResolvedValue(
+    ai.streamText.mockResolvedValue(
       makeToolCall({
         message_tags: { reuse: [], create: [] },
         semantic_hint: { strands: [], reason: "" },
@@ -228,7 +268,7 @@ describe("analyzeTurn", () => {
   });
 
   it("omits evolve_card when no slice is closing, even if the model returns it", async () => {
-    ai.generateText.mockResolvedValue(
+    ai.streamText.mockResolvedValue(
       makeToolCall({
         message_tags: { reuse: [], create: [] },
         semantic_hint: { strands: [], reason: "" },
@@ -243,7 +283,7 @@ describe("analyzeTurn", () => {
   });
 
   it("defaults evolve_card.worth to true on analyzer failure when a slice is closing", async () => {
-    ai.generateText.mockRejectedValue(new Error("boom"));
+    ai.streamText.mockRejectedValue(new Error("boom"));
     const result = await analyzeTurn({
       model,
       userMessage: "x",
@@ -256,7 +296,7 @@ describe("analyzeTurn", () => {
   });
 
   it("does not add evolve_card to the failure fallback when no slice is closing", async () => {
-    ai.generateText.mockRejectedValue(new Error("boom"));
+    ai.streamText.mockRejectedValue(new Error("boom"));
     const result = await analyzeTurn({ model, userMessage: "x", existingStrandNames: [] });
     expect(result.evolveCard).toBeUndefined();
   });

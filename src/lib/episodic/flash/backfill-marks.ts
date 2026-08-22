@@ -4,21 +4,22 @@
  *
  * The weave TRACKS dry slices but nothing rewrote their semantics; this is the
  * remediation. It runs ONLY from the slice-close boundary in housekeeping
- * (never per-turn), takes at most BACKFILL_MAX_PER_TURN candidates, and lets
- * the worker model produce focus/summary from each slice's core.md — mirroring
- * the close-marking prompt in ./turn-analyzer.ts. Marks are written into the
- * slices' frontmatter and the catalog entries refreshed, all inside the turn's
- * existing write batch.
+ * (never per-turn), takes at most BACKFILL_MAX_PER_TURN candidates, and marks
+ * each slice from its core.md through the shared sub-agent runner
+ * (src/lib/agents/sub-agent-runner.ts, v0.9: turn's MAIN model, thinking on at
+ * low effort, static system prompt) — mirroring the close-marking task in
+ * ./turn-analyzer.ts. Marks are written into the slices' frontmatter and the
+ * catalog entries refreshed, all inside the turn's existing write batch.
  *
  * Best-effort by contract: any failure skips the slice (or the whole run)
  * silently — a backfill must never take a turn down. The caller excludes the
  * active slice and skips demo mode (demo writes are no-ops).
  */
-import { generateText, tool } from "ai";
+import { tool } from "ai";
 import { z } from "zod";
 import matter from "gray-matter";
-import { createModel } from "@/lib/models/provider";
-import { workerProviderOptions } from "@/lib/models/worker";
+import { runSubAgent } from "@/lib/agents/sub-agent-runner";
+import { buildSubAgentSystem } from "@/lib/agents/prompts";
 import type { ModelConfig } from "@/lib/models/registry";
 import { fsReadFile, fsWriteFile, type WriteBatch } from "../io-helpers";
 import { parseTurns, type ParsedTurn } from "../turn-parser";
@@ -54,44 +55,45 @@ function compressTurns(turns: ParsedTurn[]): string {
   return body.length > 6000 ? body.slice(-6000) : body;
 }
 
-/** Ask the worker model for focus/summary of one dry slice. Null on any failure. */
+/** Static role block — system prompt shared across every marking call. */
+const BACKFILL_SYSTEM = buildSubAgentSystem(`You are the slice-marking agent for a personal memory system.
+
+A past conversation time slice was closed without a summary. The user message carries its conversation (first turn + last turns). Mark it so future recall can understand it at a glance.
+
+Return via \`markOutput\`:
+- focus: one sentence on what this session was about
+- summary: at most 100 characters — what happened / key decisions`);
+
+/** Ask the model for focus/summary of one dry slice. Null on any failure. */
 async function markOneSlice(
   model: ModelConfig,
   coreRaw: string,
 ): Promise<{ focus: string; summary: string } | null> {
   const { turns } = parseTurns(coreRaw);
   if (turns.length === 0) return null;
-  try {
-    const result = await generateText({
-      model: createModel(model),
-      temperature: 0.1,
-      tools: {
-        markOutput: tool({
-          description: "Report the slice marking.",
-          inputSchema: markSchema,
-        }),
-      },
-      toolChoice: "required",
-      providerOptions: workerProviderOptions(model.sdk),
-      prompt: `A past conversation time slice was closed without a summary. Mark it so future recall can understand it at a glance.
+  const result = await runSubAgent({
+    model,
+    system: BACKFILL_SYSTEM,
+    prompt: `Conversation (first turn + last turns):\n${compressTurns(turns)}`,
+    tools: {
+      markOutput: tool({
+        description: "Report the slice marking.",
+        inputSchema: markSchema,
+      }),
+    },
+    toolChoice: "required",
+    reportToolName: "markOutput",
+    reportSchema: markSchema,
+    maxSteps: 1,
+    timeoutMs: 30_000,
+    progress: { toolName: "backfill-marks" },
+  });
 
-Conversation (first turn + last turns):
-${compressTurns(turns)}
-
-Return:
-- focus: one sentence on what this session was about
-- summary: at most 100 characters — what happened / key decisions`,
-    });
-    const tc = result.toolCalls?.[0];
-    if (tc?.toolName !== "markOutput" || !tc.input) return null;
-    const parsed = markSchema.safeParse(tc.input);
-    if (!parsed.success) return null;
-    const focus = parsed.data.focus.trim();
-    const summary = parsed.data.summary.trim();
-    return focus || summary ? { focus, summary } : null;
-  } catch {
-    return null;
-  }
+  // The runner never throws — best-effort contract: any failure skips the slice.
+  if (!result.ok || !result.report) return null;
+  const focus = result.report.focus.trim();
+  const summary = result.report.summary.trim();
+  return focus || summary ? { focus, summary } : null;
 }
 
 /**

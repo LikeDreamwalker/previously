@@ -75,7 +75,6 @@ describe("createMixedStreamTransform", () => {
     const chunks = [
       { type: "start" },
       { type: "start-step" },
-      { type: "data-loop", data: { loopId: "l1", done: false } },
       { type: "data-belief", data: { summaries: ["+ 注意到…"] } },
       { type: "finish-step" },
       { type: "finish" },

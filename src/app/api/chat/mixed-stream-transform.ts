@@ -20,7 +20,7 @@ import type { UIMessageChunk } from "ai";
  * pass through unchanged:
  * - lifecycle (`start` / `start-step` / `finish-step` / `finish`) written by
  *   the workflow steps, plus step-boundary markers written by WorkflowAgent
- * - `data-loop` / `data-belief` / `data-phase` — our custom data chunks
+ * - `data-belief` / `data-phase` — our custom data chunks
  *
  * Everything else must go through `toUIMessageChunk()`. The `finish` type is
  * ambiguous (ours vs. raw model finish part), so it's discriminated by shape.
@@ -29,7 +29,6 @@ const OUR_CHUNK_TYPES = new Set([
   "start",
   "start-step",
   "finish-step",
-  "data-loop",
   "data-belief",
   "data-phase",
   "data-evolution",

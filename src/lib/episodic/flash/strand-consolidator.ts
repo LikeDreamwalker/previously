@@ -2,22 +2,25 @@
  * Strand Consolidator — the LLM consolidation pass for the strand index.
  *
  * The deterministic layer (normalization + normalized-match merge in
- * strands.ts) catches mechanical duplicates (`Apex`/`apex`). But the worker
- * model itself minted semantic duplicates — typos (`陈勇超`/`陈永超`), the
+ * strands.ts) catches mechanical duplicates (`Apex`/`apex`). But the model
+ * itself minted semantic duplicates — typos (`陈勇超`/`陈永超`), the
  * same concept under two names (`心态`/`心态调整`), and concept families
  * (`面试评估`/`面试复盘`/`面试问题`). Those need semantic judgment, which is
- * this module's job: a worker-model pass proposes a from→to merge map; the
+ * this module's job: an LLM pass proposes a from→to merge map; the
  * engineering layer applies it (path-union + key removal) and then prunes
  * single-use stale strands.
  *
- * Runs opportunistically at slice close (see housekeeping). Never throws —
- * on any failure it returns the input index unchanged so housekeeping degrades
- * gracefully.
+ * Runs opportunistically at slice close (see housekeeping). Since v0.9 the
+ * pass runs through the shared sub-agent runner
+ * (src/lib/agents/sub-agent-runner.ts) on the turn's MAIN model — thinking on
+ * at low effort, static system prompt (shared base + role), dynamic strand
+ * index in the user prompt. Never throws — on any failure it returns the
+ * input index unchanged so housekeeping degrades gracefully.
  */
-import { generateText, tool, isStepCount } from "ai";
+import { tool } from "ai";
 import { z } from "zod";
-import { createModel } from "@/lib/models/provider";
-import { workerProviderOptions } from "@/lib/models/worker";
+import { runSubAgent } from "@/lib/agents/sub-agent-runner";
+import { buildSubAgentSystem } from "@/lib/agents/prompts";
 import type { ModelConfig } from "@/lib/models/registry";
 import type { StrandIndex } from "@/lib/episodic/types";
 import {
@@ -50,18 +53,14 @@ const consolidateSchema = z.object({
 
 // ─── Prompt ────────────────────────────────────────────────────────────────
 
-function buildPrompt(strands: StrandIndex): string {
-  const rows = Object.entries(strands)
-    .map(([key, paths]) => `- ${key} (${paths.length} slice${paths.length === 1 ? "" : "s"})`)
-    .join("\n");
+/**
+ * Static role block — the system prompt (shared base + this) never changes
+ * between calls (prefix-cache hits). The dynamic strand index goes into the
+ * user prompt.
+ */
+const CONSOLIDATOR_SYSTEM = buildSubAgentSystem(`You are the strand-consolidation agent for a personal memory system.
 
-  return `You are the strand-consolidation agent for a personal memory system.
-
-A "strand" is a keyword threading through time slices (slices/YYYY/MM/DD/HHMM). The index below maps each strand to how many slices carry it.
-
-## Current strand index
-
-${rows}
+A "strand" is a keyword threading through time slices (slices/YYYY/MM/DD/HHMM). The user message carries the current strand index, mapping each strand to how many slices carry it.
 
 ## Task
 
@@ -80,7 +79,7 @@ DO NOT merge:
 
 ## Rules
 
-1. Every \`to\` key MUST already exist in the index above.
+1. Every \`to\` key MUST already exist in the provided index.
 2. Prefer keeping the more specific / more used / more canonical name as \`to\`.
 3. Do not propose a chain (A→B and B→C in the same pass). Each merge is independent: from → to.
 4. When in doubt, do NOT merge. Precision over recall — a wrong merge destroys thread history.
@@ -88,20 +87,34 @@ DO NOT merge:
 
 ## Output
 
-Call \`consolidateOutput\` with your merge map (or empty) + a short reasoning note.`;
+Call \`consolidateOutput\` with your merge map (or empty) + a short reasoning note.`);
+
+/** The dynamic user prompt: the current strand index. */
+function buildPrompt(strands: StrandIndex): string {
+  const rows = Object.entries(strands)
+    .map(([key, paths]) => `- ${key} (${paths.length} slice${paths.length === 1 ? "" : "s"})`)
+    .join("\n");
+
+  return `## Current strand index
+
+${rows}
+
+Propose the merge map per your instructions.`;
 }
 
-// ─── Worker call ───────────────────────────────────────────────────────────
+// ─── Sub-agent call ────────────────────────────────────────────────────────
 
 async function proposeMerges(
   model: ModelConfig,
   strands: StrandIndex,
 ): Promise<Array<{ from: string; to: string }>> {
-  const result = await generateText({
-    model: createModel(model),
+  const result = await runSubAgent({
+    model,
+    system: CONSOLIDATOR_SYSTEM,
     prompt: buildPrompt(strands),
     temperature: 0,
-    stopWhen: isStepCount(4),
+    maxSteps: 4,
+    timeoutMs: 30_000,
     tools: {
       consolidateOutput: tool({
         description: "Report the strand merge map.",
@@ -109,17 +122,17 @@ async function proposeMerges(
       }),
     },
     toolChoice: "required",
-    providerOptions: workerProviderOptions(model.sdk),
+    reportToolName: "consolidateOutput",
+    reportSchema: consolidateSchema,
+    progress: { toolName: "strand-consolidator" },
   });
 
-  const call = result.toolCalls?.find((tc) => tc.toolName === "consolidateOutput");
-  if (!call?.input) return [];
-
-  const parsed = consolidateSchema.safeParse(call.input);
-  if (!parsed.success) return [];
+  // The runner never throws: a timeout / model failure / missing or invalid
+  // report all degrade to an empty merge map.
+  if (!result.ok || !result.report) return [];
 
   // Sanitize: drop any proposal whose `to` key doesn't exist or that is a no-op.
-  return parsed.data.merges.filter(
+  return result.report.merges.filter(
     (m) => m.from !== m.to && strands[m.to] !== undefined,
   );
 }

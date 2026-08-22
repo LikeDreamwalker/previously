@@ -10,7 +10,8 @@ import { cn } from "@/lib/utils";
 /**
  * Maps a running-phase i18n key to its done-state key. `slicing` is kept for
  * backward compatibility with messages streamed before the housekeeping phases
- * were granularized.
+ * were granularized. Card evolution is NOT a housekeeping phase — it renders
+ * as its own stream-positioned card (see evolution-card.tsx).
  */
 const PHASE_DONE_KEYS: Record<string, string> = {
   slicing: "sliced",
@@ -18,12 +19,13 @@ const PHASE_DONE_KEYS: Record<string, string> = {
   tags: "tagged",
   context: "contextLoaded",
   strands: "strandsWoven",
+  analyze: "analyzed",
 };
 
 /**
- * The grouped housekeeping card — the compact prep phases (slice / tags /
- * context / strands) that used to stream as four separate bars now fold into
- * one faint brand-tinted card with a live checklist. Collapsible while running.
+ * The grouped housekeeping card — the compact prep phases (slice / analyze /
+ * tags / context / strands) fold into one faint brand-tinted card with a live
+ * checklist. Collapsible while running.
  */
 export function HousekeepingCard({ steps }: { steps: HousekeepingStep[] }) {
   const t = useTranslations("chat.phase");

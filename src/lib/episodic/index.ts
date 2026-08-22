@@ -108,9 +108,9 @@ export {
 export type { WriteBatch } from "./io-helpers";
 
 export {
-  DEFAULT_TIME_SILENCE_MS,
+  DEFAULT_MAX_SLICE_AGE_MS,
   DEFAULT_MAX_TURNS_PER_SLICE,
-  checkTimeSilence,
+  checkSliceAge,
 } from "./slicer";
 
 export {

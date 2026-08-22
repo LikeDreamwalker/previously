@@ -3,12 +3,12 @@
  *
  * Each executor is an independent durable step: automatically retried on
  * failure, persisted, and visible in the workflow dashboard. Context (repo,
- * owner, useGithub, sliceId / loop identity) flows through WorkflowAgent's
+ * owner, useGithub, sliceId) flows through WorkflowAgent's
  * `toolsContext` mechanism rather than JavaScript closures, so it stays
  * serializable across workflow/step boundaries.
  *
- * Used by BOTH the chat turn workflow and the background loop workflow �?the
- * tool definitions that bind these executors live in ./tools.ts.
+ * Used by the chat turn workflow — the tool
+ * definitions that bind these executors live in ./tools.ts.
  */
 
 import { streamText, type UIMessageChunk } from "ai";
@@ -29,10 +29,7 @@ import {
 
 import { searchViaFlash, type WebSearchResult } from "@/lib/search/flash-search";
 import { isPrivateHost, extractText, fetchWithGuard } from "@/lib/search/fetch-utils";
-import { startLoop } from "@/app/api/loops/start-loop";
-import { readLoopRun, serializeLoop, writeLoopFile } from "@/lib/loops/store";
-import { isAIConfigured, canWrite, DEPLOY_GUIDE_URL } from "@/lib/capabilities";
-import { LOOP_WALL_CLOCK_MS, type LoopRun, type LoopStep } from "@/lib/loops/types";
+import { isAIConfigured } from "@/lib/capabilities";
 import {
   runRecallSearch,
   type RecallHit,
@@ -46,8 +43,10 @@ import {
   sliceIdLocalClock,
   sliceIdRelPhrase,
 } from "@/lib/episodic/time-localize";
-import { normalizeLocale } from "@/lib/time/relative";
+import { buildDateAnchors, normalizeLocale } from "@/lib/time/relative";
 import { formatLocalTime } from "@/lib/turn-priming";
+import { loadUserConfig } from "@/lib/config/loader";
+import { DEFAULTS } from "@/lib/config/defaults";
 import {
   splitTurns,
   splitParagraphs,
@@ -55,7 +54,8 @@ import {
   textLines,
   searchResultToString,
 } from "@/lib/retrieval/doc-segments";
-import { resolveWorkerModel, resolveMainModelFromConfig } from "@/lib/models/worker";
+import { resolveMainModelFromConfig } from "@/lib/models/worker";
+import { resolveSubAgentModel } from "@/lib/agents/sub-agent-runner";
 import { createModel } from "@/lib/models/provider";
 import { normalizeReasoningEffort } from "@/lib/models/effort-injector";
 import type { ModelConfig } from "@/lib/models/registry";
@@ -92,56 +92,31 @@ export interface ToolContext {
   useGithub: boolean;
   /** Whether demo mode is active (remote benchmark data, read-only). */
   useDemo: boolean;
-  /** The current time-slice id (for startLoop to record the link). */
+  /** The current time-slice id. */
   sliceId: string;
   /** Recent conversation turns (last exchange + current user msg). */
   recentTurns: Array<{ role: string; content: string }>;
   /**
    * The turn's assembled system prompt (see turn-workflow.ts). thinkDeep reads
    * it to reuse the main agent's exact prompt prefix, so sub-agent calls hit
-   * the provider's prompt cache warmed by the main agent's first step. Absent
-   * on the loop tool set (no thinkDeep there).
+   * the provider's prompt cache warmed by the main agent's first step.
    */
   baseSystemPrompt?: string;
   /**
-   * Resolved worker model for cheap internal calls (recall search, loops).
-   * Set on the chat tool set; loops resolve it separately via their input.
-   */
-  workerModel?: ModelConfig;
-  /**
    * The turn's resolved MAIN model — the same config injected for the main
-   * agent. thinkDeep uses it directly so each reasoning fragment skips the
-   * per-step `resolveMainModelFromConfig()` GitHub round-trip. Set on the chat
-   * tool set; absent on the loop tool set (no thinkDeep there).
+   * agent. All sub-agents (thinkDeep, recall) use it directly so each call
+   * skips the per-step `resolveMainModelFromConfig()` GitHub round-trip.
    */
   mainModel?: ModelConfig;
   /**
    * The user's IANA timezone (e.g. "Asia/Shanghai") — read tools use it to
    * pre-render local-time annotations so the agent never converts UTC itself.
-   * Set on the chat tool set; absent on the loop tool set.
    */
   timezone?: string;
   /** The turn's start instant (UTC ISO) — anchors local-time rendering. */
   startedAtIso?: string;
   /** UI locale ("zh" | "en") — relative-time annotations follow it. */
   locale?: string;
-}
-
-/**
- * Context the loop's checkpoint tool receives �?the loop's own identity, so
- * loopReportExecute can do the read-append-write on the loop record file.
- */
-export interface LoopToolContext {
-  repo: string;
-  owner: string;
-  useGithub: boolean;
-  loopId: string;
-  goal: string;
-  filePath: string;
-  startedAt: string;
-  sliceOrigin: string | null;
-  tags: string[];
-  maxIterations: number;
 }
 
 /**
@@ -188,7 +163,7 @@ function emitToolProgress(
   }
 }
 
-// ─── Concept tool executors (chat + loop) ────────────────────────────────
+// ─── Concept tool executors ────────────────────────────────
 
 /**
  * Deterministic domain outcomes ("file not found", etc.) must reach the MODEL
@@ -571,15 +546,13 @@ export async function webSearchExecute(
     };
   }
 
-  // Soft 60s safety net. searchViaFlash errors (transient search failures)
+  // Soft 60s safety net — backstop on top of the runner's own 60s budget
+  // inside searchViaFlash. searchViaFlash errors (transient search failures)
   // still throw and get step retries — only a timeout returns an error result.
   let timed: Awaited<ReturnType<typeof withStepTimeout<WebSearchResult>>>;
   try {
     timed = await withStepTimeout(
-      () =>
-        searchViaFlash(query, (text) => {
-          void emitToolProgress(toolCallId, "webSearch", text, "running");
-        }),
+      () => searchViaFlash(query, { toolCallId, toolName: "webSearch" }),
       60_000,
     );
   } catch (err) {
@@ -707,15 +680,91 @@ export async function webFetchExecute(
   }
 }
 
+// ── currentTime — the "watch check" for a precise now ────────────────────
+
+/**
+ * currentTime — a fresh clock read. The system prompt's slice-head snapshot is
+ * frozen at the slice's start (prefix-cache freeze), so it can be tens of
+ * minutes old mid-slice; this tool is the model's way to ask "what time is it
+ * REALLY now". Zero-input, read-only, and byte-stable per call — it appends to
+ * the message tail, so it never breaks the prefix cache.
+ *
+ * Returns rich text (no disk reads): the user's local time + UTC, this slice's
+ * start / elapsed / remaining-to-cap (the start instant is parsed from the
+ * slice id itself — YYYY-MM-DD-HHMM is a UTC label), and a refreshed
+ * date-anchor table. The turn count is deliberately omitted: deriving it would
+ * require reading the slice file, which is not worth the I/O for a clock check.
+ */
+export async function currentTimeExecute(
+  _input: Record<string, never>,
+  { context: ctx }: ExecuteOpts<ToolContext>,
+): Promise<string> {
+  "use step";
+  const now = new Date();
+  const nowIso = now.toISOString();
+  const tz = ctx.timezone ?? "UTC";
+  const t = formatLocalTime(nowIso, tz);
+  const offset = t.offset ? `, ${t.offset}` : "";
+
+  const lines: string[] = [
+    `Now: ${t.local} (${t.zone}${offset})`,
+    `UTC: ${t.utc}`,
+  ];
+
+  // Slice progress — the slice id encodes its UTC start (minute granularity),
+  // so this needs no disk read.
+  const parsed = parseSliceId(ctx.sliceId);
+  if (parsed) {
+    const startIso = `${parsed.y}-${parsed.m}-${parsed.d}T${parsed.hm.slice(0, 2)}:${parsed.hm.slice(2)}:00.000Z`;
+    const startMs = Date.parse(startIso);
+    if (!Number.isNaN(startMs)) {
+      let capMinutes = DEFAULTS.slicing.maxSliceMinutes;
+      try {
+        capMinutes = (await loadUserConfig()).slicing.maxSliceMinutes;
+      } catch {
+        // Config unreadable — fall back to the shipped default cap.
+      }
+      const elapsedMin = Math.max(
+        0,
+        Math.floor((now.getTime() - startMs) / 60_000),
+      );
+      const st = formatLocalTime(startIso, tz);
+      lines.push(
+        "",
+        `This slice (${ctx.sliceId}):`,
+        `- Started: ${st.local} (${st.zone}) · UTC ${startIso}`,
+      );
+      const remaining = capMinutes - elapsedMin;
+      lines.push(
+        remaining > 0
+          ? `- Running for ${elapsedMin} min — ${remaining} min left of the ${capMinutes}-minute cap, then this slice auto-closes.`
+          : `- Running for ${elapsedMin} min — past the ${capMinutes}-minute cap; this slice closes on the next turn boundary.`,
+      );
+    }
+  }
+
+  // Fresh date anchors — the same reference table as the slice-head snapshot,
+  // recomputed against NOW instead of the slice start.
+  const anchors = buildDateAnchors(nowIso, tz, ctx.locale);
+  if (anchors.length > 0) {
+    lines.push("", "Date anchors:", ...anchors.map((a) => `- ${a}`));
+  }
+
+  return lines.join("\n");
+}
+
 // ── recall �?semantic search across past conversation slices ─────────
 
 /**
- * Recall search tool — Flash acts as a summary-level search engine over the
- * episodic memory. Flash reads the global timeline summaries, traces strands,
- * and returns pointers (which slices, which turns, why relevant) PLUS a
- * recommendation list of slices worth opening. Flash never reads slice bodies
- * and never produces content summaries. Pro decides which (if any) slices to
- * open with readSlice — the summaries may already be enough. */
+ * Recall search tool — the recall sub-agent acts as a summary-level search
+ * engine over the episodic memory. It reads the global timeline summaries,
+ * traces strands, and returns pointers (which slices, which turns, why
+ * relevant) PLUS a recommendation list of slices worth opening. It never reads
+ * slice bodies and never produces content summaries. Pro decides which (if
+ * any) slices to open with readSlice — the summaries may already be enough.
+ *
+ * Runs on the unified sub-agent runner (v0.9): the turn's MAIN model with
+ * thinking ON at effort "low", streamed progress, and a 120s budget. */
 export async function recallExecute(
   { query }: { query: string },
   { context: ctx, toolCallId }: ExecuteOpts<ToolContext>,
@@ -733,15 +782,14 @@ export async function recallExecute(
   try {
     const strands = await readStrands();
 
-    // Soft 120s safety net. Recall is best-effort: a timeout returns an empty
-    // search rather than failing the step, so the main agent knows nothing was
-    // found instead of a hard error.
-    //
-    // Cancellation: withStepTimeout aborts its signal on timeout, but
-    // runRecallSearch's generateText has no abortSignal param to consume it,
-    // so the loser runs to completion in the background. That is harmless
-    // here — recall is read-only and its late result is discarded by the race.
-    const workerModel = ctx.workerModel ?? (await resolveWorkerModel());
+    // Soft 120s safety net — a backstop on top of the runner's own 120s
+    // budget inside runRecallSearch (SDK timeout hook + its own
+    // withStepTimeout). Recall is best-effort: a timeout returns an empty
+    // search rather than failing the step, so the main agent knows nothing
+    // was found instead of a hard error. Transient failures inside
+    // runRecallSearch re-throw and reach the triage catch below for the
+    // step's auto-retry.
+    const mainModel = await resolveSubAgentModel(ctx);
     const timed = await withStepTimeout(
       () =>
         runRecallSearch({
@@ -752,12 +800,11 @@ export async function recallExecute(
           strandsContext: strands,
           useGithub: ctx.useGithub,
           useDemo: ctx.useDemo,
-          model: workerModel,
-          // Stream each sub-agent tool step ("Reading global timeline…",
-          // "Tracing strand: X…") into the typewriter subtitle as it happens.
-          onProgress: (text) => {
-            void emitToolProgress(toolCallId, "recall", text, "thinking");
-          },
+          model: mainModel,
+          // The runner streams each sub-agent tool step ("Reading global
+          // timeline…", "Tracing strand: X…") onto the data-tool-progress
+          // channel as it happens.
+          progress: { toolCallId, toolName: "recall" },
         }),
       120_000,
     );
@@ -782,9 +829,10 @@ export async function recallExecute(
       "done",
     );
 
-    // Flash returns pointers + recommendations only — it never reads slice bodies.
-    // Pro should call readSlice (optionally with range) to fetch content from
-    // slices it actually wants to use, keeping context usage minimal.
+    // The recall sub-agent returns pointers + recommendations only — it never
+    // reads slice bodies. Pro should call readSlice (optionally with range) to
+    // fetch content from slices it actually wants to use, keeping context
+    // usage minimal.
     const emptyNote =
       result.hits.length === 0
         ? "No relevant past conversations were found for this query. This is a definitive result — do NOT call recall again for this topic; answer from the conversation and your knowledge."
@@ -829,64 +877,6 @@ export async function recallExecute(
       confidence: 0,
       reasoning: triageErrorMessage(err, "recall"),
       recommendedReads: [],
-    };
-  }
-}
-
-export async function startLoopExecute(
-  { goal, tags }: { goal: string; tags?: string[] },
-  { context: ctx }: ExecuteOpts<ToolContext>,
-): Promise<{ ok: boolean; loopId?: string; runId?: string; filePath?: string; error?: string }> {
-  "use step";
-
-  // Demo mode: loops require a connected GitHub repo for write access.
-  // The rejection is model-facing �?the model reads it and explains the
-  // deployment requirement to the user naturally in the conversation.
-  if (!canWrite()) {
-    return {
-      ok: false,
-      error:
-        "The user is currently in demo mode (read-only preview data, no connected " +
-        "GitHub repository). Background loops need a real repository to write " +
-        "progress to memory/loops/. Tell the user they need to deploy their own " +
-        "instance to unlock background loops. Setup guide: " + DEPLOY_GUIDE_URL,
-    };
-  }
-
-  try {
-    // The workflow-initiation HTTP call can hang on a stuck Vercel Workflow API;
-    // a 30s soft timeout bounds the step without aborting the durable run (the
-    // run is idempotent — a retry re-fires startLoop safely).
-    const startedCall = await withStepTimeout(
-      async () =>
-        startLoop({
-          goal,
-          tags: tags ?? [],
-          sliceId: ctx.sliceId,
-          workerModel: ctx.workerModel ?? (await resolveWorkerModel()),
-        }),
-      30_000,
-    );
-    if (!startedCall.ok || startedCall.result === undefined) {
-      return {
-        ok: false,
-        error: `Starting the loop timed out after ${Math.round(startedCall.elapsedMs / 1000)}s. ` +
-          "The background run may still start on its own; try again in a moment.",
-      };
-    }
-    const started = startedCall.result;
-    // NOTE: the slice.loops / slice.tags back-reference is written by the chat
-    // workflow's finalizeTurn step (which owns the slice by value) — not here.
-    return {
-      ok: true,
-      loopId: started.loopId,
-      runId: started.runId,
-      filePath: started.filePath,
-    };
-  } catch (e) {
-    return {
-      ok: false,
-      error: e instanceof Error ? e.message : "failed to start loop",
     };
   }
 }
@@ -980,7 +970,7 @@ function isTimeoutAbort(err: unknown): boolean {
  * prompt (when available) so sub-agents share the main agent's exact prefix —
  * the provider's prompt cache, warmed by the main agent's first step, is hit by
  * every sub-agent call in the same turn. When no baseSystemPrompt flows through
- * the context (e.g. loops), SUB_AGENT_SYSTEM_PROMPT stands alone.
+ * the context, SUB_AGENT_SYSTEM_PROMPT stands alone.
  */
 const SUB_AGENT_FRAGMENT_MODE = `Your ONLY job is to reason through the sub-question below to a clear conclusion,
 then write that conclusion. You are THINK-ONLY: you have no search, no memory
@@ -1052,7 +1042,7 @@ export async function thinkDeepExecute(
 
   // The turn's main model flows through the tools context (shared with the
   // main agent — no per-call config resolution / GitHub round-trip). Falls
-  // back to resolving it only when the context lacks it (e.g. loop tools).
+  // back to resolving it only when the context lacks it.
   const modelConfig = ctx.mainModel ?? (await resolveMainModelFromConfig());
 
   // Step start — the fragment's adaptive SDK timeout is measured from here so
@@ -1235,6 +1225,18 @@ async function runThinkDeepFragment(
               }
             },
           });
+          // Provider warnings (unsupported settings, silent downgrades such as
+          // dropped image parts) never throw — log them so a quiet degradation
+          // is visible in the server log. Promise-only in the SDK, so attach
+          // without touching the control flow.
+          void Promise.resolve(stream.warnings).then((w) => {
+            if (w?.length) {
+              console.warn(
+                `[thinkDeep] model=${modelConfig.id} stream warnings:`,
+                w,
+              );
+            }
+          });
           return await stream.text;
         } finally {
           // Push the final progress line, then release the writer so the step's
@@ -1301,116 +1303,3 @@ async function runThinkDeepFragment(
   }
 }
 
-// ─── Loop-only executor: the checkpoint tool ─────────────────────────────
-
-/**
- * loopReport �?the loop's checkpoint. Each call appends one LoopStep to the
- * loop's markdown record (read-append-write; the file is the accumulator, so
- * progress survives any crash/retry) and emits a `data-loop` progress chunk to
- * the run's writable for live watchers. Replaces the old per-iteration
- * persistLoop + streamLoopProgress pair.
- */
-export async function loopReportExecute(
-  { action, result, done }: { action: string; result: string; done: boolean },
-  { context: ctx }: ExecuteOpts<LoopToolContext>,
-): Promise<{ recorded: true; step: number; done: boolean } | { error: string }> {
-  "use step";
-
-  // Demo mode safety net — startLoopExecute already blocks loops in demo,
-  // but a loop agent started through another path should fail cleanly.
-  if (!canWrite()) {
-    return {
-      error: "Loop progress cannot be recorded in demo mode. The loop should not have started.",
-    };
-  }
-
-  try {
-    // The GitHub/local read-append-write can hang on a network partition; a 30s
-    // soft timeout bounds the checkpoint. The loop run file is the accumulator,
-    // so a timed-out checkpoint is safe to retry. The abort signal stops the
-    // losing work BEFORE its write — otherwise a timed-out checkpoint could
-    // still commit later and duplicate the step the retry already recorded.
-    const io = await withStepTimeout(
-      async (signal) => {
-        const existing = await readLoopRun(ctx.filePath);
-        if (signal.aborted) {
-          throw new Error("Checkpoint aborted after timeout — write skipped");
-        }
-        const priorSteps: LoopStep[] = existing?.steps ?? [];
-        const step: LoopStep = {
-          step: priorSteps.length + 1,
-          action,
-          result,
-          time: new Date().toISOString(),
-        };
-        const steps = [...priorSteps, step];
-
-        const run: LoopRun = {
-          loopId: ctx.loopId,
-          goal: ctx.goal,
-          status: "running", // final status is stamped by the workflow's finalizeLoop
-          startedAt: ctx.startedAt,
-          updatedAt: new Date().toISOString(),
-          deadlineAt:
-            existing?.deadlineAt ??
-            new Date(Date.parse(ctx.startedAt) + LOOP_WALL_CLOCK_MS).toISOString(),
-          sliceOrigin: ctx.sliceOrigin,
-          tags: ctx.tags,
-          iterations: steps.length,
-          maxIterations: ctx.maxIterations,
-          lastError: existing?.lastError ?? "",
-          steps,
-        };
-        if (signal.aborted) {
-          throw new Error("Checkpoint aborted after timeout — write skipped");
-        }
-        await writeLoopFile(ctx.filePath, serializeLoop(run));
-        return { steps, step };
-      },
-      30_000,
-    );
-    if (!io.ok || io.result === undefined) {
-      return {
-        error: `Checkpoint write timed out after ${Math.round(io.elapsedMs / 1000)}s — the loop step is not recorded and will be retried.`,
-      };
-    }
-    const { steps, step } = io.result;
-
-    // Live progress chunk — best-effort: the memory-truth write above already
-    // committed, so a stream failure must never fail the checkpoint.
-    try {
-      const writable = getWritable<UIMessageChunk>();
-      const writer = writable.getWriter();
-      await writer.write({
-        type: "data-loop",
-        id: `loop-${ctx.loopId}`,
-        data: {
-          loopId: ctx.loopId,
-          goal: ctx.goal,
-          status: "running",
-          iteration: steps.length,
-          latestStep: step,
-          done: false,
-        },
-      } as UIMessageChunk);
-      writer.releaseLock();
-    } catch (err) {
-      console.warn(
-        `[Loop] progress chunk failed (loop=${ctx.loopId}):`,
-        err instanceof Error ? err.message : err
-      );
-    }
-
-    return { recorded: true, step: step.step, done };
-  } catch (err) {
-    // Triage: a failed checkpoint returns as data — the loop run file is the
-    // accumulator, so the model sees "couldn't checkpoint" instead of a thrown
-    // error that retries a step whose work is already committed.
-    if (isTransientError(err)) throw err;
-    console.warn(
-      `[Loop] triaged checkpoint failure (loop=${ctx.loopId}):`,
-      err instanceof Error ? err.message : err,
-    );
-    return { error: triageErrorMessage(err, "loopReport") };
-  }
-}

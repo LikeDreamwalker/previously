@@ -294,7 +294,8 @@ export async function resolveAvailableModels(): Promise<ModelConfig[]> {
       const envKey = firstConfiguredKey(source.envKeys) as string;
       let live: LiveModel[] = [];
       try {
-        live = await source.list(envKey);
+        // list() needs the key VALUE (Bearer credential), not the env var name.
+        live = await source.list(process.env[envKey] as string);
       } catch {
         live = [];
       }

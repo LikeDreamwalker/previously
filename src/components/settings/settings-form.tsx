@@ -24,8 +24,7 @@ export function SettingsForm({
 
   // ── Config (server-backed: memory/user/config.json) ──
   const [maxTurnsPerSlice, setMaxTurnsPerSlice] = useState(initialConfig.slicing.maxTurnsPerSlice);
-  const [timeSilenceMinutes, setTimeSilenceMinutes] = useState(initialConfig.slicing.timeSilenceMinutes);
-  const [recentTurnsLimit, setRecentTurnsLimit] = useState(initialConfig.context.recentTurnsLimit);
+  const [maxSliceMinutes, setMaxSliceMinutes] = useState(initialConfig.slicing.maxSliceMinutes);
   const [configSaving, setConfigSaving] = useState(false);
   const [configSavedMsg, setConfigSavedMsg] = useState("");
 
@@ -36,8 +35,7 @@ export function SettingsForm({
     // to config.json — intentionally omitted here so the settings save never
     // overwrites it.
     const res = await saveUserConfig({
-      slicing: { maxTurnsPerSlice, timeSilenceMinutes },
-      context: { recentTurnsLimit },
+      slicing: { maxTurnsPerSlice, maxSliceMinutes },
     });
     setConfigSaving(false);
     setConfigSavedMsg(res.ok ? t("config.saved") : t("config.saveFailed"));
@@ -73,19 +71,12 @@ export function SettingsForm({
           {/* Slicing */}
           <div className="grid grid-cols-2 gap-3">
             <label className="block space-y-1">
+              <span className="text-xs text-muted-foreground">{t("config.maxSliceMinutes")}</span>
+              <input type="number" min={5} max={120} value={maxSliceMinutes} onChange={(e) => setMaxSliceMinutes(Number(e.target.value))} className={numberInputClass} />
+            </label>
+            <label className="block space-y-1">
               <span className="text-xs text-muted-foreground">{t("config.maxTurnsPerSlice")}</span>
               <input type="number" min={5} max={100} value={maxTurnsPerSlice} onChange={(e) => setMaxTurnsPerSlice(Number(e.target.value))} className={numberInputClass} />
-            </label>
-            <label className="block space-y-1">
-              <span className="text-xs text-muted-foreground">{t("config.timeSilenceMinutes")}</span>
-              <input type="number" min={5} max={120} value={timeSilenceMinutes} onChange={(e) => setTimeSilenceMinutes(Number(e.target.value))} className={numberInputClass} />
-            </label>
-          </div>
-          {/* Context */}
-          <div className="grid grid-cols-2 gap-3">
-            <label className="block space-y-1">
-              <span className="text-xs text-muted-foreground">{t("config.recentTurnsLimit")}</span>
-              <input type="number" min={3} max={60} value={recentTurnsLimit} onChange={(e) => setRecentTurnsLimit(Number(e.target.value))} className={numberInputClass} />
             </label>
           </div>
           <div className="flex items-center gap-3">

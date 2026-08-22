@@ -4,10 +4,12 @@
  *
  * Most providers expose an OpenAI-compatible endpoint and can be called via
  * `@ai-sdk/openai`'s `createOpenAI({ baseURL, apiKey })`; baseURL and env var
- * come from models.dev (see ./catalog). A few (DeepSeek, Anthropic) are routed
- * to their dedicated SDKs for full feature support. Everything else falls back
- * to the OpenAI-compatible path, so adding a new provider is purely a catalog
- * concern — no dispatch code changes.
+ * come from models.dev (see ./catalog). Only Anthropic is routed to its
+ * dedicated SDK. DeepSeek keeps "deepseek" as its routing key but is built via
+ * `@ai-sdk/openai-compatible` (`createOpenAICompatible({ name: "deepseek" })`)
+ * — the dedicated @ai-sdk/deepseek SDK silently dropped image parts. Everything
+ * else falls back to the OpenAI-compatible path, so adding a new provider is
+ * purely a catalog concern — no dispatch code changes.
  */
 
 export type ProviderSdk = "deepseek" | "anthropic" | "openai";

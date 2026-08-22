@@ -1,24 +1,30 @@
 /**
- * Turn Analyzer — the single worker-model call inside the housekeeping step.
+ * Turn Analyzer — the single structured sub-agent call inside the
+ * housekeeping step.
  *
- * One pass, four outputs (structured, thinking off, cheap):
+ * One pass, four outputs (structured, thinking on at low effort, cheap):
  *   1. message_tags   — keyword tags for the current user message (woven into strands).
  *   2. semantic_hint  — which EXISTING strands this message is about, plus why
- *      (feeds the turn-priming block; an LLM understands paraphrase / cross-language).
+ *      (an LLM understands paraphrase / cross-language). v0.9: no longer fed
+ *      into the prompt (the per-turn priming block was retired with the
+ *      slice-level prompt freeze); kept on the analysis record for
+ *      housekeeping decisions and agent.md.
  *   3. closed_marking — focus / summary / refined tags / tone for a slice that is
  *      about to close (only when one closed this turn).
  *   4. evolve_card    — whether the closing slice holds anything worth
  *      sedimenting onto the user card (only when one closed this turn).
  *
- * The model is passed in — it is the resolved WORKER model (see
- * src/lib/models/worker.ts), not the main chat model. Never throws — returns an
- * empty analysis on any failure so housekeeping degrades gracefully (no
- * marking, no hint → engineering fallbacks kick in).
+ * The model is passed in — since v0.9 it is the turn's MAIN model, run through
+ * the shared sub-agent runner (src/lib/agents/sub-agent-runner.ts): thinking
+ * ON at effort "low", a 30s wall-clock budget, a fully static system prompt
+ * (shared base + role) with all dynamic content in the user prompt. Never
+ * throws — returns an empty analysis on any failure so housekeeping degrades
+ * gracefully (no marking, no hint → engineering fallbacks kick in).
  */
-import { generateText, tool } from "ai";
+import { tool } from "ai";
 import { z } from "zod";
-import { createModel } from "@/lib/models/provider";
-import { workerProviderOptions } from "@/lib/models/worker";
+import { runSubAgent } from "@/lib/agents/sub-agent-runner";
+import { buildSubAgentSystem } from "@/lib/agents/prompts";
 import type { ModelConfig } from "@/lib/models/registry";
 import type { EmotionalTone, Turn } from "@/lib/episodic/types";
 import type { EmotionalSignal } from "@/lib/turn-priming";
@@ -100,7 +106,7 @@ export interface TurnAnalysis {
 }
 
 export interface AnalyzeTurnInput {
-  /** The worker model to run this analysis on. */
+  /** The model to run this analysis on (the turn's MAIN model, via the runner). */
   model: ModelConfig;
   userMessage: string;
   existingStrandNames: string[];
@@ -240,54 +246,24 @@ function compressSliceTurns(turns: Turn[]): string {
   return body.length > 6000 ? body.slice(-6000) : body;
 }
 
-function buildPrompt(input: AnalyzeTurnInput): string {
-  const existing =
-    input.existingStrandNames.length > 0
-      ? input.existingStrandNames.join(", ")
-      : "(none yet)";
-
-  const closingSection = input.closingSlice
-    ? `
-
-## Task 6 — Mark the closed slice
-
-A time slice just closed. Summarize it so future recall can understand it at a glance.
-
-Conversation (first turn + last turns):
-${compressSliceTurns(input.closingSlice.turns)}
-
-Existing tags on this slice: ${input.closingSlice.tags.join(", ") || "(none)"}
-
-Return closed_marking with:
-- focus: one sentence on what this session was about
-- summary: at most 100 characters — what happened / key decisions
-- tags: 2-6 clean tags (dedupe, merge the same concept across languages)
-- tone: positive | neutral | negative | mixed
-
-ALSO return evolve_card — your judgment on whether anything in this closing slice deserves sedimentation onto the user card:
-- worth: true when the slice contains a durable fact about the user, a stated preference or correction, a commitment / deadline / awaited reply (a Horizon item), the resolution of an open loop, or an operating lesson for the agent
-- worth: false ONLY when the slice holds zero card-worthy content — pure greetings, logistics, ephemeral chit-chat
-- reason: one line on what deserves sedimentation, or why nothing does
-When in doubt, worth: true — a wasted review is cheap, a missed evolution is permanent memory loss.`
-    : "";
-
-  return `You are the memory analyzer for a personal AI platform. One pass, three tasks. Keep every field short — this is metadata, not prose.
+/**
+ * Static role block — the system prompt (shared base + this) never changes
+ * between calls, so provider prefix caches hit on every analysis. All dynamic
+ * content (message, existing topics, closing slice) goes into the user prompt.
+ */
+const ANALYZER_SYSTEM = buildSubAgentSystem(`You are the memory analyzer for a personal AI platform. One pass, six tasks (Task 6 ONLY when the user message includes a closing slice). Keep every field short — this is metadata, not prose.
 
 ## Task 1 — Tag the current message
 
-Message: "${input.userMessage.slice(0, 1000)}"
-
-Existing topics (pick from these FIRST — they are the durable memory index): ${existing}
-
 Return message_tags with TWO parts:
-- reuse: existing topic names from the list above that this message relates to. Pick VERBATIM from the list. Prefer reuse over create — the same concept must never gain a second name.
+- reuse: existing topic names from the provided list that this message relates to. Pick VERBATIM from the list. Prefer reuse over create — the same concept must never gain a second name.
 - create: a NEW durable/general topic ONLY when no existing topic covers this message. Durable = a work/life area, a project, a company, financing, health, a recurring emotional thread. NEVER an ephemeral one-off event ("dreamt", "hungover", "today's errand"). Max 3, each with a one-line reason.
 
 Merge-first rule: reuse > create. If in doubt, reuse an existing topic rather than minting a new one.
 
 ## Task 2 — Semantic hint for the agent
 
-Which of the EXISTING topics above is this message most likely about? The agent uses this to decide which past slices to recall. Only list topics that are genuinely related; empty if none. One-line reason.
+Which of the EXISTING topics listed in the user message is this message most likely about? The agent uses this to decide which past slices to recall. Only list topics that are genuinely related; empty if none. One-line reason.
 Return semantic_hint: { strands: [...], reason: "..." }
 
 ## Task 3 — Classify the user's intent
@@ -310,7 +286,47 @@ What is the user's emotional state in this message, if any? The agent reads this
 Return emotional_signal with:
 - intensity: none | light | strong — how much emotional weight the message carries (strong = frustrated, upset, vulnerable, celebrating, seeking support, a significant personal matter; light = light humor or casual sharing; none = purely informational)
 - register: neutral | emotional | humorous | frustrated | excited — the dominant register; humorous covers joking / playful / sarcastic. Omit or "neutral" when none.
-- note: one short line on what the user is feeling and why (empty when neutral).${closingSection}`;
+- note: one short line on what the user is feeling and why (empty when neutral).
+
+## Task 6 — Mark the closed slice (ONLY when the user message includes one)
+
+When a time slice just closed, summarize it so future recall can understand it at a glance. Return closed_marking with:
+- focus: one sentence on what this session was about
+- summary: at most 100 characters — what happened / key decisions
+- tags: 2-6 clean tags (dedupe, merge the same concept across languages)
+- tone: positive | neutral | negative | mixed
+
+ALSO return evolve_card — your judgment on whether anything in this closing slice deserves sedimentation onto the user card:
+- worth: true when the slice contains a durable fact about the user, a stated preference or correction, a commitment / deadline / awaited reply (a Horizon item), the resolution of an open loop, or an operating lesson for the agent
+- worth: false ONLY when the slice holds zero card-worthy content — pure greetings, logistics, ephemeral chit-chat
+- reason: one line on what deserves sedimentation, or why nothing does
+When in doubt, worth: true — a wasted review is cheap, a missed evolution is permanent memory loss.`);
+
+/** The dynamic user prompt: current message, existing topics, closing slice. */
+function buildPrompt(input: AnalyzeTurnInput): string {
+  const existing =
+    input.existingStrandNames.length > 0
+      ? input.existingStrandNames.join(", ")
+      : "(none yet)";
+
+  const closingSection = input.closingSlice
+    ? `
+
+## Closing slice — also run Task 6
+
+A time slice just closed.
+
+Conversation (first turn + last turns):
+${compressSliceTurns(input.closingSlice.turns)}
+
+Existing tags on this slice: ${input.closingSlice.tags.join(", ") || "(none)"}
+
+Return closed_marking AND evolve_card per your Task 6 instructions.`
+    : "";
+
+  return `Message: "${input.userMessage.slice(0, 1000)}"
+
+Existing topics (pick from these FIRST — they are the durable memory index): ${existing}${closingSection}`;
 }
 
 /**
@@ -349,29 +365,30 @@ function emptyAnalysis(sliceClosing: boolean): TurnAnalysis {
 
 export async function analyzeTurn(input: AnalyzeTurnInput): Promise<TurnAnalysis> {
   const sliceClosing = input.closingSlice !== undefined;
-  try {
-    const result = await generateText({
-      model: createModel(input.model),
-      prompt: buildPrompt(input),
-      temperature: 0.1,
-      tools: {
-        analyzeOutput: tool({
-          description: "Report the analysis results.",
-          inputSchema: analyzeSchema,
-        }),
-      },
-      toolChoice: "required",
-      providerOptions: workerProviderOptions(input.model.sdk),
-    });
+  const result = await runSubAgent({
+    model: input.model,
+    system: ANALYZER_SYSTEM,
+    prompt: buildPrompt(input),
+    tools: {
+      analyzeOutput: tool({
+        description: "Report the analysis results.",
+        inputSchema: analyzeSchema,
+      }),
+    },
+    toolChoice: "required",
+    reportToolName: "analyzeOutput",
+    reportSchema: analyzeSchema,
+    maxSteps: 1,
+    timeoutMs: 30_000,
+    progress: { toolName: "turn-analyzer" },
+  });
 
-    const tc = result.toolCalls?.[0];
-    if (tc?.toolName !== "analyzeOutput" || !tc.input) return emptyAnalysis(sliceClosing);
+  // The runner never throws: a timeout / model failure / missing or invalid
+  // report all degrade to the empty analysis (engineering fallbacks kick in).
+  if (!result.ok || !result.report) return emptyAnalysis(sliceClosing);
 
-    const parsed = analyzeSchema.safeParse(tc.input);
-    if (!parsed.success) return emptyAnalysis(sliceClosing);
-
-    const d = parsed.data;
-    return {
+  const d = result.report;
+  return {
       messageTags: {
         reuse: d.message_tags.reuse.slice(0, 5),
         create: d.message_tags.create
@@ -425,7 +442,4 @@ export async function analyzeTurn(input: AnalyzeTurnInput): Promise<TurnAnalysis
           }
         : undefined,
     };
-  } catch {
-    return emptyAnalysis(sliceClosing);
-  }
 }

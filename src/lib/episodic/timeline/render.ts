@@ -11,14 +11,26 @@ import {
   localDateKey,
   normalizeLocale,
   relPhrase,
+  weekdayLabel,
 } from "@/lib/time/relative";
 
 /** Optional user-clock context — when present, pointer lines carry a local
- *  weekday + relative-days annotation so the agent never does date math. */
+ *  date annotation so the agent never does date math. */
 export interface SliceLineTimeOpts {
   nowIso?: string;
   timezone?: string;
   locale?: string;
+  /**
+   * v0.9 FROZEN mode (slice-level prompt freeze): when set, the brief lists
+   * only slices CLOSED before this slice id (i.e. before the current slice
+   * began) and annotates with ABSOLUTE local dates — no relative phrasing —
+   * so the block stays byte-stable for the whole life of the current slice
+   * and the provider prefix cache survives every turn.
+   * Accepted residual drift (rare, documented): dry-slice backfill may
+   * rewrite an old slice's focus mid-slice, and a concurrently closed slice
+   * with an earlier id can appear (single-user deployment: effectively never).
+   */
+  asOfSliceId?: string;
 }
 
 /**
@@ -42,6 +54,28 @@ export function sliceIdRelTag(
   return normalizeLocale(locale) === "zh"
     ? `（${mmdd} ${phrase}）`
     : ` (${mmdd} ${phrase})`;
+}
+
+/**
+ * "（08-11 周二）" / " (08-11 Tue)" — the ABSOLUTE local calendar date +
+ * weekday of the slice id's UTC instant. No relative phrasing, no `nowIso` —
+ * byte-stable by construction (v0.9 frozen timeline brief). "" when
+ * unparseable.
+ */
+export function sliceIdAbsTag(
+  id: string,
+  timezone: string,
+  locale: string,
+): string {
+  const m = id.match(/^(\d{4})-(\d{2})-(\d{2})-(\d{2})(\d{2})$/);
+  if (!m) return "";
+  const iso = `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:00.000Z`;
+  const localKey = localDateKey(iso, timezone);
+  if (!localKey) return "";
+  const mmdd = localKey.slice(5);
+  const wd = weekdayLabel(localKey, locale);
+  const inner = wd ? `${mmdd} ${wd}` : mmdd;
+  return normalizeLocale(locale) === "zh" ? `（${inner}）` : ` (${inner})`;
 }
 
 interface EraGroup {
@@ -94,8 +128,10 @@ export function sliceLine(s: TimelineSliceEntry): string {
   return `- **${s.id}** ${label}${turns}${tone}${tags}`;
 }
 
-/** sliceLine with a local weekday + relative-days tag on the id. Kept as a
- *  separate function so `slices.map(sliceLine)` call sites stay valid. */
+/** sliceLine with a local date tag on the id. Frozen mode (`asOfSliceId` set)
+ *  renders the ABSOLUTE date; otherwise the relative-days tag against
+ *  `nowIso`. Kept as a separate function so `slices.map(sliceLine)` call sites
+ *  stay valid. */
 export function sliceLineWithTime(
   s: TimelineSliceEntry,
   time: SliceLineTimeOpts,
@@ -104,8 +140,11 @@ export function sliceLineWithTime(
   const tone = s.tone ? ` · ${s.tone}` : "";
   const tags = s.tags.length ? ` [${s.tags.join(",")}]` : "";
   const label = s.focus || s.summary || "*(无摘要)*";
-  const when =
-    time.nowIso && time.timezone
+  const when = time.asOfSliceId
+    ? time.timezone
+      ? sliceIdAbsTag(s.id, time.timezone, time.locale ?? "en")
+      : ""
+    : time.nowIso && time.timezone
       ? sliceIdRelTag(s.id, time.nowIso, time.timezone, time.locale ?? "en")
       : "";
   return `- **${s.id}**${when} ${label}${turns}${tone}${tags}`;
@@ -139,15 +178,32 @@ export function renderTimelineMd(idx: TimelineIndex): string {
 
 /**
  * The compact per-turn brief: recent slices + catalog totals + an invitation
- * to read deeper. Pure pointers — never content. Fits in the system prompt's
- * variable tail.
+ * to read deeper. Pure pointers — never content.
+ *
+ * With `asOfSliceId` (v0.9 frozen mode) the brief is a SLICE-HEAD SNAPSHOT:
+ * only slices closed before the current slice began, absolute dates, totals
+ * computed from that fixed pool — so the string is byte-stable for the whole
+ * life of the slice it is injected into (see SliceLineTimeOpts.asOfSliceId
+ * for the accepted residual drift).
  */
 export function buildTimelineBrief(
   idx: TimelineIndex,
   opts: { recent?: number } & SliceLineTimeOpts = {},
 ): string {
   const recent = opts.recent ?? 10;
-  const newest = [...idx.slices].sort((a, b) => b.id.localeCompare(a.id)).slice(0, recent);
+  const asOf = opts.asOfSliceId;
+  // Frozen mode: the pool excludes the current slice itself (active) and
+  // anything started after it, so mid-slice upserts can't change the brief.
+  const pool = asOf
+    ? idx.slices.filter((s) => s.status === "closed" && s.id < asOf)
+    : idx.slices;
+  const newest = [...pool].sort((a, b) => b.id.localeCompare(a.id)).slice(0, recent);
+  // Totals come from the same fixed pool in frozen mode — idx.slice_count /
+  // idx.needs_marking would drift as newer slices land mid-slice.
+  const totalCount = asOf ? pool.length : idx.slice_count;
+  const needsMarking = asOf
+    ? pool.filter((s) => s.needs_marking).length
+    : idx.needs_marking;
 
   const lines = [
     "## Timeline (recent)",
@@ -155,13 +211,13 @@ export function buildTimelineBrief(
       ? newest.map((s) => sliceLineWithTime(s, opts))
       : ["- (empty — no slices yet)"]),
   ];
-  if (idx.slice_count > recent) {
+  if (totalCount > recent) {
     lines.push(
-      `- 往前共 ${idx.slice_count} 片，可用 readTimelineWindow / readSliceSummary 回溯`,
+      `- 往前共 ${totalCount} 片，可用 readTimelineWindow / readSliceSummary 回溯`,
     );
   }
-  if (idx.needs_marking > 0) {
-    lines.push(`- ${idx.needs_marking} 片尚未生成摘要（needs_marking）`);
+  if (needsMarking > 0) {
+    lines.push(`- ${needsMarking} 片尚未生成摘要（needs_marking）`);
   }
   return lines.join("\n");
 }

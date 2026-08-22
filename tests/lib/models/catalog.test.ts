@@ -97,6 +97,27 @@ describe("resolveAvailableModels (live provider lists)", () => {
     expect(models.some((m) => m.id === "deepseek-v4-flash")).toBe(true);
   });
 
+  it("sends the API key VALUE (not the env var name) to live list endpoints", async () => {
+    // v0.8.1 regression: the catalog used to pass the env var NAME as the
+    // Bearer credential, so every live list 401'd and only curated fallback
+    // entries (no deepseek-v4-flash-vision-exp) ever appeared.
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ data: [{ id: "deepseek-v4-flash-vision-exp" }] }));
+    vi.stubGlobal("fetch", fetchMock);
+    process.env.DEEPSEEK_API_KEY = "sk-real-value";
+    const models = await resolveAvailableModels();
+    const [, init] = fetchMock.mock.calls[0] as unknown as [
+      string,
+      { headers: Record<string, string> },
+    ];
+    expect(init.headers.Authorization).toBe("Bearer sk-real-value");
+    // The live id matches a curated entry — vision metadata comes through.
+    const vision = models.find((m) => m.id === "deepseek-v4-flash-vision-exp");
+    expect(vision?.capabilities.vision).toBe(true);
+    expect(vision?.name).toBe("DeepSeek V4 Flash Vision (Exp)");
+  });
+
   it("caches the resolved list within the TTL", async () => {
     const fetchMock = vi
       .fn()

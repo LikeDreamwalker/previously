@@ -15,8 +15,10 @@
  * agent's own decision. Engineering owns the trigger and the write-back;
  * the model owns the content.
  *
- * Streaming is surfaced via the optional `onProgress` callback so the caller
- * (housekeeping) can push data-evolution chunks to the client — no idle wait.
+ * Streaming is surfaced via the optional `onProgress` callback (phase steps)
+ * and `onEvolutionLine` (the Previously Agent's live thinking/writing lines)
+ * so the caller (housekeeping) can push data-evolution chunks to the client —
+ * no idle wait.
  */
 import { runPreviouslyAgent, type PreviouslySignal } from "@/lib/episodic/flash/previously-agent";
 import { parseCard } from "@/lib/episodic/previously-format";
@@ -38,7 +40,7 @@ export interface CardEvolutionReaders {
 }
 
 export interface RunCardEvolutionInput {
-  /** The worker model running the review (thinking off). */
+  /** The model running the review — the turn's main model (thinking ON, low effort). */
   model: ModelConfig;
   /** The slice whose card is being updated (the closed slice on a boundary). */
   sliceId: string;
@@ -56,6 +58,12 @@ export interface RunCardEvolutionInput {
   readers: CardEvolutionReaders;
   /** Progress callback — wire to the turn stream (data-evolution chunks). */
   onProgress?: (step: "reading" | "reviewing" | "applied") => void;
+  /**
+   * Live thinking/writing lines from the Previously Agent's stream — wire to
+   * the turn stream as `data-evolution` live chunks. Unthrottled; the caller
+   * throttles.
+   */
+  onEvolutionLine?: (line: string, stage: "thinking" | "writing") => void;
   /** The owning turn's write batch — card writes join its single commit. */
   batch?: WriteBatch;
   /** The user's local calendar date (YYYY-MM-DD) — Now ages, overdue checks,
@@ -78,6 +86,9 @@ export interface RunCardEvolutionResult {
   changes?: CardChangeSummary;
   /** Set when the evolution FAILED — never present on a legitimate no-change. */
   error?: string;
+  /** Set when the pass ended WITHOUT a finish call (step cap / timeout) — the
+   *  written card carries the mutations that landed before the cutoff. */
+  partial?: boolean;
 }
 
 const VALID_SIGNALS: PreviouslySignal[] = [
@@ -89,6 +100,7 @@ const VALID_SIGNALS: PreviouslySignal[] = [
 export async function runCardEvolution(
   input: RunCardEvolutionInput,
 ): Promise<RunCardEvolutionResult> {
+  input.onProgress?.("reading");
   const rawCard = await readCurrentPreviously(input.batch);
   const baseCard = rawCard.trim() ? rawCard : "";
   const signal: PreviouslySignal = VALID_SIGNALS.includes(input.signal ?? "new_observation")
@@ -103,7 +115,10 @@ export async function runCardEvolution(
         ? `User explicitly requested a memory update: ${input.focus}`
         : "Auto-review of latest conversation.";
 
-  input.onProgress?.("reading");
+  // "reviewing" covers the agent run itself — the phase frame must go out
+  // BEFORE it starts (it used to fire after, a ~ms flash before the terminal
+  // chunk that left the whole run showing "reading").
+  input.onProgress?.("reviewing");
   const result = await runPreviouslyAgent({
     signal,
     note,
@@ -117,18 +132,29 @@ export async function runCardEvolution(
     readSliceFn: input.readers.readSlice,
     readAgentTimelineFn: input.readers.readAgentTimeline,
     readPreviouslyFn: input.readers.readPreviously,
+    onLine: input.onEvolutionLine,
   });
 
-  input.onProgress?.("reviewing");
-
-  // A FAILED worker (unreachable / schema-invalid / no finish call) must not be
-  // presented as "checked, no updates" — surface the failure as an error.
+  // A FAILED worker (unreachable / timed out) must not be presented as
+  // "checked, no updates" — surface the failure as an error.
   if (result.failed) {
     return { ran: true, changed: false, droppedRecent: 0, note: result.reasoning, error: result.reasoning };
   }
 
+  // A PARTIAL pass (step limit reached without a finish call) is NOT a
+  // failure: the mutations that landed are written back like any other
+  // result, with the note flagged so the UI/logs can tell it from a clean
+  // finish.
+  const resultNote = result.partial ? `[partial] ${result.reasoning}` : result.reasoning;
+
   if (!result.updatedCard.trim()) {
-    return { ran: true, changed: false, droppedRecent: 0, note: result.reasoning };
+    return {
+      ran: true,
+      changed: false,
+      droppedRecent: 0,
+      note: resultNote,
+      ...(result.partial ? { partial: true } : {}),
+    };
   }
 
   // The agent's session serialized the final card; substance comparison
@@ -149,7 +175,8 @@ export async function runCardEvolution(
     ran: true,
     changed,
     droppedRecent: 0,
-    note: result.reasoning,
+    note: resultNote,
+    ...(result.partial ? { partial: true } : {}),
     // The agent's own one-sentence account of what changed — only meaningful
     // when the card moved.
     summary: changed && result.summary.trim() ? result.summary.trim() : undefined,

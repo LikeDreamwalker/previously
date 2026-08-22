@@ -217,10 +217,15 @@ export function annotateDate(
  * deadline phrasing (`by: 2026-08-23（还剩 5 天）` / `（已逾期 2 天）`). The
  * stored file is never rewritten — this runs on the prompt-assembly string
  * only. Dates that don't parse pass through untouched.
+ *
+ * `anchorIso` is the instant the relative phrases anchor to. v0.9: the caller
+ * passes the SLICE START (not the current time) — the phrases are
+ * day-granular, so the injected card stays byte-identical for the slice's
+ * whole life (prefix-cache freeze).
  */
 export function annotateCardTimes(
   cardContent: string,
-  nowIso: string,
+  anchorIso: string,
   timezone: string,
   locale: string,
 ): string {
@@ -230,14 +235,14 @@ export function annotateCardTimes(
     .replace(
       /(\|\s*since:\s*)(\d{4}-\d{2}-\d{2})/g,
       (m, prefix: string, date: string) => {
-        const tag = relTag(date, nowIso, timezone, locale);
+        const tag = relTag(date, anchorIso, timezone, locale);
         return tag ? `${prefix}${date}${sep}${tag}` : m;
       },
     )
     .replace(
       /(—\s*by:\s*)(\d{4}-\d{2}-\d{2})/g,
       (m, prefix: string, date: string) => {
-        const tag = relTag(date, nowIso, timezone, locale, { due: true });
+        const tag = relTag(date, anchorIso, timezone, locale, { due: true });
         return tag ? `${prefix}${date}${sep}${tag}` : m;
       },
     );

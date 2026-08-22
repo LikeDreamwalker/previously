@@ -33,7 +33,6 @@ vi.mock("@/lib/models/catalog", () => ({
 
 import {
   resolveWorkerModel,
-  workerProviderOptions,
 } from "@/lib/models/worker";
 
 const SAVED_ENV = { ...process.env };
@@ -82,28 +81,6 @@ beforeEach(() => {
 
 afterEach(() => {
   process.env = { ...SAVED_ENV };
-});
-
-// ─── workerProviderOptions ────────────────────────────────────────────────
-
-describe("workerProviderOptions", () => {
-  it("disables thinking per SDK", () => {
-    expect(workerProviderOptions("anthropic")).toEqual({
-      anthropic: { thinking: { type: "disabled" } },
-    });
-    expect(workerProviderOptions("openai")).toEqual({
-      openai: { reasoningEffort: "minimal" },
-    });
-    expect(workerProviderOptions("deepseek")).toEqual({
-      deepseek: { thinking: { type: "disabled" } },
-    });
-  });
-
-  it("defaults to the DeepSeek shape for an unknown sdk", () => {
-    expect(workerProviderOptions(undefined)).toEqual({
-      deepseek: { thinking: { type: "disabled" } },
-    });
-  });
 });
 
 // ─── resolveWorkerModel ───────────────────────────────────────────────────

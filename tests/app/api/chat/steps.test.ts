@@ -54,36 +54,54 @@ const episodic = vi.hoisted(() => ({
 // The inline card evolution is mocked at its module boundary so boundary
 // gating can be asserted directly.
 const evolution = vi.hoisted(() => ({
-  runCardEvolution: vi.fn(async () => ({
-    ran: true,
-    changed: false,
-    droppedRecent: 0,
-    note: "reviewed",
-  })),
+  runCardEvolution: vi.fn(
+    async (_input: {
+      onProgress?: (step: "reading" | "reviewing" | "applied") => void;
+      onEvolutionLine?: (line: string, stage: "thinking" | "writing") => void;
+    }): Promise<{
+      ran: boolean;
+      changed: boolean;
+      droppedRecent: number;
+      note: string;
+      summary?: string;
+      partial?: boolean;
+      error?: string;
+    }> => ({ ran: true, changed: false, droppedRecent: 0, note: "reviewed" }),
+  ),
 }));
 vi.mock("@/app/api/evolution/run-card-evolution", () => evolution);
 
-let timeSilent = false;
+let sliceAged = false;
 
 vi.mock("@/lib/episodic", () => episodic);
 vi.mock("@/lib/episodic/flash/backfill-marks", () => ({
   backfillDrySliceMarks: vi.fn(async () => 0),
 }));
 vi.mock("@/lib/episodic/slicer", () => ({
-  checkTimeSilence: () => timeSilent,
+  checkSliceAge: () => sliceAged,
 }));
 
-// Mock AI SDK for Flash tag extraction in housekeeping
+// Mock AI SDK for Flash tag extraction in housekeeping (and any sub-agent
+// going through the unified runner, which streams via streamText).
 vi.mock("ai", async () => {
   const actual = await vi.importActual("ai");
   return {
     ...actual,
     generateText: vi.fn(async () => ({ toolCalls: [] })),
+    streamText: vi.fn(async () => ({
+      text: Promise.resolve(""),
+      toolCalls: Promise.resolve([]),
+      reasoningText: Promise.resolve(undefined),
+      sources: Promise.resolve([]),
+      warnings: Promise.resolve([]),
+    })),
   };
 });
 
-vi.mock("@ai-sdk/deepseek", () => ({
-  deepseek: vi.fn((id: string) => ({ modelId: id })),
+vi.mock("@ai-sdk/openai-compatible", () => ({
+  createOpenAICompatible: vi.fn(
+    () => (id: string) => ({ modelId: id }),
+  ),
 }));
 
 // The run's writable: collects everything written for assertions.
@@ -143,24 +161,12 @@ function makeInput(lastUserMessage: string, overrides: Partial<TurnInput> = {}):
       defaultThinking: false,
       defaultEffort: "low",
     },
-    workerModel: {
-      id: "deepseek-v4-flash",
-      name: "DeepSeek V4 Flash",
-      provider: "deepseek",
-      providerName: "DeepSeek",
-      sdk: "deepseek",
-      envKey: "DEEPSEEK_API_KEY",
-      capabilities: { thinking: true, vision: false, maxTokens: 393216 },
-      defaultThinking: false,
-      defaultEffort: "low",
-    },
     thinking: true,
     reasoningEffort: "medium" as const,
     clientTimezone: "UTC",
     locale: "en",
     config: {
-      slicing: { maxTurnsPerSlice: 40, timeSilenceMinutes: 30 },
-      context: { recentTurnsLimit: 20 },
+      slicing: { maxSliceMinutes: 30, maxTurnsPerSlice: 40 },
       model: { provider: "deepseek-v4-flash", thinking: true, reasoningEffort: "medium" as const },
       worker: { mode: "auto" as const, provider: "" },
     },
@@ -177,7 +183,7 @@ function makeInput(lastUserMessage: string, overrides: Partial<TurnInput> = {}):
 beforeEach(() => {
   vi.clearAllMocks();
   workflowMock.written.length = 0;
-  timeSilent = false;
+  sliceAged = false;
 });
 
 describe("housekeeping step", () => {
@@ -194,10 +200,10 @@ describe("housekeeping step", () => {
     expect(episodic.upsertTimelineEntry).toHaveBeenCalledWith(slice, expect.anything());
     expect(episodic.appendTurn).not.toHaveBeenCalled();
 
-    // 8 compact housekeeping phases (slice/tags/context/strands × running+done)
-    // then the stream lifecycle chunks.
+    // 10 compact housekeeping phases (slice/analyze/tags/context/strands ×
+    // running+done) then the stream lifecycle chunks.
     expect(workflowMock.written.map((c) => c.type)).toEqual([
-      ...Array(8).fill("data-phase"),
+      ...Array(10).fill("data-phase"),
       "start",
       "start-step",
     ]);
@@ -206,6 +212,8 @@ describe("housekeeping step", () => {
       .map((c) => (c.data as { phase: string; running: boolean; compact?: boolean }));
     expect(phases.map((p) => `${p.phase}:${p.running}`)).toEqual([
       "slice:true",
+      "analyze:true",
+      "analyze:false",
       "tags:true",
       "tags:false",
       "slice:false",
@@ -244,8 +252,8 @@ describe("housekeeping step", () => {
     expect(episodic.upsertTimelineEntry).not.toHaveBeenCalled();
   });
 
-  it("closes a stale slice on time silence and starts a new one", async () => {
-    timeSilent = true;
+  it("closes an over-age slice on time_cap and starts a new one", async () => {
+    sliceAged = true;
     const disk = makeSlice({ turns: [{ timestamp: "t0", role: "user", content: "old" }] });
     episodic.tryLoadTodaySlice.mockResolvedValue(disk);
     episodic.createSlice.mockImplementation((msg: string) =>
@@ -254,7 +262,7 @@ describe("housekeeping step", () => {
 
     const { slice } = await housekeeping(makeInput("new topic"));
 
-    expect(episodic.closeSlice).toHaveBeenCalledWith(disk, "time_silence", expect.anything());
+    expect(episodic.closeSlice).toHaveBeenCalledWith(disk, "time_cap", expect.anything());
     expect(slice.slice_id).toBe("2026-07-14-1000");
   });
 
@@ -309,7 +317,7 @@ describe("housekeeping step", () => {
 
 describe("housekeeping boundary evolution gating", () => {
   function setupClosingSlice() {
-    timeSilent = true;
+    sliceAged = true;
     const disk = makeSlice({
       turns: [
         { timestamp: "t0", role: "user", content: "old" },
@@ -395,6 +403,79 @@ describe("housekeeping boundary evolution gating", () => {
     } finally {
       episodic.readCurrentPreviously.mockResolvedValue("");
     }
+  });
+
+  it("streams throttled live thinking lines on data-evolution, one merged id", async () => {
+    setupClosingSlice();
+    mockAnalysis({ worth: true, reason: "a durable preference was stated" });
+    evolution.runCardEvolution.mockImplementationOnce(async (input) => {
+      input.onProgress?.("reading");
+      input.onEvolutionLine?.("比较卡片", "thinking"); // sent — first line
+      input.onEvolutionLine?.("比较卡片中", "thinking"); // dropped — inside 40ms, longer
+      await new Promise((r) => setTimeout(r, 60));
+      input.onEvolutionLine?.("比较卡片中…", "thinking"); // sent — throttle elapsed
+      input.onEvolutionLine?.("落笔", "writing"); // sent — stage change forces
+      input.onProgress?.("reviewing");
+      return { ran: true, changed: false, droppedRecent: 0, note: "reviewed" };
+    });
+
+    await housekeeping(makeInput("wrapping up"));
+
+    const evo = workflowMock.written.filter((c) => c.type === "data-evolution");
+    // The standalone streaming card: every evolution chunk shares ONE id.
+    expect(evo.length).toBeGreaterThan(0);
+    expect(evo.every((c) => c.id === "evolution")).toBe(true);
+
+    const live = evo
+      .map((c) => c.data as { live?: string; liveStage?: string })
+      .filter((d) => d.live);
+    expect(live.map((d) => d.live)).toEqual(["比较卡片", "比较卡片中…", "落笔"]);
+    expect(live.map((d) => d.liveStage)).toEqual([
+      "thinking",
+      "thinking",
+      "writing",
+    ]);
+    // Live frames ride the current phase step and keep the legacy running key.
+    expect(live[0]).toMatchObject({
+      running: true,
+      status: "running",
+      step: "reading",
+    });
+
+    // The terminal frame: status done, legacy keys intact.
+    const terminal = evo.at(-1)!.data as Record<string, unknown>;
+    expect(terminal).toMatchObject({
+      running: false,
+      status: "done",
+      hasChanges: false,
+      note: "reviewed",
+    });
+  });
+
+  it("flags the terminal chunk partial when the pass was cut off", async () => {
+    setupClosingSlice();
+    mockAnalysis({ worth: true, reason: "a durable preference was stated" });
+    evolution.runCardEvolution.mockResolvedValueOnce({
+      ran: true,
+      changed: true,
+      droppedRecent: 0,
+      note: "[partial] step limit reached without finish",
+      summary: "记下了面试",
+      partial: true,
+    });
+
+    await housekeeping(makeInput("wrapping up"));
+
+    const terminal = workflowMock.written
+      .filter((c) => c.type === "data-evolution")
+      .at(-1);
+    expect(terminal?.id).toBe("evolution");
+    expect(terminal?.data).toMatchObject({
+      status: "done",
+      partial: true,
+      hasChanges: true,
+      summary: "记下了面试",
+    });
   });
 });
 
