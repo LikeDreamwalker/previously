@@ -17,6 +17,11 @@
  *   - startTurn (api/chat/start-turn) — the authoritative enforcement; the
  *     per-request client overrides are ignored while locked
  *
+ * NOTE: because the project uses a Vercel ignore-command that skips builds when
+ * only data files change, updating these environment variables may not trigger
+ * an automatic redeploy. After changing DEMO_LOCK / DEMO_MODEL / DEMO_EFFORT,
+ * push a code change or manually redeploy so the new values reach the runtime.
+ *
  * Defaults target the cheapest vision-capable DeepSeek tier so demo image
  * uploads work; override with DEMO_MODEL / DEMO_EFFORT when DeepSeek retires
  * the exp id.
