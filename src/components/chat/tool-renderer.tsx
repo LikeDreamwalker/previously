@@ -6,8 +6,8 @@ import { MemoryToolRenderer } from "./tool-renderers/memory-tool";
 import { RecallToolRenderer } from "./tool-renderers/recall";
 import { WebSearchRenderer } from "./tool-renderers/web-search";
 import { WebFetchRenderer } from "./tool-renderers/web-fetch";
-import { LoopToolRenderer } from "./tool-renderers/loop";
 import { ThinkDeepToolRenderer } from "./tool-renderers/think-deep";
+import { CurrentTimeRenderer } from "./tool-renderers/current-time";
 import { DefaultRenderer } from "./tool-renderers/default";
 
 interface ToolRendererProps {
@@ -56,6 +56,13 @@ export function ToolRenderer({ toolName, state, input, output, streamingText, st
           state={renderState}
         />
       );
+    case "currentTime":
+      return (
+        <CurrentTimeRenderer
+          output={output}
+          state={renderState}
+        />
+      );
     case "webSearch":
       return (
         <WebSearchRenderer
@@ -85,18 +92,6 @@ export function ToolRenderer({ toolName, state, input, output, streamingText, st
           state={renderState}
           streamingText={streamingText}
           streamingStage={streamingStage}
-        />
-      );
-    case "startLoop":
-      return (
-        <LoopToolRenderer
-          input={input as { goal?: string; tags?: string[] } | undefined}
-          output={
-            output as
-              | { ok?: boolean; loopId?: string; filePath?: string; error?: string }
-              | undefined
-          }
-          state={renderState}
         />
       );
     case "thinkDeep":

@@ -21,6 +21,7 @@ import {
   isBridgeBrainActive,
 } from "@/lib/models/registry";
 import { detectLocalAgents, type AgentDetection } from "@/lib/client-detect";
+import { demoModelLock } from "@/lib/demo/model-lock";
 
 export const dynamic = "force-dynamic";
 
@@ -39,7 +40,17 @@ async function detectAgentsCached(): Promise<AgentDetection[]> {
 }
 
 export async function GET(): Promise<Response> {
-  const models = await resolveAvailableModels();
+  let models = await resolveAvailableModels();
+
+  // Demo mode: only the locked model is usable (startTurn enforces it), so the
+  // selector shouldn't offer choices the server would ignore. If the locked
+  // model isn't available in this deployment (e.g. no DeepSeek key), fall back
+  // to the full list rather than an empty picker.
+  const lock = demoModelLock();
+  if (lock) {
+    const locked = models.filter((m) => m.id === lock.model);
+    if (locked.length > 0) models = locked;
+  }
 
   // Probe the local agent CLIs only when bridge entries are actually listed.
   const detected = models.some((m) => m.provider === "bridge")

@@ -57,6 +57,8 @@
     "input": {
       "placeholder": "发送消息…",
       "attach": "附件",
+      "attachUnsupported": "当前模型不支持图片输入",
+      "effortLocked": "演示模式下思维强度已固定",
       "settingsTooltip": "设置",
       "stopTooltip": "停止生成",
       "sendTooltip": "发送消息",
@@ -70,14 +72,9 @@
       },
       "bridgeHint": "使用你本地的 {agent} 订阅额度。为获得最佳体验(流式输出、工具调用),建议改用 API 模型。",
       "bridgeNotInstalled": "未安装",
-      "thinkingLabel": "深度思考",
-      "advanced": "高级",
-      "workerLabel": "辅助模型",
-      "workerSameAsAgent": "和主 agent 保持一致",
-      "workerSameAsAgentDesc": "辅助模型负责轻量内部任务(回忆、标记、切片)。开启时跟随主模型同提供方的轻量模型。",
-      "workerModelLabel": "辅助模型",
-      "workerSave": "保存"
+      "thinkingLabel": "深度思考"
     },
+    "attachment": "附件",
     "actions": {
       "copy": "复制",
       "copied": "已复制",
@@ -97,6 +94,7 @@
       "readStrandDone": "查找了关于「{name}」的线索",
       "readPreviously": "查看前情提要…",
       "readAgentTimeline": "查看思考过程…",
+      "currentTime": "看了看表",
       "recallRunning": "正在回忆关于「{query}」的内容…",
       "recallDone": "回忆起 {count} 段关于「{query}」的对话",
       "recallHits": "找到 {count} 段相关对话",
@@ -114,7 +112,6 @@
       "listRunning": "正在浏览…",
       "listDone": "找到 {count} 项",
       "sources": "{count} 个来源",
-      "startLoop": "启动后台循环",
       "thinkDeep": "推理片段",
       "thinkDeepRunning": "正在推理「{question}」…",
       "thinkDeepDone": "推理完成「{question}」",
@@ -130,8 +127,6 @@
       "demoted": "降级",
       "removed": "移除",
       "superseded": "替代",
-      "loopFile": "循环文件",
-      "loopId": "循环 ID",
       "items": "{count} 项",
       "conversations": "{count} 次对话"
     },
@@ -158,7 +153,8 @@
       "previouslyOn": "前情提要",
       "clickToView": "点击查看",
       "thoughts": "思考",
-      "applied": "正在应用更新..."
+      "applied": "正在应用更新...",
+      "partial": "（部分更新）"
     },
     "phase": {
       "thinking": "正在思考…",
@@ -177,6 +173,8 @@
       "viewPreviously": "查看 previously.md →",
       "previouslyTitle": "前情提要 · Previously.md",
       "slice": "管理时间片…",
+      "analyze": "分析本轮…",
+      "analyzed": "本轮已分析",
       "tags": "提取标签…",
       "tagged": "标签已提取",
       "context": "加载你的档案…",
@@ -204,7 +202,7 @@
       "backgroundDone": "你的回答已就绪"
     },
     "loadingTips": [
-      "你的对话被切成时间片——静默 30 分钟自动收束，开启新的一片",
+      "你的对话被切成时间片——一片进行 30 分钟自动收束，开启新的一片",
       "agent 在你离开之后才开始工作——不是一直在线，回来的时候结果已经等着了",
       "每个时间片都是纯 Markdown 文件——人能读、git 能对比、不绑定任何专有格式",
       "GitHub 就是唯一的数据库——你的记忆存在你自己的仓库里，没有外部存储",
@@ -282,9 +280,8 @@
     "config": {
       "heading": "Agent 行为",
       "desc": "调整 Agent 的切片、回忆和上下文管理方式。保存到你的记忆仓库中，无需重新部署。",
-      "maxTurnsPerSlice": "每切片最大轮数",
-      "timeSilenceMinutes": "静默超时（分钟）",
-      "recentTurnsLimit": "上下文中的最近轮数",
+      "maxSliceMinutes": "切片时长（分钟）",
+      "maxTurnsPerSlice": "片内容量上限（安全阀）",
       "save": "保存配置",
       "saving": "保存中...",
       "saved": "已保存 ✓",

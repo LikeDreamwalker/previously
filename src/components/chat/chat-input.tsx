@@ -48,11 +48,15 @@ function effortLabel(level: EffortLevel, modelId: string): string {
 }
 
 interface ChatInputProps {
-  onSubmit: (message: string) => void;
+  onSubmit: (message: string, images: File[]) => void;
   isLoading: boolean;
   onStop?: () => void;
   onDemo?: () => void;
   demoRunning?: boolean;
+  /** Whether the selected model accepts image inputs (from /api/models). */
+  visionEnabled?: boolean;
+  /** Demo mode: model + thinking intensity are pinned server-side. */
+  demoLocked?: boolean;
   // Model + thinking/effort — owned by ChatPage so the request body and the
   // toolbar stay in sync. ChatInput renders the controls, ChatPage persists.
   currentModelId: string;
@@ -69,6 +73,8 @@ export function ChatInput({
   onStop,
   onDemo,
   demoRunning = false,
+  visionEnabled = false,
+  demoLocked = false,
   currentModelId,
   currentEffort,
   thinking,
@@ -100,12 +106,7 @@ export function ChatInput({
     if (!trimmed && images.length === 0) return;
     if (isLoading) return;
 
-    let message = trimmed;
-    if (images.length > 0) {
-      message = trimmed ? `${trimmed}` : "";
-    }
-
-    onSubmit(message);
+    onSubmit(trimmed, visionEnabled ? images : []);
     setValue("");
     clearImages();
     if (textareaRef.current) {
@@ -165,10 +166,10 @@ export function ChatInput({
   return (
     <div
       className={`overflow-hidden rounded-2xl bg-muted transition-colors ${isDragOver ? "ring-2 ring-blue-500/50" : ""}`}
-      onPaste={handlePaste}
-      onDrop={onDrop}
-      onDragOver={onDragOver}
-      onDragLeave={onDragLeave}
+      onPaste={visionEnabled ? handlePaste : undefined}
+      onDrop={visionEnabled ? onDrop : undefined}
+      onDragOver={visionEnabled ? onDragOver : undefined}
+      onDragLeave={visionEnabled ? onDragLeave : undefined}
     >
       {/* Image previews */}
       {images.length > 0 && (
@@ -211,20 +212,23 @@ export function ChatInput({
       <div className="flex items-center justify-between gap-2 px-3 pb-2">
         {/* Left side */}
         <div className="flex min-w-0 items-center gap-2">
-          {/* Attach */}
+          {/* Attach — gated on the selected model's vision capability */}
           <Tooltip>
             <TooltipTrigger
               render={
                 <button
                   type="button"
+                  disabled={!visionEnabled}
                   onClick={() => fileInputRef.current?.click()}
-                  className="h-7 w-7 rounded-full text-muted-foreground hover:text-foreground hover:bg-brand/10 transition-colors flex items-center justify-center"
+                  className="h-7 w-7 rounded-full text-muted-foreground hover:text-foreground hover:bg-brand/10 transition-colors flex items-center justify-center disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
                 >
                   <Paperclip className="h-3.5 w-3.5" />
                 </button>
               }
             />
-            <TooltipContent side="top">{t("attach")}</TooltipContent>
+            <TooltipContent side="top">
+              {visionEnabled ? t("attach") : t("attachUnsupported")}
+            </TooltipContent>
           </Tooltip>
           <input
             ref={fileInputRef}
@@ -268,8 +272,9 @@ export function ChatInput({
             onThinkingChange={onThinkingChange}
           />
 
-          {/* Thinking intensity — hidden for bridge models: the subscription
-              bridge has no reasoning knobs (see effort-injector.ts). */}
+          {/* Thinking intensity — pinned in demo mode (demoLocked); hidden for
+              bridge models: the subscription bridge has no reasoning knobs
+              (see effort-injector.ts). */}
           {!currentModelId.startsWith("bridge/") && (
             <Tooltip>
               <TooltipTrigger
@@ -277,7 +282,7 @@ export function ChatInput({
                   <button
                     type="button"
                     onClick={cycleEffort}
-                    disabled={isLoading || demoRunning}
+                    disabled={isLoading || demoRunning || demoLocked}
                     className="h-7 rounded-full text-muted-foreground hover:text-foreground hover:bg-brand/10 transition-colors flex items-center justify-center gap-1 px-2 disabled:opacity-30"
                   >
                     <Zap className="h-3 w-3" />
@@ -288,7 +293,9 @@ export function ChatInput({
                 }
               />
               <TooltipContent side="top">
-                Thinking: {effortLabel(currentEffort, currentModelId)} — click to cycle
+                {demoLocked
+                  ? t("effortLocked")
+                  : `Thinking: ${effortLabel(currentEffort, currentModelId)} — click to cycle`}
               </TooltipContent>
             </Tooltip>
           )}

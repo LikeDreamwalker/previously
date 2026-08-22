@@ -1,12 +1,10 @@
 /**
  * Worker model resolution — the "auxiliary" tier behind the chat agent.
  *
- * The chat's main model is user-selected (and user-visible). But several
- * internal calls run a separate, cheaper model: housekeeping tag extraction +
- * slice marking, recall search, belief evolution, and background loops. These
- * used to be hardcoded to `deepseek(...)`, which broke the moment a user
- * configured a non-DeepSeek provider. This module resolves the worker from the
- * user's config:
+ * The chat's main model is user-selected (and user-visible). Internal calls
+ * historically ran on a separate, cheaper worker model hardcoded to
+ * `deepseek(...)`, which broke the moment a user configured a non-DeepSeek
+ * provider. This module resolves the worker from the user's config:
  *
  *   manual pin  → the explicitly chosen model (config.worker.mode = "manual")
  *   auto        → a lightweight model from the SAME provider as the main model
@@ -14,19 +12,27 @@
  *                 from the models.dev catalog otherwise)
  *   fallback    → the main model itself (same provider, always correct)
  *
- * Single brain switch (client mode, PREVIOUSLY_BRAIN=bridge): when the main
- * model runs on the local subscription bridge, EVERYTHING uses the bridge —
- * the worker tier is the SAME bridge model as the main chat, not a separate
- * configuration. A manual pin is still honored when set (the escape hatch);
- * only the auto path defers to the bridge.
+ * v0.9: every sub-agent (evolution, recall, housekeeping) moved to the MAIN
+ * model via the unified sub-agent runner (src/lib/agents/sub-agent-runner.ts)
+ * with thinking ON at a low effort, so `resolveWorkerModel` currently has NO
+ * production caller — it is retained as a config-level escape hatch. The
+ * settings-UI worker pin was removed with v0.9 (dead setting); the
+ * `config.worker` field itself stays so a manual pin can still be set by
+ * hand-editing memory/user/config.json. The old `workerProviderOptions`
+ * ("thinking disabled" provider options) was removed with its last call site;
+ * thinking-effort mapping now lives in effort-injector.ts
+ * (`normalizeReasoningEffort`).
  *
- * Also provides `workerProviderOptions`: the "thinking disabled" provider
- * options shape per SDK, since worker calls are always cheap structured tasks.
+ * Single brain switch (client mode, PREVIOUSLY_BRAIN=bridge): when the main
+ * model runs on the local subscription bridge, the sub-agents automatically
+ * run on the SAME bridge model — the unified runner resolves the turn's main
+ * model, which IS the bridge model. `resolveWorkerModel` below still encodes
+ * that invariant for its remaining callers (tests / the escape hatch): a
+ * manual pin wins when set, otherwise a bridge main model is returned as-is.
  */
 import { getModel, getDefaultModelId, ALL_MODELS, type ModelConfig } from "./registry";
 import { resolveAvailableModels } from "./catalog";
 import { loadUserConfig } from "@/lib/config/loader";
-import type { ProviderSdk } from "./providers";
 
 /** Curated cheap model per provider (only for providers with curated registry entries). */
 const WORKER_IDS: Record<string, string> = {
@@ -94,31 +100,4 @@ export async function resolveWorkerModel(
   if (light) return light;
 
   return mainModel;
-}
-
-// ─── Thinking-disabled provider options (worker runs structured tasks) ────
-
-type JsonValue = string | number | boolean | null | JsonObject | JsonValue[];
-interface JsonObject {
-  [key: string]: JsonValue;
-}
-type WorkerProviderOptions = Record<string, JsonObject>;
-
-/**
- * Provider options with thinking/reasoning OFF, shaped per SDK. Worker calls
- * (tag extraction, marking, recall, evolution, loops) are always cheap
- * structured tasks — never long-form reasoning.
- */
-export function workerProviderOptions(
-  sdk: ProviderSdk | undefined,
-): WorkerProviderOptions | undefined {
-  switch (sdk) {
-    case "anthropic":
-      return { anthropic: { thinking: { type: "disabled" } } };
-    case "openai":
-      return { openai: { reasoningEffort: "minimal" } };
-    default:
-      // DeepSeek (default) — V4 defaults to thinking ENABLED, so "off" explicit.
-      return { deepseek: { thinking: { type: "disabled" } } };
-  }
 }

@@ -5,20 +5,21 @@
  * workflow→step boundary (into `doStreamStep`). Two problems with the stock
  * setup, both fixed here:
  *
- * 1. The withWorkflow compiler inlines the class registration for
- *    `DeepSeekChatLanguageModel` into the workflow (flow) bundle only, so the
- *    step route can't deserialize the model at all ("Class … not found").
- * 2. Even with the class registered, @ai-sdk/deepseek's own
- *    `WORKFLOW_DESERIALIZE` re-news the class with the serialized config —
- *    which necessarily dropped the non-serializable `url`/`fetch` functions
+ * 1. The withWorkflow compiler inlines the model-class registration into the
+ *    workflow (flow) bundle only, so the step route can't deserialize the
+ *    model at all ("Class … not found") — hence this file, imported from the
+ *    step bundle.
+ * 2. Even with the class registered, each SDK's own `WORKFLOW_DESERIALIZE`
+ *    re-news the class with the serialized config — which necessarily dropped
+ *    the non-serializable `url`/`headers`/`fetch` closures
  *    (`serializeModelOptions` keeps JSON-safe values only), so the first
  *    request dies with "this.config.url is not a function".
  *
- * So instead of the broken stock deserializer we register a host whose
- * deserializer REBUILDS the model through the `deepseek()` factory: the
- * serialized payload's `modelId` is all it needs, and the factory restores a
- * complete config (baseURL, auth headers from DEEPSEEK_API_KEY, url/fetch)
- * from the step runtime's environment.
+ * So instead of the broken stock deserializers we register hosts whose
+ * deserializer REBUILDS the model through each provider's factory: the
+ * serialized payload's `modelId` plus whatever JSON-safe config survived are
+ * all it needs, and the factory restores a complete config (baseURL, auth
+ * headers from the env key, url/fetch) from the step runtime's environment.
  *
  * Imported for its side effect from ./tool-executors.ts, which the loader
  * compiles into the step bundle — so registration runs on every step-route
@@ -28,11 +29,11 @@
  * The version comes from the installed package.json, so upgrades stay in sync.
  */
 import { registerSerializationClass } from "workflow/internal/class-serialization";
-import { deepseek } from "@ai-sdk/deepseek";
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAI } from "@ai-sdk/openai";
 import { BridgeChatLanguageModel } from "@/lib/models/bridge-model";
-import deepseekPkg from "@ai-sdk/deepseek/package.json";
+import openaiCompatiblePkg from "@ai-sdk/openai-compatible/package.json";
 import anthropicPkg from "@ai-sdk/anthropic/package.json";
 import openaiPkg from "@ai-sdk/openai/package.json";
 
@@ -45,17 +46,38 @@ interface SerializedModelOptions {
   config: Record<string, unknown>;
 }
 
-// The registry only requires a Function carrying the deserialize symbol; the
-// name is cosmetic. All DeepSeek V4 model ids share this class.
-function DeepSeekChatLanguageModelHost(): void {}
+// DeepSeek — built via @ai-sdk/openai-compatible (the dedicated
+// @ai-sdk/deepseek SDK silently dropped image parts; see provider.ts). Its
+// serialized config keeps only JSON-safe values: `provider` ("deepseek.chat")
+// survives, while baseURL and apiKey live inside the dropped url/headers
+// closures — so the rebuild recovers the provider name from `config.provider`
+// (fallback "deepseek"; DeepSeek is the only user of this class) and re-reads
+// the key from DEEPSEEK_API_KEY in the step runtime's environment.
+function OpenAICompatibleChatLanguageModelHost(): void {}
 (
-  DeepSeekChatLanguageModelHost as unknown as Record<symbol, unknown>
-)[WORKFLOW_DESERIALIZE] = (options: SerializedModelOptions) =>
-  deepseek(options.modelId);
+  OpenAICompatibleChatLanguageModelHost as unknown as Record<symbol, unknown>
+)[WORKFLOW_DESERIALIZE] = (options: SerializedModelOptions) => {
+  const cfg = (options.config ?? {}) as Record<string, unknown>;
+  const name =
+    typeof cfg.provider === "string" && cfg.provider
+      ? cfg.provider.split(".")[0]
+      : "deepseek";
+  return createOpenAICompatible({
+    name,
+    baseURL:
+      typeof cfg.baseURL === "string" && cfg.baseURL
+        ? cfg.baseURL
+        : "https://api.deepseek.com",
+    apiKey:
+      typeof cfg.apiKey === "string" && cfg.apiKey
+        ? cfg.apiKey
+        : process.env.DEEPSEEK_API_KEY,
+  })(options.modelId);
+};
 
 registerSerializationClass(
-  `class//@ai-sdk/deepseek@${deepseekPkg.version}//DeepSeekChatLanguageModel`,
-  DeepSeekChatLanguageModelHost
+  `class//@ai-sdk/openai-compatible@${openaiCompatiblePkg.version}//OpenAICompatibleChatLanguageModel`,
+  OpenAICompatibleChatLanguageModelHost
 );
 
 // Anthropic — same rebuild-through-factory pattern, keyed on the SDK's actual

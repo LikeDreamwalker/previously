@@ -1,17 +1,58 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
+
+// runRecallSearch runs on the unified sub-agent runner — mock it so tests
+// drive structured runner results instead of real model calls. fsReadFile is
+// stubbed so the per-run catalog load fails closed (validSliceIds = null,
+// meaning "skip hallucination filtering").
+const runner = vi.hoisted(() => ({ runSubAgent: vi.fn() }));
+vi.mock("@/lib/agents/sub-agent-runner", () => ({
+  runSubAgent: runner.runSubAgent,
+}));
+vi.mock("@/lib/episodic/io-helpers", () => ({
+  fsReadFile: vi.fn(async () => {
+    throw new Error("no catalog in tests");
+  }),
+}));
+
 import {
   prepareRecallStep,
   paginateTimelineEntries,
   paginateTimelineMarkdown,
   filterKnownSliceIds,
   excludeCurrentSlice,
+  runRecallSearch,
   MAX_STEPS,
 } from "@/lib/episodic/flash/recall";
+import type { ModelConfig } from "@/lib/models/registry";
 import type { TimelineSliceEntry } from "@/lib/episodic/timeline/types";
 
 afterEach(() => {
   vi.restoreAllMocks();
 });
+
+const testModel: ModelConfig = {
+  id: "deepseek-v4-pro",
+  name: "DeepSeek V4 Pro",
+  provider: "deepseek",
+  providerName: "DeepSeek",
+  sdk: "deepseek",
+  envKey: "DEEPSEEK_API_KEY",
+  capabilities: { thinking: true, vision: false, maxTokens: 393216 },
+  defaultThinking: true,
+  defaultEffort: "medium",
+};
+
+function recallInput(query = "q") {
+  return {
+    query,
+    currentSliceId: "2026-08-05-1644",
+    owner: "o",
+    repo: "r",
+    useGithub: false,
+    useDemo: false,
+    model: testModel,
+  };
+}
 
 function entry(id: string): TimelineSliceEntry {
   return {
@@ -176,5 +217,133 @@ describe("recall result pipeline", () => {
       valid,
     );
     expect(result.map((h) => h.slice_id)).toEqual(["2026-08-01-1000"]);
+  });
+});
+
+// ─── runRecallSearch on the unified runner ──────────────────────────────
+
+describe("runRecallSearch", () => {
+  it("passes the shared-base system, dynamic user prompt, step cap and prepareStep to the runner", async () => {
+    runner.runSubAgent.mockResolvedValue({
+      ok: true,
+      report: {
+        hits: [],
+        confidence: 0.5,
+        reasoning: "nothing",
+        recommended_reads: [],
+      },
+      text: "",
+    });
+
+    await runRecallSearch(recallInput("when did we discuss caching?"));
+
+    expect(runner.runSubAgent).toHaveBeenCalledTimes(1);
+    const opts = runner.runSubAgent.mock.calls[0]![0];
+    expect(opts.model).toBe(testModel);
+    expect(opts.system).toContain("recall search engine");
+    expect(opts.system).toContain("sub-agent of the Previously memory system");
+    expect(opts.prompt).toContain('Search query: "when did we discuss caching?"');
+    expect(opts.prompt).toContain("2026-08-05-1644");
+    expect(opts.prompt).not.toContain("sub-agent of the Previously");
+    expect(opts.maxSteps).toBe(MAX_STEPS);
+    expect(opts.timeoutMs).toBe(120_000);
+    expect(opts.reportToolName).toBe("recallReport");
+    expect(opts.prepareStep).toBe(prepareRecallStep);
+    expect(Object.keys(opts.tools)).toEqual([
+      "readGlobalTimeline",
+      "readStrand",
+      "readTimelineWindow",
+      "recallReport",
+    ]);
+  });
+
+  it("maps the report through the exclusion pipeline", async () => {
+    runner.runSubAgent.mockResolvedValue({
+      ok: true,
+      report: {
+        hits: [
+          { slice_id: "2026-08-01-1000", relevance: 0.9, reason: "past match" },
+          { slice_id: "2026-08-05-1644", relevance: 0.8, reason: "current" },
+        ],
+        confidence: 0.8,
+        reasoning: "found things",
+        recommended_reads: [
+          { slice_id: "2026-08-01-1000", priority: "high", reason: "direct" },
+        ],
+      },
+      text: "",
+    });
+
+    const out = await runRecallSearch(recallInput());
+    expect(out.hits.map((h) => h.slice_id)).toEqual(["2026-08-01-1000"]);
+    expect(out.recommendedReads).toEqual([
+      { slice_id: "2026-08-01-1000", priority: "high", reason: "direct", note: undefined },
+    ]);
+    expect(out.reasoning).toContain("[Excluded current slice 2026-08-05-1644");
+  });
+
+  it("zeros confidence when the only hits were the current slice", async () => {
+    runner.runSubAgent.mockResolvedValue({
+      ok: true,
+      report: {
+        hits: [{ slice_id: "2026-08-05-1644", relevance: 0.9, reason: "self" }],
+        confidence: 0.9,
+        reasoning: "only itself",
+        recommended_reads: [],
+      },
+      text: "",
+    });
+    const out = await runRecallSearch(recallInput());
+    expect(out.hits).toEqual([]);
+    expect(out.confidence).toBe(0);
+  });
+
+  it("falls back to the text fragment when recallReport was never called", async () => {
+    runner.runSubAgent.mockResolvedValue({
+      ok: true,
+      report: undefined,
+      text: "I could not find anything relevant",
+    });
+    const out = await runRecallSearch(recallInput());
+    expect(out.hits).toEqual([]);
+    expect(out.confidence).toBe(0);
+    expect(out.reasoning).toContain("Model responded without calling recallReport");
+  });
+
+  it("degrades a timeout to an empty result instead of throwing", async () => {
+    runner.runSubAgent.mockResolvedValue({
+      ok: false,
+      timedOut: true,
+      text: "",
+      error: "Sub-agent did not finish within 120s.",
+    });
+    const out = await runRecallSearch(recallInput());
+    expect(out.hits).toEqual([]);
+    expect(out.confidence).toBe(0);
+    expect(out.reasoning).toContain("120s");
+  });
+
+  it("re-throws non-timeout failures so the executor can triage transient errors for step retry", async () => {
+    // Transient (429) — must propagate: a catch-all here would swallow an
+    // error the workflow step's auto-retry could fix.
+    runner.runSubAgent.mockResolvedValue({
+      ok: false,
+      text: "",
+      error: "HTTP 429 Too Many Requests",
+    });
+    await expect(runRecallSearch(recallInput())).rejects.toThrow(
+      "HTTP 429 Too Many Requests",
+    );
+
+    // Deterministic failures also propagate — the EXECUTOR's triage
+    // (tool-triage.ts) turns them into the empty-result degradation.
+    runner.runSubAgent.mockResolvedValue({
+      ok: false,
+      text: "",
+      error: "InvalidToolInputError: recallReport input failed validation",
+    });
+    await expect(runRecallSearch(recallInput())).rejects.toThrow(
+      "InvalidToolInputError",
+    );
   });
 });

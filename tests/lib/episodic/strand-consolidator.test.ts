@@ -1,19 +1,27 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const ai = vi.hoisted(() => ({ generateText: vi.fn() }));
+const ai = vi.hoisted(() => ({ streamText: vi.fn() }));
 vi.mock("ai", async () => {
   const actual = await vi.importActual("ai");
-  return { ...actual, generateText: ai.generateText };
+  return { ...actual, streamText: ai.streamText };
 });
 vi.mock("@/lib/models/provider", () => ({
   createModel: vi.fn((c: unknown) => ({ _mock: c })),
 }));
-vi.mock("@/lib/models/worker", () => ({
-  workerProviderOptions: vi.fn(() => ({})),
-}));
 
 import { consolidateStrands } from "@/lib/episodic/flash/strand-consolidator";
 import type { ModelConfig } from "@/lib/models/registry";
+
+/** A StreamTextResult stand-in resolving to the given tool calls. */
+function streamWith(toolCalls: Array<{ toolName: string; input: unknown }>) {
+  return {
+    text: Promise.resolve(""),
+    toolCalls: Promise.resolve(toolCalls),
+    reasoningText: Promise.resolve(undefined),
+    sources: Promise.resolve([]),
+    warnings: Promise.resolve([]),
+  };
+}
 
 const model: ModelConfig = {
   id: "deepseek-v4-flash",
@@ -53,7 +61,7 @@ describe("consolidateStrands", () => {
     expect(result.llmPassSkipped).toBe(true);
     expect(result.pruned).toEqual(["stale"]);
     expect(result.strands).toEqual({ fresh: ["2026/08/06/0800"] });
-    expect(ai.generateText).not.toHaveBeenCalled();
+    expect(ai.streamText).not.toHaveBeenCalled();
   });
 
   it("applies worker-proposed merges and removes the from key", async () => {
@@ -61,8 +69,8 @@ describe("consolidateStrands", () => {
     strands["陈勇超"] = ["2026/08/02/0952"];
     strands["陈永超"] = ["2026/08/02/1050"];
 
-    ai.generateText.mockResolvedValue({
-      toolCalls: [
+    ai.streamText.mockResolvedValue(
+      streamWith([
         {
           toolName: "consolidateOutput",
           input: {
@@ -70,8 +78,8 @@ describe("consolidateStrands", () => {
             reasoning: "same person, typo",
           },
         },
-      ],
-    });
+      ]),
+    );
 
     const result = await consolidateStrands(strands, model);
     expect(result.llmPassSkipped).toBe(false);
@@ -82,8 +90,8 @@ describe("consolidateStrands", () => {
 
   it("drops a proposal whose `to` key does not exist in the index", async () => {
     const strands = bigIndex();
-    ai.generateText.mockResolvedValue({
-      toolCalls: [
+    ai.streamText.mockResolvedValue(
+      streamWith([
         {
           toolName: "consolidateOutput",
           input: {
@@ -91,8 +99,8 @@ describe("consolidateStrands", () => {
             reasoning: "",
           },
         },
-      ],
-    });
+      ]),
+    );
 
     const result = await consolidateStrands(strands, model);
     // No merges applied, no crash.
@@ -102,7 +110,7 @@ describe("consolidateStrands", () => {
 
   it("returns the index unchanged when the worker fails", async () => {
     const strands = bigIndex();
-    ai.generateText.mockRejectedValue(new Error("worker down"));
+    ai.streamText.mockRejectedValue(new Error("worker down"));
 
     const result = await consolidateStrands(strands, model);
     expect(result.merges).toEqual([]);
@@ -112,14 +120,14 @@ describe("consolidateStrands", () => {
 
   it("returns an empty merge list when the worker reports no duplicates", async () => {
     const strands = bigIndex();
-    ai.generateText.mockResolvedValue({
-      toolCalls: [
+    ai.streamText.mockResolvedValue(
+      streamWith([
         {
           toolName: "consolidateOutput",
           input: { merges: [], reasoning: "index already clean" },
         },
-      ],
-    });
+      ]),
+    );
 
     const result = await consolidateStrands(strands, model);
     expect(result.merges).toEqual([]);

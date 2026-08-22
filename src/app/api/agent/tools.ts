@@ -1,6 +1,6 @@
 /**
- * Shared tool definitions for the WorkflowAgent — chat and loop both bind
- * their tool sets here.
+ * Shared tool definitions for the WorkflowAgent — the chat agent binds its
+ * tool set here.
  *
  * Each tool couples an inputSchema (what the model provides), a contextSchema
  * (what the workflow provides via `toolsContext`), and a standalone
@@ -29,18 +29,17 @@ import {
   webFetchExecute,
   recallExecute,
   thinkDeepExecute,
-  loopReportExecute,
+  currentTimeExecute,
   delegateTaskExecute,
   type ToolContext,
-  type LoopToolContext,
 } from "./tool-executors";
 
 // ─── Context schemas ─────────────────────────────────────────────────────
 
 /** Structural ModelConfig schema for the serializable tool context — mirrors
  *  src/lib/models/registry.ts so provider configs survive the workflow
- *  boundary. Shared by workerModel (the cheap internal tier) and mainModel
- *  (the turn's resolved main agent). */
+ *  boundary. Used by mainModel (the turn's resolved main agent, which all
+ *  sub-agents run on since the v0.9 unified runner). */
 const modelConfigSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -70,30 +69,15 @@ const toolContextSchema = z.object({
   })),
   // The turn's assembled system prompt, fanned out to thinkDeep so sub-agents
   // share the exact same prefix as the main agent — prompt-cache hits across
-  // main + sub-agent calls within one turn. Optional: loop tool sets have none.
+  // main + sub-agent calls within one turn.
   baseSystemPrompt: z.string().optional(),
-  // The worker model config flows through the context for recall / loop calls.
-  workerModel: modelConfigSchema.optional(),
-  // The turn's resolved MAIN model — thinkDeep sub-agents use it directly
-  // (the same one injected for the main agent) instead of re-resolving config
-  // from GitHub on every fragment step.
+  // The turn's resolved MAIN model — all sub-agents (thinkDeep, recall, …)
+  // use it directly (the same one injected for the main agent) instead of
+  // re-resolving config from GitHub on every fragment step.
   mainModel: modelConfigSchema.optional(),
 });
 
-const loopToolContextSchema = z.object({
-  repo: z.string(),
-  owner: z.string(),
-  useGithub: z.boolean(),
-  loopId: z.string(),
-  goal: z.string(),
-  filePath: z.string(),
-  startedAt: z.string(),
-  sliceOrigin: z.string().nullable(),
-  tags: z.array(z.string()),
-  maxIterations: z.number(),
-});
-
-// ─── Concept tools (shared by chat + loop) ──────────────────────────────
+// ─── Concept tools ───────────────────────────────────────────────────────
 
 export const conceptTools = {
   readSlice: tool({
@@ -294,15 +278,30 @@ export const conceptTools = {
 // (recall / readTimelineWindow / readSliceSummary), readSlice as the last
 // resort for actual text — plus readPreviously / readAgentTimeline and the
 // delegation tools (`recall` hands the actual search to the Flash recall
-// engine; webSearch / thinkDeep). startLoop is commented out (background loops
-// disabled). The raw browse tools (listSlices / listStrands / readStrand) stay
-// the recall engine's job — the main agent does not walk directories itself.
+// engine; webSearch / thinkDeep). The raw browse tools (listSlices /
+// listStrands / readStrand) stay the recall engine's job — the main agent does
+// not walk directories itself.
 export const chatTools = {
   readSlice: conceptTools.readSlice,
   readSliceSummary: conceptTools.readSliceSummary,
   readTimelineWindow: conceptTools.readTimelineWindow,
   readPreviously: conceptTools.readPreviously,
   readAgentTimeline: conceptTools.readAgentTimeline,
+  currentTime: tool({
+    description:
+      "Check the current time — the user's local time (minute precision, with " +
+      "timezone and UTC offset), how long this conversation slice has been " +
+      "running and how much of its time cap is left, plus a refreshed " +
+      "date-anchor table (today / tomorrow / last week with weekdays). " +
+      "Call this whenever a precise time matters: \"now\", \"in a few minutes\", " +
+      "\"how long have we been talking\", \"tonight\", or something due today. " +
+      "The slice-start time in your system prompt is a snapshot taken when " +
+      "this slice began — it may already be tens of minutes old, so never " +
+      "trust it for exact times.",
+    inputSchema: z.object({}),
+    contextSchema: toolContextSchema,
+    execute: currentTimeExecute,
+  }),
   recall: tool({
     description:
       "Search past conversation slices for context relevant to the current " +
@@ -387,30 +386,6 @@ export const chatTools = {
     contextSchema: toolContextSchema,
     execute: webFetchExecute,
   }),
-  // NOTE(startLoop-disabled): background loops are temporarily disabled — the
-  // loop capability is still being stabilized. The definition is commented out
-  // so the agent no longer sees the tool. Re-enable by uncommenting it here
-  // and restoring `startLoop` to buildChatToolsContext.
-  // startLoop: tool({
-  //   description:
-  //     "Start a durable background loop that works a goal over multiple steps " +
-  //     "on its own and records its progress to memory/loops. Use this when the " +
-  //     "user explicitly asks to run something in the background or continuously, " +
-  //     "OR when you judge a task is large or long-running enough that it is " +
-  //     "better worked autonomously than answered inline. Tell the user you have " +
-  //     "started one.",
-  //   inputSchema: z.object({
-  //     goal: z
-  //       .string()
-  //       .describe("A clear, self-contained statement of what the loop should accomplish."),
-  //     tags: z
-  //       .array(z.string())
-  //       .optional()
-  //       .describe("Keyword tags for later recall, e.g. topic names."),
-  //   }),
-  //   contextSchema: toolContextSchema,
-  //   execute: startLoopExecute,
-  // }),
   thinkDeep: tool({
     description:
       "Dispatch ONE reasoning fragment — a small, self-contained logical " +
@@ -452,7 +427,7 @@ export const chatTools = {
 // Registered ONLY in client mode (PREVIOUSLY_MODE=client): the bridge command
 // is a local operator-controlled executable and cloud deployments must never
 // expose it (doc/design/v0.9-client.md §2 — mode changes "who do I talk to",
-// never identity). Chat-only, like recall/webSearch — loops don't get it.
+// never identity). Chat-only, like recall/webSearch.
 const delegateTaskTool = tool({
   description:
     "Delegate a self-contained task to the local subscription bridge — an " +
@@ -490,26 +465,6 @@ export function getChatTools():
   return isClientMode() ? { ...chatTools, delegateTask: delegateTaskTool } : chatTools;
 }
 
-// ─── Loop tool set ───────────────────────────────────────────────────────
-
-export const loopTools = {
-  ...conceptTools,
-  loopReport: tool({
-    description:
-      "Report one completed increment of work toward the goal. Call this " +
-      "exactly once after each meaningful step: what you did (action), what " +
-      "came out of it (result), and whether the goal is now fully accomplished " +
-      "(done). Set done=true only when the goal is genuinely complete.",
-    inputSchema: z.object({
-      action: z.string().describe("What you did this step, in one line."),
-      result: z.string().describe("The outcome or reasoning produced this step."),
-      done: z.boolean().describe("True only if the goal is fully accomplished."),
-    }),
-    contextSchema: loopToolContextSchema,
-    execute: loopReportExecute,
-  }),
-};
-
 // ─── toolsContext builders ───────────────────────────────────────────────
 
 /** Same serializable chat context, fanned out to every chat tool by name. */
@@ -522,6 +477,7 @@ export function buildChatToolsContext(
     readTimelineWindow: ctx,
     readPreviously: ctx,
     readAgentTimeline: ctx,
+    currentTime: ctx,
     recall: ctx,
     webSearch: ctx,
     webFetch: ctx,
@@ -530,24 +486,5 @@ export function buildChatToolsContext(
   // Keep the context map in lockstep with getChatTools(): a registered tool
   // must never lack its context entry.
   return isClientMode() ? { ...contexts, delegateTask: ctx } : contexts;
-}
-
-/** Concept tools share the chat-shaped context; loopReport gets the loop identity. */
-export function buildLoopToolsContext(
-  memoryCtx: ToolContext,
-  loopCtx: LoopToolContext,
-): Record<keyof typeof conceptTools, ToolContext> & { loopReport: LoopToolContext } {
-  return {
-    readSlice: memoryCtx,
-    readSliceSummary: memoryCtx,
-    readTimelineWindow: memoryCtx,
-    listSlices: memoryCtx,
-    readTimeline: memoryCtx,
-    readStrand: memoryCtx,
-    listStrands: memoryCtx,
-    readAgentTimeline: memoryCtx,
-    readPreviously: memoryCtx,
-    loopReport: loopCtx,
-  };
 }
 

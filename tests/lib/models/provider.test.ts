@@ -1,7 +1,18 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-const { deepseekMock, createAnthropicMock, createOpenAIMock } = vi.hoisted(() => ({
-  deepseekMock: vi.fn((id: string) => ({ kind: "deepseek", id })),
+const {
+  createOpenAICompatibleMock,
+  createAnthropicMock,
+  createOpenAIMock,
+} = vi.hoisted(() => ({
+  createOpenAICompatibleMock: vi.fn(
+    (opts?: { name?: string; baseURL?: string }) => (id: string) => ({
+      kind: "openai-compatible",
+      id,
+      name: opts?.name,
+      baseURL: opts?.baseURL,
+    }),
+  ),
   createAnthropicMock: vi.fn(() => (id: string) => ({ kind: "anthropic", id })),
   createOpenAIMock: vi.fn((opts?: { baseURL?: string }) => (id: string) => ({
     kind: "openai",
@@ -10,7 +21,9 @@ const { deepseekMock, createAnthropicMock, createOpenAIMock } = vi.hoisted(() =>
   })),
 }));
 
-vi.mock("@ai-sdk/deepseek", () => ({ deepseek: deepseekMock }));
+vi.mock("@ai-sdk/openai-compatible", () => ({
+  createOpenAICompatible: createOpenAICompatibleMock,
+}));
 vi.mock("@ai-sdk/anthropic", () => ({ createAnthropic: createAnthropicMock }));
 vi.mock("@ai-sdk/openai", () => ({ createOpenAI: createOpenAIMock }));
 
@@ -26,7 +39,7 @@ function cfg(sdk: ModelConfig["sdk"], id: string, baseURL?: string): ModelConfig
 
 describe("createModel", () => {
   beforeEach(() => {
-    deepseekMock.mockClear();
+    createOpenAICompatibleMock.mockClear();
     createAnthropicMock.mockClear();
     createOpenAIMock.mockClear();
     process.env.X_API_KEY = "sk-test";
@@ -36,10 +49,44 @@ describe("createModel", () => {
     process.env = { ...SAVED_ENV };
   });
 
-  it("dispatches deepseek-sdk models to the deepseek factory", () => {
-    const model = createModel(cfg("deepseek", "deepseek-v4-pro"));
-    expect(deepseekMock).toHaveBeenCalledWith("deepseek-v4-pro");
-    expect(model).toEqual({ kind: "deepseek", id: "deepseek-v4-pro" });
+  it("routes deepseek models through createOpenAICompatible named 'deepseek'", () => {
+    const model = createModel(cfg("deepseek", "deepseek-v4-pro", "https://api.deepseek.com"));
+    // The name MUST stay "deepseek" — it becomes the providerOptions key that
+    // effort-injector.ts emits ({ deepseek: { thinking, reasoningEffort } }).
+    expect(createOpenAICompatibleMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "deepseek",
+        baseURL: "https://api.deepseek.com",
+        apiKey: "sk-test",
+      }),
+    );
+    expect(model).toEqual({
+      kind: "openai-compatible",
+      id: "deepseek-v4-pro",
+      name: "deepseek",
+      baseURL: "https://api.deepseek.com",
+    });
+  });
+
+  it("defaults the deepseek baseURL when the config carries none", () => {
+    createModel(cfg("deepseek", "deepseek-v4-flash"));
+    expect(createOpenAICompatibleMock).toHaveBeenCalledWith(
+      expect.objectContaining({ baseURL: "https://api.deepseek.com" }),
+    );
+  });
+
+  it("falls back to the deepseek-compatible factory for unknown sdks", () => {
+    // Distinct baseURL so the provider-instance cache doesn't hit.
+    const model = createModel(
+      cfg("nope" as ModelConfig["sdk"], "some-model", "https://fallback.example/v1"),
+    );
+    expect(createOpenAICompatibleMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "deepseek",
+        baseURL: "https://fallback.example/v1",
+      }),
+    );
+    expect(model).toMatchObject({ kind: "openai-compatible", id: "some-model" });
   });
 
   it("dispatches anthropic-sdk models through createAnthropic", () => {

@@ -14,7 +14,6 @@
  */
 import type { ModelMessage } from "ai";
 import type { TimeSlice } from "@/lib/episodic";
-import type { CardHorizonItem } from "@/lib/episodic/previously-format";
 import type { CardChangeSummary, CardMutation } from "@/lib/episodic/card-diff";
 import type { UserConfig } from "@/lib/config/types";
 import type { ModelConfig } from "@/lib/models/registry";
@@ -25,7 +24,12 @@ import type { ModelConfig } from "@/lib/models/registry";
  * stay JSON-serializable end to end.
  */
 export interface TurnInput {
-  /** Converted chat history for `streamText`. */
+  /**
+   * Converted chat history from the client (capped at a broad payload limit
+   * in start-turn). The workflow cuts the slice-aligned window from its tail
+   * before streaming (sliceAlignedWindow in turn-workflow.ts) — the client
+   * remains the history source, the slice decides what the model sees.
+   */
   modelMessages: ModelMessage[];
   /** Trimmed recent turns for Flash + context assembly. */
   recentTurns: Array<{ role: string; content: string }>;
@@ -39,12 +43,6 @@ export interface TurnInput {
    * are not in the curated registry). Resolved in start-turn.
    */
   modelConfig: ModelConfig;
-  /**
-   * The resolved WORKER model — the cheap/auxiliary tier used by housekeeping
-   * (tag extraction, slice marking, semantic hint), recall, and loops. See
-   * src/lib/models/worker.ts. Resolved in start-turn alongside modelConfig.
-   */
-  workerModel: ModelConfig;
   /** Whether DeepSeek thinking is enabled for this turn. */
   thinking: boolean;
   /** Reasoning effort level for this turn. */
@@ -93,6 +91,9 @@ export interface EvolutionResult {
   /** Set when the evolution FAILED (worker down, write error) — a failure must
    *  never be presented as a legitimate "no changes" result. */
   error?: string;
+  /** Set when the pass ended without a finish call (step cap / timeout) — the
+   *  card carries whatever mutations landed before the cutoff. */
+  partial?: boolean;
 }
 
 /** Result of the housekeeping step — slice + prepared context for the agent. */
@@ -103,38 +104,28 @@ export interface HousekeepingResult {
   /** Formatted strands menu string (empty if no strands exist). */
   strandsMenu: string;
   /**
-   * Engineering-computed "brief" for this turn (time, continuity, strand links).
-   * Injected at the very top of the system prompt. See src/lib/turn-priming.ts.
+   * The frozen slice-head snapshot block (L3): slice-start local time, date
+   * anchors, continuity stance at slice birth, and the birth-evolution
+   * summary. Every input anchors to `slice.start`, so the block is
+   * byte-identical on every turn of the slice (v0.9 prefix-cache freeze).
+   * See buildSliceHeadBlock in src/lib/turn-priming.ts.
    */
-  turnPriming: string;
+  sliceHeadBlock: string;
   /**
    * The agent's constitution: SOUL + "who you're assisting" + DIRECTIVES
    * (memory access rules included), derived from previously.md's identity
    * section. Injected into the system prompt. See src/lib/identity.
    */
   identityPrompt: string;
-  /** Present when a synchronous card evolution ran this turn (slice close or explicit request). */
-  evolutionResult?: EvolutionResult;
-  /**
-   * Horizon items whose `by` date is already past, surfaced by the mechanical
-   * card maintenance at a slice boundary. Kept on the card (never dropped) and
-   * injected into the turn brief (buildTurnPriming) so the agent proactively
-   * asks the user about outcomes.
-   */
-  overdueHorizon?: CardHorizonItem[];
   /**
    * v0.8 — compact timeline brief (recent slice pointer lines + catalog
-   * totals), assembled from the woven index. Injected into the system prompt's
-   * variable tail so the agent can perceive the recent past without reading
-   * slices. Absent when the timeline isn't available yet.
+   * totals), assembled from the woven index. Injected into the system prompt
+   * so the agent can perceive the recent past without reading slices. Since
+   * v0.9 it is built in frozen mode (absolute dates, only slices closed
+   * before the current one) so it stays byte-stable within the slice. Absent
+   * when the timeline isn't available yet.
    */
   timelineBrief?: string;
-}
-
-/** A background loop the agent started during this turn (for slice writeback). */
-export interface StartedLoopRef {
-  loopId: string;
-  tags: string[];
 }
 
 /**
@@ -146,8 +137,6 @@ export interface TurnOutcome {
   text: string;
   /** Finish reason of the last step — "stop" means a clean completion. */
   finishReason: string;
-  /** Loops started via the startLoop tool during this turn. */
-  startedLoops: StartedLoopRef[];
   /**
    * Mechanically extracted cognition data for agent.md — reasoning traces
    * and tool calls with success/failure status. Written by finalizeTurn.

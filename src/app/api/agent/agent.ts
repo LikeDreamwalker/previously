@@ -1,39 +1,29 @@
 /**
- * Shared WorkflowAgent factories — the single agent brain behind both entry
- * workflows (chat turn and background loop).
+ * Shared WorkflowAgent factory — the agent brain behind the chat-turn
+ * workflow.
  *
- * Constructed INSIDE the "use workflow" bodies (the official pattern): the
+ * Constructed INSIDE the "use workflow" body (the official pattern): the
  * agent loop then runs in the Workflow runtime, so every LLM call and every
  * tool call is an individually durable, auto-retried step.
  *
- * Import-graph discipline: pure JS only (WorkflowAgent + deepseek provider
- * factory are object construction, no I/O). All Node I/O lives behind the
- * "use step" tool executors bound in ./tools.
+ * Import-graph discipline: pure JS only (WorkflowAgent + provider factories
+ * are object construction, no I/O). All Node I/O lives behind the "use step"
+ * tool executors bound in ./tools.
  */
 
 import {
   WorkflowAgent,
+  type PrepareCallOptions,
+  type PrepareCallResult,
   type WorkflowAgentOptions,
 } from "@ai-sdk/workflow";
+import type { ModelMessage } from "ai";
 import { createModel } from "@/lib/models/provider";
 import type { ModelConfig } from "@/lib/models/registry";
 import { normalizeReasoningEffort } from "@/lib/models/effort-injector";
-import { SOUL_MD } from "@/lib/identity/agent-prompt.generated";
-
-/**
- * Strip the YAML frontmatter (---…---) off a bundled identity markdown string.
- * Kept inline (no gray-matter) so this module stays workflow-sandbox-pure:
- * only the compiled string constants cross this boundary.
- */
-function stripFrontmatter(md: string): string {
-  const match = md.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/);
-  return match ? md.slice(match[0].length).trim() : md.trim();
-}
 import {
   getChatTools,
-  loopTools,
   type buildChatToolsContext,
-  type buildLoopToolsContext,
 } from "./tools";
 
 // ─── Provider-aware providerOptions ──────────────────────────────────────
@@ -45,9 +35,63 @@ import {
 // (isomorphic to @ai-sdk/provider's JSONObject shape).
 
 export type ChatToolSet = ReturnType<typeof getChatTools>;
-export type LoopToolSet = typeof loopTools;
 export type ChatAgent = WorkflowAgent<ChatToolSet>;
-export type LoopAgent = WorkflowAgent<LoopToolSet>;
+
+// ─── Anthropic explicit cache breakpoints (best-effort) ──────────────────
+//
+// DeepSeek needs nothing here: it does AUTOMATIC prefix caching on
+// byte-identical request prefixes, which the slice-frozen system prompt
+// already maximizes (see turn-workflow.ts). Anthropic caching is opt-in via
+// per-message `cacheControl` breakpoints in message-level providerOptions,
+// so we place two — both frozen for a slice's lifetime, so cache hits span
+// every turn of the slice:
+//   1. on the system prompt (the big frozen L0-L5 block);
+//   2. on the LAST history message (everything before the live agent steps;
+//      tool steps appended later stay uncached, by design).
+// Applied via prepareCall (runs once per agent.stream call), so a timeout
+// continuation re-applies both breakpoints to its rebuilt context. Other
+// providers never see these providerOptions — gated on sdk at the call site.
+const ANTHROPIC_CACHE_BREAKPOINT = {
+  anthropic: { cacheControl: { type: "ephemeral" } },
+};
+
+function withAnthropicCacheBreakpoints(
+  options: PrepareCallOptions<ChatToolSet>,
+): PrepareCallResult<ChatToolSet> {
+  const { instructions, messages } = options;
+  return {
+    // The turn workflow always passes the system prompt as a string; wrap it
+    // in a SystemModelMessage so the breakpoint rides along. (Anything else
+    // passes through untouched.)
+    instructions:
+      typeof instructions === "string"
+        ? [
+            {
+              role: "system" as const,
+              content: instructions,
+              providerOptions: ANTHROPIC_CACHE_BREAKPOINT,
+            },
+          ]
+        : instructions,
+    messages: markHistoryEndBreakpoint(messages),
+  };
+}
+
+/** Copy `messages` with an ephemeral-cache breakpoint on the last one. */
+function markHistoryEndBreakpoint(messages: ModelMessage[]): ModelMessage[] {
+  const last = messages[messages.length - 1];
+  if (!last) return messages;
+  return [
+    ...messages.slice(0, -1),
+    {
+      ...last,
+      providerOptions: {
+        ...last.providerOptions,
+        ...ANTHROPIC_CACHE_BREAKPOINT,
+      },
+    } as ModelMessage,
+  ];
+}
 
 /**
  * Chat agent. The per-turn dynamic system prompt (identity + intent + episodic
@@ -96,43 +140,10 @@ export function createChatAgent(opts: {
       opts.thinking,
       opts.reasoningEffort,
     ),
+    // Best-effort Anthropic prompt caching — see the block comment above.
+    ...(opts.model.sdk === "anthropic"
+      ? { prepareCall: withAnthropicCacheBreakpoints }
+      : {}),
     ...(opts.onStepEnd ? { onStepEnd: opts.onStepEnd } : {}),
-  });
-}
-
-/**
- * Loop agent. The goal itself arrives as the call-time prompt; these
- * instructions carry the standing working discipline (ported from the old
- * runLoopStep prompt preamble in src/app/api/loops/steps.ts).
- */
-export function createLoopAgent(opts: {
-  toolsContext: ReturnType<typeof buildLoopToolsContext>;
-  /** The resolved worker model for the loop brain (see src/lib/models/worker.ts). */
-  model: ModelConfig;
-}): LoopAgent {
-  // The loop worker shares the agent's constitution (SOUL only — DIRECTIVES
-  // mention the chat-only `recall` tool, so loops get identity + voice without
-  // tool instructions they can't follow). The goal arrives as the call-time
-  // prompt; these instructions carry the standing working discipline.
-  const soulBody = stripFrontmatter(SOUL_MD);
-  return new WorkflowAgent({
-    model: createModel(opts.model),
-    temperature: 0.4,
-    // V4 models default to thinking ENABLED — the loop worker matches the old
-    // deepseek-chat behavior (non-thinking); its power is iteration, not depth.
-    providerOptions: {
-      deepseek: { thinking: { type: "disabled" as const } },
-    },
-    instructions: `${soulBody}
-
----
-
-You are now working as an autonomous background agent on a goal the user set, on your own, while the human is away.
-
-Use your concept tools to read context: open specific slices with readSlice, browse with listSlices / readTimeline, follow topics with readStrand / listStrands. Work from what you find — do not re-read files that don't exist.
-
-After each meaningful increment of work, call the loopReport tool exactly once to record the action you took, the result, and whether the goal is done. Set done=true only when the goal is genuinely complete — do not pad with busywork. Stop working once you have reported done=true.`,
-    tools: loopTools,
-    toolsContext: opts.toolsContext,
   });
 }

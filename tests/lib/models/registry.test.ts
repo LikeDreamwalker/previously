@@ -87,6 +87,13 @@ describe("model registry", () => {
     expect(getModel("claude-sonnet-5")?.provider).toBe("anthropic");
   });
 
+  it("curates the DeepSeek multimodal model with vision capability", () => {
+    const vision = getModel("deepseek-v4-flash-vision-exp");
+    expect(vision?.capabilities.vision).toBe(true);
+    expect(vision?.capabilities.thinking).toBe(true);
+    expect(vision?.defaultEffort).toBe("low");
+  });
+
   it("returns undefined for an unknown id", () => {
     expect(getModel("nope")).toBeUndefined();
   });

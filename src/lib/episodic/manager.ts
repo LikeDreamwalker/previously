@@ -173,7 +173,7 @@ export async function closeSlice(
 ): Promise<TimeSlice> {
   slice.status = "closed";
   // The end of the conversation is the LAST TURN's timestamp, not the moment
-  // this close executes — closes are lazy (time-silence is detected when the
+  // this close executes — closes are lazy (the age cap is detected when the
   // NEXT session arrives, possibly hours later), so stamping "now" would
   // fabricate a false end and zero out the continuity gap.
   slice.end = slice.turns.at(-1)?.timestamp ?? new Date().toISOString();
@@ -290,6 +290,7 @@ export function serializeSlice(slice: TimeSlice): string {
     loops: slice.loops,
     emotional_tone: slice.emotional_tone,
     closed_by: slice.closedBy,
+    evolution_summary: slice.evolutionSummary,
   };
 
   // Remove undefined fields for clean YAML
@@ -361,6 +362,9 @@ export function parseSlice(raw: string): TimeSlice {
     related_slices: normalizeStringArray(frontmatter.related_slices),
     loops: normalizeStringArray(frontmatter.loops),
     emotional_tone: frontmatter.emotional_tone as SliceFrontmatter["emotional_tone"],
+    // v0.9: evolution summary frozen at slice birth, replayed into the L3
+    // slice-head block on every turn of this slice (byte-stable prompt).
+    evolutionSummary: normalizeString(frontmatter.evolution_summary) || undefined,
     turns,
     estimatedTokens,
     // The real close signal round-trips through frontmatter since v0.8;
@@ -375,6 +379,9 @@ export function parseSlice(raw: string): TimeSlice {
 }
 
 const SLICING_SIGNALS: readonly SlicingSignal[] = [
+  "time_cap",
+  // Legacy (pre-v0.9): inactivity-based closing. Kept so historical slices
+  // with closed_by: time_silence are not misread as user_explicit.
   "time_silence",
   "user_explicit",
   "capacity",

@@ -8,7 +8,6 @@ function outcome(partial: Partial<TurnOutcome>): TurnOutcome {
   return {
     text: "",
     finishReason: "stop",
-    startedLoops: [],
     cognition: "",
     ...partial,
   };

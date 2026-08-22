@@ -1,8 +1,14 @@
 /** Status of a time slice — only one active at a time */
 export type SliceStatus = "active" | "closed";
 
-/** The four signals that can trigger a slice boundary */
+/**
+ * The signals that can trigger a slice boundary.
+ * "time_silence" is a legacy value (pre-v0.9 inactivity-based closing) — no
+ * longer written, but kept so historical slices with `closed_by: time_silence`
+ * still round-trip instead of falling back to "user_explicit".
+ */
 export type SlicingSignal =
+  | "time_cap"
   | "time_silence"
   | "user_explicit"
   | "capacity"
@@ -65,6 +71,11 @@ export interface SliceFrontmatter {
   /** The signal that closed this slice (persisted since v0.8; legacy closed
    *  slices lack it and read back as "user_explicit"). */
   closed_by?: SlicingSignal;
+  /** One-sentence summary of the card evolution that ran as this slice began
+   *  (or mid-slice on an explicit update). Persisted so the L3 slice-head
+   *  block can replay it verbatim on every turn — the system prompt stays
+   *  byte-identical for the slice's whole life (v0.9 prefix-cache freeze). */
+  evolution_summary?: string;
 }
 
 // ─── Time Slice (in-memory) ──────────────────────────────────────────
@@ -95,6 +106,8 @@ export interface TimeSlice {
   estimatedTokens: number;
   /** The signal that caused this slice to close (only set when status is "closed") */
   closedBy?: SlicingSignal;
+  /** Evolution summary captured at slice birth — see SliceFrontmatter.evolution_summary. */
+  evolutionSummary?: string;
 }
 
 // ─── Index structures ────────────────────────────────────────────────

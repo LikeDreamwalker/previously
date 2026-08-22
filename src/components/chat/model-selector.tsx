@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useTranslations } from "next-intl";
-import { Check, Info, Settings2 } from "lucide-react";
+import { Check, Info } from "lucide-react";
 import {
   Popover,
   PopoverContent,
@@ -13,37 +13,15 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import {
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetTitle,
-  SheetDescription,
-  SheetFooter,
-} from "@/components/ui/sheet";
-import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { ProviderIcon, stripProviderPrefix } from "./provider-icon";
-import { getUserConfig, saveUserConfig } from "@/lib/config/actions";
+import { useAvailableModels, type AvailableModel } from "@/hooks/use-available-models";
 
 type EffortLevel = "low" | "medium" | "high";
 
 export interface ModelDefaults {
   thinking: boolean;
   effort: EffortLevel;
-}
-
-interface AvailableModel {
-  id: string;
-  name: string;
-  provider: string;
-  providerName: string;
-  defaultThinking: boolean;
-  defaultEffort: EffortLevel;
-  /** Bridge options only: informational copy about the subscription bridge. */
-  hint?: string;
-  /** Bridge options only: whether the agent CLI was detected on PATH. */
-  available?: boolean;
 }
 
 /** Display names of the subscription CLIs (brand names — locale-neutral). */
@@ -83,10 +61,10 @@ function groupByProvider(models: AvailableModel[]): Map<string, AvailableModel[]
  * (/api/models — env-gated) and shows a grouped picker plus a thinking toggle.
  * Hides entirely when there are 0 or 1 models to choose from.
  *
- * An "Advanced" entry opens a sheet for the WORKER model config — the cheap
- * internal tier (recall, tagging, slice marking). Both the main selection and
- * the worker config persist to memory/user/config.json (ChatPage owns the main
- * model state; this component owns the worker sheet state).
+ * The selection persists to memory/user/config.json (ChatPage owns the model
+ * state). v0.9: the "Advanced" worker-pin sheet was removed — every sub-agent
+ * now runs on the main model via the unified sub-agent runner, so the worker
+ * pin had no production consumer (see src/lib/models/worker.ts).
  */
 export function ModelSelector({
   currentModelId,
@@ -95,28 +73,11 @@ export function ModelSelector({
   onThinkingChange,
 }: ModelSelectorProps) {
   const t = useTranslations("chat.input");
-  const [models, setModels] = useState<AvailableModel[]>([]);
+  const models = useAvailableModels();
   const [mounted, setMounted] = useState(false);
-
-  // ── Advanced worker config state ────────────────────────────────────────
-  const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [workerMode, setWorkerMode] = useState<"auto" | "manual">("auto");
-  const [workerModel, setWorkerModel] = useState("");
 
   useEffect(() => {
     setMounted(true);
-    fetch("/api/models")
-      .then((r) => r.json())
-      .then((data) => setModels(data.models ?? []))
-      .catch(() => setModels([]));
-
-    // Worker config comes from config.json.
-    getUserConfig()
-      .then((cfg) => {
-        setWorkerMode(cfg.worker?.mode ?? "auto");
-        setWorkerModel(cfg.worker?.provider ?? "");
-      })
-      .catch(() => {});
   }, []);
 
   const current = models.find((m) => m.id === currentModelId);
@@ -137,16 +98,6 @@ export function ModelSelector({
     },
     [onModelChange],
   );
-
-  const saveWorker = () => {
-    void saveUserConfig({
-      worker: {
-        mode: workerMode,
-        provider: workerMode === "manual" ? workerModel : "",
-      },
-    });
-    setAdvancedOpen(false);
-  };
 
   if (models.length <= 1) return null;
 
@@ -252,110 +203,20 @@ export function ModelSelector({
             </div>
           ))}
 
-          <div className="mt-1 flex items-center justify-between gap-2 border-t px-2 pt-2">
-            {!isBridgeSelected && (
+          {!isBridgeSelected && (
+            <div className="mt-1 flex items-center justify-between gap-2 border-t px-2 pt-2">
               <span className="text-xs text-muted-foreground">
                 {t("thinkingLabel")}
               </span>
-            )}
-            <div
-              className={`flex items-center gap-0.5 ${isBridgeSelected ? "ml-auto" : ""}`}
-            >
-              {!isBridgeSelected && (
-                <Switch
-                  size="sm"
-                  checked={thinking}
-                  onCheckedChange={onThinkingChange}
-                />
-              )}
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <button
-                      type="button"
-                      aria-label={t("advanced")}
-                      onClick={() => setAdvancedOpen(true)}
-                      className="rounded p-1 text-muted-foreground hover:text-foreground hover:bg-brand/10 transition-colors"
-                    >
-                      <Settings2 className="h-3.5 w-3.5" />
-                    </button>
-                  }
-                />
-                <TooltipContent side="top">{t("advanced")}</TooltipContent>
-              </Tooltip>
-            </div>
-          </div>
-        </PopoverContent>
-      </Popover>
-
-      {/* ── Advanced: worker model config ─────────────────────────────── */}
-      <Sheet open={advancedOpen} onOpenChange={setAdvancedOpen}>
-        <SheetContent side="right" className="w-full sm:max-w-sm">
-          <SheetHeader>
-            <SheetTitle>{t("workerLabel")}</SheetTitle>
-            <SheetDescription>{t("workerSameAsAgentDesc")}</SheetDescription>
-          </SheetHeader>
-
-          <div className="flex items-center justify-between gap-2 px-4">
-            <span className="text-xs text-muted-foreground">
-              {t("workerSameAsAgent")}
-            </span>
-            <Switch
-              size="sm"
-              checked={workerMode === "auto"}
-              onCheckedChange={(on) =>
-                setWorkerMode(on ? "auto" : "manual")
-              }
-            />
-          </div>
-
-          {workerMode === "manual" && (
-            <div className="flex-1 overflow-y-auto px-2">
-              <div className="px-2 py-1 text-xs font-medium text-muted-foreground">
-                {t("workerModelLabel")}
-              </div>
-              {/* The worker tier never routes to the subscription bridge
-                  (src/lib/models/worker.ts) — don't offer bridge entries. */}
-              {[...groups.entries()]
-                .filter(([provider]) => provider !== "bridge")
-                .map(([provider, providerModels]) => (
-                <div key={provider} className="mb-1">
-                  <div className="px-2 py-1 text-[10px] uppercase tracking-wide text-muted-foreground/60">
-                    {providerModels[0]?.providerName ?? t(`modelGroup.${provider}`)}
-                  </div>
-                  {providerModels.map((m) => (
-                    <button
-                      key={m.id}
-                      type="button"
-                      onClick={() => setWorkerModel(m.id)}
-                      className={`w-full text-left px-2 py-1.5 rounded text-xs flex items-center justify-between gap-2 ${
-                        m.id === workerModel
-                          ? "bg-primary/10 text-primary"
-                          : "hover:bg-muted"
-                      }`}
-                    >
-                      <span className="flex min-w-0 items-center gap-1.5">
-                        <ProviderIcon
-                          provider={m.provider}
-                          className="h-3.5 w-3.5 shrink-0"
-                        />
-                        <span className="truncate">{m.name}</span>
-                      </span>
-                      {m.id === workerModel && <Check className="h-3 w-3 shrink-0" />}
-                    </button>
-                  ))}
-                </div>
-              ))}
+              <Switch
+                size="sm"
+                checked={thinking}
+                onCheckedChange={onThinkingChange}
+              />
             </div>
           )}
-
-          <SheetFooter>
-            <Button size="sm" onClick={saveWorker}>
-              {t("workerSave")}
-            </Button>
-          </SheetFooter>
-        </SheetContent>
-      </Sheet>
+        </PopoverContent>
+      </Popover>
     </>
   );
 }

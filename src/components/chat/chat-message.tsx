@@ -8,6 +8,7 @@ import { MarkdownRenderer } from "./markdown";
 import { ThinkingSteps } from "./thinking";
 import { PhaseIndicator } from "./phase-indicator";
 import { HousekeepingCard } from "./housekeeping-card";
+import { EvolutionCard } from "./evolution-card";
 import { MessageActions } from "./message-actions";
 import { ToolRenderer } from "./tool-renderer";
 import { Message, MessageContent, MessageFooter } from "@/components/ui/message";
@@ -15,10 +16,10 @@ import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import {
   Activity,
   AlertTriangle,
+  Paperclip,
   XCircle,
 } from "lucide-react";
 import { LoadingTip } from "./loading-tip";
-import { EvolutionIndicator, type EvolutionState } from "./evolution-indicator";
 import type { ToolRenderState } from "@/lib/chat/tool-state";
 import {
   buildStream,
@@ -33,7 +34,6 @@ interface ChatMessageProps {
   onRegenerate?: () => void;
   isStreaming?: boolean;
   startedAt?: string;
-  evolutionState?: EvolutionState | null;
 }
 
 // ── i18n key lookup for the live agent-stage pill ───────────────────────
@@ -123,6 +123,8 @@ function itemKey(item: StreamItem, index: number): string {
       return `tool-${item.toolCallId}`;
     case "housekeeping":
       return `housekeeping-${index}`;
+    case "evolution":
+      return `evolution-${index}`;
     case "phase":
       return `phase-${item.phase}-${index}`;
   }
@@ -133,9 +135,9 @@ export const ChatMessage = memo(function ChatMessage({
   onRegenerate,
   isStreaming,
   startedAt,
-  evolutionState,
 }: ChatMessageProps) {
   const t = useTranslations("chat.phase");
+  const tChat = useTranslations("chat");
   const isUser = message.role === "user";
   const isAssistant = message.role === "assistant";
   const parts = useMemo(
@@ -193,15 +195,42 @@ export const ChatMessage = memo(function ChatMessage({
       .filter((p) => p.type === "text")
       .map((p) => p.text ?? "")
       .join("\n");
+    // File parts (attachments): images render inline from their data URL;
+    // anything else collapses to a small file chip.
+    const fileParts = parts.filter((p) => p.type === "file" && p.url);
     return (
       <div className="py-1">
         <Message align="end" className="gap-1">
           <MessageContent className="min-w-0">
-            <Bubble variant="secondary">
-              <BubbleContent>
-                <MarkdownRenderer content={userText} />
-              </BubbleContent>
-            </Bubble>
+            {fileParts.length > 0 && (
+              <div className="mb-1 flex flex-wrap justify-end gap-2">
+                {fileParts.map((p, i) =>
+                  p.mediaType?.startsWith("image/") ? (
+                    <img
+                      key={i}
+                      src={p.url}
+                      alt={p.filename ?? tChat("attachment")}
+                      className="max-h-64 max-w-full rounded-lg border border-border object-cover"
+                    />
+                  ) : (
+                    <span
+                      key={i}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-muted px-2 py-1 text-xs text-muted-foreground"
+                    >
+                      <Paperclip className="h-3.5 w-3.5" />
+                      {p.filename ?? tChat("attachment")}
+                    </span>
+                  ),
+                )}
+              </div>
+            )}
+            {(userText || fileParts.length === 0) && (
+              <Bubble variant="secondary">
+                <BubbleContent>
+                  <MarkdownRenderer content={userText} />
+                </BubbleContent>
+              </Bubble>
+            )}
           </MessageContent>
         </Message>
       </div>
@@ -213,9 +242,6 @@ export const ChatMessage = memo(function ChatMessage({
     <div className="py-1">
       <Message align="start" className="gap-1">
         <MessageContent className="min-w-0">
-          {/* Self-evolution indicator — per-bubble, same position as thinking/recall/phase */}
-          <EvolutionIndicator state={evolutionState} />
-
           {/* Live agent-stage pill — a small brand marker of what the agent is doing */}
           {isStreaming && stage && (
             <div className="mb-1.5 inline-flex items-center gap-1.5 rounded-full bg-brand-100 px-2 py-0.5 text-[11px] font-medium text-brand-700 dark:bg-brand-500/15 dark:text-brand-300">
@@ -255,6 +281,15 @@ export const ChatMessage = memo(function ChatMessage({
                   }
                   if (item.kind === "housekeeping") {
                     return <HousekeepingCard key={key} steps={item.steps} />;
+                  }
+                  if (item.kind === "evolution") {
+                    return (
+                      <EvolutionCard
+                        key={key}
+                        running={item.running}
+                        data={item.data}
+                      />
+                    );
                   }
                   if (item.kind === "phase") {
                     // Terminal interrupted/error — prominent static card.
