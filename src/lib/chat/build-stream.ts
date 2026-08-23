@@ -78,6 +78,17 @@ export type HousekeepingStep = {
   summaries?: string[];
 };
 
+/**
+ * One row of the bridge-tool indicator — a protocol-2 tool-activity event from
+ * the local CLI (mirrors BridgeEvent in src/lib/bridge.ts; declared
+ * structurally so this pure module stays server-free).
+ */
+export type BridgeToolRow = {
+  name: string;
+  summary: string;
+  status: "start" | "ok" | "error";
+};
+
 export type StreamItem =
   | { kind: "reasoning"; text: string }
   | { kind: "text"; content: string }
@@ -100,6 +111,24 @@ export type StreamItem =
       running: boolean;
       /** The latest data-evolution chunk's payload (last chunk wins). */
       data: EvolutionStepData;
+    }
+  | {
+      /** The bridge activity indicator (client+bridge mode): one row per
+       *  CLI tool event. Carried by data-phase chunks whose data carries a
+       *  `tools` array (chat phase "stageWorking" / housekeeping phase
+       *  "bridgeHousekeeping"); frames are cumulative, last chunk wins. */
+      kind: "bridge-tools";
+      phase: string;
+      running: boolean;
+      tools: BridgeToolRow[];
+      /** The CLI's rolling narration line (housekeeping deltas) — last
+       *  frame wins; shown only while running. */
+      live?: string;
+      /** Client-mode housekeeping only: the deterministic wrap-up rows
+       *  (slice / analyze / tags / context / strands) filling in as the
+       *  engineering steps complete around the single bridge call. Renders
+       *  as a checklist inside the bridge housekeeping card. */
+      steps?: HousekeepingStep[];
     }
   | {
       kind: "phase";
@@ -251,10 +280,38 @@ export function buildStream(
             mode?: string;
             summaries?: string[];
             compact?: boolean;
+            tools?: BridgeToolRow[];
+            live?: string;
+            steps?: HousekeepingStep[];
           }
         | undefined;
       if (d?.phase) {
-        if (d.compact) {
+        if (Array.isArray(d.tools)) {
+          // Bridge activity (client+bridge mode) — the generic tool-event
+          // indicator. Frames are cumulative (each carries the full tools
+          // list + the current narration line); merge by phase name, last
+          // chunk wins. Chat and housekeeping use distinct phase names, so
+          // they never merge.
+          const existing = items.find(
+            (it): it is Extract<StreamItem, { kind: "bridge-tools" }> =>
+              it.kind === "bridge-tools" && it.phase === d.phase,
+          );
+          if (existing) {
+            existing.running = d.running ?? false;
+            existing.tools = d.tools;
+            existing.live = d.live;
+            if (d.steps !== undefined) existing.steps = d.steps;
+          } else {
+            items.push({
+              kind: "bridge-tools",
+              phase: d.phase,
+              running: d.running ?? false,
+              tools: d.tools,
+              ...(d.live !== undefined ? { live: d.live } : {}),
+              ...(d.steps !== undefined ? { steps: d.steps } : {}),
+            });
+          }
+        } else if (d.compact) {
           // Housekeeping sub-step — merge into the single grouped card.
           upsertHousekeepingStep(d.phase, d.running ?? false, d.summaries);
         } else {

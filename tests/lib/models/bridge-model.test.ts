@@ -375,8 +375,21 @@ describe("BridgeChatLanguageModel tool protocol", () => {
     expect(payload.task).toContain("summarize my week");
     expect(payload.task).toContain("[Tool protocol");
     expect(payload.task).toContain("recallReport");
+    // Tool-protocol calls carry NO phase — the chat skill doc's output
+    // contract contradicts the required {"tool": …} JSON tail.
+    expect(payload.phase).toBeUndefined();
     // Function tools are now supported — no "unsupported tools" warning.
     expect(result.warnings).toEqual([]);
+  });
+
+  it("stamps phase 'chat' on plain chat calls (no tool protocol)", async () => {
+    process.env.PREVIOUSLY_BRIDGE_CMD = bridgeCmd("bridge-echo-payload.mjs");
+    const model = new BridgeChatLanguageModel("bridge/claude");
+    const result = await model.doGenerate({ prompt: PROMPT });
+    const text = result.content.find((p) => p.type === "text");
+    const payload = JSON.parse((text as { text: string }).text);
+    expect(payload.phase).toBe("chat");
+    expect(payload.protocol).toBe(2);
   });
 
   it("parses the JSON tail into a tool-call content part (required)", async () => {
@@ -593,5 +606,250 @@ describe("BridgeChatLanguageModel sub-agent loop (recall pattern)", () => {
       confidence: 0.4,
       reasoning: "searched the timeline",
     });
+  });
+});
+
+// ─── S5: live text deltas (protocol 2) ─────────────────────────────────────
+
+/** Drain a model stream into a plain part list. */
+async function drainStream(
+  stream: ReadableStream<unknown>,
+): Promise<Array<Record<string, unknown>>> {
+  const parts: Array<Record<string, unknown>> = [];
+  const reader = stream.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    parts.push(value as Record<string, unknown>);
+  }
+  return parts;
+}
+
+describe("BridgeChatLanguageModel streaming deltas", () => {
+  it("streams live {" + '"delta"' + "} lines as incremental text-delta parts", async () => {
+    process.env.PREVIOUSLY_BRIDGE_CMD = bridgeCmd("bridge-proto2-delta.mjs");
+    const model = new BridgeChatLanguageModel("bridge/claude");
+    const { stream } = await model.doStream({ prompt: PROMPT });
+    const parts = await drainStream(stream);
+
+    expect(parts.map((p) => p.type)).toEqual([
+      "stream-start",
+      "text-start",
+      "text-delta",
+      "text-delta",
+      "text-end",
+      "finish",
+    ]);
+    const deltas = parts.filter((p) => p.type === "text-delta");
+    // Deltas concat exactly to the envelope result — nothing to reconcile.
+    expect(deltas.map((d) => d.delta)).toEqual(["Hello, ", "world!"]);
+    expect(deltas.every((d) => d.id === "bridge-text-1")).toBe(true);
+  });
+
+  it("reconciles a dropped delta tail: the envelope result wins (remainder appended)", async () => {
+    process.env.PREVIOUSLY_BRIDGE_CMD = bridgeCmd(
+      "bridge-proto2-delta-truncated.mjs",
+    );
+    const model = new BridgeChatLanguageModel("bridge/claude");
+    const { stream } = await model.doStream({ prompt: PROMPT });
+    const parts = await drainStream(stream);
+
+    const text = parts
+      .filter((p) => p.type === "text-delta")
+      .map((p) => p.delta)
+      .join("");
+    expect(text).toBe("Hello, world!");
+    // One text block: start → "Hello, " → remainder "world!" → end.
+    expect(parts.map((p) => p.type)).toEqual([
+      "stream-start",
+      "text-start",
+      "text-delta",
+      "text-delta",
+      "text-end",
+      "finish",
+    ]);
+  });
+
+  it("re-emits the authoritative result as a fresh block when deltas diverge", async () => {
+    process.env.PREVIOUSLY_BRIDGE_CMD = bridgeCmd(
+      "bridge-proto2-delta-mismatch.mjs",
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const model = new BridgeChatLanguageModel("bridge/claude");
+      const { stream } = await model.doStream({ prompt: PROMPT });
+      const parts = await drainStream(stream);
+
+      expect(parts.map((p) => p.type)).toEqual([
+        "stream-start",
+        "text-start",
+        "text-delta", // advisory "draft"
+        "text-end",
+        "text-start", // reconciled block
+        "text-delta", // "final answer"
+        "text-end",
+        "finish",
+      ]);
+      const deltas = parts.filter((p) => p.type === "text-delta");
+      expect(deltas[0].delta).toBe("draft");
+      expect(deltas[1].delta).toBe("final answer");
+      expect(deltas[1].id).toBe("bridge-text-2");
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("diverge from the envelope"),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("falls back to the one-shot replay when a protocol-2 CLI emits no deltas", async () => {
+    process.env.PREVIOUSLY_BRIDGE_CMD = bridgeCmd("bridge-proto2.mjs");
+    const model = new BridgeChatLanguageModel("bridge/claude");
+    const { stream } = await model.doStream({ prompt: PROMPT });
+    const parts = await drainStream(stream);
+
+    expect(parts.map((p) => p.type)).toEqual([
+      "stream-start",
+      "text-start",
+      "text-delta",
+      "text-end",
+      "finish",
+    ]);
+    const deltas = parts.filter((p) => p.type === "text-delta");
+    expect(deltas).toHaveLength(1);
+    expect(deltas[0].delta).toBe("the final answer");
+  });
+
+  it("never streams deltas live on tool-protocol calls (the JSON tail must not render)", async () => {
+    process.env.PREVIOUSLY_BRIDGE_CMD = bridgeCmd(
+      "bridge-proto2-delta-report.mjs",
+    );
+    const model = new BridgeChatLanguageModel("bridge/claude");
+    const { stream } = await model.doStream({
+      prompt: PROMPT,
+      ...withTools({ type: "tool", toolName: "recallReport" }),
+    });
+    const parts = await drainStream(stream);
+
+    // One-shot replay: exactly one text delta, and it carries only the prose.
+    const deltas = parts.filter((p) => p.type === "text-delta");
+    expect(deltas).toHaveLength(1);
+    expect(deltas[0].delta).toBe("Here are my findings from the timeline.");
+    const call = parts.find((p) => p.type === "tool-call")!;
+    expect(call.toolName).toBe("recallReport");
+    const finish = parts.find((p) => p.type === "finish")!;
+    expect(finish.finishReason).toEqual({
+      unified: "tool-calls",
+      raw: undefined,
+    });
+  });
+
+  it("errors the stream (never fakes output) when the bridge fails", async () => {
+    process.env.PREVIOUSLY_BRIDGE_CMD = bridgeCmd("bridge-fail.mjs");
+    const model = new BridgeChatLanguageModel("bridge/claude");
+    const { stream } = await model.doStream({ prompt: PROMPT });
+    await expect(drainStream(stream)).rejects.toThrow(/exit-code/);
+  });
+});
+
+describe("createBridgeEventEmitter tools accumulation", () => {
+  it("collapses start → ok pairs into one row and settles running=false", async () => {
+    const { createBridgeEventEmitter } = await import(
+      "@/lib/models/bridge-model"
+    );
+    const frames: Array<{
+      phase: string;
+      running: boolean;
+      summaries: string[];
+      tools: Array<{ name: string; summary: string; status: string }>;
+    }> = [];
+    const emitter = createBridgeEventEmitter({
+      id: "phase-bridge-housekeeping",
+      phase: "bridgeHousekeeping",
+      write: (data) => frames.push(data),
+    });
+
+    emitter.onEvent({ name: "Read", summary: "Read a.md", status: "start" });
+    emitter.onEvent({ name: "Read", summary: "Read a.md", status: "ok" });
+    emitter.onEvent({ name: "Bash", summary: "Bash pnpm test", status: "error" });
+    emitter.finish();
+
+    // The custom write path never touches the workflow writable.
+    expect(workflow.getWritable).not.toHaveBeenCalled();
+    expect(frames.length).toBeGreaterThan(0);
+    const last = frames[frames.length - 1];
+    expect(last.phase).toBe("bridgeHousekeeping");
+    expect(last.running).toBe(false);
+    expect(last.tools).toEqual([
+      { name: "Read", summary: "Read a.md", status: "ok" },
+      { name: "Bash", summary: "Bash pnpm test", status: "error" },
+    ]);
+    expect(last.summaries).toEqual(["Read a.md", "Bash pnpm test"]);
+  });
+
+  it("is silent when no events arrive (no phantom phase)", async () => {
+    const { createBridgeEventEmitter } = await import(
+      "@/lib/models/bridge-model"
+    );
+    const frames: unknown[] = [];
+    const emitter = createBridgeEventEmitter({ write: (d) => frames.push(d) });
+    emitter.finish();
+    expect(frames).toEqual([]);
+  });
+
+  it("onDelta folds narration into one rolling current line", async () => {
+    const { createBridgeEventEmitter } = await import(
+      "@/lib/models/bridge-model"
+    );
+    const frames: Array<{ running: boolean; live?: string; tools: unknown[] }> =
+      [];
+    const emitter = createBridgeEventEmitter({ write: (d) => frames.push(d) });
+
+    // First delta writes immediately (throttle clock starts at 0).
+    emitter.onDelta("Reading the slice");
+    expect(frames).toHaveLength(1);
+    expect(frames[0]).toMatchObject({
+      running: true,
+      live: "Reading the slice",
+      tools: [],
+    });
+
+    // A same-tick delta is throttled (no new frame) but still folds in.
+    emitter.onDelta("…");
+    expect(frames).toHaveLength(1);
+    emitter.finish();
+    const last = frames[frames.length - 1];
+    expect(last.running).toBe(false);
+    expect(last.live).toBe("Reading the slice…");
+  });
+
+  it("onDelta rolls to a new line on newline boundaries", async () => {
+    const { createBridgeEventEmitter } = await import(
+      "@/lib/models/bridge-model"
+    );
+    const frames: Array<{ live?: string }> = [];
+    const emitter = createBridgeEventEmitter({ write: (d) => frames.push(d) });
+
+    emitter.onDelta("first line\nsecond ");
+    emitter.finish();
+    // Only the fragment after the last newline survives.
+    expect(frames[frames.length - 1].live).toBe("second ");
+  });
+
+  it("onDelta caps the rolling line (tail kept) and narration alone settles the phase", async () => {
+    const { createBridgeEventEmitter } = await import(
+      "@/lib/models/bridge-model"
+    );
+    const frames: Array<{ running: boolean; live?: string }> = [];
+    const emitter = createBridgeEventEmitter({ write: (d) => frames.push(d) });
+
+    emitter.onDelta("x".repeat(400));
+    emitter.finish();
+    const last = frames[frames.length - 1];
+    expect(last.live).toHaveLength(300);
+    // Narration-only run (zero tool calls): frames were still written and the
+    // indicator settles.
+    expect(frames.length).toBeGreaterThan(0);
+    expect(last.running).toBe(false);
   });
 });

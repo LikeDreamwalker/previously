@@ -87,6 +87,81 @@ describe("runBridge protocol 2", () => {
       `(Truncated at ${BRIDGE_MAX_RESULT_CHARS_V2} characters)`,
     );
   });
+
+  it('routes live {"delta"} lines to onDelta (malformed ignored), envelope settles the result', async () => {
+    const deltas: string[] = [];
+    const result = await runBridge(
+      bridgeArgv("bridge-proto2-delta.mjs"),
+      PAYLOAD,
+      10_000,
+      undefined,
+      undefined,
+      (t) => deltas.push(t),
+    );
+
+    expect(result.status).toBe("ok");
+    if (result.status !== "ok") return;
+    // The envelope result remains the source of truth.
+    expect(result.result).toBe("Hello, world!");
+    // The two well-formed delta lines streamed live; {"delta":123} was dropped.
+    expect(deltas).toEqual(["Hello, ", "world!"]);
+    expect(result.events).toBeUndefined();
+  });
+
+  it("never lets a throwing onDelta callback break the run", async () => {
+    const result = await runBridge(
+      bridgeArgv("bridge-proto2-delta.mjs"),
+      PAYLOAD,
+      10_000,
+      undefined,
+      undefined,
+      () => {
+        throw new Error("display hook exploded");
+      },
+    );
+    expect(result.status).toBe("ok");
+    if (result.status !== "ok") return;
+    expect(result.result).toBe("Hello, world!");
+  });
+});
+
+describe("runBridge abort", () => {
+  it("kills the subprocess and settles 'aborted' when the caller's signal fires", async () => {
+    const ac = new AbortController();
+    const pending = runBridge(
+      bridgeArgv("bridge-hang.mjs"),
+      PAYLOAD,
+      60_000,
+      undefined,
+      undefined,
+      undefined,
+      ac.signal,
+    );
+    setTimeout(() => ac.abort(), 200);
+    const result = await pending;
+    expect(result.status).toBe("error");
+    if (result.status !== "error") return;
+    expect(result.reason).toBe("aborted");
+    // Settled via the abort, not the 60s timeout.
+    expect(result.elapsedMs).toBeLessThan(10_000);
+  });
+
+  it("settles 'aborted' immediately on an already-aborted signal", async () => {
+    const ac = new AbortController();
+    ac.abort();
+    const result = await runBridge(
+      bridgeArgv("bridge-hang.mjs"),
+      PAYLOAD,
+      60_000,
+      undefined,
+      undefined,
+      undefined,
+      ac.signal,
+    );
+    expect(result.status).toBe("error");
+    if (result.status !== "error") return;
+    expect(result.reason).toBe("aborted");
+  });
 });
 
 describe("runBridge legacy protocol 1", () => {

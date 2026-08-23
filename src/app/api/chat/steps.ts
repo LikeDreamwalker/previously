@@ -44,14 +44,36 @@ import {
   type TimeSlice,
   type StrandIndex,
   type SlicingSignal,
+  type TurnAnalysis,
   type WriteBatch,
 } from "@/lib/episodic";
 import { withSliceLock } from "@/lib/episodic/slice-mutex";
 import { mergeTurnsWithRemote } from "@/lib/episodic/turn-merge";
 import { isRefConflictError } from "@/lib/tools/batch-write";
 import { getRepoConfig } from "@/lib/capabilities";
-import { consolidateStrands } from "@/lib/episodic/flash/strand-consolidator";
-import { backfillDrySliceMarks } from "@/lib/episodic/flash/backfill-marks";
+import {
+  consolidateStrands,
+  MIN_STRANDS_FOR_LLM,
+} from "@/lib/episodic/flash/strand-consolidator";
+import { applyStrandMerges, pruneStrands } from "@/lib/episodic/strands";
+import {
+  adaptHousekeepingReport,
+  applyBridgeCardEvolution,
+  degradedAnalysis,
+  isPhaseOutsourceActive,
+  runHousekeepingBridge,
+  type HousekeepingPhaseReport,
+} from "@/lib/bridge-phases";
+import {
+  createBridgeEventEmitter,
+  type BridgePhaseData,
+} from "@/lib/models/bridge-model";
+import type { HousekeepingStep } from "@/lib/chat/build-stream";
+import {
+  applyMarksToDrySlices,
+  backfillDrySliceMarks,
+  collectDrySliceCandidates,
+} from "@/lib/episodic/flash/backfill-marks";
 import { checkSliceAge } from "@/lib/episodic/slicer";
 import { fsReadFile, fsWriteFile } from "@/lib/episodic/io-helpers";
 import {
@@ -405,8 +427,60 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   // fresh-writer-per-write races drop frames (see createStepStream).
   const stream = createStepStream();
 
+  // ── Phase display: two modes, two components ─────────────────────────
+  // Edge mode emits one compact data-phase chunk per engineering sub-step
+  // (slice / analyze / tags / context / strands) — the client merges them
+  // into the HousekeepingCard checklist.
+  // Client (outsourced) mode renders ONE streaming card instead: the whole
+  // phase is a single agent call + deterministic wrap-up, so the card
+  // streams the CLI's live activity (tool rows + narration line, fed by the
+  // bridge emitter below) and fills in wrap-up rows as the engineering
+  // steps complete — the edge checklist is NOT emitted (it would sit idle
+  // through the whole call, then jump to done).
+  const phaseOutsource = isPhaseOutsourceActive();
+  /** Wrap-up rows of the client-mode card (same shape as the checklist). */
+  const hkSteps: HousekeepingStep[] = [];
+  /** Last bridge-emitter frame state, folded into every card frame. */
+  const hkActivity: { tools: BridgePhaseData["tools"]; live?: string } = {
+    tools: [],
+  };
+  const sendHousekeepingCard = (running: boolean) =>
+    stream.send({
+      type: "data-phase" as `data-${string}`,
+      id: "phase-bridge-housekeeping",
+      data: {
+        phase: "bridgeHousekeeping",
+        running,
+        summaries: [],
+        tools: hkActivity.tools,
+        ...(hkActivity.live ? { live: hkActivity.live } : {}),
+        steps: hkSteps.map((s) => ({ ...s })),
+      },
+    } as UIMessageChunk);
+  /** Phase display dispatch: edge → compact checklist chunk; client → a
+   *  wrap-up row inside the bridge housekeeping card. */
+  const emitStep = async (
+    phase: string,
+    running: boolean,
+    summaries?: string[],
+  ): Promise<void> => {
+    if (!phaseOutsource) return emitPhase(stream, phase, running, summaries);
+    const existing = hkSteps.find((s) => s.phase === phase);
+    if (existing) {
+      existing.running = running;
+      if (summaries !== undefined) existing.summaries = summaries;
+    } else {
+      hkSteps.push({
+        phase,
+        running,
+        ...(summaries !== undefined ? { summaries } : {}),
+      });
+    }
+    sendHousekeepingCard(hkSteps.some((s) => s.running));
+  };
+
   // ── Phase: slice — manage the time slice (recover/close/create) ─────
-  await emitPhase(stream, "slice", true);
+  await emitStep("slice", true);
 
   const { config, clientTimezone, lastUserMessage, modelMessages } = input;
 
@@ -460,25 +534,144 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   // ── 2. One analyze pass: message tags + semantic hint + (on close) marking ──
   // Phase: analyze — the turn-analyzer sub-agent pass (main model via the
   // shared runner, v0.9) is its own visible housekeeping sub-step.
-  await emitPhase(stream, "analyze", true);
+  await emitStep("analyze", true);
   const existingStrands = await readStrands(batch);
-  const analysis = await analyzeTurn({
-    model: input.modelConfig,
-    userMessage: lastUserMessage,
-    existingStrandNames: Object.keys(existingStrands),
-    closingSlice:
-      closeSignal && diskSlice
-        ? { turns: diskSlice.turns, tags: diskSlice.tags }
-        : undefined,
-  });
+  // Phase outsourcing (client mode + bridge brain, kill-switch
+  // PREVIOUSLY_PHASE_OUTSOURCE=0): ONE bridge call covers BOTH LLM stages —
+  // the turn analysis AND the card-evolution proposal (applied in §4b via
+  // bridgeReport). The card is read here for the payload and reused in §4b.
+  // A failed call degrades EXACTLY like an analyzer outage (memoryWorthy=true,
+  // no tags, deterministic closed marking below) and additionally SKIPS the
+  // evolution — no second bridge spawn on a broken bridge.
+  let analysis: TurnAnalysis;
+  let bridgeReport: HousekeepingPhaseReport | null = null;
+  let bridgeCardRaw: string | undefined;
+  /** Dry-slice ids offered to the bridge call — the apply step (§3b) honors
+   *  backfill marks for exactly these ids, never anything the agent invented. */
+  let bridgeDryCandidateIds: string[] = [];
+  /** True when the bridge call was offered strand merge candidates (close
+   *  boundary + post-prune index ≥ MIN_STRANDS_FOR_LLM — the consolidator's
+   *  own gate) — the apply step (§close) honors strand_merges only when the
+   *  offer was actually made. */
+  let bridgeStrandMergeOffered = false;
+  /** The offered strand names — the apply step honors a merge only when BOTH
+   *  keys were actually offered (same discipline as backfill candidate ids). */
+  let bridgeStrandMergeNames: Set<string> | null = null;
+  if (phaseOutsource) {
+    bridgeCardRaw = await readCurrentPreviously(batch);
+    // Dry-slice re-marking rides the SAME bridge call (job 4 of the report)
+    // instead of the old per-slice backfill sub-agent spawns — on a close
+    // boundary the candidates are gathered here and marked via the report.
+    const dryCandidates =
+      closeSignal && diskSlice && !input.useDemo
+        ? await collectDrySliceCandidates({
+            excludeSliceIds: [diskSlice.slice_id],
+            batch,
+          })
+        : [];
+    bridgeDryCandidateIds = dryCandidates.map((d) => d.sliceId);
+    // Strand semantic dedupe rides the SAME call too (job 5), replacing the
+    // old strand-consolidator sub-agent pass — same gate (close boundary +
+    // POST-PRUNE index big enough), offered with slice counts so the agent
+    // can prefer the more-used name as the merge target.
+    const prunedForOffer =
+      closeSignal && diskSlice && !input.useDemo
+        ? pruneStrands(existingStrands).strands
+        : null;
+    bridgeStrandMergeOffered =
+      prunedForOffer !== null &&
+      Object.keys(prunedForOffer).length >= MIN_STRANDS_FOR_LLM;
+    if (bridgeStrandMergeOffered && prunedForOffer) {
+      bridgeStrandMergeNames = new Set(Object.keys(prunedForOffer));
+    }
+    // Forward the client agent's live tool activity into the turn stream so
+    // the user can watch the CLI work during housekeeping — the same
+    // data-phase channel + payload the chat bridge model uses
+    // (createBridgeEventEmitter), on a distinct id/phase so the two
+    // indicators never merge. Frames ride this step's serial stream queue
+    // (stream.send), throttled inside the emitter. Deltas ARE forwarded here:
+    // for phase "housekeeping" the client suppresses the JSON report block
+    // and deltas carry only narration/thinking — they become the indicator's
+    // rolling "current activity" line (data.live), so the wait is visible
+    // even when the CLI makes zero tool calls. The activity state is folded
+    // into the shared card frame (hkActivity) so wrap-up rows (emitStep) and
+    // tool/narration frames never overwrite each other — every frame carries
+    // the full cumulative state (build-stream: last chunk wins).
+    const bridgeActivity = createBridgeEventEmitter({
+      id: "phase-bridge-housekeeping",
+      phase: "bridgeHousekeeping",
+      write: (data: BridgePhaseData) => {
+        hkActivity.tools = data.tools;
+        hkActivity.live = data.live;
+        // The emitter's settle (running:false) fires the moment the bridge
+        // call returns, while wrap-up rows (analyze → tags → …) are still
+        // being applied — keep the card spinning until they settle too.
+        sendHousekeepingCard(
+          data.running || hkSteps.some((s) => s.running),
+        );
+      },
+    });
+    const bridgeResult = await runHousekeepingBridge(
+      {
+        userMessage: lastUserMessage,
+        recentTurns: input.recentTurns,
+        existingStrandNames: Object.keys(existingStrands),
+        cardContent: bridgeCardRaw,
+        sliceId: diskSlice?.slice_id ?? "pending",
+        closingSlice:
+          closeSignal && diskSlice
+            ? {
+                sliceId: diskSlice.slice_id,
+                turns: diskSlice.turns,
+                tags: diskSlice.tags,
+              }
+            : undefined,
+        drySlices: dryCandidates.length > 0 ? dryCandidates : undefined,
+        strandsForMerge:
+          bridgeStrandMergeOffered && prunedForOffer
+            ? Object.entries(prunedForOffer).map(([name, paths]) => ({
+                name,
+                slices: paths.length,
+              }))
+            : undefined,
+        todayLocal:
+          localDateKey(input.startedAtIso, input.clientTimezone) ?? undefined,
+        locale: input.locale,
+      },
+      { onEvent: bridgeActivity.onEvent, onDelta: bridgeActivity.onDelta },
+    );
+    // Settle the indicator (running: false) whatever the outcome.
+    bridgeActivity.finish();
+    if (bridgeResult.ok) {
+      bridgeReport = bridgeResult.report;
+      analysis = adaptHousekeepingReport(
+        bridgeResult.report,
+        !!(closeSignal && diskSlice),
+      );
+    } else {
+      console.warn(
+        `[HousekeepingBridge] ${bridgeResult.reason} — degraded to the deterministic path`,
+      );
+      analysis = degradedAnalysis();
+    }
+  } else {
+    analysis = await analyzeTurn({
+      model: input.modelConfig,
+      userMessage: lastUserMessage,
+      existingStrandNames: Object.keys(existingStrands),
+      closingSlice:
+        closeSignal && diskSlice
+          ? { turns: diskSlice.turns, tags: diskSlice.tags }
+          : undefined,
+    });
+  }
   const candidateTags = analysis.memoryWorthy
     ? [
         ...analysis.messageTags.reuse,
         ...analysis.messageTags.create.map((c) => c.tag),
       ]
     : [];
-  await emitPhase(
-    stream,
+  await emitStep(
     "analyze",
     false,
     candidateTags.length > 0 ? candidateTags : undefined,
@@ -510,7 +703,7 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
     // Signal the client that a slice closed (rendered as a housekeeping
     // checklist row). The per-slice evolution itself runs INLINE below
     // (§4b) — the client no longer fires anything on this signal.
-    await emitPhase(stream, "slice-closed", false, [diskSlice.slice_id]);
+    await emitStep("slice-closed", false, [diskSlice.slice_id]);
     // v0.8 — force the reconcile so the just-closed slice is in the projection
     // immediately (the throttled per-turn weave would defer it up to 5 min).
     await weaveTimeline({ force: true }, batch);
@@ -521,9 +714,36 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
     // to collapse semantic duplicates
     // (typos / same-concept-two-names) that deterministic normalization can't
     // catch. Writes land in the current batch → one commit with the close.
+    // Phase outsourcing (bridge brain): the merge proposals arrived INSIDE the
+    // single housekeeping bridge call (report.strand_merges, job 5) — the
+    // deterministic prune still runs here, then the proposed merges are
+    // sanitized exactly like the consolidator's own output (both keys must
+    // exist post-prune, no no-ops) and applied through the same
+    // applyStrandMerges. Honors merges only when candidates were offered.
     const strandsBefore = await readStrands(batch);
     const { strands: consolidated, pruned, merges, llmPassSkipped } =
-      await consolidateStrands(strandsBefore, input.modelConfig);
+      phaseOutsource
+        ? (() => {
+            const { strands, pruned } = pruneStrands(strandsBefore);
+            const proposed = bridgeStrandMergeOffered
+              ? (bridgeReport?.strand_merges ?? [])
+              : [];
+            // Sanitize exactly like the consolidator's own output (no no-ops,
+            // both keys must exist post-prune) AND honor the offer allowlist
+            // (both keys must have been offered — same discipline as the
+            // backfill candidate ids).
+            const merges = proposed.filter(
+              (m) =>
+                m.from !== m.to &&
+                bridgeStrandMergeNames?.has(m.from) === true &&
+                bridgeStrandMergeNames?.has(m.to) === true &&
+                strands[m.from] !== undefined &&
+                strands[m.to] !== undefined,
+            );
+            if (merges.length > 0) applyStrandMerges(strands, merges);
+            return { strands, pruned, merges, llmPassSkipped: !bridgeStrandMergeOffered };
+          })()
+        : await consolidateStrands(strandsBefore, input.modelConfig);
     if (pruned.length > 0 || merges.length > 0) {
       await fsWriteFile(getStrandsPath(), serializeStrands(consolidated), batch);
       console.log(
@@ -549,18 +769,43 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   // model via the shared runner, v0.9), inside this turn's batch. Best-effort:
   // failures skip silently, the active slice is never touched, and demo mode
   // is skipped entirely (its writes are no-ops — no reason to spend the calls).
+  // Phase outsourcing (bridge brain): the marks arrived INSIDE the single
+  // housekeeping bridge call (report.backfill_marks) — no extra CLI spawns.
+  // Only candidate ids we actually offered are honored, and the same
+  // frontmatter/catalog write path (applyMarksToDrySlices) applies them.
   if (closeSignal && diskSlice && !input.useDemo) {
-    try {
-      const marked = await backfillDrySliceMarks({
-        model: input.modelConfig,
-        excludeSliceIds: [slice.slice_id, diskSlice.slice_id],
-        batch,
-      });
-      if (marked > 0) {
-        console.log(`[Timeline] backfilled marks for ${marked} dry slice(s)`);
+    if (phaseOutsource) {
+      const allowed = new Set(bridgeDryCandidateIds);
+      const marks = (bridgeReport?.backfill_marks ?? [])
+        .map((m) => ({
+          id: m.slice_id,
+          focus: m.focus.trim(),
+          summary: m.summary.trim(),
+        }))
+        .filter((m) => allowed.has(m.id) && (m.focus || m.summary));
+      try {
+        const marked = await applyMarksToDrySlices(marks, batch);
+        if (marked > 0) {
+          console.log(
+            `[Timeline] backfilled marks for ${marked} dry slice(s) (bridge report)`,
+          );
+        }
+      } catch {
+        // best-effort — never take a turn down
       }
-    } catch {
-      // best-effort — never take a turn down
+    } else {
+      try {
+        const marked = await backfillDrySliceMarks({
+          model: input.modelConfig,
+          excludeSliceIds: [slice.slice_id, diskSlice.slice_id],
+          batch,
+        });
+        if (marked > 0) {
+          console.log(`[Timeline] backfilled marks for ${marked} dry slice(s)`);
+        }
+      } catch {
+        // best-effort — never take a turn down
+      }
     }
   }
 
@@ -572,7 +817,7 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   // near-duplicate strands mid-slice (they'd otherwise hit strands.json before
   // the close-time cleaning replaces them).
   // Phase: tags — the analyzer (above) found them; this step applies them.
-  await emitPhase(stream, "tags", true);
+  await emitStep("tags", true);
   const appliedTags: string[] = [];
   // Semantic gate: trivial turns (greetings, "继续", thanks, small talk) carry
   // no durable info — skip tag extraction and strand weaving entirely, so
@@ -597,7 +842,7 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   if (appliedTags.length > 0) {
     console.log(`[FlashTags] Applied: ${appliedTags.join(", ")}`);
   }
-  await emitPhase(stream, "tags", false, appliedTags);
+  await emitStep("tags", false, appliedTags);
 
   // ── 5. Append user turn ───────────────────────────────────────────────
   // Dedup by turnId (user and agent turns of a round share it — scope the
@@ -618,10 +863,10 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
       turnId: input.turnId,
     });
   }
-  await emitPhase(stream, "slice", false, [slice.slice_id]);
+  await emitStep("slice", false, [slice.slice_id]);
 
   // ── Phase: context — load the user profile (previously + identity) ───
-  await emitPhase(stream, "context", true);
+  await emitStep("context", true);
 
   // ── 4b. Card evolution (v0.7b / v5, mutation-based) ─────────────────────
   // ONE pass, owned by the Previously Agent. Engineering owns the TRIGGER
@@ -688,14 +933,53 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   };
   try {
     if (!input.useDemo && closeSignal && diskSlice) {
-      // Read-only fact for the trigger.
-      const cardRaw = await readCurrentPreviously(batch);
+      // Read-only fact for the trigger. In the outsourced path the card was
+      // already read for the bridge payload (analyze stage) — reuse it.
+      const cardRaw = bridgeCardRaw ?? (await readCurrentPreviously(batch));
       // A legacy (pre-v5) card forces the run — migration must not wait for a
       // "worthy" boundary.
       const legacyCard =
         cardRaw.trim().length > 0 && !cardRaw.includes(CARD_STAMP);
 
-      if (shouldRunCardEvolution(analysis) || legacyCard) {
+      if (phaseOutsource) {
+        // Bridge path: the evolution decision + mutation proposals arrived in
+        // the SAME bridge call as the analysis — apply them through the
+        // card-session machinery (applyBridgeCardEvolution), no second spawn.
+        if (!bridgeReport) {
+          await emitEvolutionResult(stream, {
+            ran: false,
+            changed: false,
+            droppedRecent: 0,
+            note: "Housekeeping bridge unavailable — card evolution skipped this turn.",
+            error: "housekeeping bridge failed",
+          });
+        } else if (
+          (bridgeReport.evolution.worth || legacyCard) &&
+          bridgeReport.evolution.mutations.length > 0
+        ) {
+          evolutionResult = await applyBridgeCardEvolution({
+            card: cardRaw,
+            sliceId: diskSlice.slice_id,
+            today: todayLocal ?? new Date().toISOString().slice(0, 10),
+            reason: bridgeReport.evolution.reason,
+            mutations: bridgeReport.evolution.mutations,
+            batch,
+          });
+          await emitEvolutionResult(stream, evolutionResult);
+          freezeEvolutionSummary(slice);
+          console.log(
+            `[Evolution] bridge slice-close: changed=${evolutionResult.changed}${legacyCard ? " (legacy card migration)" : ""}`,
+          );
+        } else {
+          // Report-judged skip — the terminal chunk keeps the skip visible.
+          await emitEvolutionResult(stream, {
+            ran: false,
+            changed: false,
+            droppedRecent: 0,
+            note: `Slice boundary — nothing worth sedimenting (${bridgeReport.evolution.reason || "no reason given"}).`,
+          });
+        }
+      } else if (shouldRunCardEvolution(analysis) || legacyCard) {
         evolutionResult = await runCardEvolution({
           model: input.modelConfig,
           sliceId: diskSlice.slice_id,
@@ -727,24 +1011,53 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
         });
       }
     } else if (explicitUpdate && slice) {
-      evolutionResult = await runCardEvolution({
-        model: input.modelConfig,
-        sliceId: slice.slice_id,
-        recentTurns: input.recentTurns,
-        currentSliceTags: slice.tags,
-        focus: explicitUpdate.content,
-        signal: "new_observation",
-        readers: buildCardReaders(input),
-        onProgress: onEvolutionProgress,
-        onEvolutionLine,
-        batch,
-        todayDate: todayLocal,
-      });
-      await emitEvolutionResult(stream, evolutionResult);
-      freezeEvolutionSummary(slice);
-      console.log(
-        `[Evolution] inline user request: changed=${evolutionResult.changed}`,
-      );
+      if (phaseOutsource) {
+        const cardRaw = bridgeCardRaw ?? (await readCurrentPreviously(batch));
+        if (bridgeReport && bridgeReport.evolution.mutations.length > 0) {
+          evolutionResult = await applyBridgeCardEvolution({
+            card: cardRaw,
+            sliceId: slice.slice_id,
+            today: todayLocal ?? new Date().toISOString().slice(0, 10),
+            reason: bridgeReport.evolution.reason || explicitUpdate.content,
+            mutations: bridgeReport.evolution.mutations,
+            batch,
+          });
+          await emitEvolutionResult(stream, evolutionResult);
+          freezeEvolutionSummary(slice);
+          console.log(
+            `[Evolution] bridge user request: changed=${evolutionResult.changed}`,
+          );
+        } else {
+          await emitEvolutionResult(stream, {
+            ran: false,
+            changed: false,
+            droppedRecent: 0,
+            note: bridgeReport
+              ? `Memory update noted — no card mutation proposed (${bridgeReport.evolution.reason || "no reason given"}).`
+              : "Housekeeping bridge unavailable — card evolution skipped this turn.",
+            ...(bridgeReport ? {} : { error: "housekeeping bridge failed" }),
+          });
+        }
+      } else {
+        evolutionResult = await runCardEvolution({
+          model: input.modelConfig,
+          sliceId: slice.slice_id,
+          recentTurns: input.recentTurns,
+          currentSliceTags: slice.tags,
+          focus: explicitUpdate.content,
+          signal: "new_observation",
+          readers: buildCardReaders(input),
+          onProgress: onEvolutionProgress,
+          onEvolutionLine,
+          batch,
+          todayDate: todayLocal,
+        });
+        await emitEvolutionResult(stream, evolutionResult);
+        freezeEvolutionSummary(slice);
+        console.log(
+          `[Evolution] inline user request: changed=${evolutionResult.changed}`,
+        );
+      }
     }
   } catch (err) {
     console.error(
@@ -780,7 +1093,7 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   await flushBatch(batch, `Turn ${input.turnId} — housekeeping`);
 
   // ── Phase: strands — weave the memory-topic index ────────────────────
-  await emitPhase(stream, "strands", true);
+  await emitStep("strands", true);
   const strands = await readStrands();
   // Anchored to the SLICE START (not "now") so the relative-day annotations
   // stay byte-stable for the slice's whole life (v0.9 prefix-cache freeze).
@@ -789,7 +1102,7 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
     timezone: input.clientTimezone,
     locale: input.locale,
   });
-  await emitPhase(stream, "strands", false, [`${Object.keys(strands).length} strands`]);
+  await emitStep("strands", false, [`${Object.keys(strands).length} strands`]);
 
   // ── 6b. Continuity + slice-head snapshot + identity ──────────────────
   // v0.9 slice-level prompt freeze: the continuity stance is computed at the
@@ -818,7 +1131,7 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   const profile = parseIdentityFromPreviously(previouslyContent);
   const identityPrompt = buildAgentIdentityPrompt(profile);
 
-  await emitPhase(stream, "context", false, [`continuity: ${continuity.tier}`]);
+  await emitStep("context", false, [`continuity: ${continuity.tier}`]);
 
   // ── 7. Open UI stream ────────────────────────────────────────────────
   await stream.write({ type: "start" } as UIMessageChunk);

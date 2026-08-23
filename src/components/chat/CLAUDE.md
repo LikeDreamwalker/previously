@@ -17,8 +17,10 @@ ChatPage (chat-page.tsx)  ← "use client", top-level useChat container
 │   │   ├── EmptyBriefing (when no messages and not loading — the "Previously On" arrival briefing)
 │   │   └── ChatSection (chat-section.tsx)
 │   │       ├── ChatMessage (per message)
-│   │       │   ├── HousekeepingCard  ← compact data-phase group (slice/analyze/tags/context/strands)
+│   │       │   ├── HousekeepingCard  ← compact data-phase group (slice/analyze/tags/context/strands) — EDGE mode only
 │   │       │   ├── EvolutionCard  ← data-evolution parts (standalone stream-positioned card with live thinking line)
+│   │       │   ├── BridgeToolCard  ← data-phase parts carrying a `tools` array (bridge mode: CLI tool activity during the chat answer)
+│   │       │   ├── BridgeHousekeepingCard  ← the `bridgeHousekeeping` data-phase parts (client mode: one streaming card for the whole housekeeping phase — CLI tool rows + live narration + deterministic wrap-up checklist in `data.steps`)
 │   │       │   ├── ThinkingSteps  ← reasoning parts (Brain icon, streaming subtitle)
 │   │       │   ├── PhaseIndicator  ← non-compact data-phase parts (terminal states)
 │   │       │   ├── ToolRenderer  ← dispatches tool-* parts to per-tool renderers
@@ -47,7 +49,7 @@ ChatPage (chat-page.tsx)  ← "use client", top-level useChat container
 2. `ChatMessage.buildStream()` classifies each part in a single pass:
    - `reasoning` → merged consecutively into one `ThinkingSteps` block (streaming mode with typewriter subtitle)
    - `tool-*` → merged by `toolCallId` into a single `ToolRenderer` card (folds input-streaming → input-available → output-available)
-   - `data-phase` → compact phases merge by name into ONE `HousekeepingCard` checklist (emits `{running: true}` at start, `{running: false}` at end); non-compact phases render as `PhaseIndicator` (static mode, Activity icon)
+   - `data-phase` → compact phases merge by name into ONE `HousekeepingCard` checklist (emits `{running: true}` at start, `{running: false}` at end; EDGE mode only — client mode never emits compact phases); phases carrying a `tools` array (bridge-mode CLI activity) merge by name into a bridge item — phase `bridgeHousekeeping` renders as `BridgeHousekeepingCard` (streaming: tool rows + `live` narration + wrap-up `steps` checklist), anything else as `BridgeToolCard`; other non-compact phases render as `PhaseIndicator` (static mode, Activity icon)
    - `data-evolution` → its OWN `EvolutionCard` item at the position the chunks arrive (between the housekeeping context and strands phases); while running it streams the Previously Agent's live thinking line, the terminal chunk carries the summary / mutations diff / note / error / partial flag
    - `text` → buffered and flushed into `MarkdownRenderer` blocks
 3. Items render in natural stream order inside `AnimatePresence` for enter/exit animations.
@@ -63,7 +65,9 @@ ChatPage (chat-page.tsx)  ← "use client", top-level useChat container
 | `chat-message.tsx` | Per-message renderer: unified stream pipeline (`buildStream`) — classifies parts into reasoning/text/tool/phase, wraps in `AnimatePresence` |
 | `chat-input.tsx` | Textarea with image attachments (paste/drag-drop/file picker), auto-resize, submit/stop buttons, demo trigger |
 | `phase-indicator.tsx` | Reusable expandable header bar: two modes — `streaming` (typewriter subtitle, elapsed timer) and `static` (manual expand, chevron). Used by ThinkingSteps, HousekeepingCard, RecallToolRenderer, and non-compact data-phase items |
-| `housekeeping-card.tsx` | The grouped prep card: compact data-phase checklist (slice / analyze / tags / context / strands). Built on PhaseIndicator |
+| `housekeeping-card.tsx` | The grouped prep card (EDGE mode): compact data-phase checklist (slice / analyze / tags / context / strands). Built on PhaseIndicator |
+| `bridge-tools-card.tsx` | The generic bridge-tool indicator (client+bridge mode): one ToolLayout row per protocol-2 CLI tool event (icon + name + status, expandable summary), plus the CLI's rolling narration line (`live`, mono muted + pulsing caret, running-only) under a brand-tinted header. Renders `bridge-tools` stream items for the chat answer (phase `stageWorking`) |
+| `bridge-housekeeping-card.tsx` | The CLIENT-mode housekeeping card (`bridge-tools` item, phase `bridgeHousekeeping`): the whole housekeeping phase as one streaming surface — live narration + CLI tool rows (same look as BridgeToolCard) + the kernel's deterministic wrap-up checklist (`data.steps`) filling in around the single bridge call |
 | `evolution-card.tsx` | The standalone card-evolution card (data-evolution, Previously Agent): streaming mode with the agent's live thinking line as the typewriter subtitle while running, then the settled headline — "evolved: summary" (+ partial marker) with an expandable mutations diff + note, "checked, no updates", or the failure reason in red. Built on PhaseIndicator |
 | `thinking.tsx` | Reasoning display: Brain icon, streaming subtitle, elapsed timer, expandable Markdown. Uses PhaseIndicator in streaming mode |
 | `tool-renderer.tsx` | Central dispatch hub: maps `toolName` to specific renderers, extracts `ToolRenderState` from raw SDK state |

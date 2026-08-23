@@ -242,6 +242,157 @@ describe("buildStream — tool progress routing", () => {
   });
 });
 
+describe("buildStream — bridge tool activity (data-phase with tools)", () => {
+  const toolRows = [
+    { name: "Read", summary: "Read memory/a.md", status: "ok" },
+    { name: "Bash", summary: "Bash pnpm test", status: "start" },
+  ];
+
+  it("becomes a bridge-tools item (merged by phase, last chunk wins)", () => {
+    const parts = [
+      part({
+        type: "data-phase",
+        data: { phase: "stageWorking", running: true, summaries: ["Read memory/a.md"], tools: [toolRows[0]] },
+      }),
+      part({
+        type: "data-phase",
+        data: { phase: "stageWorking", running: false, summaries: ["Read memory/a.md", "Bash pnpm test"], tools: toolRows },
+      }),
+    ];
+    const items = buildStream(parts, false);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      kind: "bridge-tools",
+      phase: "stageWorking",
+      running: false,
+      tools: toolRows,
+    });
+  });
+
+  it("keeps housekeeping and chat bridge activity as separate items (distinct phases)", () => {
+    const parts = [
+      part({
+        type: "data-phase",
+        data: { phase: "bridgeHousekeeping", running: false, summaries: [], tools: [toolRows[0]] },
+      }),
+      phaseChunks("strands", true),
+      part({
+        type: "data-phase",
+        data: { phase: "stageWorking", running: true, summaries: [], tools: toolRows },
+      }),
+    ];
+    const items = buildStream(parts, false);
+    expect(items.map((i) => i.kind)).toEqual([
+      "bridge-tools",
+      "housekeeping",
+      "bridge-tools",
+    ]);
+    expect((items[0] as { phase: string }).phase).toBe("bridgeHousekeeping");
+    expect((items[2] as { phase: string }).phase).toBe("stageWorking");
+  });
+
+  it("keeps the legacy tools-less data-phase rendering as a plain phase item", () => {
+    const parts = [
+      part({
+        type: "data-phase",
+        data: { phase: "stageWorking", running: true, summaries: ["Read x"] },
+      }),
+    ];
+    const items = buildStream(parts, false);
+    expect(items[0]).toMatchObject({ kind: "phase", phase: "stageWorking" });
+  });
+
+  it("carries the rolling narration line (live), last frame wins", () => {
+    const parts = [
+      part({
+        type: "data-phase",
+        data: { phase: "bridgeHousekeeping", running: true, summaries: [], tools: [], live: "Reading the slice" },
+      }),
+      part({
+        type: "data-phase",
+        data: { phase: "bridgeHousekeeping", running: true, summaries: [], tools: [], live: "Reading the slice…" },
+      }),
+      part({
+        type: "data-phase",
+        data: { phase: "bridgeHousekeeping", running: false, summaries: [], tools: [], live: "Reading the slice…" },
+      }),
+    ];
+    const items = buildStream(parts, false);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      kind: "bridge-tools",
+      phase: "bridgeHousekeeping",
+      running: false,
+      live: "Reading the slice…",
+      tools: [],
+    });
+  });
+
+  it("carries the client-mode wrap-up steps, last frame wins", () => {
+    const parts = [
+      part({
+        type: "data-phase",
+        data: {
+          phase: "bridgeHousekeeping",
+          running: true,
+          summaries: [],
+          tools: [],
+          steps: [{ phase: "slice", running: true }],
+        },
+      }),
+      part({
+        type: "data-phase",
+        data: {
+          phase: "bridgeHousekeeping",
+          running: true,
+          summaries: [],
+          tools: [toolRows[0]],
+          live: "Analyzing the turn",
+          steps: [
+            { phase: "slice", running: true },
+            { phase: "analyze", running: true },
+          ],
+        },
+      }),
+      part({
+        type: "data-phase",
+        data: {
+          phase: "bridgeHousekeeping",
+          running: false,
+          summaries: [],
+          tools: [toolRows[0]],
+          steps: [
+            { phase: "slice", running: false, summaries: ["2026-08-22-1015"] },
+            { phase: "analyze", running: false, summaries: ["work"] },
+          ],
+        },
+      }),
+    ];
+    const items = buildStream(parts, false);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      kind: "bridge-tools",
+      phase: "bridgeHousekeeping",
+      running: false,
+      tools: [toolRows[0]],
+      steps: [
+        { phase: "slice", running: false, summaries: ["2026-08-22-1015"] },
+        { phase: "analyze", running: false, summaries: ["work"] },
+      ],
+    });
+    // A frame without a steps field leaves the accumulated steps untouched.
+    const parts2 = [
+      ...parts,
+      part({
+        type: "data-phase",
+        data: { phase: "bridgeHousekeeping", running: false, summaries: [], tools: [toolRows[0]] },
+      }),
+    ];
+    const items2 = buildStream(parts2, false);
+    expect((items2[0] as { steps?: unknown[] }).steps).toHaveLength(2);
+  });
+});
+
 describe("buildStream — terminal turn status", () => {
   it("creates a terminal error phase with the client-visible explanation", () => {
     const parts = [

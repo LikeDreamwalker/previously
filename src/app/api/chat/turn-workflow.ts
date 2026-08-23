@@ -626,13 +626,16 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
     // tools are mounted for this turn (see createChatAgent). The prompt blocks
     // above still name recall/readSlice, so say explicitly that they are not
     // available here — an unannounced tool-less model would hallucinate calls
-    // to them. Memory access instead happens on the bridge side: the client
-    // spawns the CLI in a per-call skills workspace whose instruction files
-    // (CLAUDE.md / AGENTS.md) explain how to read Previously's read-only
-    // markdown memory (client repo's affair, not kernel tools).
+    // to them. Memory access instead happens on the bridge side through two
+    // CONSTRAINED local commands (`previously recall` / `previously
+    // readslice`) described by the per-call workspace instruction file
+    // (CLAUDE.md / AGENTS.md); deep reasoning and web search use the CLI's own
+    // native capabilities — the DIRECTIVES clause mandating thinkDeep
+    // decomposition is countermanded here (the tool does not exist in this
+    // mode; the bundled DIRECTIVES text itself is unchanged).
     bridgeNotice:
       input.modelConfig.sdk === "bridge"
-        ? `## Subscription bridge mode\n\nYou are running as the user's local subscription CLI, invoked by the Previously client. Your working directory contains an instruction file (CLAUDE.md or AGENTS.md) explaining how to read Previously's memory — read it first; the memory is read-only markdown on disk. Do not try to save or update memory yourself — conversation persistence is handled outside your process. The kernel tools mentioned elsewhere in this prompt (recall, readSlice, webSearch, delegateTask, …) are NOT available to you here, so do not attempt to call them. Your final reply is rendered verbatim in a chat UI — output only the answer, no preamble or meta-commentary.`
+        ? `## Subscription bridge mode\n\nYou are running as the user's local subscription CLI, invoked by the Previously client. Memory access goes through two local commands — \`previously recall "<query>"\` (search; returns pointers only) and \`previously readslice <sliceId>\` (open one slice) — described by the instruction file (CLAUDE.md or AGENTS.md) in your working directory; read it first, and do not read or write the memory directory directly. The kernel tools mentioned elsewhere in this prompt (recall, readSlice, webSearch, thinkDeep, delegateTask, …) are NOT available to you here: the DIRECTIVES clause mandating thinkDeep decomposition does NOT apply in this mode — use your own native deep-reasoning and search capabilities instead. Conversation persistence and memory evolution are handled outside your process; never try to save or update memory yourself. Your final reply is rendered verbatim in a chat UI — output only the answer, no preamble or meta-commentary.`
         : "",
     // Derived from the RAW card + the slice-head local date — both frozen, so
     // this block is byte-stable within the slice (see buildOverdueBlock).

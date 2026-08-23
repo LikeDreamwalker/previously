@@ -32,9 +32,12 @@ export const BRIDGE_MAX_OUTPUT_CHARS = 30_000;
  * Wire protocol version sent on stdin (`{ task, context, protocol: 2 }`).
  * Old bridge CLIs ignore the unknown field and keep answering with plain
  * text on stdout (protocol 1). Protocol-2 CLIs answer with NDJSON: zero or
- * more live event lines `{"event": {name, summary, status}}` followed by a
- * final envelope line `{"protocol": 2, "result": string, "events": [...]}`.
- * A single JSON envelope as the whole stdout (no live lines) is also valid.
+ * more live lines — tool-activity events `{"event": {name, summary, status}}`
+ * and (claude adapter only) advisory text deltas `{"delta": "<chunk>"}` —
+ * followed by a final envelope line `{"protocol": 2, "result": string,
+ * "events": [...]}`. Deltas are advisory: the envelope `result` stays the
+ * source of truth and consumers reconcile to it at completion. A single JSON
+ * envelope as the whole stdout (no live lines) is also valid.
  */
 export const BRIDGE_PROTOCOL_VERSION = 2;
 
@@ -69,7 +72,10 @@ export type BridgeFailureReason =
   | "empty-output"
   // The CLI answered but ignored the required tool-call JSON tail (used by
   // the bridge model when toolChoice demands a structured report).
-  | "invalid-report";
+  | "invalid-report"
+  // The caller's AbortSignal fired (client disconnect / stop button) — the
+  // subprocess was killed instead of burning subscription quota until timeout.
+  | "aborted";
 
 export type BridgeRunResult =
   | {
@@ -124,6 +130,24 @@ function normalizeBridgeEvent(raw: unknown): BridgeEvent | undefined {
 }
 
 /**
+ * Raw stdout is only the LEGACY (no-envelope) fallback, capped at 30k from the
+ * head anyway — protocol-2 lines (events/deltas/envelope) are parsed
+ * incrementally out of `lineBuf` and never need the raw capture. Stop
+ * accumulating past this bound so a long streaming chat answer (thousands of
+ * delta lines) doesn't grow the server heap for the whole run.
+ */
+const BRIDGE_MAX_STDOUT_CAPTURE = 64_000;
+/**
+ * A single line may legitimately be the envelope (result ≤512k + events), so
+ * the line buffer gets headroom — but a never-newlined runaway line is dropped
+ * past this bound (the parse then fails harmlessly and the run degrades to the
+ * capped legacy path).
+ */
+const BRIDGE_MAX_LINE_CHARS = 2_000_000;
+/** stderr is only surfaced as an error tail — keep a rolling tail, not all of it. */
+const BRIDGE_STDERR_TAIL_CHARS = 4_096;
+
+/**
  * Spawn the bridge command, pipe the JSON payload to its stdin, and capture
  * stdout as the result. Never rejects — every outcome (missing binary,
  * non-zero exit, timeout, empty stdout) becomes a structured error result so
@@ -133,18 +157,27 @@ function normalizeBridgeEvent(raw: unknown): BridgeEvent | undefined {
  * Protocol 2 (see BRIDGE_PROTOCOL_VERSION): stdout is parsed line by line as
  * it arrives. Lines that are single-line JSON objects `{"event": {...}}` are
  * live tool-activity events — forwarded to `onEvent` immediately and
- * collected. A line `{"protocol": 2, "result": ..., "events": [...]}` is the
- * final envelope and settles the run (its `events` are the batch fallback:
+ * collected. Lines `{"delta": "<text>"}` are advisory text deltas (the chat
+ * answer streaming live, claude adapter only) — forwarded to `onDelta`
+ * immediately, never collected; the envelope `result` stays the source of
+ * truth and the consumer reconciles to it at completion. A line
+ * `{"protocol": 2, "result": ..., "events": [...]}` is the final envelope
+ * and settles the run (its `events` are the batch fallback:
  * any beyond the ones already streamed live are flushed to `onEvent` at
  * completion — the client may echo the same events in both places, so the
  * first `streamedEvents.length` envelope events are skipped as duplicates).
- * Without an envelope line the WHOLE raw stdout stays the result (legacy
+ * Malformed protocol lines are ignored, never fatal. Without an envelope
+ * line the WHOLE raw stdout stays the result (legacy
  * protocol 1), byte-cap 30k; envelope results get the raised 512k cap.
  *
  * `extraEnv` is merged over the inherited process env for this one spawn —
  * used by the bridge main model to pin PREVIOUSLY_BRAIN_AGENT to the agent
  * named by the selected model id (bridge/<agent>), so switching agents via
  * the model selector takes effect on the next call without a restart.
+ *
+ * `signal` (optional) aborts the run: the subprocess is killed and the result
+ * settles as reason "aborted" — a disconnected/stopped client must not leave
+ * the CLI burning subscription quota until the timeout.
  */
 export async function runBridge(
   argv: string[],
@@ -152,6 +185,8 @@ export async function runBridge(
   timeoutMs: number,
   extraEnv?: Record<string, string>,
   onEvent?: (event: BridgeEvent) => void,
+  onDelta?: (text: string) => void,
+  signal?: AbortSignal,
 ): Promise<BridgeRunResult> {
   // Lazy: see the module-level note — never loaded in the workflow sandbox.
   const { spawn } = await import("node:child_process");
@@ -159,6 +194,7 @@ export async function runBridge(
   return new Promise((resolve) => {
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let abortListener: (() => void) | undefined;
     const finish = (
       r:
         | { status: "ok"; result: string; events?: BridgeEvent[] }
@@ -167,6 +203,9 @@ export async function runBridge(
       if (settled) return;
       settled = true;
       if (timer !== undefined) clearTimeout(timer);
+      if (signal && abortListener) {
+        signal.removeEventListener("abort", abortListener);
+      }
       resolve({ ...r, elapsedMs: Date.now() - start });
     };
 
@@ -176,6 +215,22 @@ export async function runBridge(
       windowsHide: true,
       ...(extraEnv ? { env: { ...process.env, ...extraEnv } } : {}),
     });
+    // Caller abort (client disconnect / stop button): kill the subprocess
+    // instead of letting it burn subscription quota until the timeout.
+    if (signal) {
+      abortListener = () => {
+        child.kill();
+        finish({
+          status: "error",
+          reason: "aborted",
+          error:
+            "The caller aborted the run (client disconnected or the turn was " +
+            "stopped) — the bridge subprocess was killed.",
+        });
+      };
+      if (signal.aborted) abortListener();
+      else signal.addEventListener("abort", abortListener, { once: true });
+    }
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8");
@@ -195,7 +250,15 @@ export async function runBridge(
       }
     };
 
-    /** Returns true when the line was a protocol line (event or envelope). */
+    const emitDelta = (text: string) => {
+      try {
+        onDelta?.(text);
+      } catch {
+        // Same discipline as event callbacks — display hook, never fatal.
+      }
+    };
+
+    /** Returns true when the line was a protocol line (event, delta, or envelope). */
     const parseProtocolLine = (line: string): boolean => {
       const t = line.trim();
       if (!t.startsWith("{")) return false;
@@ -218,6 +281,12 @@ export async function runBridge(
         }
         return true;
       }
+      // Advisory live text chunk (protocol 2, claude adapter). Never
+      // collected — the envelope result is the source of truth.
+      if (typeof o.delta === "string") {
+        emitDelta(o.delta);
+        return true;
+      }
       const ev = normalizeBridgeEvent(o.event);
       if (ev) {
         if (streamedEvents.length < BRIDGE_MAX_EVENTS) {
@@ -230,8 +299,17 @@ export async function runBridge(
     };
 
     child.stdout.on("data", (d) => {
-      stdout += d;
+      // Raw capture is only the legacy fallback (head-capped at 30k) — stop
+      // growing it once past the bound; protocol lines live in lineBuf.
+      if (stdout.length < BRIDGE_MAX_STDOUT_CAPTURE) stdout += d;
       lineBuf += d;
+      // A never-newlined runaway line must not grow the heap — drop it (the
+      // parse of the mangled line then fails harmlessly; legit envelopes are
+      // far below this bound).
+      if (lineBuf.length > BRIDGE_MAX_LINE_CHARS) {
+        const nl = lineBuf.indexOf("\n");
+        lineBuf = nl >= 0 ? lineBuf.slice(nl + 1) : "";
+      }
       let nl: number;
       while ((nl = lineBuf.indexOf("\n")) >= 0) {
         parseProtocolLine(lineBuf.slice(0, nl));
@@ -240,6 +318,9 @@ export async function runBridge(
     });
     child.stderr.on("data", (d) => {
       stderr += d;
+      if (stderr.length > BRIDGE_STDERR_TAIL_CHARS) {
+        stderr = stderr.slice(-BRIDGE_STDERR_TAIL_CHARS);
+      }
     });
 
     // Best-effort kill on timeout; if the bridge ignores SIGTERM it still

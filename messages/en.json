@@ -184,6 +184,7 @@
       "turnError": "Error occurred",
       "housekeeping": "Preparing…",
       "housekeepingDone": "Context ready",
+      "bridgeHousekeeping": "Housekeeping…",
       "stillWorking": "Still working…",
       "stageRecalling": "Recalling…",
       "stageReasoning": "Reasoning…",

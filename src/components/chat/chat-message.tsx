@@ -9,6 +9,8 @@ import { ThinkingSteps } from "./thinking";
 import { PhaseIndicator } from "./phase-indicator";
 import { HousekeepingCard } from "./housekeeping-card";
 import { EvolutionCard } from "./evolution-card";
+import { BridgeToolCard } from "./bridge-tools-card";
+import { BridgeHousekeepingCard } from "./bridge-housekeeping-card";
 import { MessageActions } from "./message-actions";
 import { ToolRenderer } from "./tool-renderer";
 import { Message, MessageContent, MessageFooter } from "@/components/ui/message";
@@ -125,6 +127,8 @@ function itemKey(item: StreamItem, index: number): string {
       return `housekeeping-${index}`;
     case "evolution":
       return `evolution-${index}`;
+    case "bridge-tools":
+      return `bridge-tools-${item.phase}-${index}`;
     case "phase":
       return `phase-${item.phase}-${index}`;
   }
@@ -288,6 +292,32 @@ export const ChatMessage = memo(function ChatMessage({
                         key={key}
                         running={item.running}
                         data={item.data}
+                      />
+                    );
+                  }
+                  if (item.kind === "bridge-tools") {
+                    // The local CLI's live tool activity (bridge mode).
+                    // Housekeeping gets its own card (client mode: the whole
+                    // phase is one agent call + deterministic wrap-up rows);
+                    // the chat answer keeps the plain tool indicator.
+                    if (item.phase === "bridgeHousekeeping") {
+                      return (
+                        <BridgeHousekeepingCard
+                          key={key}
+                          running={item.running}
+                          tools={item.tools}
+                          live={item.live}
+                          steps={item.steps}
+                        />
+                      );
+                    }
+                    return (
+                      <BridgeToolCard
+                        key={key}
+                        phase={item.phase}
+                        running={item.running}
+                        tools={item.tools}
+                        live={item.live}
                       />
                     );
                   }

@@ -30,8 +30,10 @@ import {
 
 // ─── Config ────────────────────────────────────────────────────────────────
 
-/** Below this many strands, skip the LLM pass (nothing meaningful to dedupe). */
-const MIN_STRANDS_FOR_LLM = 25;
+/** Below this many strands, skip the LLM pass (nothing meaningful to dedupe).
+ *  Exported: the outsourced (bridge) housekeeping path applies the same gate
+ *  when deciding whether to offer merge candidates to the client agent. */
+export const MIN_STRANDS_FOR_LLM = 25;
 /** Cap on merges the worker may propose per pass (keeps the call cheap). */
 const MAX_MERGES = 30;
 

@@ -9,8 +9,11 @@
  * prompt + prior history), and written as JSON to the bridge command's stdin
  * (PREVIOUSLY_BRIDGE_CMD, default `previously bridge-exec` — the local
  * Claude/Codex/Kimi CLI adapter shipped by the client). The bridge's stdout
- * is the generated text. This is honestly NON-streaming: doStream waits for
- * the full result and emits it as a single text delta.
+ * is the generated text. Streaming: when the CLI emits protocol-2 `{"delta"}`
+ * lines (claude adapter), doStream forwards them as live text-delta parts and
+ * reconciles to the envelope `result` at completion (the result wins); with
+ * no deltas (codex/kimi, legacy CLIs) it honestly replays the one-shot result
+ * as a single text delta.
  *
  * Structured reports (sub-agents): when the call offers function tools (the
  * unified sub-agent runner's report tool, plus recall's search tools), a
@@ -73,6 +76,7 @@ import {
   runBridge,
   splitBridgeCommand,
   BRIDGE_PROTOCOL_VERSION,
+  BRIDGE_MAX_RESULT_CHARS_V2,
   type BridgeEvent,
   type BridgeFailureReason,
 } from "@/lib/bridge";
@@ -135,10 +139,15 @@ function renderMessage(message: LanguageModelV3Message): string {
  * the `task`, everything before it (system prompt + history) is the
  * `context`. When the prompt doesn't end in a user message (shouldn't happen
  * on the chat path), the whole transcript is the task.
+ *
+ * `phase: "chat"` marks the payload as the chat phase (the client picks its
+ * per-phase skill workspace document from it; older clients ignore the
+ * unknown field).
  */
 export function promptToBridgePayload(prompt: LanguageModelV3Prompt): {
   task: string;
   context: string | null;
+  phase: "chat";
 } {
   const transcript = prompt.map(renderMessage);
   const last = prompt[prompt.length - 1];
@@ -150,10 +159,10 @@ export function promptToBridgePayload(prompt: LanguageModelV3Prompt): {
       .trim();
     if (task) {
       const context = transcript.slice(0, -1).join("\n\n");
-      return { task, context: context || null };
+      return { task, context: context || null, phase: "chat" };
     }
   }
-  return { task: transcript.join("\n\n"), context: null };
+  return { task: transcript.join("\n\n"), context: null, phase: "chat" };
 }
 
 /** Warnings for call options the bridge cannot honor. */
@@ -320,30 +329,84 @@ const BRIDGE_PHASE_NAME = "stageWorking";
 const BRIDGE_PHASE_ID = "phase-bridge";
 // Mirrors progress-throttle.ts: the server pump drains ~55-60 chunks/sec.
 const BRIDGE_EVENT_THROTTLE_MS = 40;
+/** Display cap on the structured tool rows (runBridge already caps at 200). */
+const BRIDGE_TOOL_ROWS_MAX = 50;
+/** Cap on the rolling narration line (oldest chars drop off the front). */
+const BRIDGE_LIVE_MAX_CHARS = 300;
 
-interface BridgeEventEmitter {
+/** The `data-phase` payload the bridge activity emitter writes. */
+export interface BridgePhaseData {
+  phase: string;
+  running: boolean;
+  /** Accumulated human lines (one per activity, start→ok dups collapsed). */
+  summaries: string[];
+  /** Structured per-tool rows — the generic bridge-tool indicator's data. */
+  tools: BridgeEvent[];
+  /**
+   * The rolling narration line — the CLI's current thinking/narration text
+   * (protocol-2 `{"delta"}` lines, housekeeping phase: the client suppresses
+   * the JSON report block, so deltas are display-safe). Only the CURRENT
+   * line is kept: the fragment after the last newline seen, capped at
+   * BRIDGE_LIVE_MAX_CHARS (tail kept). Absent until the first delta arrives.
+   */
+  live?: string;
+}
+
+export interface BridgeEventEmitter {
   onEvent: (event: BridgeEvent) => void;
+  /** Fold a live text delta into the rolling narration line (`data.live`). */
+  onDelta: (text: string) => void;
   /** Final settle (running: false) + lock release. ALWAYS call after the run. */
   finish: () => void;
 }
 
 /**
  * Create the emitter that turns protocol-2 bridge events into one live
- * `data-phase` chunk stream. The chunks are written DIRECTLY to the workflow
- * run's writable (they cannot ride the model stream — the AI SDK step
- * transform rejects unknown chunk types) and match the shape buildStream
- * expects: `{ phase, running, summaries }`, non-compact, merged by phase
- * name. Discipline mirrors the sub-agent progress emitter: a single reused
- * `getWritable()` writer, a 40ms throttle, the lock always released. Noop
- * outside a workflow step (unit tests) and fully silent when the CLI never
- * emits an event (legacy CLIs produce no phantom phase).
+ * `data-phase` chunk stream (`{ phase, running, summaries, tools, live }`,
+ * merged by phase name; the frontend renders it as the bridge-tool
+ * indicator).
+ *
+ * Default (no `write`): chunks go DIRECTLY to the workflow run's writable via
+ * a single reused `getWritable()` writer (they cannot ride the model stream —
+ * the AI SDK step transform rejects unknown chunk types), throttled at 40ms,
+ * lock always released; noop outside a workflow step (unit tests) and fully
+ * silent when the CLI never emits an event or delta (legacy CLIs produce no
+ * phantom phase). With a custom `write` (the housekeeping step), frames ride
+ * the caller's own channel instead — `id`/`phase` are then the caller's
+ * choice.
  */
-function createBridgeEventEmitter(): BridgeEventEmitter {
+export function createBridgeEventEmitter(opts?: {
+  id?: string;
+  phase?: string;
+  write?: (data: BridgePhaseData) => void;
+}): BridgeEventEmitter {
+  const id = opts?.id ?? BRIDGE_PHASE_ID;
+  const phase = opts?.phase ?? BRIDGE_PHASE_NAME;
   let writer: WritableStreamDefaultWriter<UIMessageChunk> | null | undefined;
   const lines: string[] = [];
+  const tools: BridgeEvent[] = [];
+  /** The current narration line (fragment after the last newline seen). */
+  let liveLine = "";
+  let wroteAny = false;
   let lastWriteMs = 0;
 
   const write = (running: boolean) => {
+    wroteAny = true;
+    const data: BridgePhaseData = {
+      phase,
+      running,
+      summaries: [...lines],
+      tools: [...tools],
+      ...(liveLine ? { live: liveLine } : {}),
+    };
+    if (opts?.write) {
+      try {
+        opts.write(data);
+      } catch {
+        // display hook — never break the bridge
+      }
+      return;
+    }
     if (writer === undefined) {
       try {
         writer = getWritable<UIMessageChunk>().getWriter();
@@ -355,8 +418,8 @@ function createBridgeEventEmitter(): BridgeEventEmitter {
     void writer
       .write({
         type: "data-phase" as `data-${string}`,
-        id: BRIDGE_PHASE_ID,
-        data: { phase: BRIDGE_PHASE_NAME, running, summaries: [...lines] },
+        id,
+        data,
       } as UIMessageChunk)
       .catch(() => {});
   };
@@ -368,13 +431,37 @@ function createBridgeEventEmitter(): BridgeEventEmitter {
       // The CLI typically emits start → ok with the same summary; collapse
       // consecutive duplicates so each activity shows once.
       if (lines[lines.length - 1] !== line) lines.push(line);
+      // Structured rows: a start → ok pair for the same tool+summary updates
+      // the existing row's status instead of adding a second row.
+      const last = tools[tools.length - 1];
+      if (last && last.name === event.name && last.summary === event.summary) {
+        last.status = event.status;
+      } else if (tools.length < BRIDGE_TOOL_ROWS_MAX) {
+        tools.push({ ...event });
+      }
+      const now = Date.now();
+      if (now - lastWriteMs < BRIDGE_EVENT_THROTTLE_MS) return;
+      lastWriteMs = now;
+      write(true);
+    },
+    onDelta(text) {
+      if (!text) return;
+      // Rolling line: the current line is the fragment after the last
+      // newline seen; completed lines roll away (the UI shows one line).
+      const nl = text.lastIndexOf("\n");
+      liveLine = nl >= 0 ? text.slice(nl + 1) : liveLine + text;
+      if (liveLine.length > BRIDGE_LIVE_MAX_CHARS) {
+        liveLine = liveLine.slice(-BRIDGE_LIVE_MAX_CHARS);
+      }
       const now = Date.now();
       if (now - lastWriteMs < BRIDGE_EVENT_THROTTLE_MS) return;
       lastWriteMs = now;
       write(true);
     },
     finish() {
-      if (lines.length === 0) return;
+      // Nothing ever arrived → no phantom phase. A buffered-but-throttled
+      // first event/delta (no frame written yet) still settles here.
+      if (!wroteAny && lines.length === 0 && !liveLine) return;
       try {
         // Unthrottled final frame: the indicator settles on the full list.
         write(false);
@@ -384,6 +471,60 @@ function createBridgeEventEmitter(): BridgeEventEmitter {
       }
     },
   };
+}
+
+// ─── Shared post-processing (doGenerate + doStream) ───────────────────────
+
+interface BridgeParsedOutput {
+  text: string;
+  toolCall?: { toolCallId: string; toolName: string; input: string };
+}
+
+/**
+ * Split a successful bridge result into text + optional tool call by parsing
+ * the text tool protocol's JSON tail. Throws BridgeModelError("invalid-report")
+ * when toolChoice demands a call and the tail is missing — output is never
+ * faked.
+ */
+function splitBridgeReport(
+  modelId: string,
+  raw: string,
+  options: LanguageModelV3CallOptions,
+  toolInstruction: string | null,
+): BridgeParsedOutput {
+  if (!toolInstruction) return { text: raw };
+  const fnTools = collectFunctionTools(options);
+  const forced =
+    options.toolChoice?.type === "tool" ? options.toolChoice.toolName : undefined;
+  const required = options.toolChoice?.type === "required" || forced !== undefined;
+  const extracted = extractBridgeToolCall(
+    raw,
+    new Set(fnTools.map((t) => t.name)),
+    forced,
+  );
+  if (extracted) {
+    return {
+      text: extracted.text,
+      toolCall: {
+        toolCallId: `bridge-call-${++toolCallCounter}`,
+        toolName: extracted.toolCall.toolName,
+        input: JSON.stringify(extracted.toolCall.input),
+      },
+    };
+  }
+  if (required) {
+    const tail = raw.slice(-500);
+    throw new BridgeModelError(
+      modelId,
+      "invalid-report",
+      `The bridge CLI did not end its reply with the required ` +
+        `{"tool": ..., "input": ...} JSON object` +
+        (forced ? ` for tool "${forced}"` : "") +
+        `. Tail of its output: ${JSON.stringify(tail)}`,
+    );
+  }
+  // toolChoice "auto" + plain text: honest text answer, no fake call.
+  return { text: raw };
 }
 
 // ─── The model ────────────────────────────────────────────────────────────
@@ -438,7 +579,7 @@ export class BridgeChatLanguageModel implements LanguageModelV3 {
     options: LanguageModelV3CallOptions,
   ): Promise<LanguageModelV3GenerateResult> {
     const warnings = bridgeCallWarnings(options);
-    const { task, context } = promptToBridgePayload(options.prompt);
+    const { task, context, phase } = promptToBridgePayload(options.prompt);
     const toolInstruction = buildBridgeToolInstruction(options);
 
     // The model id picks the agent CLI: bridge/<agent> → that agent, pinned
@@ -451,11 +592,18 @@ export class BridgeChatLanguageModel implements LanguageModelV3 {
       JSON.stringify({
         task: toolInstruction ? `${task}\n\n${toolInstruction}` : task,
         context,
+        // Tool-protocol calls (sub-agent reports on the kill-switch path) get
+        // NO phase — the chat skill doc's output contract ("reply rendered
+        // verbatim") contradicts the required {"tool": …} JSON tail; a
+        // missing phase makes the client use its generic memory doc.
+        ...(toolInstruction ? {} : { phase }),
         protocol: BRIDGE_PROTOCOL_VERSION,
       }),
       getBridgeTimeoutMs(),
       { PREVIOUSLY_BRAIN_AGENT: agent },
       events.onEvent,
+      undefined,
+      options.abortSignal,
     );
     // Settle the live phase indicator even on failure (spinner must stop).
     events.finish();
@@ -467,42 +615,12 @@ export class BridgeChatLanguageModel implements LanguageModelV3 {
     }
 
     // Text tool protocol: parse the JSON tail back into a real tool call.
-    let text = result.result;
-    let toolCall:
-      | { toolCallId: string; toolName: string; input: string }
-      | undefined;
-    if (toolInstruction) {
-      const fnTools = collectFunctionTools(options);
-      const forced =
-        options.toolChoice?.type === "tool"
-          ? options.toolChoice.toolName
-          : undefined;
-      const required = options.toolChoice?.type === "required" || forced !== undefined;
-      const extracted = extractBridgeToolCall(
-        result.result,
-        new Set(fnTools.map((t) => t.name)),
-        forced,
-      );
-      if (extracted) {
-        text = extracted.text;
-        toolCall = {
-          toolCallId: `bridge-call-${++toolCallCounter}`,
-          toolName: extracted.toolCall.toolName,
-          input: JSON.stringify(extracted.toolCall.input),
-        };
-      } else if (required) {
-        const tail = result.result.slice(-500);
-        throw new BridgeModelError(
-          this.modelId,
-          "invalid-report",
-          `The bridge CLI did not end its reply with the required ` +
-            `{"tool": ..., "input": ...} JSON object` +
-            (forced ? ` for tool "${forced}"` : "") +
-            `. Tail of its output: ${JSON.stringify(tail)}`,
-        );
-      }
-      // toolChoice "auto" + plain text: honest text answer, no fake call.
-    }
+    const { text, toolCall } = splitBridgeReport(
+      this.modelId,
+      result.result,
+      options,
+      toolInstruction,
+    );
 
     const content: LanguageModelV3Content[] = [];
     if (text) content.push({ type: "text", text });
@@ -521,54 +639,169 @@ export class BridgeChatLanguageModel implements LanguageModelV3 {
   }
 
   /**
-   * The bridge is a one-shot subprocess — there is no token stream to
-   * forward. doStream runs the full generation (live protocol-2 events flow
-   * to the UI via the event emitter while it runs), then replays the result:
-   * text as a single delta, a parsed report tail as the full tool-input
-   * sequence + tool-call, so the chat UI and the sub-agent runner behave
-   * exactly as with any other model.
+   * Streams the chat answer live when the CLI emits protocol-2 `{"delta"}`
+   * lines (claude adapter): each delta becomes a text-delta part as it
+   * arrives. The deltas are ADVISORY — at completion the stream reconciles to
+   * the envelope `result`, which is the source of truth:
+   *   - deltas == result          → just close the text block;
+   *   - result extends the deltas → emit the remainder (dropped tail);
+   *   - true divergence           → close the advisory block and re-emit the
+   *     authoritative result as a fresh block (result wins).
+   * When NO deltas arrive (codex/kimi, older client) the full result is
+   * replayed as a single delta — today's honest one-shot behavior.
+   *
+   * Live streaming is only enabled on the plain chat path: when the text tool
+   * protocol is active (sub-agent report calls) the reply ends with a machine
+   * JSON tail that must never render, so those calls always use the one-shot
+   * replay (deltas are not subscribed at all).
+   *
+   * Live protocol-2 tool events keep flowing to the UI via the event emitter
+   * while the run executes. Bridge failures error the stream with
+   * BridgeModelError — output is never faked.
    */
   async doStream(
     options: LanguageModelV3CallOptions,
   ): Promise<LanguageModelV3StreamResult> {
-    const result = await this.doGenerate(options);
+    const warnings = bridgeCallWarnings(options);
+    const { task, context, phase } = promptToBridgePayload(options.prompt);
+    const toolInstruction = buildBridgeToolInstruction(options);
+    const agent = bridgeAgentFromModelId(this.modelId);
+    const events = createBridgeEventEmitter();
+    const modelId = this.modelId;
+
+    const TEXT_ID = "bridge-text-1";
+    const TEXT_ID_RECONCILED = "bridge-text-2";
 
     const stream = new ReadableStream<LanguageModelV3StreamPart>({
       start(controller) {
-        controller.enqueue({
-          type: "stream-start",
-          warnings: result.warnings,
-        });
-        let textId = 0;
-        for (const part of result.content) {
-          if (part.type === "text") {
-            const id = `bridge-text-${++textId}`;
-            controller.enqueue({ type: "text-start", id });
-            if (part.text) {
-              controller.enqueue({ type: "text-delta", id, delta: part.text });
+        controller.enqueue({ type: "stream-start", warnings });
+
+        let textStarted = false;
+        let accumulated = "";
+        const onDelta = (delta: string) => {
+          if (!delta) return;
+          // Advisory cap: deltas are never collected by runBridge; keep the
+          // accumulator within the envelope cap so a runaway CLI can't grow
+          // it unboundedly. The envelope result is reconciled to regardless.
+          if (accumulated.length >= BRIDGE_MAX_RESULT_CHARS_V2) return;
+          if (!textStarted) {
+            controller.enqueue({ type: "text-start", id: TEXT_ID });
+            textStarted = true;
+          }
+          controller.enqueue({ type: "text-delta", id: TEXT_ID, delta });
+          accumulated += delta;
+        };
+
+        void (async () => {
+          const result = await runBridge(
+            splitBridgeCommand(getBridgeCommand()),
+            JSON.stringify({
+              task: toolInstruction ? `${task}\n\n${toolInstruction}` : task,
+              context,
+              // No phase on tool-protocol calls — see doGenerate.
+              ...(toolInstruction ? {} : { phase }),
+              protocol: BRIDGE_PROTOCOL_VERSION,
+            }),
+            getBridgeTimeoutMs(),
+            { PREVIOUSLY_BRAIN_AGENT: agent },
+            events.onEvent,
+            // No live deltas for tool-protocol calls — the JSON report tail
+            // would render as chat text.
+            toolInstruction === null ? onDelta : undefined,
+            options.abortSignal,
+          );
+          // Settle the live phase indicator even on failure.
+          events.finish();
+
+          if (result.status !== "ok") {
+            controller.error(
+              new BridgeModelError(modelId, result.reason, result.error),
+            );
+            return;
+          }
+
+          const { text, toolCall } = splitBridgeReport(
+            modelId,
+            result.result,
+            options,
+            toolInstruction,
+          );
+
+          // ── Reconcile the advisory deltas with the envelope result ──
+          if (textStarted) {
+            if (text !== accumulated) {
+              if (text.startsWith(accumulated)) {
+                // Dropped tail (throttled/lost deltas) — result wins.
+                const remainder = text.slice(accumulated.length);
+                if (remainder) {
+                  controller.enqueue({
+                    type: "text-delta",
+                    id: TEXT_ID,
+                    delta: remainder,
+                  });
+                }
+              } else {
+                // True divergence (adapter bug): the streamed text can't be
+                // retracted — close it and re-emit the authoritative result.
+                console.warn(
+                  `[BridgeModel] streamed deltas diverge from the envelope ` +
+                    `result (model ${modelId}) — the envelope wins.`,
+                );
+                controller.enqueue({ type: "text-end", id: TEXT_ID });
+                textStarted = false;
+                if (text) {
+                  controller.enqueue({ type: "text-start", id: TEXT_ID_RECONCILED });
+                  controller.enqueue({
+                    type: "text-delta",
+                    id: TEXT_ID_RECONCILED,
+                    delta: text,
+                  });
+                  controller.enqueue({ type: "text-end", id: TEXT_ID_RECONCILED });
+                }
+              }
             }
-            controller.enqueue({ type: "text-end", id });
-          } else if (part.type === "tool-call") {
+            if (textStarted) {
+              controller.enqueue({ type: "text-end", id: TEXT_ID });
+            }
+          } else if (text || !toolCall) {
+            // No deltas (codex/kimi, legacy CLI, tool-protocol call): the
+            // honest one-shot replay. An empty text block is still emitted
+            // when there is no tool call, matching doGenerate's contract.
+            controller.enqueue({ type: "text-start", id: TEXT_ID });
+            if (text) {
+              controller.enqueue({ type: "text-delta", id: TEXT_ID, delta: text });
+            }
+            controller.enqueue({ type: "text-end", id: TEXT_ID });
+          }
+
+          if (toolCall) {
             controller.enqueue({
               type: "tool-input-start",
-              id: part.toolCallId,
-              toolName: part.toolName,
+              id: toolCall.toolCallId,
+              toolName: toolCall.toolName,
             });
             controller.enqueue({
               type: "tool-input-delta",
-              id: part.toolCallId,
-              delta: part.input,
+              id: toolCall.toolCallId,
+              delta: toolCall.input,
             });
-            controller.enqueue({ type: "tool-input-end", id: part.toolCallId });
-            controller.enqueue(part);
+            controller.enqueue({ type: "tool-input-end", id: toolCall.toolCallId });
+            controller.enqueue({ type: "tool-call", ...toolCall });
           }
-        }
-        controller.enqueue({
-          type: "finish",
-          finishReason: result.finishReason,
-          usage: result.usage,
+
+          controller.enqueue({
+            type: "finish",
+            finishReason: {
+              unified: toolCall ? "tool-calls" : "stop",
+              raw: undefined,
+            },
+            usage: UNKNOWN_USAGE,
+          });
+          controller.close();
+        })().catch((err) => {
+          events.finish();
+          controller.error(err);
         });
-        controller.close();
       },
     });
 
