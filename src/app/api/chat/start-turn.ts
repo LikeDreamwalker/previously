@@ -207,11 +207,5 @@ export async function startTurn(
 
   const run = await start(turnWorkflow, [input]);
 
-  // TODO(v0.6): client-side reconnection — persist the runId → return here to
-  // the client's localStorage alongside the runId WorkflowChatTransport already
-  // stores. When a dropped stream reconnects, the client replays from the last
-  // seen index and derives the terminal turn status from the final assistant
-  // message. The run→turn mapping lives on the client, not on disk.
-
   return run;
 }

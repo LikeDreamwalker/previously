@@ -141,6 +141,7 @@ Two things make this unusual:
 - **Local time, everywhere** — read tools pre-render your local time, so the agent never mangles timezones
 - **Trivial turns stay out of memory** — a semantic gate keeps "thanks" and "continue" from polluting your timeline
 - **Multi-model** — DeepSeek, Anthropic, and any OpenAI-compatible provider, with a pick-your-main-model toolbar
+- **Client mode** — run the whole thing as a local kernel: your own agent CLI (Claude/Codex/Kimi) as the default zero-setup engine, or bring your own API key (BYOK) for the full streaming experience
 - **Durable background loops** — long-running tasks persist across disconnects and report back
 - **English & 中文** — fully internationalized, with a dark theme
 
@@ -168,6 +169,8 @@ Previously is built to be self-hosted. It's a Next.js app on Vercel with your ow
    | `DEEPSEEK_API_KEY` | A DeepSeek API key (any AI SDK provider works too) |
 
 3. **Or run locally** — `git clone` your repo, `pnpm install`, `pnpm dev`.
+
+4. **Or run as a local client** — with `PREVIOUSLY_MODE=client` the app becomes a fully local kernel (filesystem storage, no GitHub repo needed). Two engines, both selectable in Settings: a local agent CLI (Claude/Codex/Kimi) as the default — no API key required — or your own API key (BYOK) for the full streaming experience.
 
 Storage has three modes, controlled by `STORAGE`:
 

@@ -162,12 +162,6 @@ export interface TurnOutcome {
  * synthesizing around dispatched sub-agents) were removed when thinkDeep
  * became an agent-as-a-tool: reasoning fragments now flow back inline through
  * tool results, so there is no separate wait/integrate phase to announce.
- *
- * TODO(v0.6): client-side reconnection — when the chat transport detects a
- * dropped connection, it should replay the stream from the last-seen index
- * (already supported by WorkflowChatTransport) and derive the terminal status
- * from the last assistant message. The run→turn mapping can live in
- * localStorage alongside the runId, not on disk.
  */
 export type TurnStatus =
   | "active" // LLM is generating or tools are executing
