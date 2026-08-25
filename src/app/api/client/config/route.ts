@@ -2,13 +2,16 @@
  * GET/POST /api/client/config — read/update PREVIOUSLY_HOME/config.json
  * (client mode only; 404 in cloud mode).
  *
- * The kernel manages exactly three fields of the client-owned file:
+ * The kernel manages exactly four fields of the client-owned file:
  * `executionBackend` (string | null), `brain` ({ type: "api-key", env,
- * model? } | { type: "bridge", agent }), and `agents` (per-agent bridge
- * defaults: { model?, effort? } — effort for claude/codex only). All other
+ * model? } | { type: "bridge", agent }), `agents` (per-agent bridge
+ * defaults: { model?, effort? } — effort for claude/codex only), and `byok`
+ * (the user's own API key: { provider, apiKey, baseUrl?, model }). All other
  * fields pass through untouched. POST is same-origin guarded like every
  * mutation endpoint (src/lib/security/origin-guard.ts). Validation and write
- * failures are reported honestly — never a fake "saved".
+ * failures are reported honestly — never a fake "saved". A successful POST
+ * resets the model-catalog cache so a freshly saved BYOK model shows up in
+ * the selector immediately.
  */
 
 import { isClientMode } from "@/lib/mode";
@@ -19,6 +22,7 @@ import {
   writeClientConfig,
   type ClientConfigPatch,
 } from "@/lib/client-config";
+import { __resetCatalogCache } from "@/lib/models/catalog";
 
 export const dynamic = "force-dynamic";
 
@@ -56,7 +60,7 @@ export async function POST(request: Request): Promise<Response> {
   }
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return Response.json(
-      { error: "Body must be a JSON object with optional executionBackend / brain / agents fields" },
+      { error: "Body must be a JSON object with optional executionBackend / brain / agents / byok fields" },
       { status: 400 },
     );
   }
@@ -72,15 +76,26 @@ export async function POST(request: Request): Promise<Response> {
   if ("agents" in input) {
     patch.agents = input.agents as ClientConfigPatch["agents"];
   }
-  if (!("executionBackend" in input) && !("brain" in input) && !("agents" in input)) {
+  if ("byok" in input) {
+    patch.byok = input.byok as ClientConfigPatch["byok"];
+  }
+  if (
+    !("executionBackend" in input) &&
+    !("brain" in input) &&
+    !("agents" in input) &&
+    !("byok" in input)
+  ) {
     return Response.json(
-      { error: "Nothing to update — provide executionBackend, brain and/or agents" },
+      { error: "Nothing to update — provide executionBackend, brain, agents and/or byok" },
       { status: 400 },
     );
   }
 
   try {
     const snapshot = await writeClientConfig(patch);
+    // A fresh byok section must show up in the model selector immediately —
+    // the catalog otherwise caches the available-models list for 30 min.
+    __resetCatalogCache();
     return Response.json(snapshot);
   } catch (e) {
     const status = e instanceof ClientConfigError ? e.status : 500;

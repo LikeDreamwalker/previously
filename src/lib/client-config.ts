@@ -4,9 +4,10 @@
  *
  * PREVIOUSLY_HOME is the client state root injected by the client CLI
  * (~/.previously). Its config.json is owned by the client but the kernel may
- * read it (status display) and update three fields (executionBackend, brain,
- * agents) from the settings UI. Unknown fields are preserved verbatim on
- * write.
+ * read it (status display; the model catalog reads the `byok` section
+ * through readClientConfig) and update four fields (executionBackend,
+ * brain, agents, byok) from the settings UI. Unknown fields are preserved
+ * verbatim on write.
  *
  * Honesty rules: a missing PREVIOUSLY_HOME is reported as null fields, a
  * missing file as exists:false, an unreadable/corrupt file as a thrown error
@@ -15,7 +16,11 @@
 
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { BRIDGE_AGENTS, type BridgeAgent } from "@/lib/models/registry";
+import {
+  BRIDGE_AGENTS,
+  BYOK_PROVIDERS,
+  type BridgeAgent,
+} from "@/lib/models/registry";
 
 /** The `brain` field of the client config (subscription vs. API-key brain). */
 export type ClientBrain =
@@ -36,6 +41,19 @@ export interface AgentConfig {
 export type ClientAgents = Partial<Record<BridgeAgent, AgentConfig>>;
 
 /**
+ * The `byok` field of the client config — the user's own provider API key
+ * (client mode's second engine, recommended next to local agent outsourcing).
+ * `provider` is a BYOK_PROVIDERS key or "custom" (which requires baseUrl).
+ * The apiKey is stored in plaintext — config.json is local single-user state.
+ */
+export interface ClientByok {
+  provider: string;
+  apiKey: string;
+  baseUrl?: string;
+  model: string;
+}
+
+/**
  * The client config.json shape. Only the fields the kernel understands are
  * typed; everything else passes through untouched (index signature).
  */
@@ -46,6 +64,7 @@ export interface ClientConfigFile {
   hostname?: string;
   executionBackend?: string | null;
   brain?: ClientBrain;
+  byok?: ClientByok;
   apiKeys?: Record<string, string>;
   [key: string]: unknown;
 }
@@ -61,6 +80,13 @@ export interface ClientConfigSnapshot {
   brain: ClientBrain | null;
   /** Per-agent bridge defaults, or null when absent/unrecognizable. */
   agents: ClientAgents | null;
+  /**
+   * The BYOK section, or null when absent/unrecognizable. The apiKey is
+   * returned in plaintext by the local GET endpoint — acceptable because the
+   * kernel is single-user local state (same trust level as config.json
+   * itself); never log it.
+   */
+  byok: ClientByok | null;
 }
 
 /** Error with an HTTP status hint for the route layer (400 = caller error). */
@@ -129,12 +155,29 @@ function parseAgents(raw: unknown): ClientAgents | null {
   return Object.keys(agents).length > 0 ? agents : null;
 }
 
+/** Lenient read-side byok parse: returned only when structurally recognizable. */
+function parseByok(raw: unknown): ClientByok | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const b = raw as Record<string, unknown>;
+  if (typeof b.provider !== "string" || !b.provider.trim()) return null;
+  if (typeof b.apiKey !== "string" || !b.apiKey) return null;
+  if (typeof b.model !== "string" || !b.model.trim()) return null;
+  return {
+    provider: b.provider,
+    apiKey: b.apiKey,
+    ...(typeof b.baseUrl === "string" && b.baseUrl.trim()
+      ? { baseUrl: b.baseUrl }
+      : {}),
+    model: b.model,
+  };
+}
+
 /** Read the current client config. Never fabricates state. */
 export async function readClientConfig(): Promise<ClientConfigSnapshot> {
   const home = getPreviouslyHome();
   const path = getClientConfigPath();
   if (!home || !path) {
-    return { home, path, exists: false, executionBackend: null, brain: null, agents: null };
+    return { home, path, exists: false, executionBackend: null, brain: null, agents: null, byok: null };
   }
 
   let raw: ClientConfigFile;
@@ -142,7 +185,7 @@ export async function readClientConfig(): Promise<ClientConfigSnapshot> {
     raw = JSON.parse(await readFile(path, "utf8")) as ClientConfigFile;
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") {
-      return { home, path, exists: false, executionBackend: null, brain: null, agents: null };
+      return { home, path, exists: false, executionBackend: null, brain: null, agents: null, byok: null };
     }
     throw new ClientConfigError(
       `Could not read ${path}: ${e instanceof Error ? e.message : String(e)}`,
@@ -158,6 +201,7 @@ export async function readClientConfig(): Promise<ClientConfigSnapshot> {
       typeof raw.executionBackend === "string" ? raw.executionBackend : null,
     brain: parseBrain(raw.brain),
     agents: parseAgents(raw.agents),
+    byok: parseByok(raw.byok),
   };
 }
 
@@ -255,13 +299,59 @@ function validateAgents(input: unknown): ClientAgents {
 }
 
 /**
+ * Strict write-side byok validation. Returns the value to store. `provider`
+ * is required and must be a BYOK_PROVIDERS key or "custom" (custom requires
+ * `baseUrl`); `apiKey` and `model` are required non-empty. Unknown fields are
+ * rejected, not dropped (same discipline as validateAgents).
+ */
+function validateByok(input: unknown): ClientByok {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new ClientConfigError(
+      'byok must be an object like { "provider": "deepseek", "apiKey": "…", "model": "…" }',
+    );
+  }
+  const b = input as Record<string, unknown>;
+  for (const key of Object.keys(b)) {
+    if (key !== "provider" && key !== "apiKey" && key !== "baseUrl" && key !== "model") {
+      throw new ClientConfigError(`byok.${key} is not a supported field`);
+    }
+  }
+  const provider = typeof b.provider === "string" ? b.provider.trim() : "";
+  if (!provider) {
+    throw new ClientConfigError("byok.provider must be a non-empty string");
+  }
+  if (
+    provider !== "custom" &&
+    !(BYOK_PROVIDERS as readonly { key: string }[]).some((p) => p.key === provider)
+  ) {
+    throw new ClientConfigError(
+      `byok.provider must be one of: ${BYOK_PROVIDERS.map((p) => p.key).join(", ")}, custom`,
+    );
+  }
+  const baseUrl = typeof b.baseUrl === "string" ? b.baseUrl.trim() : "";
+  if (provider === "custom" && !baseUrl) {
+    throw new ClientConfigError('byok.baseUrl is required when provider is "custom"');
+  }
+  const apiKey = typeof b.apiKey === "string" ? b.apiKey.trim() : "";
+  if (!apiKey) {
+    throw new ClientConfigError("byok.apiKey must be a non-empty string");
+  }
+  const model = typeof b.model === "string" ? b.model.trim() : "";
+  if (!model) {
+    throw new ClientConfigError("byok.model must be a non-empty string");
+  }
+  return { provider, apiKey, ...(baseUrl ? { baseUrl } : {}), model };
+}
+
+/**
  * Field update tri-state per key: absent → leave unchanged; null → clear
- * (executionBackend → null, brain/agents → field removed); value → validate + set.
+ * (executionBackend → null, brain/agents/byok → field removed); value → validate + set.
  */
 export interface ClientConfigPatch {
   executionBackend?: string | null;
   brain?: ClientBrain | null;
   agents?: ClientAgents | null;
+  byok?: ClientByok | null;
 }
 
 /**
@@ -299,6 +389,10 @@ export async function writeClientConfig(
   if ("agents" in patch) {
     agents = patch.agents === null ? null : validateAgents(patch.agents);
   }
+  let byok: ClientByok | null | undefined;
+  if ("byok" in patch) {
+    byok = patch.byok === null ? null : validateByok(patch.byok);
+  }
 
   let raw: ClientConfigFile = {};
   try {
@@ -326,6 +420,10 @@ export async function writeClientConfig(
   if (agents !== undefined) {
     if (agents === null) delete merged.agents;
     else merged.agents = agents;
+  }
+  if (byok !== undefined) {
+    if (byok === null) delete merged.byok;
+    else merged.byok = byok;
   }
 
   try {

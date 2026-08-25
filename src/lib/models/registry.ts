@@ -17,6 +17,7 @@
  */
 
 import type { ProviderSdk } from "./providers";
+import type { ClientByok } from "../client-config";
 import { isClientMode } from "../mode";
 
 // ─── Bridge brain (pure subscription mode) ────────────────────────────────
@@ -122,6 +123,68 @@ export function getBridgeModel(): ModelConfig | undefined {
   return getBridgeModels()[0];
 }
 
+// ─── BYOK (bring-your-own-key, client mode) ───────────────────────────────
+//
+// Client mode's second engine next to local agent outsourcing (the bridge):
+// the user's own provider API key, stored in PREVIOUSLY_HOME/config.json (the
+// `byok` section — see src/lib/client-config.ts). One entry, `byok/<model>`,
+// listed after the bridge entries (agent outsourcing is the default; BYOK is
+// the recommended full-capability path). Cloud mode never sees it.
+//
+// sdk is ALWAYS "openai" (OpenAI-compatible — DeepSeek included): the
+// workflow step runtime round-trips the model through class serialization,
+// and only the openai path's deserializer restores the apiKey from the
+// serialized config (src/app/api/agent/register-model-classes.ts) — the
+// deepseek/anthropic paths re-read the key from env and would lose it. The
+// tradeoff: BYOK v1 forgoes the deepseek path's prefix-caching provider
+// options.
+
+/**
+ * BYOK provider presets — mirror the openaiBaseURL table in ./catalog.ts
+ * (SOURCES), kept here so BYOK resolution stays free of the catalog's fetch
+ * machinery. "custom" takes the user-supplied baseUrl instead.
+ */
+export const BYOK_PROVIDERS = [
+  { key: "deepseek", providerName: "DeepSeek", baseURL: "https://api.deepseek.com" },
+  { key: "openai", providerName: "OpenAI", baseURL: "https://api.openai.com/v1" },
+  { key: "moonshotai", providerName: "Moonshot AI", baseURL: "https://api.moonshot.cn/v1" },
+  { key: "alibaba", providerName: "Alibaba", baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1" },
+  { key: "google", providerName: "Google", baseURL: "https://generativelanguage.googleapis.com/v1beta/openai" },
+  { key: "mistral", providerName: "Mistral", baseURL: "https://api.mistral.ai/v1" },
+  { key: "xai", providerName: "xAI", baseURL: "https://api.x.ai/v1" },
+  { key: "groq", providerName: "Groq", baseURL: "https://api.groq.com/openai/v1" },
+] as const;
+
+/**
+ * The BYOK model entry (`byok/<model>`) for the given `byok` config section,
+ * or undefined in cloud mode / without one. Pure — the caller reads
+ * config.json (catalog.ts, async) so this module stays fs-free. Capabilities
+ * stay conservative: BYOK providers' features are unknown to the kernel.
+ */
+export function getByokModel(
+  byok: ClientByok | null | undefined,
+): ModelConfig | undefined {
+  if (!isClientMode() || !byok) return undefined;
+  const preset = BYOK_PROVIDERS.find((p) => p.key === byok.provider);
+  return {
+    id: `byok/${byok.model}`,
+    name: `${byok.model} (BYOK)`,
+    provider: "byok",
+    providerName: "Your API key",
+    sdk: "openai",
+    // No env var backs this model — the key comes from config.json (apiKey).
+    envKey: "",
+    baseURL:
+      byok.provider === "custom"
+        ? byok.baseUrl
+        : (preset?.baseURL ?? byok.baseUrl),
+    apiKey: byok.apiKey,
+    capabilities: { thinking: false, vision: false, maxTokens: 200_000 },
+    defaultThinking: false,
+    defaultEffort: "low",
+  };
+}
+
 export interface ModelCapabilities {
   thinking: boolean;
   vision: boolean;
@@ -141,6 +204,11 @@ export interface ModelConfig {
   envKey: string;
   /** Base URL for OpenAI-compatible providers (DeepSeek included). */
   baseURL?: string;
+  /**
+   * Explicit API key (BYOK only) — takes precedence over process.env[envKey]
+   * in createModel. Never logged.
+   */
+  apiKey?: string;
   capabilities: ModelCapabilities;
   /** Default thinking state when the user selects this model. */
   defaultThinking: boolean;

@@ -110,4 +110,44 @@ test.describe("Settings — Client section", () => {
     ) as { agents?: Record<string, { model?: string }> };
     expect(raw.agents?.[agentName!]?.model).toBe("e2e-default-model");
   });
+
+  // The BYOK form (user's own API key) posts the `byok` section through the
+  // same endpoint — the assertion is the on-disk write only; no real provider
+  // API call happens anywhere in this flow.
+  test("saves a BYOK config to PREVIOUSLY_HOME/config.json", async ({
+    page,
+  }) => {
+    await page.goto("/en/settings");
+
+    const section = page.locator("section", {
+      has: page.getByRole("heading", { name: "Client", exact: true }),
+    });
+    await expect(section).toBeVisible();
+
+    // Brain → Your own API key reveals the BYOK form.
+    const brainSelect = section.locator("select").first();
+    await brainSelect.selectOption("byok");
+
+    // Provider is the first select inside the revealed form; keep the
+    // default (deepseek — a preset, so no baseUrl row renders).
+    await section.locator('input[type="password"]').fill("sk-e2e-byok");
+    // The model input is the form's last text input (no baseUrl for presets).
+    await section.getByPlaceholder("e.g. deepseek-chat").fill("e2e-byok-model");
+
+    await section
+      .getByRole("button", { name: "Save client config" })
+      .click();
+    // Exact text — see the brain test above for why a loose match is unsafe.
+    await expect(section.getByText("Saved ✓", { exact: true })).toBeVisible();
+
+    // Real persistence to the isolated client home on disk.
+    const raw = JSON.parse(
+      await readFile(path.join(E2E_HOME, "config.json"), "utf8"),
+    ) as { byok?: { provider?: string; apiKey?: string; model?: string } };
+    expect(raw.byok).toEqual({
+      provider: "deepseek",
+      apiKey: "sk-e2e-byok",
+      model: "e2e-byok-model",
+    });
+  });
 });

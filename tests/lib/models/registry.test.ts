@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import {
   ALL_MODELS,
+  BYOK_PROVIDERS,
   getAvailableModels,
+  getByokModel,
   getModel,
   resolveModelId,
   getDefaultModelId,
@@ -123,5 +125,64 @@ describe("model registry", () => {
 
   it("falls back to a hardcoded default when nothing is configured", () => {
     expect(getDefaultModelId()).toBe("deepseek-v4-flash");
+  });
+
+  // ─── BYOK (client mode, config.json `byok` section) ─────────────────
+
+  describe("getByokModel", () => {
+    const byok = { provider: "deepseek", apiKey: "sk-byok", model: "deepseek-chat" };
+
+    it("returns undefined without a byok section or in cloud mode", () => {
+      process.env.PREVIOUSLY_MODE = "client";
+      expect(getByokModel(null)).toBeUndefined();
+      expect(getByokModel(undefined)).toBeUndefined();
+      process.env.PREVIOUSLY_MODE = "cloud";
+      expect(getByokModel(byok)).toBeUndefined();
+    });
+
+    it("builds the byok/<model> entry on the openai-compatible sdk path", () => {
+      process.env.PREVIOUSLY_MODE = "client";
+      const m = getByokModel(byok);
+      expect(m).toMatchObject({
+        id: "byok/deepseek-chat",
+        provider: "byok",
+        providerName: "Your API key",
+        sdk: "openai",
+        // The preset baseURL comes from BYOK_PROVIDERS, the key from config.
+        baseURL: "https://api.deepseek.com",
+        apiKey: "sk-byok",
+        defaultThinking: false,
+        defaultEffort: "low",
+      });
+      expect(m?.name).toContain("(BYOK)");
+      expect(m?.capabilities.thinking).toBe(false);
+    });
+
+    it("uses the custom baseUrl for custom providers", () => {
+      process.env.PREVIOUSLY_MODE = "client";
+      const m = getByokModel({
+        provider: "custom",
+        apiKey: "sk-x",
+        baseUrl: "https://llm.example.com/v1",
+        model: "my-model",
+      });
+      expect(m?.id).toBe("byok/my-model");
+      expect(m?.baseURL).toBe("https://llm.example.com/v1");
+    });
+
+    it("covers every preset the settings UI offers (minus custom)", () => {
+      // The UI's provider list mirrors these keys — a drift breaks validation
+      // (client-config validateByok accepts exactly these + custom).
+      expect(BYOK_PROVIDERS.map((p) => p.key)).toEqual([
+        "deepseek",
+        "openai",
+        "moonshotai",
+        "alibaba",
+        "google",
+        "mistral",
+        "xai",
+        "groq",
+      ]);
+    });
   });
 });

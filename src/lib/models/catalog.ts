@@ -18,9 +18,12 @@ import {
   ALL_MODELS,
   getAvailableModels,
   getBridgeModels,
+  getByokModel,
   resolveModelId,
 } from "./registry";
 import type { ProviderSdk } from "./providers";
+import { isClientMode } from "../mode";
+import { readClientConfig } from "../client-config";
 
 const CACHE_TTL_MS = 30 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 10_000;
@@ -325,6 +328,23 @@ export async function resolveAvailableModels(): Promise<ModelConfig[]> {
     if (!seen.has(bridge.id)) {
       seen.add(bridge.id);
       models.push(bridge);
+    }
+  }
+
+  // BYOK (client mode, the `byok` section of PREVIOUSLY_HOME/config.json):
+  // the user's own-API-key model, listed AFTER the bridge entries — local
+  // agent outsourcing stays the default, BYOK is the recommended upgrade.
+  // A missing/unreadable config.json must not break model listing (the
+  // settings API already surfaces that state honestly).
+  if (isClientMode()) {
+    try {
+      const byok = getByokModel((await readClientConfig()).byok);
+      if (byok && !seen.has(byok.id)) {
+        seen.add(byok.id);
+        models.push(byok);
+      }
+    } catch {
+      // config.json unreadable/corrupt — skip the BYOK entry.
     }
   }
 

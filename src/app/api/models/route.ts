@@ -10,8 +10,9 @@
  * (English informational copy; the selector renders its own localized hint
  * and treats this as a fallback for other API consumers) and `available`
  * (whether the agent CLI was detected on PATH — see src/lib/client-detect.ts).
- * Detection results are cached module-side with the same TTL as the model
- * catalog, so a freshly installed CLI shows up after the cache expires.
+ * BYOK options carry `hint` only. Detection results are cached module-side
+ * with the same TTL as the model catalog, so a freshly installed CLI shows
+ * up after the cache expires.
  */
 
 import { resolveAvailableModels } from "@/lib/models/catalog";
@@ -80,6 +81,12 @@ export async function GET(): Promise<Response> {
           defaultThinking,
           defaultEffort,
         };
+        if (provider === "byok") {
+          return {
+            ...option,
+            hint: "Uses your own API key (recommended) — a direct API connection.",
+          };
+        }
         if (provider !== "bridge" || !isBridgeBrainActive()) return option;
         const agent = bridgeAgentFromModelId(id);
         return {

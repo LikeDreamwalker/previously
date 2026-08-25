@@ -110,6 +110,31 @@ describe("createModel", () => {
     });
   });
 
+  it("prefers an explicit config apiKey (BYOK) over the environment", () => {
+    const model = createModel({
+      ...cfg("openai", "byok/gpt-5.4", "https://api.openai.com/v1"),
+      apiKey: "sk-from-config",
+    });
+    expect(createOpenAIMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        baseURL: "https://api.openai.com/v1",
+        apiKey: "sk-from-config",
+      }),
+    );
+    // The `byok/` selection prefix is stripped — the API gets the bare model.
+    expect(model).toMatchObject({ kind: "openai", id: "gpt-5.4" });
+  });
+
+  it("keys the provider-instance cache on the apiKey (a changed key = a new instance)", () => {
+    // Distinct baseURL so earlier tests' cache entries can't interfere.
+    const base = "https://cache-key-test.example/v1";
+    createModel({ ...cfg("openai", "m1", base), apiKey: "sk-one" });
+    createModel({ ...cfg("openai", "m1", base), apiKey: "sk-one" });
+    expect(createOpenAIMock).toHaveBeenCalledTimes(1);
+    createModel({ ...cfg("openai", "m1", base), apiKey: "sk-two" });
+    expect(createOpenAIMock).toHaveBeenCalledTimes(2);
+  });
+
   it("dispatches bridge-sdk models to the subscription bridge model", () => {
     const model = createModel(cfg("bridge", "bridge/claude"));
     expect(model).toMatchObject({

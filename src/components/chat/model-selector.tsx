@@ -129,6 +129,7 @@ export function ModelSelector({
               </div>
               {providerModels.map((m) => {
                 const isBridge = m.provider === "bridge";
+                const isByok = m.provider === "byok";
                 const unavailable = isBridge && m.available === false;
                 return (
                   <div key={m.id} className="flex items-center gap-0.5">
@@ -187,6 +188,23 @@ export function ModelSelector({
                             agent:
                               BRIDGE_AGENT_LABELS[bridgeAgentOf(m.id)] ?? m.name,
                           })}
+                        </TooltipContent>
+                      </Tooltip>
+                    )}
+                    {isByok && (
+                      <Tooltip>
+                        <TooltipTrigger
+                          render={
+                            <span
+                              tabIndex={0}
+                              className="shrink-0 rounded p-1 text-muted-foreground/70 hover:text-foreground"
+                            >
+                              <Info className="h-3 w-3" />
+                            </span>
+                          }
+                        />
+                        <TooltipContent side="top" className="max-w-56">
+                          {t("byokHint")}
                         </TooltipContent>
                       </Tooltip>
                     )}

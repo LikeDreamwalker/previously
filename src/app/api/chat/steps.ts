@@ -437,7 +437,10 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   // bridge emitter below) and fills in wrap-up rows as the engineering
   // steps complete — the edge checklist is NOT emitted (it would sit idle
   // through the whole call, then jump to done).
-  const phaseOutsource = isPhaseOutsourceActive();
+  // The gate also requires the turn's model to run on the bridge — a BYOK
+  // model (sdk "openai") under a bridge env brain keeps housekeeping on the
+  // standard API sub-agent path.
+  const phaseOutsource = isPhaseOutsourceActive(input.modelConfig.sdk);
   /** Wrap-up rows of the client-mode card (same shape as the checklist). */
   const hkSteps: HousekeepingStep[] = [];
   /** Last bridge-emitter frame state, folded into every card frame. */

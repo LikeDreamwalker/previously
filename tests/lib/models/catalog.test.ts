@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { resolveAvailableModels, __resetCatalogCache } from "@/lib/models/catalog";
 
 const SAVED_ENV = { ...process.env };
@@ -14,6 +17,11 @@ beforeEach(() => {
   delete process.env.MOONSHOT_API_KEY;
   delete process.env.DASHSCOPE_API_KEY;
   delete process.env.GOOGLE_API_KEY;
+  // BYOK/bridge state must not leak in from the developer's shell.
+  delete process.env.PREVIOUSLY_MODE;
+  delete process.env.PREVIOUSLY_HOME;
+  delete process.env.PREVIOUSLY_BRAIN;
+  delete process.env.PREVIOUSLY_BRAIN_AGENT;
   __resetCatalogCache();
 });
 
@@ -129,5 +137,67 @@ describe("resolveAvailableModels (live provider lists)", () => {
     const second = await resolveAvailableModels();
     expect(first).toEqual(second);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("resolveAvailableModels — BYOK entries (client mode)", () => {
+  let home: string;
+
+  beforeEach(async () => {
+    home = await mkdtemp(join(tmpdir(), "previously-catalog-byok-"));
+  });
+
+  afterEach(async () => {
+    await rm(home, { recursive: true, force: true });
+  });
+
+  async function writeByok(byok: unknown): Promise<void> {
+    process.env.PREVIOUSLY_MODE = "client";
+    process.env.PREVIOUSLY_HOME = home;
+    await writeFile(join(home, "config.json"), JSON.stringify({ byok }));
+  }
+
+  it("appends the byok/<model> entry when config.json has a byok section", async () => {
+    await writeByok({ provider: "deepseek", apiKey: "sk-byok", model: "deepseek-chat" });
+    const models = await resolveAvailableModels();
+    const entry = models.find((m) => m.id === "byok/deepseek-chat");
+    expect(entry).toMatchObject({
+      provider: "byok",
+      sdk: "openai",
+      baseURL: "https://api.deepseek.com",
+      apiKey: "sk-byok",
+    });
+  });
+
+  it("lists BYOK after the bridge entries (outsourcing is the default)", async () => {
+    process.env.PREVIOUSLY_BRAIN = "bridge";
+    await writeByok({ provider: "openai", apiKey: "sk-byok", model: "gpt-5.4" });
+    const models = await resolveAvailableModels();
+    const lastBridge = models.map((m) => m.provider).lastIndexOf("bridge");
+    const byokIndex = models.findIndex((m) => m.provider === "byok");
+    expect(lastBridge).toBeGreaterThanOrEqual(0);
+    expect(byokIndex).toBeGreaterThan(lastBridge);
+  });
+
+  it("never lists BYOK in cloud mode", async () => {
+    process.env.PREVIOUSLY_HOME = home;
+    await writeFile(
+      join(home, "config.json"),
+      JSON.stringify({ byok: { provider: "openai", apiKey: "sk", model: "gpt-5.4" } }),
+    );
+    // PREVIOUSLY_MODE unset = cloud.
+    const models = await resolveAvailableModels();
+    expect(models.some((m) => m.provider === "byok")).toBe(false);
+  });
+
+  it("omits BYOK when config.json is missing or corrupt", async () => {
+    process.env.PREVIOUSLY_MODE = "client";
+    process.env.PREVIOUSLY_HOME = home;
+    // No config.json at all.
+    expect((await resolveAvailableModels()).some((m) => m.provider === "byok")).toBe(false);
+    // Corrupt config.json must not break model listing.
+    __resetCatalogCache();
+    await writeFile(join(home, "config.json"), "{ not json");
+    expect((await resolveAvailableModels()).some((m) => m.provider === "byok")).toBe(false);
   });
 });

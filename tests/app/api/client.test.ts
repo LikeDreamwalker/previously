@@ -123,6 +123,21 @@ describe("GET /api/client/config", () => {
     expect(JSON.stringify(body)).not.toContain("sk-secret");
   });
 
+  it("reads the byok section (plaintext apiKey — local single-user state)", async () => {
+    await writeFile(
+      join(home, "config.json"),
+      JSON.stringify({
+        byok: { provider: "deepseek", apiKey: "sk-byok", model: "deepseek-chat" },
+      }),
+    );
+    const body = await (await configGET()).json();
+    expect(body.byok).toEqual({
+      provider: "deepseek",
+      apiKey: "sk-byok",
+      model: "deepseek-chat",
+    });
+  });
+
   it("surfaces a corrupt config.json as an honest 500", async () => {
     await writeFile(join(home, "config.json"), "{ not json");
     const res = await configGET();
@@ -284,6 +299,91 @@ describe("POST /api/client/config", () => {
     const res = await configPOST(post({ executionBackend: "local" }));
     expect(res.status).toBe(400);
     expect((await res.json()).error).toContain("PREVIOUSLY_HOME");
+  });
+
+  // ── byok (user's own API key) ──
+
+  it("writes a byok section, preserving unmanaged fields", async () => {
+    await writeFile(
+      join(home, "config.json"),
+      JSON.stringify({ storage: "local", brain: { type: "bridge", agent: "claude" } }),
+    );
+    const res = await configPOST(
+      post({ byok: { provider: "deepseek", apiKey: "sk-byok", model: "deepseek-chat" } }),
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.byok).toEqual({
+      provider: "deepseek",
+      apiKey: "sk-byok",
+      model: "deepseek-chat",
+    });
+    const onDisk = JSON.parse(await readFile(join(home, "config.json"), "utf8"));
+    expect(onDisk.storage).toBe("local");
+    expect(onDisk.brain).toEqual({ type: "bridge", agent: "claude" });
+    expect(onDisk.byok.model).toBe("deepseek-chat");
+  });
+
+  it("writes a custom-provider byok with its baseUrl", async () => {
+    const res = await configPOST(
+      post({
+        byok: {
+          provider: "custom",
+          apiKey: "sk-x",
+          baseUrl: "https://llm.example.com/v1",
+          model: "my-model",
+        },
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect((await res.json()).byok).toEqual({
+      provider: "custom",
+      apiKey: "sk-x",
+      baseUrl: "https://llm.example.com/v1",
+      model: "my-model",
+    });
+  });
+
+  it("leaves byok unchanged when the patch omits it (tri-state)", async () => {
+    await writeFile(
+      join(home, "config.json"),
+      JSON.stringify({ byok: { provider: "openai", apiKey: "sk-keep", model: "gpt-5.4" } }),
+    );
+    const res = await configPOST(post({ executionBackend: "local" }));
+    expect(res.status).toBe(200);
+    const onDisk = JSON.parse(await readFile(join(home, "config.json"), "utf8"));
+    expect(onDisk.byok).toEqual({ provider: "openai", apiKey: "sk-keep", model: "gpt-5.4" });
+  });
+
+  it("clears byok with explicit null", async () => {
+    await writeFile(
+      join(home, "config.json"),
+      JSON.stringify({ byok: { provider: "openai", apiKey: "sk-x", model: "gpt-5.4" } }),
+    );
+    const res = await configPOST(post({ byok: null }));
+    expect(res.status).toBe(200);
+    expect((await res.json()).byok).toBeNull();
+    const onDisk = JSON.parse(await readFile(join(home, "config.json"), "utf8"));
+    expect("byok" in onDisk).toBe(false);
+  });
+
+  it("rejects invalid byok values with a 400 and writes nothing", async () => {
+    for (const byok of [
+      "deepseek", // non-object
+      {}, // everything missing
+      { provider: "deepseek", apiKey: "sk", model: "" }, // empty model
+      { provider: "deepseek", model: "m" }, // missing apiKey
+      { apiKey: "sk", model: "m" }, // missing provider
+      { provider: "custom", apiKey: "sk", model: "m" }, // custom without baseUrl
+      { provider: "not-a-provider", apiKey: "sk", model: "m" }, // unknown provider
+      { provider: "deepseek", apiKey: "sk", model: "m", region: "cn" }, // unknown field
+    ]) {
+      const res = await configPOST(post({ byok }));
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toBeTruthy();
+    }
+    const res = await configGET();
+    expect((await res.json()).exists).toBe(false);
   });
 
   it("is blocked by the origin guard for cross-site posts when ACCESS_SECRET is set", async () => {

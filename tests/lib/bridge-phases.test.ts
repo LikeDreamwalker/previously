@@ -408,22 +408,33 @@ describe("isPhaseOutsourceActive", () => {
     process.env = { ...saved };
   });
 
-  it("requires client mode + bridge brain + no kill-switch", () => {
+  it("requires client mode + bridge brain + bridge model + no kill-switch", () => {
     process.env.PREVIOUSLY_MODE = "client";
     process.env.PREVIOUSLY_BRAIN = "bridge";
     delete process.env.PREVIOUSLY_PHASE_OUTSOURCE;
-    expect(isPhaseOutsourceActive()).toBe(true);
+    expect(isPhaseOutsourceActive("bridge")).toBe(true);
 
     process.env.PREVIOUSLY_PHASE_OUTSOURCE = "0";
-    expect(isPhaseOutsourceActive()).toBe(false);
+    expect(isPhaseOutsourceActive("bridge")).toBe(false);
 
     delete process.env.PREVIOUSLY_PHASE_OUTSOURCE;
     delete process.env.PREVIOUSLY_BRAIN;
-    expect(isPhaseOutsourceActive()).toBe(false);
+    expect(isPhaseOutsourceActive("bridge")).toBe(false);
 
     process.env.PREVIOUSLY_BRAIN = "bridge";
     process.env.PREVIOUSLY_MODE = "cloud";
-    expect(isPhaseOutsourceActive()).toBe(false);
+    expect(isPhaseOutsourceActive("bridge")).toBe(false);
+  });
+
+  it("is off for a BYOK model even under a bridge env brain", () => {
+    // The env brain is bridge but the user picked a byok/* model (sdk
+    // "openai") — housekeeping must run on the standard API sub-agent path,
+    // not spawn the CLI.
+    process.env.PREVIOUSLY_MODE = "client";
+    process.env.PREVIOUSLY_BRAIN = "bridge";
+    delete process.env.PREVIOUSLY_PHASE_OUTSOURCE;
+    expect(isPhaseOutsourceActive("openai")).toBe(false);
+    expect(isPhaseOutsourceActive("deepseek")).toBe(false);
   });
 });
 

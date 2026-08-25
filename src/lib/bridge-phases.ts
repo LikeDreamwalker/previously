@@ -70,14 +70,19 @@ import type { EvolutionResult } from "@/lib/chat/turn-types";
 // ─── Gate ──────────────────────────────────────────────────────────────────
 
 /**
- * Is phase-level outsourcing active? Client mode + bridge brain (the existing
- * single brain switch) + the kill-switch env. PREVIOUSLY_PHASE_OUTSOURCE=0
- * falls back to the old per-sub-agent path (each sub-agent its own bridge
- * spawn).
+ * Is phase-level outsourcing active? Client mode + bridge brain + the turn's
+ * model actually running on the bridge (modelSdk) + the kill-switch env.
+ * PREVIOUSLY_PHASE_OUTSOURCE=0 falls back to the old per-sub-agent path (each
+ * sub-agent its own bridge spawn). The modelSdk clause matters when the env
+ * brain is bridge but the user picked a BYOK model (`byok/*`, sdk "openai"):
+ * housekeeping then runs on the standard API sub-agent path instead of
+ * spawning the CLI.
  */
-export function isPhaseOutsourceActive(): boolean {
+export function isPhaseOutsourceActive(modelSdk: string): boolean {
   return (
-    isBridgeBrainActive() && process.env.PREVIOUSLY_PHASE_OUTSOURCE !== "0"
+    isBridgeBrainActive() &&
+    modelSdk === "bridge" &&
+    process.env.PREVIOUSLY_PHASE_OUTSOURCE !== "0"
   );
 }
 

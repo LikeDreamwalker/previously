@@ -16,7 +16,7 @@ export interface AvailableModel {
   maxTokens: number;
   defaultThinking: boolean;
   defaultEffort: "low" | "medium" | "high";
-  /** Bridge options only: informational copy about the subscription bridge. */
+  /** Bridge/BYOK options only: informational copy about the engine. */
   hint?: string;
   /** Bridge options only: whether the agent CLI was detected on PATH. */
   available?: boolean;

@@ -70,6 +70,7 @@
         "bridge": "订阅桥接"
       },
       "bridgeHint": "使用你本地的 {agent} 订阅额度。为获得最佳体验(流式输出、工具调用),建议改用 API 模型。",
+      "byokHint": "使用你自己的 API key(推荐)——直连 API:流式、快、无需本地 CLI。",
       "bridgeNotInstalled": "未安装",
       "bridgeConfigure": "去配置"
     },
@@ -338,6 +339,14 @@
       "brainUnset": "跟随环境变量",
       "brainApiKey": "API key",
       "brainBridge": "订阅桥接",
+      "brainByok": "自带 API key(推荐)",
+      "byokDesc": "推荐——体验最完整(流式、快、无 CLI 冷启动)。密钥仅保存在本机 config.json,除发送给所选服务商外不会离开本机。",
+      "byokProviderLabel": "服务商",
+      "byokProviderCustom": "自定义(OpenAI 兼容)",
+      "byokApiKeyLabel": "API key",
+      "byokBaseUrlLabel": "Base URL",
+      "byokModelLabel": "模型",
+      "byokModelPlaceholder": "例如 deepseek-chat",
       "brainEnvLabel": "API key 环境变量名",
       "brainModelLabel": "模型（可选）",
       "brainModelPlaceholder": "例如 deepseek-v4-pro",
