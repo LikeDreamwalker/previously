@@ -34,7 +34,6 @@ import {
   BRIDGE_PROTOCOL_VERSION,
   type BridgeEvent,
 } from "@/lib/bridge";
-import { isBridgeBrainActive } from "@/lib/models/registry";
 import {
   createCardSession,
   serializeSession,
@@ -70,19 +69,20 @@ import type { EvolutionResult } from "@/lib/chat/turn-types";
 // ─── Gate ──────────────────────────────────────────────────────────────────
 
 /**
- * Is phase-level outsourcing active? Client mode + bridge brain + the turn's
- * model actually running on the bridge (modelSdk) + the kill-switch env.
- * PREVIOUSLY_PHASE_OUTSOURCE=0 falls back to the old per-sub-agent path (each
- * sub-agent its own bridge spawn). The modelSdk clause matters when the env
- * brain is bridge but the user picked a BYOK model (`byok/*`, sdk "openai"):
- * housekeeping then runs on the standard API sub-agent path instead of
- * spawning the CLI.
+ * Is phase-level outsourcing active? The turn's model actually running on the
+ * bridge (modelSdk) + the kill-switch env. PREVIOUSLY_PHASE_OUTSOURCE=0 falls
+ * back to the old per-sub-agent path (each sub-agent its own bridge spawn).
+ *
+ * The gate keys on the resolved model alone, not on how the bridge engine was
+ * activated (env PREVIOUSLY_BRAIN or config.json brain — either registers the
+ * bridge/* models, and only then can a turn resolve to sdk "bridge"). That
+ * keeps engine switching hot: no restart, in-flight calls finish on the model
+ * they started with. The BYOK case is covered the same way — a byok/* model
+ * has sdk "openai", so housekeeping runs the standard API sub-agent path.
  */
 export function isPhaseOutsourceActive(modelSdk: string): boolean {
   return (
-    isBridgeBrainActive() &&
-    modelSdk === "bridge" &&
-    process.env.PREVIOUSLY_PHASE_OUTSOURCE !== "0"
+    modelSdk === "bridge" && process.env.PREVIOUSLY_PHASE_OUTSOURCE !== "0"
   );
 }
 

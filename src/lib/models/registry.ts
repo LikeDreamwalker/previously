@@ -17,20 +17,27 @@
  */
 
 import type { ProviderSdk } from "./providers";
-import type { ClientByok } from "../client-config";
+import type { ClientBrain, ClientByok } from "../client-config";
 import { isClientMode } from "../mode";
 
-// ─── Bridge brain (pure subscription mode) ────────────────────────────────
+// ─── Local agent engine (pure subscription mode) ──────────────────────────
 //
-// When the client CLI injects PREVIOUSLY_BRAIN=bridge, the user has NO model
-// API keys and the kernel's main model must run through the local subscription
-// bridge (Claude/Codex/Kimi CLI via PREVIOUSLY_BRIDGE_CMD — the spawn contract
-// lives in src/lib/bridge.ts). One `bridge/<agent>` entry per known agent is
-// registered then, gated on client mode + the env pair; cloud mode never sees
-// them. The env-selected agent (PREVIOUSLY_BRAIN_AGENT) is the default — its
-// entry comes first — but every installed agent CLI is selectable, and the
-// model id (`bridge/<agent>`) decides which CLI a given call spawns (see
+// The main model can run through the local subscription bridge (Claude/Codex/
+// Kimi CLI via PREVIOUSLY_BRIDGE_CMD — the spawn contract lives in
+// src/lib/bridge.ts). One `bridge/<agent>` entry per known agent is registered
+// when the engine is active, gated on client mode; cloud mode never sees them.
+//
+// The engine is active when EITHER the client CLI injected
+// PREVIOUSLY_BRAIN=bridge at spawn time OR config.json says
+// brain.type === "bridge" (the settings UI's engine switch — hot, no
+// restart). The config brain wins over the env for the DEFAULT agent ordering
+// (it's the fresher, user-editable source), but the model id
+// (`bridge/<agent>`) decides which CLI a given call spawns (see
 // src/lib/models/bridge-model.ts), so switching agents needs no restart.
+//
+// fs-freedom contract: these helpers are PURE — the caller reads config.json
+// (catalog.ts, async server path) and passes the brain in. Sync callers that
+// omit it keep env-only behavior.
 
 /** Subscription CLI agents the bridge can drive. */
 export const BRIDGE_AGENTS = ["claude", "codex", "kimi"] as const;
@@ -45,11 +52,13 @@ export const BRIDGE_AGENT_LABELS: Record<BridgeAgent, string> = {
 };
 
 /**
- * The selected bridge agent (PREVIOUSLY_BRAIN_AGENT). Unknown values fall
- * back to the default rather than failing — the env is injected by the
- * client CLI, and a typo shouldn't take the whole kernel down.
+ * The default bridge agent. The config brain (`brain.agent` from
+ * config.json) wins over PREVIOUSLY_BRAIN_AGENT when present; unknown env
+ * values fall back to the default rather than failing — the env is injected
+ * by the client CLI, and a typo shouldn't take the whole kernel down.
  */
-export function getBridgeAgent(): BridgeAgent {
+export function getBridgeAgent(brain?: ClientBrain | null): BridgeAgent {
+  if (brain?.type === "bridge") return brain.agent;
   const raw = process.env.PREVIOUSLY_BRAIN_AGENT?.trim();
   return (BRIDGE_AGENTS as readonly string[]).includes(raw ?? "")
     ? (raw as BridgeAgent)
@@ -57,13 +66,19 @@ export function getBridgeAgent(): BridgeAgent {
 }
 
 /**
- * Is the "pure subscription" brain active? Only in client mode AND with
- * PREVIOUSLY_BRAIN=bridge explicitly set — cloud mode is byte-for-byte
- * unaffected, and a client with real API keys (PREVIOUSLY_BRAIN unset) keeps
- * the normal AI SDK path.
+ * Is the local agent engine (pure subscription) active? Client mode AND
+ * either PREVIOUSLY_BRAIN=bridge (injected by the client CLI) or
+ * brain.type === "bridge" in config.json (the settings-UI engine switch) —
+ * either source suffices, so saving the engine in settings takes effect
+ * without a restart. Callers without the config at hand (sync paths) omit
+ * `brain` and keep env-only behavior; cloud mode is byte-for-byte
+ * unaffected, and a client with real API keys keeps the normal AI SDK path.
  */
-export function isBridgeBrainActive(): boolean {
-  return isClientMode() && process.env.PREVIOUSLY_BRAIN === "bridge";
+export function isBridgeBrainActive(brain?: ClientBrain | null): boolean {
+  return (
+    isClientMode() &&
+    (process.env.PREVIOUSLY_BRAIN === "bridge" || brain?.type === "bridge")
+  );
 }
 
 /**
@@ -102,15 +117,15 @@ function bridgeModelConfig(agent: BridgeAgent): ModelConfig {
 }
 
 /**
- * The bridge main-model entries (`bridge/<agent>` for every known agent), or
- * [] when the bridge brain is not active. The env-selected agent comes first
- * so getAvailableModels()[0] / getDefaultModelId() resolve to it. envKey is
- * informational — availability is gated by isBridgeBrainActive(), not by an
- * API key.
+ * The local-agent engine entries (`bridge/<agent>` for every known agent), or
+ * [] when the engine is not active. The default agent (config brain first,
+ * then env) comes first so getAvailableModels()[0] / getDefaultModelId()
+ * resolve to it. envKey is informational — availability is gated by
+ * isBridgeBrainActive(), not by an API key.
  */
-export function getBridgeModels(): ModelConfig[] {
-  if (!isBridgeBrainActive()) return [];
-  const first = getBridgeAgent();
+export function getBridgeModels(brain?: ClientBrain | null): ModelConfig[] {
+  if (!isBridgeBrainActive(brain)) return [];
+  const first = getBridgeAgent(brain);
   const rest = BRIDGE_AGENTS.filter((a) => a !== first);
   return [first, ...rest].map(bridgeModelConfig);
 }

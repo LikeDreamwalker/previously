@@ -23,7 +23,10 @@ import {
 } from "./registry";
 import type { ProviderSdk } from "./providers";
 import { isClientMode } from "../mode";
-import { readClientConfig } from "../client-config";
+import {
+  readClientConfig,
+  type ClientConfigSnapshot,
+} from "../client-config";
 
 const CACHE_TTL_MS = 30 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 10_000;
@@ -320,32 +323,37 @@ export async function resolveAvailableModels(): Promise<ModelConfig[]> {
     models.push(m);
   }
 
-  // Pure subscription mode (client + PREVIOUSLY_BRAIN=bridge): the bridge
-  // main models are available without any provider API key, so they are
-  // appended outside the env-key provider loop above. One entry per agent
-  // CLI, env-selected agent first.
-  for (const bridge of getBridgeModels()) {
+  // Local agent engine + BYOK (client mode, PREVIOUSLY_HOME/config.json):
+  // config.json is read ONCE here and drives both config-backed engines, so
+  // an engine switch saved from the settings UI applies on the next resolve
+  // (POST /api/client/config resets this cache) with no kernel restart —
+  // in-flight calls keep their already-resolved model. The bridge entries
+  // need no provider API key, so they are appended outside the env-key
+  // provider loop above (default agent first). A missing/unreadable
+  // config.json must not break model listing — degrade to env-only (the
+  // settings API already surfaces that state honestly).
+  let clientConfig: ClientConfigSnapshot | null = null;
+  if (isClientMode()) {
+    try {
+      clientConfig = await readClientConfig();
+    } catch {
+      clientConfig = null; // unreadable/corrupt — env-only registration
+    }
+  }
+  for (const bridge of getBridgeModels(clientConfig?.brain)) {
     if (!seen.has(bridge.id)) {
       seen.add(bridge.id);
       models.push(bridge);
     }
   }
 
-  // BYOK (client mode, the `byok` section of PREVIOUSLY_HOME/config.json):
-  // the user's own-API-key model, listed AFTER the bridge entries — local
-  // agent outsourcing stays the default, BYOK is the recommended upgrade.
-  // A missing/unreadable config.json must not break model listing (the
-  // settings API already surfaces that state honestly).
-  if (isClientMode()) {
-    try {
-      const byok = getByokModel((await readClientConfig()).byok);
-      if (byok && !seen.has(byok.id)) {
-        seen.add(byok.id);
-        models.push(byok);
-      }
-    } catch {
-      // config.json unreadable/corrupt — skip the BYOK entry.
-    }
+  // BYOK: the user's own-API-key model, listed AFTER the bridge entries —
+  // local agent outsourcing stays the default, BYOK is the recommended
+  // upgrade.
+  const byok = getByokModel(clientConfig?.byok);
+  if (byok && !seen.has(byok.id)) {
+    seen.add(byok.id);
+    models.push(byok);
   }
 
   cache = { at: now, models };

@@ -19,7 +19,6 @@ import { resolveAvailableModels } from "@/lib/models/catalog";
 import {
   bridgeAgentFromModelId,
   BRIDGE_AGENT_LABELS,
-  isBridgeBrainActive,
 } from "@/lib/models/registry";
 import { detectLocalAgents, type AgentDetection } from "@/lib/client-detect";
 import { demoModelLock } from "@/lib/demo/model-lock";
@@ -87,7 +86,10 @@ export async function GET(): Promise<Response> {
             hint: "Uses your own API key (recommended) — a direct API connection.",
           };
         }
-        if (provider !== "bridge" || !isBridgeBrainActive()) return option;
+        // A bridge option only reaches this list when the catalog registered
+        // it (env or config.json brain — see resolveAvailableModels), so no
+        // further engine gate is needed here.
+        if (provider !== "bridge") return option;
         const agent = bridgeAgentFromModelId(id);
         return {
           ...option,

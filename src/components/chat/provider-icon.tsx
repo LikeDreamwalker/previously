@@ -235,6 +235,19 @@ const bridgeAgentIconMap: Record<string, React.FC<IconProps>> = {
   kimi: MoonshotIcon,
 };
 
+/**
+ * Brand icon for a bridge agent CLI ("claude" | "codex" | "kimi") — the
+ * vendor's real logo (same SVGs as the provider brands); unknown agents get
+ * the generic terminal fallback.
+ */
+export function BridgeAgentIcon({
+  agent,
+  ...props
+}: IconProps & { agent: string }) {
+  const Icon = bridgeAgentIconMap[agent] ?? Terminal;
+  return <Icon {...props} />;
+}
+
 interface ProviderIconProps extends IconProps {
   provider: string;
   /** Model id — resolves per-agent brand icons for `bridge/<agent>` ids. */

@@ -408,21 +408,16 @@ describe("isPhaseOutsourceActive", () => {
     process.env = { ...saved };
   });
 
-  it("requires client mode + bridge brain + bridge model + no kill-switch", () => {
-    process.env.PREVIOUSLY_MODE = "client";
-    process.env.PREVIOUSLY_BRAIN = "bridge";
+  it("keys on the resolved model sdk + kill-switch, regardless of how the engine was activated", () => {
+    // Engine activated via config.json only (no PREVIOUSLY_BRAIN env): a turn
+    // whose model resolved to sdk "bridge" still gets phase outsourcing —
+    // that is what makes engine switching hot (no restart).
     delete process.env.PREVIOUSLY_PHASE_OUTSOURCE;
+    delete process.env.PREVIOUSLY_BRAIN;
+    delete process.env.PREVIOUSLY_MODE;
     expect(isPhaseOutsourceActive("bridge")).toBe(true);
 
     process.env.PREVIOUSLY_PHASE_OUTSOURCE = "0";
-    expect(isPhaseOutsourceActive("bridge")).toBe(false);
-
-    delete process.env.PREVIOUSLY_PHASE_OUTSOURCE;
-    delete process.env.PREVIOUSLY_BRAIN;
-    expect(isPhaseOutsourceActive("bridge")).toBe(false);
-
-    process.env.PREVIOUSLY_BRAIN = "bridge";
-    process.env.PREVIOUSLY_MODE = "cloud";
     expect(isPhaseOutsourceActive("bridge")).toBe(false);
   });
 

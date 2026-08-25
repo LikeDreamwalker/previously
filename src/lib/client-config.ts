@@ -4,10 +4,13 @@
  *
  * PREVIOUSLY_HOME is the client state root injected by the client CLI
  * (~/.previously). Its config.json is owned by the client but the kernel may
- * read it (status display; the model catalog reads the `byok` section
- * through readClientConfig) and update four fields (executionBackend,
- * brain, agents, byok) from the settings UI. Unknown fields are preserved
- * verbatim on write.
+ * read it (status display; the model catalog reads the `brain`/`byok`
+ * sections through readClientConfig to register the local agent engine and
+ * BYOK model entries) and update four fields (executionBackend,
+ * brain, agents, byok). Unknown fields are preserved verbatim on write.
+ * The settings UI only posts `brain`/`byok` — executionBackend and the
+ * per-agent `agents` tuning stay API-compatible (client CLI / hand edits)
+ * but have no UI surface.
  *
  * Honesty rules: a missing PREVIOUSLY_HOME is reported as null fields, a
  * missing file as exists:false, an unreadable/corrupt file as a thrown error

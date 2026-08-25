@@ -15,7 +15,7 @@ import {
 } from "@/lib/models/registry";
 import { getBridgeCommand, getBridgeTimeoutMs } from "@/lib/bridge";
 import { resolveAvailableModels } from "@/lib/models/catalog";
-import { getPreviouslyHome } from "@/lib/client-config";
+import { getPreviouslyHome, readClientConfig } from "@/lib/client-config";
 import { getMemoryRoot } from "@/lib/whitelist";
 
 export const dynamic = "force-dynamic";
@@ -38,7 +38,10 @@ export async function GET(): Promise<Response> {
     console.error("[client/status] MEMORY_ROOT misconfigured:", e);
   }
 
-  const bridgeBrain = isBridgeBrainActive();
+  // The local agent engine is active via env (PREVIOUSLY_BRAIN=bridge) OR
+  // config.json (brain.type === "bridge") — report both honestly.
+  const clientConfig = await readClientConfig().catch(() => null);
+  const bridgeBrain = isBridgeBrainActive(clientConfig?.brain);
   const models = await resolveAvailableModels();
 
   return Response.json({
@@ -49,9 +52,9 @@ export async function GET(): Promise<Response> {
     bridge: {
       /** The operator-controlled bridge command line. */
       cmd: getBridgeCommand(),
-      /** The bridged agent — only when the pure-subscription brain is active. */
-      agent: bridgeBrain ? getBridgeAgent() : null,
-      /** Whether PREVIOUSLY_BRAIN=bridge (no API-key main model). */
+      /** The default bridged agent — only when the local agent engine is active. */
+      agent: bridgeBrain ? getBridgeAgent(clientConfig?.brain) : null,
+      /** Whether the local agent engine is active (env or config brain). */
       active: bridgeBrain,
       timeoutMs: getBridgeTimeoutMs(),
     },

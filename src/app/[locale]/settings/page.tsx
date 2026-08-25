@@ -27,14 +27,14 @@ export default async function SettingsPage({
   const clientMode = isClientMode();
 
   return (
-    <div className="p-6 max-w-2xl mx-auto pt-16">
+    <div className="p-6 max-w-3xl mx-auto pt-16">
       <h1 className="text-2xl font-bold mb-2">{t("pageTitle")}</h1>
       <p className="text-muted-foreground text-sm mb-8">
         {t(clientMode ? "pageSubtitleClient" : "pageSubtitleCloud")}
       </p>
-      <div className="space-y-10">
+      <div className="space-y-12">
         {/* 通用 / General — applies in every deployment mode */}
-        <section className="space-y-4">
+        <section className="space-y-6">
           <GroupHeader
             title={t("groups.general.title")}
             desc={t("groups.general.desc")}
@@ -49,7 +49,7 @@ export default async function SettingsPage({
         {/* 本地设置 / Local settings — client mode only (server-gated; the
             section keeps its runtime 404 self-hide as a fallback). */}
         {clientMode && (
-          <section className="space-y-4">
+          <section className="space-y-6">
             <GroupHeader
               title={t("groups.local.title")}
               desc={t("groups.local.desc")}
@@ -62,7 +62,7 @@ export default async function SettingsPage({
             sync are GitHub-template semantics; a client kernel upgrades via
             the client CLI (`previously upgrade`). */}
         {!clientMode && (
-          <section className="space-y-4">
+          <section className="space-y-6">
             <GroupHeader
               title={t("groups.cloud.title")}
               desc={t("groups.cloud.desc")}
