@@ -3,17 +3,26 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { E2E_HOME } from "./env";
 
-// The settings Client section (src/components/settings/client-section.tsx)
-// self-gates on GET /api/client/status and persists via POST /api/client/config
-// to PREVIOUSLY_HOME/config.json — this spec asserts the real on-disk write
-// against the isolated e2e home (see tests/e2e/env.ts).
+// The settings Client card (src/components/settings/client-section.tsx) is
+// gated server-side on isClientMode() (with a runtime /api/client/status 404
+// self-hide as fallback) and persists via POST /api/client/config to
+// PREVIOUSLY_HOME/config.json — this spec asserts the real on-disk write
+// against the isolated e2e home (see tests/e2e/env.ts). It runs in client
+// mode, so the card always renders.
+// The card locator targets [data-slot="card"] (ui/card renders a div, not a
+// <section>); the selects stay native <select> elements on purpose.
 test.describe("Settings — Client section", () => {
+  // fullyParallel is on globally, but these tests share one on-disk
+  // config.json in E2E_HOME — concurrent saves would last-write-wins race
+  // each other's assertions. Serial within this describe; other files stay
+  // parallel.
+  test.describe.configure({ mode: "serial" });
   test("saves a bridge brain selection to PREVIOUSLY_HOME/config.json", async ({
     page,
   }) => {
     await page.goto("/en/settings");
 
-    const section = page.locator("section", {
+    const section = page.locator('[data-slot="card"]', {
       has: page.getByRole("heading", { name: "Client", exact: true }),
     });
     await expect(section).toBeVisible();
@@ -68,7 +77,7 @@ test.describe("Settings — Client section", () => {
   }) => {
     await page.goto("/en/settings");
 
-    const section = page.locator("section", {
+    const section = page.locator('[data-slot="card"]', {
       has: page.getByRole("heading", { name: "Client", exact: true }),
     });
     await expect(section).toBeVisible();
@@ -119,7 +128,7 @@ test.describe("Settings — Client section", () => {
   }) => {
     await page.goto("/en/settings");
 
-    const section = page.locator("section", {
+    const section = page.locator('[data-slot="card"]', {
       has: page.getByRole("heading", { name: "Client", exact: true }),
     });
     await expect(section).toBeVisible();

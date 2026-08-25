@@ -259,24 +259,21 @@
   },
   "settings": {
     "pageTitle": "设置",
-    "pageSubtitle": "你的个人信息与对话偏好。",
-    "profile": {
-      "heading": "个人信息",
-      "desc": "agent 在为谁服务。你的名字会显示在首页;其余信息帮助 agent 更了解你。",
-      "name": "名字",
-      "namePlaceholder": "希望被如何显示（例如你的全名）",
-      "pronouns": "代词",
-      "pronounsPlaceholder": "例如 he/him",
-      "addressAs": "称呼",
-      "addressAsPlaceholder": "agent 该怎么称呼你",
-      "timezone": "时区",
-      "timezonePlaceholder": "例如 America/Chicago",
-      "about": "关于你",
-      "aboutPlaceholder": "任何你希望 agent 了解的信息：你是谁、在做什么、偏好如何。",
-      "save": "保存",
-      "saving": "保存中…",
-      "saved": "已保存 ✓",
-      "saveFailed": "保存失败，请重试。"
+    "pageSubtitleClient": "本地内核模式",
+    "pageSubtitleCloud": "云端模式",
+    "groups": {
+      "general": {
+        "title": "通用",
+        "desc": "Agent 行为——在所有部署模式下生效。"
+      },
+      "local": {
+        "title": "本地设置",
+        "desc": "本内核以本地客户端实例运行——以下设置保存在本机。"
+      },
+      "cloud": {
+        "title": "云端设置",
+        "desc": "版本检查，以及与上游模板仓库的代码同步。"
+      }
     },
     "config": {
       "heading": "Agent 行为",

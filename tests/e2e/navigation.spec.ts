@@ -32,7 +32,7 @@ test.describe("Navigation", () => {
 
   test("settings page renders the settings form", async ({ page }) => {
     await page.goto("/en/settings");
-    await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Settings", exact: true })).toBeVisible();
     await expect(page.locator("input").first()).toBeVisible();
   });
 

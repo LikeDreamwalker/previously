@@ -14,7 +14,7 @@
  * — never a fabricated default that looks like real state.
  */
 
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile, writeFile, rename, rm, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import {
   BRIDGE_AGENTS,
@@ -428,7 +428,19 @@ export async function writeClientConfig(
 
   try {
     await mkdir(home, { recursive: true });
-    await writeFile(path, JSON.stringify(merged, null, 2) + "\n", "utf8");
+    // Atomic write: tmp file + rename, so a concurrent reader (e.g. a
+    // parallel GET /api/client/config) never sees a half-written file.
+    const tmp = `${path}.tmp`;
+    await writeFile(tmp, JSON.stringify(merged, null, 2) + "\n", "utf8");
+    try {
+      await rename(tmp, path);
+    } catch {
+      // Windows can EPERM on rename-over-existing when the target is
+      // transiently locked (AV scan, a concurrent reader); fall back to a
+      // direct overwrite rather than failing the save.
+      await writeFile(path, JSON.stringify(merged, null, 2) + "\n", "utf8");
+      await rm(tmp, { force: true });
+    }
   } catch (e) {
     throw new ClientConfigError(
       `Could not write ${path}: ${e instanceof Error ? e.message : String(e)}`,

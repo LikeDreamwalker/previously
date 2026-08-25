@@ -259,24 +259,21 @@
   },
   "settings": {
     "pageTitle": "Settings",
-    "pageSubtitle": "Your profile and chat preferences.",
-    "profile": {
-      "heading": "Profile",
-      "desc": "Who the agent is assisting. Your name shows on the home screen; the rest helps the agent know you.",
-      "name": "Name",
-      "namePlaceholder": "How you'd like to be shown (e.g. your full name)",
-      "pronouns": "Pronouns",
-      "pronounsPlaceholder": "e.g. she/her",
-      "addressAs": "Address as",
-      "addressAsPlaceholder": "What the agent should call you",
-      "timezone": "Timezone",
-      "timezonePlaceholder": "e.g. America/Chicago",
-      "about": "About you",
-      "aboutPlaceholder": "Anything the agent should know about you, your work, or preferences.",
-      "save": "Save profile",
-      "saving": "Saving...",
-      "saved": "Saved ✓",
-      "saveFailed": "Couldn't save. Try again."
+    "pageSubtitleClient": "Local kernel mode",
+    "pageSubtitleCloud": "Cloud mode",
+    "groups": {
+      "general": {
+        "title": "General",
+        "desc": "Agent behaviour — applies in every deployment mode."
+      },
+      "local": {
+        "title": "Local settings",
+        "desc": "This kernel runs as a local client instance — these settings are saved on this machine."
+      },
+      "cloud": {
+        "title": "Cloud settings",
+        "desc": "Version checks and code sync with the upstream template repository."
+      }
     },
     "config": {
       "heading": "Agent behaviour",
