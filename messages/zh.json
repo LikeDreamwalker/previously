@@ -21,6 +21,7 @@
     "archive": "存档",
     "docs": "文档",
     "settings": "设置",
+    "settingsBusy": "回复进行中——完成后即可修改设置",
     "expand": "展开",
     "collapse": "收起",
     "timelineToggle": "切换时间线"
@@ -58,7 +59,6 @@
       "placeholder": "发送消息…",
       "attach": "附件",
       "attachUnsupported": "当前模型不支持图片输入",
-      "settingsTooltip": "设置",
       "stopTooltip": "停止生成",
       "sendTooltip": "发送消息",
       "modelTooltip": "切换 AI 模型",
@@ -280,10 +280,9 @@
       "desc": "调整 Agent 的切片、回忆和上下文管理方式。保存到你的记忆仓库中，无需重新部署。",
       "maxSliceMinutes": "切片时长（分钟）",
       "maxTurnsPerSlice": "片内容量上限（安全阀）",
-      "save": "保存配置",
-      "saving": "保存中...",
       "saved": "已保存 ✓",
-      "saveFailed": "保存失败，请重试。"
+      "saveFailed": "保存失败，请重试。",
+      "restoreDefaults": "恢复默认设置"
     },
     "version": {
       "heading": "版本与更新",
@@ -334,10 +333,11 @@
       "colStatus": "状态",
       "colVersion": "版本",
       "colPath": "路径",
-      "engineLocalAgent": "本地 Agent（默认）",
+      "engineLocalAgent": "本地 Agent",
       "engineLocalAgentDesc": "主模型通过本机订阅 CLI 执行——无需 API key；每次调用拉起所选 agent 的 CLI。",
-      "engineUnsetHint": "未配置引擎——内核默认跟随环境变量。在上方选择一个引擎进行配置。",
+      "engineLabel": "引擎",
       "brainByok": "自带 API Key（推荐）",
+      "byokWhyRecommended": "为什么推荐？架构所限——只有使用自己的 API key，才能体验完整的 Previously 能力（流式输出、响应更快、无 CLI 冷启动）。",
       "byokDesc": "推荐——体验最完整(流式、快、无 CLI 冷启动)。密钥仅保存在本机 config.json,除发送给所选服务商外不会离开本机。",
       "byokProviderLabel": "服务商",
       "byokProviderCustom": "自定义(OpenAI 兼容)",
@@ -348,11 +348,9 @@
       "brainAgentLabel": "桥接 agent",
       "brainHeading": "模型引擎",
       "bridgeAgentNotDetected": "本机未检测到 {agent}——已保存的配置可能在其他机器上有效，或 PATH 已变化。",
-      "save": "保存客户端配置",
-      "saving": "保存中...",
       "saved": "已保存 ✓",
       "saveFailed": "保存失败，请重试。",
-      "applyHint": "引擎切换保存即生效，无需重启——进行中的调用会按旧配置自然跑完。"
+      "applyHint": "改动自动保存，引擎切换即时生效，无需重启——进行中的调用会按旧配置自然跑完。"
     }
   },
   "memory": {

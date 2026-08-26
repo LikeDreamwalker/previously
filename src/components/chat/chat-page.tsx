@@ -32,6 +32,7 @@ import { saveUserConfig } from "@/lib/config/actions";
 import type { UserConfig } from "@/lib/config/types";
 import { useTranslations, useLocale } from "next-intl";
 import { toast } from "sonner";
+import { setTurnBusy } from "./turn-busy";
 import { formatErrorDetail } from "@/lib/chat/workflow-errors";
 
 interface ChatPageProps {
@@ -497,6 +498,13 @@ function Inner({
 
   const isStreaming = status === "streaming" || demoStreaming;
   const isLoading = status === "submitted" || isStreaming;
+
+  // Publish the in-flight state so the header can disable the settings entry
+  // mid-turn (engine/model changes must not land while a call is running).
+  useEffect(() => {
+    setTurnBusy(isLoading);
+    return () => setTurnBusy(false);
+  }, [isLoading]);
 
   const allMessages = useMemo(() => {
     if (demoMessages.length > 0) return demoMessages;

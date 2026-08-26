@@ -21,6 +21,7 @@
     "archive": "Archive",
     "docs": "Docs",
     "settings": "Settings",
+    "settingsBusy": "A reply is in progress — settings unlock when it finishes",
     "expand": "Expand",
     "collapse": "Collapse",
     "timelineToggle": "Toggle timeline"
@@ -58,7 +59,6 @@
       "placeholder": "Send a message...",
       "attach": "Attach files",
       "attachUnsupported": "The selected model doesn't support images",
-      "settingsTooltip": "Settings",
       "stopTooltip": "Stop generation",
       "sendTooltip": "Send message",
       "modelTooltip": "Switch AI model",
@@ -280,10 +280,9 @@
       "desc": "Tune how the agent slices, recalls, and manages context. Saved to your memory repo — no redeploy needed.",
       "maxSliceMinutes": "Slice duration (min)",
       "maxTurnsPerSlice": "Max turns per slice (safety cap)",
-      "save": "Save config",
-      "saving": "Saving...",
       "saved": "Saved ✓",
-      "saveFailed": "Couldn't save. Try again."
+      "saveFailed": "Couldn't save. Try again.",
+      "restoreDefaults": "Restore defaults"
     },
     "version": {
       "heading": "Version & Updates",
@@ -334,10 +333,11 @@
       "colStatus": "Status",
       "colVersion": "Version",
       "colPath": "Path",
-      "engineLocalAgent": "Local agent (default)",
+      "engineLocalAgent": "Local agent",
       "engineLocalAgentDesc": "The main model runs through a local subscription CLI — no API key needed. Every call spawns the selected agent's CLI.",
-      "engineUnsetHint": "No engine configured — the kernel inherits whatever the environment provides. Pick an engine above to configure it.",
+      "engineLabel": "Engine",
       "brainByok": "Your own API key (recommended)",
+      "byokWhyRecommended": "Why recommended? By design, the full Previously experience — streaming, faster responses, no CLI cold start — is only available with your own API key.",
       "byokDesc": "Recommended — the fullest experience (streaming, fast, no CLI cold start). The key is stored locally in config.json and never leaves this machine except to the chosen provider.",
       "byokProviderLabel": "Provider",
       "byokProviderCustom": "Custom (OpenAI-compatible)",
@@ -348,11 +348,9 @@
       "brainAgentLabel": "Bridge agent",
       "brainHeading": "Model engine",
       "bridgeAgentNotDetected": "{agent} isn't detected on this machine — the saved config may be valid elsewhere, or the PATH changed.",
-      "save": "Save client config",
-      "saving": "Saving...",
       "saved": "Saved ✓",
       "saveFailed": "Couldn't save. Try again.",
-      "applyHint": "Engine changes apply on save — no restart needed. In-flight calls finish on the old configuration."
+      "applyHint": "Changes save automatically and engine switches apply immediately — no restart needed. In-flight calls finish on the old configuration."
     }
   },
   "memory": {

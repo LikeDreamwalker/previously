@@ -4,6 +4,7 @@ import { ClientSection } from "@/components/settings/client-section";
 import { VersionSection } from "@/components/settings/version-section";
 import { Separator } from "@/components/ui/separator";
 import { loadUserConfig } from "@/lib/config/loader";
+import { DEFAULTS } from "@/lib/config/defaults";
 import { resolveDataSource, isWritable } from "@/lib/data-source/resolve";
 import { isClientMode } from "@/lib/mode";
 
@@ -41,6 +42,7 @@ export default async function SettingsPage({
           />
           <SettingsForm
             initialConfig={config}
+            defaults={DEFAULTS.slicing}
             dataSource={source}
             canWrite={canWrite}
           />

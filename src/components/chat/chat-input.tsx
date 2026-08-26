@@ -2,9 +2,8 @@
 
 import { useState, useRef, type FormEvent, type ChangeEvent } from "react";
 import { useTranslations } from "next-intl";
-import { ArrowUp, Square, Paperclip, X, Settings, FlaskConical } from "lucide-react";
+import { ArrowUp, Square, Paperclip, X, FlaskConical } from "lucide-react";
 import { useImageAttachments } from "@/hooks/use-image-attachments";
-import { Link } from "@/i18n/navigation";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ModelSelector } from "./model-selector";
 
@@ -210,21 +209,6 @@ export function ChatInput({
             currentModelId={currentModelId}
             onModelChange={onModelChange}
           />
-
-          {/* Settings */}
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Link
-                  href="/settings"
-                  className="h-7 w-7 rounded-full text-muted-foreground hover:text-foreground hover:bg-brand/10 transition-colors flex items-center justify-center"
-                >
-                  <Settings className="h-3.5 w-3.5" />
-                </Link>
-              }
-            />
-            <TooltipContent side="top">{t("settingsTooltip")}</TooltipContent>
-          </Tooltip>
         </div>
 
         {/* Right side */}
