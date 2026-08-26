@@ -122,6 +122,13 @@ describe("buildHousekeepingPayload", () => {
     expect(context).toContain("(empty — new card)");
   });
 
+  it("pins the read-only evidence contract in the static task", () => {
+    const { task } = buildHousekeepingPayload(baseInput());
+    expect(task).toContain("from the data in this payload ALONE");
+    expect(task).toContain("readslice / agentlog / card");
+    expect(task).toContain("gated off in the housekeeping phase");
+  });
+
   it("lists dry slices for the folded-in backfill job when provided", () => {
     const { task, context } = buildHousekeepingPayload({
       ...baseInput(),

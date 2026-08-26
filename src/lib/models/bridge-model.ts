@@ -81,6 +81,7 @@ import {
   type BridgeFailureReason,
 } from "@/lib/bridge";
 import { bridgeAgentFromModelId } from "./registry";
+import { RECALL_SKILL_DOC } from "@/lib/bridge-skills";
 
 // Global-registry symbols shared with @workflow/serde (Symbol.for — safe to
 // recreate here without importing the transitive package).
@@ -142,15 +143,20 @@ function renderMessage(message: LanguageModelV3Message): string {
  *
  * `phase: "chat"` marks the payload as the chat phase (the client picks its
  * per-phase skill workspace document from it; older clients ignore the
- * unknown field).
+ * unknown field). Chat-phase payloads also carry `skills` — the static skill
+ * specs (src/lib/bridge-skills.ts) the client materializes into the workspace
+ * (skills/recall.md); their `{{PREVIOUSLY_CMD}}` placeholders are filled by
+ * the client, never here.
  */
 export function promptToBridgePayload(prompt: LanguageModelV3Prompt): {
   task: string;
   context: string | null;
   phase: "chat";
+  skills: { recall: string };
 } {
   const transcript = prompt.map(renderMessage);
   const last = prompt[prompt.length - 1];
+  const skills = { recall: RECALL_SKILL_DOC };
   if (last?.role === "user" && Array.isArray(last.content)) {
     const task = last.content
       .filter((p) => p.type === "text")
@@ -159,10 +165,10 @@ export function promptToBridgePayload(prompt: LanguageModelV3Prompt): {
       .trim();
     if (task) {
       const context = transcript.slice(0, -1).join("\n\n");
-      return { task, context: context || null, phase: "chat" };
+      return { task, context: context || null, phase: "chat", skills };
     }
   }
-  return { task: transcript.join("\n\n"), context: null, phase: "chat" };
+  return { task: transcript.join("\n\n"), context: null, phase: "chat", skills };
 }
 
 /** Warnings for call options the bridge cannot honor. */
@@ -579,7 +585,7 @@ export class BridgeChatLanguageModel implements LanguageModelV3 {
     options: LanguageModelV3CallOptions,
   ): Promise<LanguageModelV3GenerateResult> {
     const warnings = bridgeCallWarnings(options);
-    const { task, context, phase } = promptToBridgePayload(options.prompt);
+    const { task, context, phase, skills } = promptToBridgePayload(options.prompt);
     const toolInstruction = buildBridgeToolInstruction(options);
 
     // The model id picks the agent CLI: bridge/<agent> → that agent, pinned
@@ -595,8 +601,9 @@ export class BridgeChatLanguageModel implements LanguageModelV3 {
         // Tool-protocol calls (sub-agent reports on the kill-switch path) get
         // NO phase — the chat skill doc's output contract ("reply rendered
         // verbatim") contradicts the required {"tool": …} JSON tail; a
-        // missing phase makes the client use its generic memory doc.
-        ...(toolInstruction ? {} : { phase }),
+        // missing phase makes the client use its generic memory doc. Skills
+        // ride with the phase: no phase → no skills.
+        ...(toolInstruction ? {} : { phase, skills }),
         protocol: BRIDGE_PROTOCOL_VERSION,
       }),
       getBridgeTimeoutMs(),
@@ -663,7 +670,7 @@ export class BridgeChatLanguageModel implements LanguageModelV3 {
     options: LanguageModelV3CallOptions,
   ): Promise<LanguageModelV3StreamResult> {
     const warnings = bridgeCallWarnings(options);
-    const { task, context, phase } = promptToBridgePayload(options.prompt);
+    const { task, context, phase, skills } = promptToBridgePayload(options.prompt);
     const toolInstruction = buildBridgeToolInstruction(options);
     const agent = bridgeAgentFromModelId(this.modelId);
     const events = createBridgeEventEmitter();
@@ -698,8 +705,9 @@ export class BridgeChatLanguageModel implements LanguageModelV3 {
             JSON.stringify({
               task: toolInstruction ? `${task}\n\n${toolInstruction}` : task,
               context,
-              // No phase on tool-protocol calls — see doGenerate.
-              ...(toolInstruction ? {} : { phase }),
+              // No phase on tool-protocol calls — see doGenerate. Skills ride
+              // with the phase.
+              ...(toolInstruction ? {} : { phase, skills }),
               protocol: BRIDGE_PROTOCOL_VERSION,
             }),
             getBridgeTimeoutMs(),

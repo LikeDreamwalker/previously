@@ -112,6 +112,51 @@ export function splitBridgeCommand(cmd: string): string[] {
 }
 
 /**
+ * Windows shim resolution (mirrors the client CLI's bridge runner): globally
+ * installed CLIs surface as `.cmd`/`.bat` shims, which a shell-less spawn
+ * cannot execute — Node resolves neither the extension (ENOENT, surfaces as
+ * bridge-not-found even though the CLI is installed) nor the batch
+ * interpreter (EINVAL since Node's CVE-2024-27980 fix). When a bare command
+ * name resolves to a shim on PATH, spawn it through the shell (cmd.exe) — the
+ * officially supported path. Real executables, explicit paths, and POSIX take
+ * the direct route. Deps are injectable for tests; the fs/path defaults are
+ * imported lazily at call time (module-load discipline — see the note at the
+ * top of this file).
+ */
+export async function resolveBridgeSpawnTarget(
+  command: string,
+  deps: {
+    platform?: NodeJS.Platform;
+    pathEnv?: string;
+    fileExists?: (p: string) => boolean;
+  } = {},
+): Promise<{ command: string; shell: boolean }> {
+  const platform = deps.platform ?? process.platform;
+  if (platform !== "win32") return { command, shell: false };
+  if (/\.(cmd|bat)$/i.test(command)) return { command, shell: true };
+  // Explicit paths (e.g. `"<node>" "<…/cli.js>"` overrides) spawn as-is.
+  if (command.includes("/") || command.includes("\\")) {
+    return { command, shell: false };
+  }
+  const fileExists =
+    deps.fileExists ?? (await import("node:fs")).existsSync;
+  const { delimiter, join } = await import("node:path");
+  const pathEnv = deps.pathEnv ?? process.env.PATH ?? "";
+  for (const dir of pathEnv.split(delimiter)) {
+    if (dir === "") continue;
+    for (const ext of [".cmd", ".exe", ".bat", ""]) {
+      const candidate = join(dir, command + ext);
+      if (fileExists(candidate)) {
+        return /\.(cmd|bat)$/i.test(candidate)
+          ? { command: candidate, shell: true }
+          : { command, shell: false };
+      }
+    }
+  }
+  return { command, shell: false };
+}
+
+/**
  * Normalize a raw protocol-2 event object; returns undefined when malformed.
  */
 function normalizeBridgeEvent(raw: unknown): BridgeEvent | undefined {
@@ -191,6 +236,21 @@ export async function runBridge(
   // Lazy: see the module-level note — never loaded in the workflow sandbox.
   const { spawn } = await import("node:child_process");
   const start = Date.now();
+  // Keep the never-reject contract: a resolution failure settles as a
+  // structured spawn-failed result instead of escaping as a rejection.
+  let target: { command: string; shell: boolean };
+  try {
+    target = await resolveBridgeSpawnTarget(argv[0]);
+  } catch (err) {
+    return {
+      status: "error",
+      reason: "spawn-failed",
+      error: `Failed to resolve the bridge spawn target for ${JSON.stringify(argv[0])}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+      elapsedMs: Date.now() - start,
+    };
+  }
   return new Promise((resolve) => {
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -209,10 +269,12 @@ export async function runBridge(
       resolve({ ...r, elapsedMs: Date.now() - start });
     };
 
-    const child = spawn(argv[0], argv.slice(1), {
+    const child = spawn(target.command, argv.slice(1), {
       stdio: ["pipe", "pipe", "pipe"],
       // No console window flash on Windows when the kernel spawns the bridge.
       windowsHide: true,
+      // Windows .cmd/.bat shims (how global CLIs install) need cmd.exe.
+      shell: target.shell,
       ...(extraEnv ? { env: { ...process.env, ...extraEnv } } : {}),
     });
     // Caller abort (client disconnect / stop button): kill the subprocess

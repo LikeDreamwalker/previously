@@ -853,3 +853,50 @@ describe("createBridgeEventEmitter tools accumulation", () => {
     expect(last.running).toBe(false);
   });
 });
+
+// ─── S6: skills in the chat payload ────────────────────────────────────────
+
+describe("promptToBridgePayload skills", () => {
+  it("chat-phase payloads carry skills.recall with the {{PREVIOUSLY_CMD}} placeholder verbatim", () => {
+    const payload = promptToBridgePayload(PROMPT);
+    expect(payload.phase).toBe("chat");
+    expect(typeof payload.skills.recall).toBe("string");
+    // The placeholder is INTENTIONAL — the client fills it with the absolute
+    // CLI prefix when materializing skills/recall.md. It must cross the wire
+    // unfilled.
+    expect(payload.skills.recall).toContain("{{PREVIOUSLY_CMD}}");
+  });
+
+  it("also carries skills on the whole-transcript fallback path", () => {
+    const prompt: LanguageModelV3Prompt = [
+      { role: "assistant", content: [{ type: "text", text: "partial" }] },
+    ];
+    const payload = promptToBridgePayload(prompt);
+    expect(payload.skills.recall).toContain("{{PREVIOUSLY_CMD}}");
+  });
+});
+
+describe("BridgeChatLanguageModel skills on the wire", () => {
+  it("sends skills.recall on plain chat calls (phase chat)", async () => {
+    process.env.PREVIOUSLY_BRIDGE_CMD = bridgeCmd("bridge-echo-payload.mjs");
+    const model = new BridgeChatLanguageModel("bridge/claude");
+    const result = await model.doGenerate({ prompt: PROMPT });
+    const text = result.content.find((p) => p.type === "text");
+    const payload = JSON.parse((text as { text: string }).text);
+    expect(payload.phase).toBe("chat");
+    expect(payload.skills.recall).toContain("{{PREVIOUSLY_CMD}}");
+  });
+
+  it("omits skills on tool-protocol calls (no phase → no skills)", async () => {
+    process.env.PREVIOUSLY_BRIDGE_CMD = bridgeCmd("bridge-echo-payload.mjs");
+    const model = new BridgeChatLanguageModel("bridge/claude");
+    const result = await model.doGenerate({
+      prompt: PROMPT,
+      ...withTools({ type: "auto" }),
+    });
+    const text = result.content.find((p) => p.type === "text");
+    const payload = JSON.parse((text as { text: string }).text);
+    expect(payload.phase).toBeUndefined();
+    expect(payload.skills).toBeUndefined();
+  });
+});

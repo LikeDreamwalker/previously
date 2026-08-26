@@ -1,7 +1,11 @@
 import { describe, it, expect } from "vitest";
+import type { ModelMessage } from "ai";
 import {
   assembleSystemPrompt,
   buildOverdueBlock,
+  BRIDGE_NOTICE,
+  buildBridgeTimeLine,
+  appendBridgeTimeSuffix,
 } from "@/app/api/chat/turn-workflow";
 
 const IDENTITY = "SOUL + DIRECTIVES";
@@ -125,5 +129,110 @@ describe("buildOverdueBlock (frozen derivation from raw card + slice-head date)"
     expect(buildOverdueBlock(CARD, "2026-08-09", "zh")).toBe(
       buildOverdueBlock(CARD, "2026-08-09", "zh"),
     );
+  });
+});
+
+// ─── Bridge mode: notice + fresh-time injection ────────────────────────────
+
+describe("bridgeNotice (subscription bridge mode)", () => {
+  it("renders as the L5b tail when injected (bridge sdk)", () => {
+    const s = build({ bridgeNotice: BRIDGE_NOTICE });
+    expect(s).toContain("## Subscription bridge mode");
+    expect(s.indexOf(BRIDGE_NOTICE)).toBeGreaterThan(s.indexOf(DEMO));
+  });
+
+  it("is absent for non-bridge turns (no bridgeNotice option)", () => {
+    expect(build()).not.toContain("Subscription bridge mode");
+  });
+
+  it("keeps the slice-freeze intact: byte-identical with the notice, and the notice carries no per-turn data", () => {
+    expect(build({ bridgeNotice: BRIDGE_NOTICE })).toBe(
+      build({ bridgeNotice: BRIDGE_NOTICE }),
+    );
+    // The fresh time NEVER enters the system prompt — it rides the last user
+    // message instead (see buildBridgeTimeLine below).
+    expect(BRIDGE_NOTICE).not.toContain("[Current time:");
+  });
+
+  it("pins the notice contract: no `previously recall`, recall via skills/recall.md sub-agent, verbatim output", () => {
+    // The `previously recall` command no longer exists on the client.
+    expect(BRIDGE_NOTICE).not.toContain("previously recall");
+    // Memory access runs through the workspace reader commands…
+    for (const cmd of ["timeline", "strands", "slicesummary", "readslice", "card", "agentlog"]) {
+      expect(BRIDGE_NOTICE).toContain(`previously ${cmd}`);
+    }
+    // …and past-looking questions go through the recall skill sub-agent,
+    // pointers only.
+    expect(BRIDGE_NOTICE).toContain("skills/recall.md");
+    expect(BRIDGE_NOTICE).toContain("POINTERS");
+    // The countermand + output contract survive the rewrite.
+    expect(BRIDGE_NOTICE).toContain("thinkDeep decomposition does NOT apply");
+    expect(BRIDGE_NOTICE).toContain("rendered verbatim");
+  });
+});
+
+describe("buildBridgeTimeLine (bridge-mode fresh clock read)", () => {
+  const OPTS = {
+    sliceId: "2026-08-26-1530",
+    maxSliceMinutes: 30,
+    timezone: "Asia/Shanghai",
+    nowIso: "2026-08-26T15:42:00.000Z",
+  };
+
+  it("renders local time / UTC and the slice's remaining minutes (parsed from the slice id)", () => {
+    const line = buildBridgeTimeLine(OPTS);
+    expect(line.startsWith("\n\n[Current time: ")).toBe(true);
+    expect(line.endsWith("]")).toBe(true);
+    expect(line).toContain("26 Aug 2026, 23:42");
+    expect(line).toContain("Asia/Shanghai");
+    expect(line).toContain("/ 2026-08-26T15:42:00.000Z");
+    expect(line).toContain("slice closes in ~18 min");
+  });
+
+  it("sends only the time part when the slice id is unparseable", () => {
+    const line = buildBridgeTimeLine({ ...OPTS, sliceId: "not-a-slice" });
+    expect(line).toContain("[Current time:");
+    expect(line).not.toContain("slice closes");
+  });
+
+  it("omits the slice part once the slice is past its cap", () => {
+    const line = buildBridgeTimeLine({
+      ...OPTS,
+      nowIso: "2026-08-26T16:05:00.000Z",
+    });
+    expect(line).not.toContain("slice closes");
+  });
+});
+
+describe("appendBridgeTimeSuffix (outbound-only tail injection)", () => {
+  const LINE = "\n\n[Current time: x]";
+
+  it("appends to the LAST user message's string content", () => {
+    const msgs: ModelMessage[] = [
+      { role: "user", content: "first" },
+      { role: "assistant", content: "hi" },
+      { role: "user", content: "second" },
+    ];
+    const out = appendBridgeTimeSuffix(msgs, LINE);
+    expect(out[2]).toEqual({ role: "user", content: "second" + LINE });
+    expect(out[0]).toEqual({ role: "user", content: "first" });
+    // Outbound copy only — the input is untouched.
+    expect(msgs[2]).toEqual({ role: "user", content: "second" });
+  });
+
+  it("appends a text part to array content", () => {
+    const msgs: ModelMessage[] = [
+      { role: "user", content: [{ type: "text", text: "hello" }] },
+    ];
+    const out = appendBridgeTimeSuffix(msgs, LINE);
+    const content = (out[0] as { content: Array<{ type: string; text?: string }> })
+      .content;
+    expect(content).toHaveLength(2);
+    expect(content[1]).toEqual({ type: "text", text: LINE });
+  });
+
+  it("is a no-op when the window has no user message", () => {
+    const msgs: ModelMessage[] = [{ role: "assistant", content: "hi" }];
+    expect(appendBridgeTimeSuffix(msgs, LINE)).toEqual(msgs);
   });
 });

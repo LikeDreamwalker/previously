@@ -254,13 +254,13 @@ export interface HousekeepingBridgeInput {
 }
 
 /**
- * Static instruction text — the kernel-side mirror of the client's
- * housekeeping skill doc. Kept minimal on purpose: the workspace skill
- * carries the full judgment rules; this fixes the input specifics, the
- * mutation vocabulary, and the output contract. The closing-slice flag is
- * appended per call (see buildHousekeepingPayload).
+ * Static instruction text — the SINGLE SOURCE of the housekeeping contract.
+ * The client-side docs only carry the command list and mechanism notes; the
+ * full judgment rules, the input specifics, the mutation vocabulary, and the
+ * output contract all live HERE and ride the payload. The closing-slice flag
+ * is appended per call (see buildHousekeepingPayload).
  */
-const HOUSEKEEPING_TASK = `You are running Previously's housekeeping phase — the per-turn memory bookkeeping of a personal agent. The full judgment rules live in the housekeeping skill doc in your workspace; this task fixes only the input specifics and the output contract.
+const HOUSEKEEPING_TASK = `You are running Previously's housekeeping phase — the per-turn memory bookkeeping of a personal agent. This task is the FULL contract — the judgment rules, input specifics, and output contract all live here; your workspace instruction file only lists the available commands and mechanics.
 
 One pass, these jobs:
 1. Turn analysis — merge-first tags (reuse existing strand names VERBATIM; create only genuinely durable topics), semantic_hint (existing strands this message is about), intent, memory_worthy (false for trivial turns: greetings / "继续" / thanks / small talk), memory_update (ONLY on an explicit record/evolve request or an explicit behavioral correction — the exact content, else null), emotional_signal.
@@ -292,7 +292,7 @@ OUTPUT CONTRACT: your final reply must be EXACTLY ONE JSON object — no prose, 
   "backfill_marks": [ { "slice_id": string, "focus": string, "summary": string } ],
   "strand_merges": [ { "from": string, "to": string } ]
 }
-closed_marking is null when no slice is closing; mutations is [] when nothing changes; backfill_marks is [] when no dry slices were provided; strand_merges is [] when no merge candidates were provided. You may verify facts with the read-only memory commands (previously recall / previously readslice) before answering.`;
+closed_marking is null when no slice is closing; mutations is [] when nothing changes; backfill_marks is [] when no dry slices were provided; strand_merges is [] when no merge candidates were provided. Analysis, closed_marking, backfill_marks and strand_merges must be produced from the data in this payload ALONE — do not read memory for them. Reading memory is card-evolution forensics ONLY (substantiating mutations, especially self-model lessons), and only through the three evidence commands the workspace allows in this phase (readslice / agentlog / card); the search-type commands (timeline / strands / slicesummary) are gated off in the housekeeping phase and will be refused.`;
 
 /** Compress a closing slice's turns (first turn + last 10, chars capped). */
 function compressTurns(turns: Array<{ role: string; content: string }>): string {

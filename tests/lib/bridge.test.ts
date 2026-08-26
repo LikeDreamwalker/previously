@@ -14,6 +14,7 @@ import { join } from "node:path";
 import {
   runBridge,
   splitBridgeCommand,
+  resolveBridgeSpawnTarget,
   BRIDGE_MAX_OUTPUT_CHARS,
   BRIDGE_MAX_RESULT_CHARS_V2,
   type BridgeEvent,
@@ -205,5 +206,67 @@ describe("runBridge legacy protocol 1", () => {
     if (result.status !== "ok") return;
     const echoed = JSON.parse(result.result);
     expect(echoed).toEqual({ task: "t", context: null, protocol: 2 });
+  });
+});
+
+describe("resolveBridgeSpawnTarget (Windows shim resolution)", () => {
+  const shimDir = "C:\\Users\\x\\AppData\\Local\\pnpm\\bin";
+  const isShim = (p: string) => p === `${shimDir}\\previously.cmd`;
+
+  it("routes a bare name resolving to a .cmd shim through the shell", async () => {
+    const target = await resolveBridgeSpawnTarget("previously", {
+      platform: "win32",
+      pathEnv: shimDir,
+      fileExists: isShim,
+    });
+    expect(target).toEqual({ command: `${shimDir}\\previously.cmd`, shell: true });
+  });
+
+  it("spawns real executables and extensionless scripts directly", async () => {
+    const target = await resolveBridgeSpawnTarget("previously", {
+      platform: "win32",
+      pathEnv: shimDir,
+      fileExists: (p) => p === `${shimDir}\\previously.exe`,
+    });
+    expect(target).toEqual({ command: "previously", shell: false });
+  });
+
+  it("keeps a missing command bare (spawn ENOENT → bridge-not-found)", async () => {
+    const target = await resolveBridgeSpawnTarget("previously", {
+      platform: "win32",
+      pathEnv: shimDir,
+      fileExists: () => false,
+    });
+    expect(target).toEqual({ command: "previously", shell: false });
+  });
+
+  it("spawns explicit .cmd paths through the shell without a PATH scan", async () => {
+    const target = await resolveBridgeSpawnTarget("C:\\x\\previously.cmd", {
+      platform: "win32",
+      fileExists: () => {
+        throw new Error("must not be called for explicit paths");
+      },
+    });
+    expect(target).toEqual({ command: "C:\\x\\previously.cmd", shell: true });
+  });
+
+  it("spawns explicit non-shim paths (fixture node binaries) directly", async () => {
+    const target = await resolveBridgeSpawnTarget("C:\\node\\node.exe", {
+      platform: "win32",
+      fileExists: () => {
+        throw new Error("must not be called for explicit paths");
+      },
+    });
+    expect(target).toEqual({ command: "C:\\node\\node.exe", shell: false });
+  });
+
+  it("POSIX always takes the direct route", async () => {
+    const target = await resolveBridgeSpawnTarget("previously", {
+      platform: "linux",
+      fileExists: () => {
+        throw new Error("must not be called on POSIX");
+      },
+    });
+    expect(target).toEqual({ command: "previously", shell: false });
   });
 });
