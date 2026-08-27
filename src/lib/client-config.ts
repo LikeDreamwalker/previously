@@ -6,8 +6,11 @@
  * (~/.previously). Its config.json is owned by the client but the kernel may
  * read it (status display; the model catalog reads the `brain`/`byok`
  * sections through readClientConfig to register the local agent engine and
- * BYOK model entries) and update four fields (executionBackend,
- * brain, agents, byok). Unknown fields are preserved verbatim on write.
+ * BYOK model entries, and the sync model-resolution paths in the registry
+ * read the `byok` section through src/lib/byok-sync.ts — getBuiltinModule,
+ * no static node:* imports, since the registry is reachable from the
+ * workflow bundle) and update four fields (executionBackend, brain, agents,
+ * byok). Unknown fields are preserved verbatim on write.
  * The settings UI only posts `brain`/`byok` — executionBackend and the
  * per-agent `agents` tuning stay API-compatible (client CLI / hand edits)
  * but have no UI surface.
@@ -24,6 +27,9 @@ import {
   BYOK_PROVIDERS,
   type BridgeAgent,
 } from "@/lib/models/registry";
+import { parseByok, type ClientByok } from "./byok-parse";
+
+export type { ClientByok } from "./byok-parse";
 
 /** The `brain` field of the client config (subscription vs. API-key brain). */
 export type ClientBrain =
@@ -42,19 +48,6 @@ export interface AgentConfig {
 
 /** The `agents` field of the client config, keyed by bridge agent. */
 export type ClientAgents = Partial<Record<BridgeAgent, AgentConfig>>;
-
-/**
- * The `byok` field of the client config — the user's own provider API key
- * (client mode's second engine, recommended next to local agent outsourcing).
- * `provider` is a BYOK_PROVIDERS key or "custom" (which requires baseUrl).
- * The apiKey is stored in plaintext — config.json is local single-user state.
- */
-export interface ClientByok {
-  provider: string;
-  apiKey: string;
-  baseUrl?: string;
-  model: string;
-}
 
 /**
  * The client config.json shape. Only the fields the kernel understands are
@@ -156,23 +149,6 @@ function parseAgents(raw: unknown): ClientAgents | null {
     }
   }
   return Object.keys(agents).length > 0 ? agents : null;
-}
-
-/** Lenient read-side byok parse: returned only when structurally recognizable. */
-function parseByok(raw: unknown): ClientByok | null {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
-  const b = raw as Record<string, unknown>;
-  if (typeof b.provider !== "string" || !b.provider.trim()) return null;
-  if (typeof b.apiKey !== "string" || !b.apiKey) return null;
-  if (typeof b.model !== "string" || !b.model.trim()) return null;
-  return {
-    provider: b.provider,
-    apiKey: b.apiKey,
-    ...(typeof b.baseUrl === "string" && b.baseUrl.trim()
-      ? { baseUrl: b.baseUrl }
-      : {}),
-    model: b.model,
-  };
 }
 
 /** Read the current client config. Never fabricates state. */

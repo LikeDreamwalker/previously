@@ -83,12 +83,46 @@ export function createModel(config: ModelConfig): LanguageModel {
       return getDeepseekProvider(config.baseURL, config.envKey, config.apiKey)(config.id);
     case "anthropic":
       return getAnthropicProvider()(config.id);
-    case "openai":
+    case "openai": {
       // BYOK entries carry the selection id `byok/<model>`; the provider API
       // needs the bare model name.
-      return getOpenaiProvider(config.baseURL, config.envKey, config.apiKey)(
+      const model = getOpenaiProvider(config.baseURL, config.envKey, config.apiKey)(
         config.id.startsWith("byok/") ? config.id.slice("byok/".length) : config.id,
       );
+      // createOpenAI keeps apiKey/baseURL only inside the config's
+      // url/headers closures, which the workflow serializer drops — so the
+      // step runtime's rebuildOpenAIModel
+      // (src/app/api/agent/register-model-classes.ts) rebuilt a keyless bare
+      // openai provider and the chat turn died with AI_LoadAPIKeyError.
+      // Re-attach both as plain JSON-safe fields so they survive the
+      // workflow→step round trip. Trade-off: the serialized payload (the
+      // key included — the resolved Authorization header rides along too)
+      // lands in the LOCAL .workflow-data/ store; single-user local state,
+      // and it never leaves through any /api/* response.
+      //
+      // Two key sources get decorated:
+      // - BYOK (explicit config.apiKey) — always; BYOK only exists in
+      //   single-user client mode.
+      // - Env-key models (cloud Kimi/Qwen/...) — only when
+      //   WORKFLOW_TARGET_WORLD === "local": their payload also stays in the
+      //   local store, and the step side otherwise falls back to
+      //   OPENAI_API_KEY and dies standalone. Non-local (cloud) deployments
+      //   stay undecorated on purpose: serialization may land in a shared
+      //   store, so a deployment's env key must not be written out — the
+      //   step runtime re-reads it from its own environment.
+      const c = (model as unknown as { config: Record<string, unknown> })
+        .config;
+      const apiKey =
+        config.apiKey ??
+        (process.env.WORKFLOW_TARGET_WORLD === "local"
+          ? process.env[config.envKey]
+          : undefined);
+      if (apiKey) {
+        c.apiKey = apiKey;
+        if (config.baseURL) c.baseURL = config.baseURL;
+      }
+      return model;
+    }
     case "bridge":
       // Local subscription bridge (client mode + PREVIOUSLY_BRAIN=bridge) —
       // the custom LanguageModel shells out to PREVIOUSLY_BRIDGE_CMD.

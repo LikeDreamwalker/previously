@@ -32,10 +32,49 @@ export function getMemoryRoot(): string {
 }
 
 /**
+ * Absolute filesystem root for the `tasks/` data directory, configured via
+ * the TASKS_ROOT environment variable (must be an absolute path). Same
+ * contract as getMemoryRoot(): unset falls back to the repo's own `tasks/`
+ * directory; a set-but-relative value throws.
+ */
+export function getTasksRoot(): string {
+  const configured = process.env.TASKS_ROOT;
+  if (!configured) {
+    return join(process.cwd(), "tasks");
+  }
+  if (!isAbsolute(configured)) {
+    throw new Error(
+      `TASKS_ROOT must be an absolute path, got: "${configured}"`
+    );
+  }
+  return configured;
+}
+
+/**
+ * Absolute filesystem root for the `sessions/` data directory, configured via
+ * the SESSIONS_ROOT environment variable (must be an absolute path). Same
+ * contract as getMemoryRoot(): unset falls back to the repo's own
+ * `sessions/` directory; a set-but-relative value throws.
+ */
+export function getSessionsRoot(): string {
+  const configured = process.env.SESSIONS_ROOT;
+  if (!configured) {
+    return join(process.cwd(), "sessions");
+  }
+  if (!isAbsolute(configured)) {
+    throw new Error(
+      `SESSIONS_ROOT must be an absolute path, got: "${configured}"`
+    );
+  }
+  return configured;
+}
+
+/**
  * Resolve a whitelisted relative path to an absolute filesystem path for
- * local (non-GitHub) storage. `memory/` paths re-root at MEMORY_ROOT when
- * configured; everything else stays relative to the repo root. When
- * MEMORY_ROOT is unset the result is identical to the historical
+ * local (non-GitHub) storage. `memory/` paths re-root at MEMORY_ROOT,
+ * `tasks/` at TASKS_ROOT, and `sessions/` at SESSIONS_ROOT when those are
+ * configured; everything else stays relative to the repo root. When all of
+ * them are unset the result is identical to the historical
  * `join(process.cwd(), rawPath)`.
  *
  * The caller MUST have already validated the path with isPathAllowed() —
@@ -44,15 +83,32 @@ export function getMemoryRoot(): string {
  */
 export function resolveLocalDataPath(rawPath: string): string {
   const memoryRoot = process.env.MEMORY_ROOT;
-  if (!memoryRoot) {
+  const tasksRoot = process.env.TASKS_ROOT;
+  const sessionsRoot = process.env.SESSIONS_ROOT;
+  if (!memoryRoot && !tasksRoot && !sessionsRoot) {
     return join(/* turbopackIgnore: true */ process.cwd(), rawPath);
   }
   const normalized = normalizePath(rawPath);
-  if (normalized === "memory" || normalized.startsWith("memory/")) {
+  if (memoryRoot && (normalized === "memory" || normalized.startsWith("memory/"))) {
     // Runtime-configured data root — intentionally outside the traced project.
     return join(
       /* turbopackIgnore: true */ getMemoryRoot(),
       normalized.slice("memory".length)
+    );
+  }
+  if (tasksRoot && (normalized === "tasks" || normalized.startsWith("tasks/"))) {
+    return join(
+      /* turbopackIgnore: true */ getTasksRoot(),
+      normalized.slice("tasks".length)
+    );
+  }
+  if (
+    sessionsRoot &&
+    (normalized === "sessions" || normalized.startsWith("sessions/"))
+  ) {
+    return join(
+      /* turbopackIgnore: true */ getSessionsRoot(),
+      normalized.slice("sessions".length)
     );
   }
   return join(/* turbopackIgnore: true */ process.cwd(), normalized);

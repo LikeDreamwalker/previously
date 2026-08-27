@@ -18,6 +18,11 @@
 
 import type { ProviderSdk } from "./providers";
 import type { ClientBrain, ClientByok } from "../client-config";
+// Runtime byok read comes from byok-sync (getBuiltinModule — NO static
+// node:* imports): this module is reachable from the "use workflow" bundle
+// (turn-workflow → agent → provider → bridge-model → registry), where static
+// node builtins fail the build. client-config.ts itself stays off-limits.
+import { readClientByokSync } from "../byok-sync";
 import { isClientMode } from "../mode";
 
 // ─── Local agent engine (pure subscription mode) ──────────────────────────
@@ -148,9 +153,11 @@ export function getBridgeModel(): ModelConfig | undefined {
 //
 // sdk is ALWAYS "openai" (OpenAI-compatible — DeepSeek included): the
 // workflow step runtime round-trips the model through class serialization,
-// and only the openai path's deserializer restores the apiKey from the
-// serialized config (src/app/api/agent/register-model-classes.ts) — the
-// deepseek/anthropic paths re-read the key from env and would lose it. The
+// and only the openai path's deserializer can restore the apiKey — the
+// deepseek/anthropic hosts re-read the key from env and would lose it.
+// createOpenAI itself hides apiKey/baseURL inside closures, so provider.ts
+// re-attaches them as JSON-safe config fields for the step side's
+// rebuildOpenAIModel (src/app/api/agent/register-model-classes.ts). The
 // tradeoff: BYOK v1 forgoes the deepseek path's prefix-caching provider
 // options.
 
@@ -173,8 +180,10 @@ export const BYOK_PROVIDERS = [
 /**
  * The BYOK model entry (`byok/<model>`) for the given `byok` config section,
  * or undefined in cloud mode / without one. Pure — the caller reads
- * config.json (catalog.ts, async) so this module stays fs-free. Capabilities
- * stay conservative: BYOK providers' features are unknown to the kernel.
+ * config.json (catalog.ts, async); the sync resolution paths (getModel /
+ * getDefaultModelId below) read it themselves via readClientByokSync.
+ * Capabilities stay conservative: BYOK providers' features are unknown to the
+ * kernel.
  */
 export function getByokModel(
   byok: ClientByok | null | undefined,
@@ -321,6 +330,13 @@ export function getAvailableModels(): ModelConfig[] {
 export function getModel(id: string): ModelConfig | undefined {
   const bridge = getBridgeModels().find((m) => m.id === id);
   if (bridge) return bridge;
+  // BYOK entries live in config.json, not the curated list — resolve them so
+  // a byok/<model> default (getDefaultModelId) survives the id→config lookup
+  // in start-turn / resolve. The prefix guard keeps non-byok ids fs-free.
+  if (id.startsWith("byok/")) {
+    const byok = getByokModel(readClientByokSync());
+    if (byok?.id === id) return byok;
+  }
   return ALL_MODELS.find((m) => m.id === id);
 }
 
@@ -337,7 +353,18 @@ export function resolveModelId(id: string): string {
   return MODEL_ALIASES[id] ?? id;
 }
 
-/** First available model (server-side), for deployments with no stored pref. */
+/**
+ * First available model (server-side), for deployments with no stored pref.
+ * A BYOK-only deployment has no env-key model, so when getAvailableModels()
+ * is empty the byok entry from PREVIOUSLY_HOME/config.json wins before the
+ * curated ALL_MODELS[0] last resort (a model the user never configured a key
+ * for). The sync config read never throws — missing/corrupt config degrades
+ * to the curated fallback.
+ */
 export function getDefaultModelId(): string {
-  return getAvailableModels()[0]?.id ?? ALL_MODELS[0].id;
+  const first = getAvailableModels()[0];
+  if (first) return first.id;
+  const byok = getByokModel(readClientByokSync());
+  if (byok) return byok.id;
+  return ALL_MODELS[0].id;
 }

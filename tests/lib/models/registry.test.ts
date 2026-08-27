@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   ALL_MODELS,
   BYOK_PROVIDERS,
@@ -13,10 +16,16 @@ const SAVED_ENV = { ...process.env };
 
 describe("model registry", () => {
   beforeEach(() => {
-    // Deterministic env: no provider keys configured by default.
+    // Deterministic env: no provider keys configured by default, no
+    // client-mode state (PREVIOUSLY_HOME / brain / default-model injection).
     delete process.env.DEEPSEEK_API_KEY;
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.OPENAI_API_KEY;
+    delete process.env.PREVIOUSLY_MODE;
+    delete process.env.PREVIOUSLY_HOME;
+    delete process.env.PREVIOUSLY_BRAIN;
+    delete process.env.PREVIOUSLY_BRAIN_AGENT;
+    delete process.env.PREVIOUSLY_DEFAULT_MODEL;
   });
 
   afterEach(() => {
@@ -183,6 +192,57 @@ describe("model registry", () => {
         "xai",
         "groq",
       ]);
+    });
+  });
+
+  // ─── getDefaultModelId with BYOK (no env-key models) ────────────────
+
+  describe("getDefaultModelId with BYOK", () => {
+    let home: string;
+
+    const writeByok = (byok: unknown) =>
+      writeFile(join(home, "config.json"), JSON.stringify({ byok }));
+
+    beforeEach(async () => {
+      home = await mkdtemp(join(tmpdir(), "previously-home-"));
+      process.env.PREVIOUSLY_MODE = "client";
+      process.env.PREVIOUSLY_HOME = home;
+    });
+
+    afterEach(async () => {
+      await rm(home, { recursive: true, force: true });
+    });
+
+    it("prefers the byok entry when no env-key model is available", async () => {
+      await writeByok({ provider: "deepseek", apiKey: "sk-byok", model: "deepseek-chat" });
+      expect(getDefaultModelId()).toBe("byok/deepseek-chat");
+    });
+
+    it("keeps the first env-key model as the default when one is available", async () => {
+      await writeByok({ provider: "deepseek", apiKey: "sk-byok", model: "deepseek-chat" });
+      process.env.ANTHROPIC_API_KEY = "sk-ant-test";
+      expect(getDefaultModelId()).toMatch(/^claude-/);
+    });
+
+    it("uses PREVIOUSLY_DEFAULT_MODEL when the byok section omits model", async () => {
+      await writeByok({ provider: "deepseek", apiKey: "sk-byok" });
+      process.env.PREVIOUSLY_DEFAULT_MODEL = "deepseek-v4-pro";
+      expect(getDefaultModelId()).toBe("byok/deepseek-v4-pro");
+    });
+
+    it("falls back to ALL_MODELS[0] on a missing/corrupt config.json (never throws)", async () => {
+      // Missing file.
+      expect(getDefaultModelId()).toBe("deepseek-v4-flash");
+      // Corrupt file.
+      await writeFile(join(home, "config.json"), "{ not json");
+      expect(getDefaultModelId()).toBe("deepseek-v4-flash");
+    });
+
+    it("resolves a byok default id back to its config (the start-turn chain)", async () => {
+      await writeByok({ provider: "deepseek", apiKey: "sk-byok", model: "deepseek-chat" });
+      const id = getDefaultModelId();
+      expect(getModel(id)?.provider).toBe("byok");
+      expect(getModel(id)?.apiKey).toBe("sk-byok");
     });
   });
 });

@@ -64,6 +64,9 @@ export function ModelSelector({
   const t = useTranslations("chat.input");
   const models = useAvailableModels();
   const [mounted, setMounted] = useState(false);
+  // Controlled popover so handleSelect can close it after a pick — the
+  // ui/popover.tsx wrapper doesn't export Popover.Close.
+  const [open, setOpen] = useState(false);
 
   useEffect(() => {
     setMounted(true);
@@ -81,6 +84,7 @@ export function ModelSelector({
   const handleSelect = useCallback(
     (m: AvailableModel) => {
       onModelChange(m.id);
+      setOpen(false);
     },
     [onModelChange],
   );
@@ -91,7 +95,7 @@ export function ModelSelector({
 
   return (
     <>
-      <Popover>
+      <Popover open={open} onOpenChange={setOpen}>
         <Tooltip>
           <TooltipTrigger
             render={

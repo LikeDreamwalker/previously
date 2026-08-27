@@ -18,6 +18,10 @@ const {
     kind: "openai",
     id,
     baseURL: opts?.baseURL,
+    // The real SDK model always carries a mutable config bag — createModel's
+    // BYOK decoration writes apiKey/baseURL into it for the workflow step
+    // serialization round trip.
+    config: {} as Record<string, unknown>,
   })),
 }));
 
@@ -103,11 +107,16 @@ describe("createModel", () => {
         apiKey: "sk-test",
       }),
     );
-    expect(model).toEqual({
+    expect(model).toMatchObject({
       kind: "openai",
       id: "kimi-latest",
       baseURL: "https://api.moonshot.ai/v1",
     });
+    // Env-key models are NOT decorated — the deployment's env key must not be
+    // written into the serialized (on-disk .workflow-data/) payload.
+    expect(
+      (model as unknown as { config: Record<string, unknown> }).config,
+    ).toEqual({});
   });
 
   it("prefers an explicit config apiKey (BYOK) over the environment", () => {
@@ -123,6 +132,16 @@ describe("createModel", () => {
     );
     // The `byok/` selection prefix is stripped — the API gets the bare model.
     expect(model).toMatchObject({ kind: "openai", id: "gpt-5.4" });
+    // BYOK decoration: apiKey/baseURL are re-attached as JSON-safe config
+    // fields so the workflow step runtime's rebuildOpenAIModel can restore
+    // them (register-model-classes.ts) — without this the turn dies with
+    // AI_LoadAPIKeyError.
+    expect(
+      (model as unknown as { config: Record<string, unknown> }).config,
+    ).toEqual({
+      apiKey: "sk-from-config",
+      baseURL: "https://api.openai.com/v1",
+    });
   });
 
   it("keys the provider-instance cache on the apiKey (a changed key = a new instance)", () => {

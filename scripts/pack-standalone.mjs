@@ -223,3 +223,39 @@ for (const [src, dest] of [
   cpSync(src, dest, { recursive: true, force: true, dereference: true });
   console.log(`pack-standalone: copied ${src.slice(repoRoot.length + 1)} -> ${dest.slice(repoRoot.length + 1)}`);
 }
+
+// ── Size summary ─────────────────────────────────────────────────────────
+// Print top-level entry sizes plus the total so artifact bloat regressions
+// (e.g. data directories accidentally traced into standalone) are visible in
+// every build log.
+function dirSize(p) {
+  let total = 0;
+  const stack = [p];
+  while (stack.length > 0) {
+    const cur = stack.pop();
+    const st = lstatSync(cur);
+    if (st.isSymbolicLink()) continue; // none should remain; never follow
+    if (st.isDirectory()) {
+      for (const entry of readdirSync(cur)) stack.push(join(cur, entry));
+    } else {
+      total += st.size;
+    }
+  }
+  return total;
+}
+
+function formatSize(bytes) {
+  return `${(bytes / 1024 / 1024).toFixed(1)}M`;
+}
+
+let totalSize = 0;
+const rows = [];
+for (const entry of readdirSync(standaloneDir)) {
+  const size = dirSize(join(standaloneDir, entry));
+  totalSize += size;
+  rows.push(`  ${formatSize(size).padStart(8)}  ${entry}`);
+}
+rows.sort();
+console.log(`\npack-standalone: size summary for ${standaloneDir.slice(repoRoot.length + 1)}`);
+for (const row of rows) console.log(row);
+console.log(`  ${formatSize(totalSize).padStart(8)}  TOTAL`);

@@ -5,6 +5,8 @@ import {
   isPathAllowed,
   getAllowedPaths,
   getMemoryRoot,
+  getTasksRoot,
+  getSessionsRoot,
   resolveLocalDataPath,
 } from "@/lib/whitelist";
 
@@ -177,6 +179,83 @@ describe("MEMORY_ROOT path resolution", () => {
       );
       expect(resolveLocalDataPath("sessions/2025-06-25.md")).toBe(
         join(process.cwd(), "sessions/2025-06-25.md")
+      );
+    });
+  });
+});
+
+describe("TASKS_ROOT / SESSIONS_ROOT path resolution", () => {
+  const SAVED_ENV = { ...process.env };
+  const ABSOLUTE_TASKS = resolve("/previously-test-data/tasks");
+  const ABSOLUTE_SESSIONS = resolve("/previously-test-data/sessions");
+
+  beforeEach(() => {
+    delete process.env.MEMORY_ROOT;
+    delete process.env.TASKS_ROOT;
+    delete process.env.SESSIONS_ROOT;
+  });
+
+  afterEach(() => {
+    process.env = { ...SAVED_ENV };
+  });
+
+  describe("getTasksRoot / getSessionsRoot", () => {
+    it("defaults to the repo's tasks/ and sessions/ directories when unset", () => {
+      expect(getTasksRoot()).toBe(join(process.cwd(), "tasks"));
+      expect(getSessionsRoot()).toBe(join(process.cwd(), "sessions"));
+    });
+
+    it("returns the configured absolute paths", () => {
+      process.env.TASKS_ROOT = ABSOLUTE_TASKS;
+      process.env.SESSIONS_ROOT = ABSOLUTE_SESSIONS;
+      expect(getTasksRoot()).toBe(ABSOLUTE_TASKS);
+      expect(getSessionsRoot()).toBe(ABSOLUTE_SESSIONS);
+    });
+
+    it("throws when the configured root is not absolute", () => {
+      process.env.TASKS_ROOT = "relative/tasks";
+      expect(() => getTasksRoot()).toThrow(/absolute/);
+      process.env.SESSIONS_ROOT = "relative/sessions";
+      expect(() => getSessionsRoot()).toThrow(/absolute/);
+    });
+  });
+
+  describe("resolveLocalDataPath", () => {
+    it("resolves tasks/ and sessions/ under the repo root when the env roots are unset", () => {
+      expect(resolveLocalDataPath("tasks/status.md")).toBe(
+        join(process.cwd(), "tasks/status.md")
+      );
+      expect(resolveLocalDataPath("sessions/2025-06-25.md")).toBe(
+        join(process.cwd(), "sessions/2025-06-25.md")
+      );
+    });
+
+    it("re-roots tasks/ paths at TASKS_ROOT when configured", () => {
+      process.env.TASKS_ROOT = ABSOLUTE_TASKS;
+      expect(resolveLocalDataPath("tasks/status.md")).toBe(
+        join(ABSOLUTE_TASKS, "status.md")
+      );
+    });
+
+    it("re-roots sessions/ paths at SESSIONS_ROOT when configured", () => {
+      process.env.SESSIONS_ROOT = ABSOLUTE_SESSIONS;
+      expect(resolveLocalDataPath("sessions/2025-06-25.md")).toBe(
+        join(ABSOLUTE_SESSIONS, "2025-06-25.md")
+      );
+    });
+
+    it("maps the bare directory names to the roots themselves", () => {
+      process.env.TASKS_ROOT = ABSOLUTE_TASKS;
+      process.env.SESSIONS_ROOT = ABSOLUTE_SESSIONS;
+      expect(resolveLocalDataPath("tasks")).toBe(ABSOLUTE_TASKS);
+      expect(resolveLocalDataPath("sessions")).toBe(ABSOLUTE_SESSIONS);
+    });
+
+    it("leaves other whitelisted paths under the repo root", () => {
+      process.env.TASKS_ROOT = ABSOLUTE_TASKS;
+      process.env.SESSIONS_ROOT = ABSOLUTE_SESSIONS;
+      expect(resolveLocalDataPath("memory/episodic/strands.json")).toBe(
+        join(process.cwd(), "memory/episodic/strands.json")
       );
     });
   });

@@ -38,7 +38,8 @@ export function matchSkills(prefix: string): SkillConfig[] {
 
 /**
  * Sync discovered file-driven skills into the registry.
- * Called at startup to pick up .claude/skills/ and .agents/skills/.
+ * Called at startup to pick up .claude/skills/, .agents/skills/, and
+ * PREVIOUSLY_SKILLS_DIR (see discovery.ts).
  */
 export function syncDiscoveredSkills(): void {
   const dirs = getProjectSkillDirectories();
@@ -56,6 +57,18 @@ export function syncDiscoveredSkills(): void {
       description: skill.description,
       skillPath: `${skill.path}/${skill.filename}`,
     });
+  }
+
+  // Startup observability: a client-mode kernel's cwd is the install dir, so
+  // discovery used to find 0 skills and fail silently — say what happened.
+  if (discovered.length > 0) {
+    console.log(
+      `[Skills] Discovered ${discovered.length} skill(s): ${discovered.map((s) => s.name).join(", ")}`,
+    );
+  } else {
+    console.log(
+      "[Skills] No skills discovered — place skill folders (each with a SKILL.md) under .claude/skills or .agents/skills, or point PREVIOUSLY_SKILLS_DIR at a skills directory.",
+    );
   }
 }
 

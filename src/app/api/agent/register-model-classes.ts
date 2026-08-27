@@ -95,12 +95,16 @@ registerSerializationClass(
   AnthropicLanguageModelHost
 );
 
-// OpenAI / OpenAI-compatible (Kimi, Qwen, ...) — same rebuild-through-factory
-// pattern. Unlike deepseek/anthropic, there is no single global env var or
-// baseURL for the catch-all provider, so the deserializer reads them back from
-// the serialized config (baseURL + apiKey are JSON-safe; only url/fetch are
-// dropped). When absent it degrades to a bare openai provider rather than
-// crashing with "Class not found".
+// OpenAI / OpenAI-compatible (Kimi, Qwen, BYOK, ...) — same
+// rebuild-through-factory pattern. Unlike deepseek/anthropic, there is no
+// single global env var or baseURL for the catch-all provider, so the
+// deserializer reads them back from the serialized config. createOpenAI
+// itself keeps apiKey/baseURL inside the dropped url/headers closures —
+// provider.ts re-attaches them as plain JSON-safe config fields for explicit
+// (BYOK) keys, and for env-key models when WORKFLOW_TARGET_WORLD is "local";
+// the resolved Authorization header also survives serialization. Env-key
+// models on a non-local world stay undecorated and degrade to a bare openai
+// provider (env fallback) rather than crashing with "Class not found".
 function rebuildOpenAIModel(options: SerializedModelOptions) {
   const cfg = (options.config ?? {}) as Record<string, unknown>;
   return createOpenAI({

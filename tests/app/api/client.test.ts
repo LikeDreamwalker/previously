@@ -138,6 +138,40 @@ describe("GET /api/client/config", () => {
     });
   });
 
+  it("falls back to PREVIOUSLY_DEFAULT_MODEL when the byok section omits model", async () => {
+    await writeFile(
+      join(home, "config.json"),
+      JSON.stringify({ byok: { provider: "deepseek", apiKey: "sk-byok" } }),
+    );
+    process.env.PREVIOUSLY_DEFAULT_MODEL = "deepseek-v4-pro";
+    const body = await (await configGET()).json();
+    expect(body.byok).toEqual({
+      provider: "deepseek",
+      apiKey: "sk-byok",
+      model: "deepseek-v4-pro",
+    });
+  });
+
+  it("ignores a blank PREVIOUSLY_DEFAULT_MODEL", async () => {
+    await writeFile(
+      join(home, "config.json"),
+      JSON.stringify({ byok: { provider: "deepseek", apiKey: "sk-byok" } }),
+    );
+    process.env.PREVIOUSLY_DEFAULT_MODEL = "   ";
+    const body = await (await configGET()).json();
+    expect(body.byok).toBeNull();
+  });
+
+  it("returns null byok when model is missing and PREVIOUSLY_DEFAULT_MODEL is unset", async () => {
+    delete process.env.PREVIOUSLY_DEFAULT_MODEL;
+    await writeFile(
+      join(home, "config.json"),
+      JSON.stringify({ byok: { provider: "deepseek", apiKey: "sk-byok" } }),
+    );
+    const body = await (await configGET()).json();
+    expect(body.byok).toBeNull();
+  });
+
   it("surfaces a corrupt config.json as an honest 500", async () => {
     await writeFile(join(home, "config.json"), "{ not json");
     const res = await configGET();

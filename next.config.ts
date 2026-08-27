@@ -6,6 +6,15 @@ const nextConfig: NextConfig = {
   // Produce .next/standalone — the client deployment packages this self-contained
   // server bundle (doc/design/v0.9-client.md §6). No effect on cloud deploys.
   output: "standalone",
+  // Keep runtime data directories out of the standalone trace. `memory/` is
+  // traced only because getMemoryRoot()/demo-fs resolve paths dynamically via
+  // `join(process.cwd(), ...)` — at runtime client mode re-roots memory at
+  // MEMORY_ROOT and demo-fs reads `<cwd>/../benchmark-data`, so neither reads
+  // the copies Next would ship inside .next/standalone. Shipping them bloats
+  // the previously-kernel artifact with local dev data.
+  outputFileTracingExcludes: {
+    "*": ["./memory/**/*", "./benchmark-data/**/*"],
+  },
   turbopack: {
     root: process.cwd(),
   },

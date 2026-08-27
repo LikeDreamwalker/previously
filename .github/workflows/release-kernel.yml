@@ -1,0 +1,50 @@
+name: Release kernel package
+
+# Publishes the standalone kernel build as the `previously-kernel` npm package
+# whenever a version tag (v*) is pushed. The client CLI installs this package
+# as a dependency so end-user machines never run a Next build.
+#
+# Same upstream-only guard as bump-version.yml: forks carry a copy of this
+# workflow and must not publish from accidental tags.
+#
+# REQUIRED SECRET: configure `NPM_TOKEN` (an npm automation token with publish
+# rights on the previously-kernel package) in the repository settings.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  release-kernel:
+    # Only run on the upstream repository — never on forks.
+    if: github.repository == 'previously-lab/agent'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm --provenance attestation
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build standalone kernel
+        run: pnpm build:standalone
+
+      - name: Assemble previously-kernel package
+        run: pnpm pack:kernel
+
+      - name: Publish previously-kernel to npm
+        run: npm publish ./dist-kernel --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

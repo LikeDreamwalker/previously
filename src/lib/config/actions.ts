@@ -10,6 +10,8 @@ import { writeFile } from "@/lib/tools/writeFile";
 import { writeFileLocal } from "@/lib/tools/local-fs";
 import { getRepoConfig, isDemo } from "@/lib/capabilities";
 import { resolveDataSource } from "@/lib/data-source/resolve";
+import { getMemoryRoot } from "@/lib/whitelist";
+import { commitPaths, isGitRepo } from "@/lib/episodic/local-git";
 import { DEFAULTS, mergeConfigOverrides } from "./defaults";
 import { loadUserConfig, invalidateUserConfigCache } from "./loader";
 import type { UserConfig, UserConfigOverrides } from "./types";
@@ -43,6 +45,12 @@ export async function saveUserConfig(
       await writeFile(CONFIG_PATH, json, repo, owner);
     } else {
       await writeFileLocal(CONFIG_PATH, json);
+      // Best-effort git ledger, mirroring the GitHub path's commit — a no-op
+      // unless the memory root is a git repo; never throws (see local-git).
+      const memoryRoot = getMemoryRoot();
+      if (isGitRepo(memoryRoot)) {
+        await commitPaths(memoryRoot, ["user/config.json"], "Update user/config.json");
+      }
     }
 
     // Drop the loader's parsed-config cache so the next read (and the RSC
