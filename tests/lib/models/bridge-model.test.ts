@@ -554,12 +554,24 @@ describe("BridgeChatLanguageModel live events", () => {
     expect(workflow.writer.releaseLock).toHaveBeenCalled();
   });
 
-  it("writes no data-phase for legacy plain-text CLIs (no phantom phase)", async () => {
+  it("writes only the kickoff + settle frames for legacy plain-text CLIs", async () => {
     process.env.PREVIOUSLY_BRIDGE_CMD = bridgeCmd("bridge-ok.mjs");
     const model = new BridgeChatLanguageModel("bridge/claude");
     await model.doGenerate({ prompt: PROMPT });
-    expect(workflow.getWritable).not.toHaveBeenCalled();
-    expect(workflow.writer.write).not.toHaveBeenCalled();
+    // The chat path kicks off a "Working…" frame up front so a silent CLI
+    // never leaves a blank wait; the settle frame closes it. No activity
+    // ever arrives, so both frames carry empty summaries/tools.
+    const writes = workflow.writer.write.mock.calls.map(
+      (c) => c[0] as Record<string, unknown>,
+    );
+    expect(writes).toHaveLength(2);
+    expect(writes[0].data).toMatchObject({
+      phase: "stageWorking",
+      running: true,
+      summaries: [],
+      tools: [],
+    });
+    expect(writes[1].data).toMatchObject({ running: false });
   });
 });
 
@@ -694,6 +706,13 @@ describe("BridgeChatLanguageModel streaming deltas", () => {
       expect(deltas[0].delta).toBe("draft");
       expect(deltas[1].delta).toBe("final answer");
       expect(deltas[1].id).toBe("bridge-text-2");
+      // The reconciled block is marked authoritative so the client REPLACES
+      // the advisory text instead of concatenating the two.
+      const starts = parts.filter((p) => p.type === "text-start");
+      expect(starts[0].providerMetadata).toBeUndefined();
+      expect(starts[1].providerMetadata).toEqual({
+        "previously-bridge": { authoritative: true },
+      });
       expect(warn).toHaveBeenCalledWith(
         expect.stringContaining("diverge from the envelope"),
       );
@@ -851,6 +870,47 @@ describe("createBridgeEventEmitter tools accumulation", () => {
     // indicator settles.
     expect(frames.length).toBeGreaterThan(0);
     expect(last.running).toBe(false);
+  });
+
+  it("kickoff writes an immediate running frame and finish settles it", async () => {
+    const { createBridgeEventEmitter } = await import(
+      "@/lib/models/bridge-model"
+    );
+    const frames: Array<{ running: boolean; tools: unknown[] }> = [];
+    const emitter = createBridgeEventEmitter({ write: (d) => frames.push(d) });
+
+    emitter.kickoff();
+    expect(frames).toHaveLength(1);
+    expect(frames[0]).toMatchObject({ running: true, tools: [] });
+
+    emitter.finish();
+    expect(frames[frames.length - 1].running).toBe(false);
+  });
+
+  it("retries writer acquisition after a transient lock contention", async () => {
+    const { createBridgeEventEmitter } = await import(
+      "@/lib/models/bridge-model"
+    );
+    // First acquisition fails (the WorkflowAgent's writer holds the lock) —
+    // the frame is dropped, but the emitter must NOT go permanently noop.
+    workflow.getWritable.mockReturnValueOnce({
+      getWriter: () => {
+        throw new TypeError("Writer is locked");
+      },
+    } as unknown as ReturnType<typeof workflow.getWritable>);
+
+    const emitter = createBridgeEventEmitter();
+    emitter.onEvent({ name: "Read", summary: "Read a.md", status: "ok" });
+    expect(workflow.writer.write).not.toHaveBeenCalled();
+
+    // finish() re-acquires and lands the settle frame with the full state.
+    emitter.finish();
+    expect(workflow.writer.write).toHaveBeenCalledTimes(1);
+    const frame = workflow.writer.write.mock.calls[0][0] as {
+      data: { running: boolean; summaries: string[] };
+    };
+    expect(frame.data.running).toBe(false);
+    expect(frame.data.summaries).toEqual(["Read a.md"]);
   });
 });
 

@@ -469,3 +469,93 @@ describe("progressStageTone", () => {
     expect(progressStageTone(undefined)).toBe("thinking");
   });
 });
+
+describe("buildStream — bridge authoritative re-emit (divergent deltas)", () => {
+  it("replaces earlier text items instead of concatenating", () => {
+    // The bridge model re-emits the envelope result marked authoritative when
+    // the advisory deltas diverged — the UI must show ONLY the final text.
+    const parts = [
+      part({ type: "text", text: "draft" }),
+      part({
+        type: "text",
+        text: "final answer",
+        providerMetadata: { "previously-bridge": { authoritative: true } },
+      }),
+    ];
+    const items = buildStream(parts, false);
+    expect(items).toEqual([{ kind: "text", content: "final answer" }]);
+  });
+
+  it("replaces text already flushed to items by an interleaved data-phase", () => {
+    const parts = [
+      part({ type: "text", text: "draft" }),
+      part({
+        type: "data-phase",
+        data: { phase: "stageWorking", running: true, summaries: [], tools: [] },
+      }),
+      part({
+        type: "text",
+        text: "final answer",
+        providerMetadata: { "previously-bridge": { authoritative: true } },
+      }),
+    ];
+    const items = buildStream(parts, false);
+    expect(items.map((i) => i.kind)).toEqual(["bridge-tools", "text"]);
+    expect(items[1]).toMatchObject({ kind: "text", content: "final answer" });
+  });
+
+  it("leaves unmarked consecutive text parts concatenated (normal mode unchanged)", () => {
+    const parts = [
+      part({ type: "text", text: "a" }),
+      part({ type: "text", text: "b" }),
+    ];
+    const items = buildStream(parts, false);
+    expect(items).toEqual([{ kind: "text", content: "ab" }]);
+  });
+});
+
+describe("buildStream — bridge housekeeping degradation warning", () => {
+  it("passes the warning through to the bridge-tools item (last frame wins)", () => {
+    const parts = [
+      part({
+        type: "data-phase",
+        data: { phase: "bridgeHousekeeping", running: true, summaries: [], tools: [] },
+      }),
+      part({
+        type: "data-phase",
+        data: { phase: "bridgeHousekeeping", running: false, summaries: [], tools: [], warning: "timeout" },
+      }),
+    ];
+    const items = buildStream(parts, false);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      kind: "bridge-tools",
+      phase: "bridgeHousekeeping",
+      running: false,
+      warning: "timeout",
+    });
+  });
+});
+
+describe("deriveAgentStage — bridge data-phase", () => {
+  it("reads the bridge chat activity phase as working, clearing when it settles", () => {
+    expect(
+      deriveAgentStage([
+        part({ type: "data-phase", data: { phase: "stageWorking", running: true, tools: [] } }),
+      ]),
+    ).toBe("working");
+    expect(
+      deriveAgentStage([
+        part({ type: "data-phase", data: { phase: "stageWorking", running: false, tools: [] } }),
+      ]),
+    ).toBeNull();
+  });
+
+  it("ignores the bridge housekeeping phase (the prep card is showing)", () => {
+    expect(
+      deriveAgentStage([
+        part({ type: "data-phase", data: { phase: "bridgeHousekeeping", running: true, tools: [] } }),
+      ]),
+    ).toBeNull();
+  });
+});

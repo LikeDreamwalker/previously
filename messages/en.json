@@ -186,6 +186,7 @@
       "housekeeping": "Preparing…",
       "housekeepingDone": "Context ready",
       "bridgeHousekeeping": "Housekeeping…",
+      "bridgeHousekeepingDegraded": "Local bridge unavailable — fell back to basic rules",
       "stillWorking": "Still working…",
       "stageRecalling": "Recalling…",
       "stageReasoning": "Reasoning…",

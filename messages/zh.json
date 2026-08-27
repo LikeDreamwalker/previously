@@ -186,6 +186,7 @@
       "housekeeping": "准备中…",
       "housekeepingDone": "上下文就绪",
       "bridgeHousekeeping": "整理记忆中…",
+      "bridgeHousekeepingDegraded": "本地桥接不可用 — 已改用基础规则整理",
       "stillWorking": "仍在处理…",
       "stageRecalling": "回忆中…",
       "stageReasoning": "推理中…",

@@ -2,9 +2,9 @@
 
 import { useTranslations } from "next-intl";
 import { motion } from "motion/react";
-import { Check, Loader2 } from "lucide-react";
+import { AlertTriangle, Check, Loader2 } from "lucide-react";
 import { ToolLayout } from "./tool-layout";
-import { rowState, toolIcon } from "./bridge-tools-card";
+import { rowState, toolIcon, useElapsedSeconds } from "./bridge-tools-card";
 import { PHASE_DONE_KEYS } from "./housekeeping-card";
 import type { BridgeToolRow, HousekeepingStep } from "@/lib/chat/build-stream";
 import { cn } from "@/lib/utils";
@@ -30,6 +30,7 @@ export function BridgeHousekeepingCard({
   tools,
   live,
   steps = [],
+  warning,
 }: {
   running: boolean;
   tools: BridgeToolRow[];
@@ -37,9 +38,13 @@ export function BridgeHousekeepingCard({
   live?: string;
   /** The kernel's wrap-up rows, filling in as the steps complete. */
   steps?: HousekeepingStep[];
+  /** Set when the bridge call failed and housekeeping degraded to the
+   *  deterministic path — an amber warning row shows the reason. */
+  warning?: string;
 }) {
   const t = useTranslations("chat.phase");
   const Icon = running ? Loader2 : Check;
+  const elapsed = useElapsedSeconds(running);
 
   return (
     <motion.div
@@ -66,7 +71,24 @@ export function BridgeHousekeepingCard({
             {tools.length}
           </span>
         )}
+        {running && (
+          <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+            {elapsed}s
+          </span>
+        )}
       </div>
+
+      {/* Degradation warning — the bridge call failed and housekeeping fell
+          back to the deterministic path; never settle silently green. */}
+      {warning && (
+        <div className="mt-1.5 flex items-baseline gap-1.5 pl-6.5 text-xs text-amber-600 dark:text-amber-400">
+          <AlertTriangle className="h-3 w-3 shrink-0 self-center" />
+          <span className="shrink-0">{t("bridgeHousekeepingDegraded")}</span>
+          <span className="truncate font-mono text-[11px] leading-none text-amber-600/70 dark:text-amber-400/70">
+            {warning}
+          </span>
+        </div>
+      )}
 
       {/* Rolling narration line — same styling as BridgeToolCard's live line
           (mono muted current line + pulsing caret). Shown only while running. */}

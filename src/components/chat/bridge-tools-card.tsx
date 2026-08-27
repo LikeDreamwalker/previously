@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { useTranslations } from "next-intl";
 import { motion } from "motion/react";
 import {
@@ -63,6 +64,25 @@ export function rowState(tool: BridgeToolRow): ToolRenderState {
   };
 }
 
+/**
+ * Seconds elapsed while `running` — the wait feedback for silent CLIs
+ * (codex/kimi emit no events/deltas, so the timer is the only sign of life).
+ * Same pattern as PhaseIndicator's elapsed timer.
+ */
+export function useElapsedSeconds(running: boolean): number {
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    if (!running) return;
+    const start = Date.now();
+    const id = setInterval(
+      () => setElapsed(Math.floor((Date.now() - start) / 1000)),
+      1000,
+    );
+    return () => clearInterval(id);
+  }, [running]);
+  return elapsed;
+}
+
 export function BridgeToolCard({
   phase,
   running,
@@ -78,6 +98,7 @@ export function BridgeToolCard({
 }) {
   const t = useTranslations("chat.phase");
   const Icon = running ? Loader2 : Check;
+  const elapsed = useElapsedSeconds(running);
 
   return (
     <motion.div
@@ -102,6 +123,11 @@ export function BridgeToolCard({
         {tools.length > 0 && (
           <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
             {tools.length}
+          </span>
+        )}
+        {running && (
+          <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+            {elapsed}s
           </span>
         )}
       </div>

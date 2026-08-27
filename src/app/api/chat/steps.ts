@@ -444,7 +444,13 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   /** Wrap-up rows of the client-mode card (same shape as the checklist). */
   const hkSteps: HousekeepingStep[] = [];
   /** Last bridge-emitter frame state, folded into every card frame. */
-  const hkActivity: { tools: BridgePhaseData["tools"]; live?: string } = {
+  const hkActivity: {
+    tools: BridgePhaseData["tools"];
+    live?: string;
+    /** Set when the bridge call failed and the turn degraded to the
+     *  deterministic path — the card shows an amber warning. */
+    warning?: string;
+  } = {
     tools: [],
   };
   const sendHousekeepingCard = (running: boolean) =>
@@ -457,6 +463,7 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
         summaries: [],
         tools: hkActivity.tools,
         ...(hkActivity.live ? { live: hkActivity.live } : {}),
+        ...(hkActivity.warning ? { warning: hkActivity.warning } : {}),
         steps: hkSteps.map((s) => ({ ...s })),
       },
     } as UIMessageChunk);
@@ -656,6 +663,10 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
         `[HousekeepingBridge] ${bridgeResult.reason} — degraded to the deterministic path`,
       );
       analysis = degradedAnalysis();
+      // Surface the degradation on the card — it must not settle silently
+      // green when the memory analysis fell back to heuristics.
+      hkActivity.warning = bridgeResult.reason;
+      sendHousekeepingCard(hkSteps.some((s) => s.running));
     }
   } else {
     analysis = await analyzeTurn({
@@ -960,6 +971,9 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
           (bridgeReport.evolution.worth || legacyCard) &&
           bridgeReport.evolution.mutations.length > 0
         ) {
+          // The card opens in its running state first — a terminal chunk out
+          // of nowhere reads as "it never ran".
+          emitEvolutionProgress(stream, "reviewing");
           evolutionResult = await applyBridgeCardEvolution({
             card: cardRaw,
             sliceId: diskSlice.slice_id,
@@ -1017,6 +1031,9 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
       if (phaseOutsource) {
         const cardRaw = bridgeCardRaw ?? (await readCurrentPreviously(batch));
         if (bridgeReport && bridgeReport.evolution.mutations.length > 0) {
+          // Open the card in its running state before applying — see the
+          // slice-close branch above.
+          emitEvolutionProgress(stream, "reviewing");
           evolutionResult = await applyBridgeCardEvolution({
             card: cardRaw,
             sliceId: slice.slice_id,

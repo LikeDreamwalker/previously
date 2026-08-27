@@ -17,6 +17,12 @@ export type AnyPart = {
   output?: unknown;
   text?: string;
   data?: unknown;
+  /**
+   * Provider metadata survives stream → part assembly (unlike text block
+   * ids). The bridge model marks its authoritative re-emitted answer block
+   * with `providerMetadata["previously-bridge"].authoritative === true`.
+   */
+  providerMetadata?: Record<string, Record<string, unknown>>;
   /** File parts (user attachments): data URL + media metadata. */
   mediaType?: string;
   url?: string;
@@ -129,6 +135,10 @@ export type StreamItem =
        *  engineering steps complete around the single bridge call. Renders
        *  as a checklist inside the bridge housekeeping card. */
       steps?: HousekeepingStep[];
+      /** Client-mode housekeeping only: set when the bridge call failed and
+       *  the turn degraded to the deterministic path — the card shows an
+       *  amber warning instead of settling silently green. */
+      warning?: string;
     }
   | {
       kind: "phase";
@@ -174,6 +184,15 @@ export function deriveAgentStage(parts: readonly AnyPart[]): AgentStage | null {
       stage = "reasoning";
     } else if (p.type === "text") {
       stage = "composing";
+    } else if (p.type === "data-phase") {
+      // Bridge mode: the chat answer's activity frames (phase "stageWorking")
+      // are the only in-flight signal — light the pill while the CLI works.
+      // Housekeeping frames ("bridgeHousekeeping" / compact sub-steps) are
+      // ignored: the prep card is showing, same as normal mode.
+      const d = p.data as { phase?: string; running?: boolean } | undefined;
+      if (d?.phase === "stageWorking") {
+        stage = d.running === false ? null : "working";
+      }
     } else if (p.type === "data-tool-progress") {
       const toolName = (p.data as { toolName?: string } | undefined)?.toolName;
       if (toolName) stage = isRecallTool(toolName) ? "recalling" : "working";
@@ -270,7 +289,17 @@ export function buildStream(
         items.push({ kind: "reasoning", text: reasoningText });
       }
     } else if (p.type === "text") {
-      textBuf.push((p as { text: string }).text ?? "");
+      // Bridge authoritative re-emit (the envelope result diverged from the
+      // advisory deltas): the marked block REPLACES every text item streamed
+      // so far instead of appending — bridge turns have a single answer
+      // block, so dropping the advisory text is exactly "the result wins".
+      if (p.providerMetadata?.["previously-bridge"]?.authoritative === true) {
+        textBuf = [];
+        for (let i = items.length - 1; i >= 0; i--) {
+          if (items[i].kind === "text") items.splice(i, 1);
+        }
+      }
+      textBuf.push(p.text ?? "");
     } else if (p.type === "data-phase") {
       flushText();
       const d = p.data as
@@ -283,6 +312,7 @@ export function buildStream(
             tools?: BridgeToolRow[];
             live?: string;
             steps?: HousekeepingStep[];
+            warning?: string;
           }
         | undefined;
       if (d?.phase) {
@@ -301,6 +331,7 @@ export function buildStream(
             existing.tools = d.tools;
             existing.live = d.live;
             if (d.steps !== undefined) existing.steps = d.steps;
+            if (d.warning !== undefined) existing.warning = d.warning;
           } else {
             items.push({
               kind: "bridge-tools",
@@ -309,6 +340,7 @@ export function buildStream(
               tools: d.tools,
               ...(d.live !== undefined ? { live: d.live } : {}),
               ...(d.steps !== undefined ? { steps: d.steps } : {}),
+              ...(d.warning !== undefined ? { warning: d.warning } : {}),
             });
           }
         } else if (d.compact) {

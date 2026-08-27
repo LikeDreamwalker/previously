@@ -308,6 +308,7 @@ export const ChatMessage = memo(function ChatMessage({
                           tools={item.tools}
                           live={item.live}
                           steps={item.steps}
+                          warning={item.warning}
                         />
                       );
                     }

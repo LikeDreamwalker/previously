@@ -356,12 +356,24 @@ export interface BridgePhaseData {
    * BRIDGE_LIVE_MAX_CHARS (tail kept). Absent until the first delta arrives.
    */
   live?: string;
+  /**
+   * Housekeeping card only: set when the bridge call failed and the turn
+   * degraded to the deterministic path — the card shows an amber warning
+   * instead of settling silently green. Carries the failure reason.
+   */
+  warning?: string;
 }
 
 export interface BridgeEventEmitter {
   onEvent: (event: BridgeEvent) => void;
   /** Fold a live text delta into the rolling narration line (`data.live`). */
   onDelta: (text: string) => void;
+  /**
+   * Write the initial running frame immediately, before any CLI output —
+   * the "Working…" indicator shows from the moment the call starts, so a
+   * silent CLI (no events/deltas) never leaves the wait blank.
+   */
+  kickoff: () => void;
   /** Final settle (running: false) + lock release. ALWAYS call after the run. */
   finish: () => void;
 }
@@ -375,11 +387,16 @@ export interface BridgeEventEmitter {
  * Default (no `write`): chunks go DIRECTLY to the workflow run's writable via
  * a single reused `getWritable()` writer (they cannot ride the model stream —
  * the AI SDK step transform rejects unknown chunk types), throttled at 40ms,
- * lock always released; noop outside a workflow step (unit tests) and fully
- * silent when the CLI never emits an event or delta (legacy CLIs produce no
- * phantom phase). With a custom `write` (the housekeeping step), frames ride
- * the caller's own channel instead — `id`/`phase` are then the caller's
- * choice.
+ * lock always released; noop outside a workflow step (unit tests). The writer
+ * is acquired LAZILY on every write: a transient lock contention (the
+ * WorkflowAgent's own writer holds the stream) only drops that frame — frames
+ * are cumulative, so the next successful write carries the full state. With a
+ * custom `write` (the housekeeping step), frames ride the caller's own
+ * channel instead — `id`/`phase` are then the caller's choice.
+ *
+ * Silent CLIs (no events, no deltas) produce no frames on their own — the
+ * chat path calls `kickoff()` up front so the user still gets a "Working…"
+ * indicator for the wait.
  */
 export function createBridgeEventEmitter(opts?: {
   id?: string;
@@ -413,11 +430,15 @@ export function createBridgeEventEmitter(opts?: {
       }
       return;
     }
-    if (writer === undefined) {
+    if (!writer) {
       try {
         writer = getWritable<UIMessageChunk>().getWriter();
       } catch {
-        writer = null; // not inside a workflow step — stay noop
+        // Not inside a workflow step (unit tests), or a transient lock
+        // contention with the WorkflowAgent's own writer — drop THIS frame
+        // and retry on the next write; frames are cumulative, so no state
+        // is lost.
+        writer = null;
       }
     }
     if (!writer) return;
@@ -464,9 +485,15 @@ export function createBridgeEventEmitter(opts?: {
       lastWriteMs = now;
       write(true);
     },
+    kickoff() {
+      // Unconditional first frame: the indicator spins from the start of the
+      // call even if the CLI never emits an event or delta.
+      write(true);
+    },
     finish() {
-      // Nothing ever arrived → no phantom phase. A buffered-but-throttled
-      // first event/delta (no frame written yet) still settles here.
+      // Nothing ever arrived and no kickoff → no phantom phase. A
+      // buffered-but-throttled first event/delta (no frame written yet) or a
+      // bare kickoff still settles here.
       if (!wroteAny && lines.length === 0 && !liveLine) return;
       try {
         // Unthrottled final frame: the indicator settles on the full list.
@@ -593,6 +620,9 @@ export class BridgeChatLanguageModel implements LanguageModelV3 {
     // kernel restart. Bare/unknown ids fall back to the env-selected agent.
     const agent = bridgeAgentFromModelId(this.modelId);
     const events = createBridgeEventEmitter();
+    // Chat path only: show the "Working…" indicator from the moment the call
+    // starts, so a silent CLI (no events/deltas) never leaves a blank wait.
+    if (!toolInstruction) events.kickoff();
     const result = await runBridge(
       splitBridgeCommand(getBridgeCommand()),
       JSON.stringify({
@@ -683,6 +713,10 @@ export class BridgeChatLanguageModel implements LanguageModelV3 {
       start(controller) {
         controller.enqueue({ type: "stream-start", warnings });
 
+        // Chat path only: the "Working…" indicator spins from the start of
+        // the call, even when the CLI never emits an event or delta.
+        if (toolInstruction === null) events.kickoff();
+
         let textStarted = false;
         let accumulated = "";
         const onDelta = (delta: string) => {
@@ -750,7 +784,11 @@ export class BridgeChatLanguageModel implements LanguageModelV3 {
                 }
               } else {
                 // True divergence (adapter bug): the streamed text can't be
-                // retracted — close it and re-emit the authoritative result.
+                // retracted — close it and re-emit the authoritative result
+                // as a fresh block (result wins). The providerMetadata marker
+                // survives stream → UI-part assembly (unlike the block id) and
+                // tells buildStream to REPLACE the advisory text item instead
+                // of concatenating the two.
                 console.warn(
                   `[BridgeModel] streamed deltas diverge from the envelope ` +
                     `result (model ${modelId}) — the envelope wins.`,
@@ -758,7 +796,13 @@ export class BridgeChatLanguageModel implements LanguageModelV3 {
                 controller.enqueue({ type: "text-end", id: TEXT_ID });
                 textStarted = false;
                 if (text) {
-                  controller.enqueue({ type: "text-start", id: TEXT_ID_RECONCILED });
+                  controller.enqueue({
+                    type: "text-start",
+                    id: TEXT_ID_RECONCILED,
+                    providerMetadata: {
+                      "previously-bridge": { authoritative: true },
+                    },
+                  });
                   controller.enqueue({
                     type: "text-delta",
                     id: TEXT_ID_RECONCILED,
