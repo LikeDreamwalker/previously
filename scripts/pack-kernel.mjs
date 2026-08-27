@@ -10,6 +10,9 @@
  *
  * The version is read from APP_VERSION in src/lib/version/constants.ts (the
  * single source of truth, bumped by .github/workflows/bump-version.yml).
+ * release-kernel.yml overrides it with PREVIOUSLY_KERNEL_VERSION (derived
+ * from the pushed tag) because bump-version runs AFTER the GitHub Release is
+ * published — the tag is the authority at packaging time.
  *
  * Idempotent: dist-kernel/ is removed and rebuilt on every run.
  * Requires `pnpm build:standalone` to have run first.
@@ -28,15 +31,21 @@ if (!existsSync(standaloneDir)) {
   process.exit(1);
 }
 
-// Version from the single source of truth (same constant the running kernel
-// reports via GET /api/version).
+// Version: the release tag wins (PREVIOUSLY_KERNEL_VERSION, set by
+// release-kernel.yml — bump-version only syncs APP_VERSION after the release,
+// so the tag is the authority at packaging time); APP_VERSION is the local
+// fallback (same constant the running kernel reports via GET /api/version).
 const constantsSrc = readFileSync(join(repoRoot, "src", "lib", "version", "constants.ts"), "utf8");
 const versionMatch = constantsSrc.match(/APP_VERSION\s*=\s*"([^"]+)"/);
 if (!versionMatch) {
   console.error("pack-kernel: could not find APP_VERSION in src/lib/version/constants.ts");
   process.exit(1);
 }
-const version = versionMatch[1];
+const version = (process.env.PREVIOUSLY_KERNEL_VERSION ?? versionMatch[1]).trim();
+if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)) {
+  console.error(`pack-kernel: invalid version "${version}" (APP_VERSION or PREVIOUSLY_KERNEL_VERSION)`);
+  process.exit(1);
+}
 
 rmSync(distDir, { recursive: true, force: true });
 mkdirSync(distDir, { recursive: true });
