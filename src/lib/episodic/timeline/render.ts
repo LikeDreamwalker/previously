@@ -213,7 +213,7 @@ export function buildTimelineBrief(
   ];
   if (totalCount > recent) {
     lines.push(
-      `- 往前共 ${totalCount} 片，可用 readTimelineWindow / readSliceSummary 回溯`,
+      `- 往前共 ${totalCount} 片，需要时向 recall 提问回溯`,
     );
   }
   if (needsMarking > 0) {

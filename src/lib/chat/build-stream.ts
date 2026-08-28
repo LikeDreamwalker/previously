@@ -71,6 +71,28 @@ export type EvolutionStepData = {
   error?: string;
   /** Set when the run was cut short — only part of the update was applied. */
   partial?: boolean;
+  /**
+   * v1.0: the fitness buckets whose scores FORCED this run, each with its
+   * current windowed net score (design §2.5). Empty/omitted when the run was
+   * gated by the analyzer's judgment or an explicit user request instead —
+   * the card then shows no score rows.
+   */
+  triggers?: Array<{
+    bucket: "card" | "recall" | "search" | "thinkdeep" | "interaction";
+    score: number;
+  }>;
+  /**
+   * v1.0: the Phase-1 direction verdict (design §2.3). A FAILED direction
+   * check omits the field entirely — a failure must never masquerade as
+   * "no_change". `summary` is the one-sentence account of what changed when
+   * the direction was updated.
+   */
+  direction?: { outcome: "no_change" | "updated"; summary?: string };
+  /** v1.0: the playbook mutations applied this run (design §2.4). */
+  playbooks?: Array<{
+    agent: "recall" | "search" | "thinkdeep";
+    summary: string;
+  }>;
 };
 
 /**

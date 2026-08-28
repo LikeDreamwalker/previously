@@ -10,17 +10,57 @@ import {
 import type { ToolRenderState } from "@/lib/chat/tool-state";
 
 /**
- * The terminal detail of an evolution run: the actual card diff (added /
- * removed lines) plus the reviewer's reasoning note. Rendered as the card's
- * expandable content once the run settles. (Extracted from the retired
- * housekeeping sub-step row.)
+ * The terminal detail of an evolution run: the v1.0 calibration story (why the
+ * run fired → what the direction check concluded → which playbooks changed),
+ * then the actual card diff (added / removed lines) plus the reviewer's
+ * reasoning note. Rendered as the card's expandable content once the run
+ * settles. (Extracted from the retired housekeeping sub-step row.)
  */
 function EvolutionDetail({ data }: { data: EvolutionStepData }) {
+  const t = useTranslations("chat.evolution");
+  const hasTriggers = (data.triggers?.length ?? 0) > 0;
+  const hasDirection = Boolean(data.direction);
+  const hasPlaybooks = (data.playbooks?.length ?? 0) > 0;
   const hasMutations = (data.mutations?.length ?? 0) > 0;
   const hasNote = Boolean(data.note?.trim());
-  if (!hasMutations && !hasNote) return null;
+  if (!hasTriggers && !hasDirection && !hasPlaybooks && !hasMutations && !hasNote)
+    return null;
   return (
     <div className="space-y-2 pt-1">
+      {hasTriggers && (
+        <ul className="space-y-1 text-xs leading-relaxed text-muted-foreground">
+          {data.triggers!.map((trigger) => (
+            <li key={trigger.bucket}>
+              {t("triggerNet", {
+                bucket: t(`buckets.${trigger.bucket}`),
+                score: trigger.score,
+              })}
+            </li>
+          ))}
+        </ul>
+      )}
+      {hasDirection && (
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          {data.direction!.outcome === "updated" &&
+          data.direction!.summary?.trim()
+            ? t("directionUpdated", {
+                summary: data.direction!.summary.trim(),
+              })
+            : t("directionUnchanged")}
+        </p>
+      )}
+      {hasPlaybooks && (
+        <ul className="space-y-1 text-xs leading-relaxed text-muted-foreground">
+          {data.playbooks!.map((playbook) => (
+            <li key={playbook.agent}>
+              {t("playbookUpdated", {
+                agent: t(`buckets.${playbook.agent}`),
+                summary: playbook.summary,
+              })}
+            </li>
+          ))}
+        </ul>
+      )}
       {hasMutations && (
         <ul className="space-y-1 font-mono text-xs leading-relaxed">
           {data.mutations!.map((m, i) => (

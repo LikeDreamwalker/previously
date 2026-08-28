@@ -482,7 +482,7 @@ export function sliceAlignedWindow(
  */
 export const BRIDGE_NOTICE = `## Subscription bridge mode
 
-You are running as the user's local subscription CLI, invoked by the Previously client. Memory access goes through the read-only reader commands (\`previously timeline\`, \`previously strands\`, \`previously slicesummary\`, \`previously readslice\`, \`previously card\`, \`previously agentlog\`) described by the instruction file (CLAUDE.md or AGENTS.md) in your working directory; read it first, and do not read or write the memory directory directly. When a question touches the past, spawn a sub-agent to search per the \`skills/recall.md\` spec in your workspace (if your runtime supports sub-agents) — it navigates the memory index with the read-only reader commands and returns POINTERS (slice ids) only; bring only those pointers back into the main context, then open the slices yourself with \`previously readslice\`. The kernel tools mentioned elsewhere in this prompt (recall, readSlice, webSearch, thinkDeep, delegateTask, …) are NOT available to you here: the DIRECTIVES clause mandating thinkDeep decomposition does NOT apply in this mode — use your own native deep-reasoning and search capabilities instead. Conversation persistence and memory evolution are handled outside your process; never try to save or update memory yourself. Your final reply is rendered verbatim in a chat UI — output only the answer, no preamble or meta-commentary.`;
+You are running as the user's local subscription CLI, invoked by the Previously client. Memory access goes through the read-only reader commands (\`previously timeline\`, \`previously strands\`, \`previously slicesummary\`, \`previously readslice\`, \`previously card\`, \`previously agentlog\`) described by the instruction file (CLAUDE.md or AGENTS.md) in your working directory; read it first, and do not read or write the memory directory directly. When a question touches the past, spawn a sub-agent to search per the \`skills/recall.md\` spec in your workspace (if your runtime supports sub-agents) — it navigates the memory index with the read-only reader commands and returns POINTERS (slice ids) only; bring only those pointers back into the main context, then open the slices yourself with \`previously readslice\`. The kernel tools mentioned elsewhere in this prompt (recall, readSlice, webSearch, thinkDeep, delegateTask, …) are NOT available to you here: any thinkDeep guidance elsewhere in this prompt does NOT apply in this mode — use your own native deep-reasoning and search capabilities instead. Conversation persistence and memory evolution are handled outside your process; never try to save or update memory yourself. Your final reply is rendered verbatim in a chat UI — output only the answer, no preamble or meta-commentary.`;
 
 /**
  * Bridge-mode fresh clock read. The system prompt is slice-frozen (prefix
@@ -619,7 +619,7 @@ export function assembleSystemPrompt(opts: {
     identityPrompt,
     `## What I know about the user (inference model — ${dateAnchor})`,
     previouslyContent,
-    "The above is the current profile and operating model — distilled hypotheses, each carrying `refs` to its evidence. If any line seems outdated or contradicts what the user just said, cite its refs and say so; the correction flows into the archive. Every `refs` pointer is a drill-down entry: open the referenced slice with readSlice before citing specifics from a past event — the card answers WHO the user is, not what was said.",
+    "The above is the current profile and operating model — distilled hypotheses, each carrying `refs` to its evidence. If any line seems outdated or contradicts what the user just said, cite its refs and say so; the correction flows into the archive. Every `refs` pointer is a drill-down entry: verify it through recall (or open the referenced slice with readSlice) before citing specifics from a past event — the card answers WHO the user is, not what was said.",
     overdueBlock,
     sliceHeadBlock,
     timelineBrief,
@@ -697,10 +697,10 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
     ),
     sliceHeadBlock,
     timelineBrief: timelineBrief
-      ? `${timelineBrief}\nTimeline lines are pointers — if a line looks relevant, read the slice (readSliceSummary / readSlice) before answering from it.`
+      ? `${timelineBrief}\nTimeline lines are pointers — if a line looks relevant, ask recall about it (a natural-language question) before answering from it.`
       : "",
     strandsBlock: strandsMenu
-      ? `## Memory topics\n\n${strandsMenu}\nWhen the user mentions these topics, use recall to search for related memories. If a search finds nothing relevant, do not retry it — answer from what you have.`
+      ? `## Memory topics\n\n${strandsMenu}\nWhen the user mentions these topics, ask recall about related past conversations. If it answers that there is no such memory, do not ask again — answer from what you have.`
       : "",
     demoNotice: input.useDemo
       ? `## Demo mode (read-only)\n\nYou are running in demo mode. You can browse sample data, recall past conversations, and search the live web — but **writes are not persisted**. No GitHub repo is connected; you are seeing pre-seeded sample memories.\n\nWhen the user asks to save anything or create memories, tell them naturally:\n- This is demo mode and data cannot be saved\n- They need to deploy their own instance to unlock full read/write capabilities\n\nDeployment guide: ${DEPLOY_GUIDE_URL}\n\nIt's perfectly normal for users to explore in demo mode — help them understand what this product can do and what they'll get after deploying.`

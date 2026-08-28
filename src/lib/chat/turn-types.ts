@@ -94,6 +94,20 @@ export interface EvolutionResult {
   /** Set when the pass ended without a finish call (step cap / timeout) — the
    *  card carries whatever mutations landed before the cutoff. */
   partial?: boolean;
+  /** v1.0: the fitness buckets that forced this run + their current net
+   *  scores — surfaced in the terminal data-evolution frame. */
+  triggers?: Array<{
+    bucket: "card" | "recall" | "search" | "thinkdeep" | "interaction";
+    score: number;
+  }>;
+  /** v1.0: the Phase-1 direction verdict — omitted entirely when the
+   *  direction check failed or did not run. */
+  direction?: { outcome: "no_change" | "updated"; summary?: string };
+  /** v1.0: playbook mutations applied this run (Phase 2). */
+  playbooks?: Array<{
+    agent: "recall" | "search" | "thinkdeep";
+    summary: string;
+  }>;
 }
 
 /** Result of the housekeeping step — slice + prepared context for the agent. */

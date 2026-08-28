@@ -96,13 +96,9 @@
       "readAgentTimeline": "Viewing cognition…",
       "currentTime": "Checked the time",
       "recallRunning": "Recalling \"{query}\"…",
-      "recallDone": "Recalled {count} conversations about \"{query}\"",
-      "recallHits": "{count} conversation{count, plural, one {} other {s}} found",
-      "recallNone": "No relevant conversations found",
-      "recallRecommendedReads": "Recommended reads",
-      "recallPriorityHigh": "High",
-      "recallPriorityMedium": "Medium",
-      "recallPriorityLow": "Low",
+      "recallDone": "Recalled \"{query}\" · {count} reference{count, plural, one {} other {s}}",
+      "recallReferences": "References",
+      "recallSearched": "Searched",
       "webSearchRunning": "Searching \"{query}\"…",
       "webSearchDone": "Searched \"{query}\" · {count} sources",
       "webSearchRecommendation": "Recommendation",
@@ -154,7 +150,18 @@
       "clickToView": "Click to view",
       "thoughts": "Thoughts",
       "applied": "Applying update...",
-      "partial": "(partial update)"
+      "partial": "(partial update)",
+      "triggerNet": "{bucket} · net score {score}",
+      "directionUnchanged": "Direction: unchanged",
+      "directionUpdated": "Direction: {summary}",
+      "playbookUpdated": "{agent} playbook updated: {summary}",
+      "buckets": {
+        "card": "Card",
+        "recall": "Recall",
+        "search": "Search",
+        "thinkdeep": "Thinking",
+        "interaction": "Interaction"
+      }
     },
     "phase": {
       "thinking": "Thinking…",

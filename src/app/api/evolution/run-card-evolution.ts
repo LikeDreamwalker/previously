@@ -15,6 +15,13 @@
  * agent's own decision. Engineering owns the trigger and the write-back;
  * the model owns the content.
  *
+ * v1.0 (design §2.3/§2.7): the run also carries the two-phase evolution
+ * context (direction.md orientation + the triggered fitness buckets, which
+ * gate the agent's writePlaybook), and this function is the SINGLE-WRITER
+ * boundary — accepted card/playbook mutations are archived to
+ * memory/evolution/mutations.md here, each archival first evaluating the
+ * previous mutation on the same target (the effectiveness window).
+ *
  * Streaming is surfaced via the optional `onProgress` callback (phase steps)
  * and `onEvolutionLine` (the Previously Agent's live thinking/writing lines)
  * so the caller (housekeeping) can push data-evolution chunks to the client —
@@ -27,6 +34,15 @@ import { diffCardLines, summarizeCardChanges, type CardChangeSummary, type CardM
 import { readCurrentPreviously, writeCurrentPreviously, writePreviously } from "@/lib/episodic";
 import type { WriteBatch } from "@/lib/episodic/io-helpers";
 import type { ModelConfig } from "@/lib/models/registry";
+import {
+  readFitness,
+  writePlaybook,
+  type FitnessBucket,
+  type FitnessEvent,
+  type FitnessSignal,
+} from "@/lib/evolution/store";
+import type { PlaybookAgent } from "@/lib/evolution/paths";
+import { appendMutationWithEvaluation } from "@/lib/evolution/acceptance";
 
 export interface CardEvolutionReaders {
   readSlice: (sliceId: string, range?: {
@@ -69,6 +85,18 @@ export interface RunCardEvolutionInput {
   /** The user's local calendar date (YYYY-MM-DD) — Now ages, overdue checks,
    *  and the default `since` all run on the user's clock, not UTC. */
   todayDate?: string;
+
+  // ── Two-phase evolution inputs (v1.0 §2.3, Phase 2 = product) ──────────
+
+  /** The current evolution direction (direction.md) — orientation for the
+   *  agent: the CRITERIA the card evolves under. Pass-through to the agent. */
+  direction?: string | null;
+  /** The fitness buckets that triggered this run — gates writePlaybook. */
+  triggeredBuckets?: FitnessBucket[];
+  /** Recent fitness events for the triggered buckets (evidence to re-read). */
+  fitnessEvents?: FitnessEvent[];
+  /** This slice's mechanical signals (recall verify/rework). */
+  fitnessSignals?: FitnessSignal[];
 }
 
 export interface RunCardEvolutionResult {
@@ -89,6 +117,10 @@ export interface RunCardEvolutionResult {
   /** Set when the pass ended WITHOUT a finish call (step cap / timeout) — the
    *  written card carries the mutations that landed before the cutoff. */
   partial?: boolean;
+  /** v1.0 §2.4: the playbook mutations actually written this run — agent +
+   *  the one-line summary from its mutation-archive record (the expected
+   *  benefit). Surfaced on the terminal data-evolution frame. */
+  playbooks?: Array<{ agent: PlaybookAgent; summary: string }>;
 }
 
 const VALID_SIGNALS: PreviouslySignal[] = [
@@ -129,6 +161,10 @@ export async function runCardEvolution(
     recentTurns: input.recentTurns,
     currentSliceTags: input.currentSliceTags,
     todayLocal: input.todayDate,
+    direction: input.direction,
+    triggeredBuckets: input.triggeredBuckets,
+    fitnessEvents: input.fitnessEvents,
+    fitnessSignals: input.fitnessSignals,
     readSliceFn: input.readers.readSlice,
     readAgentTimelineFn: input.readers.readAgentTimeline,
     readPreviouslyFn: input.readers.readPreviously,
@@ -170,6 +206,73 @@ export async function runCardEvolution(
     await writePreviously(input.sliceId, result.updatedCard, input.batch);
   }
 
+  // ── v1.0 §2.7 mutation archive — the evolution agent is the single writer
+  // of card / playbooks, and every accepted mutation lands in the append-only
+  // archive WITH the effectiveness evaluation of the previous mutation on the
+  // same target. Best-effort: an archive failure must never eat the card /
+  // playbook write that already landed. ──────────────────────────────────
+  const playbookWrites = result.playbookWrites ?? [];
+  // The playbooks that actually landed — surfaced on the terminal evolution
+  // frame so the UI can tell the "what changed" story (design §2.4).
+  const appliedPlaybooks: Array<{ agent: PlaybookAgent; summary: string }> = [];
+  if (!result.failed && (changed || playbookWrites.length > 0)) {
+    try {
+      const fitnessStore = await readFitness(input.batch);
+      const ts = new Date().toISOString();
+      if (changed) {
+        const archived = await appendMutationWithEvaluation(
+          {
+            ts,
+            target: "card",
+            summary:
+              result.summary.trim() || resultNote.slice(0, 200),
+            evidence: [input.sliceId],
+            expectedBenefit:
+              result.expectedBenefit ?? "Card updated from new evidence",
+          },
+          fitnessStore,
+          input.batch,
+        );
+        if (archived.markedIneffective) {
+          console.log(
+            `[Evolution] previous card mutation (${archived.evaluatedPreviousTs}) marked ineffective`,
+          );
+        }
+      }
+      for (const pw of playbookWrites) {
+        await writePlaybook(pw.agent, pw.content, input.batch);
+        // The user-facing line comes from the archived record: the agent's
+        // one-line expected benefit, falling back to the archive summary.
+        appliedPlaybooks.push({
+          agent: pw.agent,
+          summary:
+            pw.expectedBenefit.trim() || `Rewrote the ${pw.agent} playbook`,
+        });
+        const archived = await appendMutationWithEvaluation(
+          {
+            ts,
+            target: `playbook:${pw.agent}`,
+            summary: `Rewrote the ${pw.agent} playbook (${pw.content.length} chars)`,
+            evidence: pw.evidence.length > 0 ? pw.evidence : [input.sliceId],
+            expectedBenefit: pw.expectedBenefit || "(none given)",
+          },
+          fitnessStore,
+          input.batch,
+        );
+        if (archived.markedIneffective) {
+          console.log(
+            `[Evolution] previous ${pw.agent} playbook mutation (${archived.evaluatedPreviousTs}) marked ineffective`,
+          );
+        }
+      }
+    } catch (e) {
+      console.warn(
+        "[Evolution] mutation archive write failed (the card/playbook writes landed):",
+        e instanceof Error ? e.message : e,
+      );
+    }
+  }
+
   input.onProgress?.("applied");
   return {
     ran: true,
@@ -186,5 +289,6 @@ export async function runCardEvolution(
     changes: changed
       ? summarizeCardChanges(baseCard, result.updatedCard, 0)
       : undefined,
+    ...(appliedPlaybooks.length > 0 ? { playbooks: appliedPlaybooks } : {}),
   };
 }

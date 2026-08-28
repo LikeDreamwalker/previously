@@ -5,7 +5,8 @@
  * Agent, …) resolve to the bridge model and spawn its own CLI subprocess, the
  * WHOLE housekeeping phase is outsourced as ONE bridge call: the client agent
  * returns a single structured JSON report (turn analysis + closed-slice
- * marking + card-evolution decision with mutation proposals); the kernel
+ * marking + card-evolution decision with mutation proposals + fitness deltas
+ * + the Phase-1 direction verdict, v1.0 §6); the kernel
  * validates it (zod + the existing card-session caps) and applies it through
  * the same downstream code paths as the sub-agent flow.
  *
@@ -65,6 +66,8 @@ import type { WriteBatch } from "@/lib/episodic/io-helpers";
 import type { TurnAnalysis, TurnIntent } from "@/lib/episodic/flash/turn-analyzer";
 import type { EmotionalTone } from "@/lib/episodic/types";
 import type { EvolutionResult } from "@/lib/chat/turn-types";
+import { readFitness, type FitnessSignal } from "@/lib/evolution/store";
+import { appendMutationWithEvaluation } from "@/lib/evolution/acceptance";
 
 // ─── Gate ──────────────────────────────────────────────────────────────────
 
@@ -148,6 +151,41 @@ const strandMergeSchema = z.object({
   to: z.string(),
 });
 
+/** Mirrors the analyzer's fitness schema (turn-analyzer.ts, v1.0 §2.5) and
+ *  the FITNESS_BUCKETS list (evolution/triggers.ts). */
+const FITNESS_BUCKETS_WIRE = [
+  "card",
+  "recall",
+  "search",
+  "thinkdeep",
+  "interaction",
+] as const;
+
+/** Sanity cap — mirrors the analyzer's max-5 fitness entries. */
+const MAX_FITNESS_ENTRIES = 5;
+
+const fitnessEntrySchema = z.object({
+  bucket: z.enum(FITNESS_BUCKETS_WIRE),
+  delta: z.union([z.literal(-2), z.literal(-1), z.literal(0), z.literal(1)]),
+  evidence: z.string(),
+});
+
+/**
+ * The Phase-1 direction verdict (v1.0 §2.3/§6) riding the same report:
+ * "no_change" (the common case) or a full proposed direction.md. The proposal
+ * is validated structurally at apply time (validateDirectionProposal — same
+ * rules as the direction sub-agent), never trusted.
+ */
+const directionOutcomeSchema = z.union([
+  z.literal("no_change"),
+  z.object({
+    proposed: z.string(),
+    summary: z.string().default(""),
+    evidence: z.array(z.string()).default([]),
+    expected_benefit: z.string().default(""),
+  }),
+]);
+
 /**
  * Length caps TRUNCATE instead of rejecting — an over-long list (or a missing
  * optional array, see the `.default([])`s) must never nuke the whole report:
@@ -208,6 +246,17 @@ export const housekeepingPhaseReportSchema = z.object({
     .array(strandMergeSchema)
     .transform((a) => capped(a, MAX_STRAND_MERGES))
     .default([]),
+  // Fitness deltas (v1.0 §2.5 — job 6): this slice's evidence-anchored
+  // satisfaction/dissatisfaction signals. Missing/empty is the NORMAL state
+  // (no signal → no entry); the kernel appends them through
+  // appendFitnessEvents, whose evidence force-zero backstop applies.
+  fitness: z
+    .array(fitnessEntrySchema)
+    .transform((a) => capped(a, MAX_FITNESS_ENTRIES))
+    .default([]),
+  // Direction verdict (v1.0 §2.3/§6 — job 7): absent/null/"no_change" all
+  // mean the direction doc stays untouched.
+  direction: directionOutcomeSchema.nullable().default(null),
 });
 export type HousekeepingPhaseReport = z.infer<
   typeof housekeepingPhaseReportSchema
@@ -247,6 +296,18 @@ export interface HousekeepingBridgeInput {
    * must exist, no no-ops) and applies through applyStrandMerges.
    */
   strandsForMerge?: Array<{ name: string; slices: number }>;
+  /**
+   * This slice's mechanical fitness signals (v1.0 §2.6 — recall verify/rework
+   * instrumentation). Each recall_rework / recall_repeat is a -1 CANDIDATE
+   * for the recall bucket in the report's fitness array; its detail may serve
+   * as the evidence.
+   */
+  signals?: FitnessSignal[];
+  /**
+   * The current direction.md content (v1.0 §2.2) — the agent evaluates it in
+   * the SAME call (direction in the report). null/absent = not set yet.
+   */
+  directionContent?: string | null;
   /** The user's local calendar date (YYYY-MM-DD) — Now/Horizon judgments. */
   todayLocal?: string;
   /** UI locale ("zh" | "en"). */
@@ -268,6 +329,8 @@ One pass, these jobs:
 3. Card evolution — judge worth (when in doubt, worth: true — a wasted review is cheap, a missed evolution is permanent memory loss) and, when worth or memory_update is set, propose card mutations with the op vocabulary below. Never rewrite the whole card; entries you don't touch stay as they are.
 4. Dry-slice backfill — ONLY when the context carries a "Dry slices needing marks" section: one backfill_marks entry per listed slice ({slice_id copied verbatim, focus one sentence, summary ≤100 chars}); [] when the section is absent.
 5. Strand merge — ONLY when the context carries a "Strand merge candidates" section: propose from→to merges for NEAR-DUPLICATE strands (typos / same concept under two names / same entity written differently). Every "to" MUST be a name from the offered list; no chains (A→B and B→C in one pass); do NOT merge distinct concepts that merely share a word; when in doubt, do NOT merge — a wrong merge destroys thread history. [] when the section is absent or the index is already clean.
+6. Fitness scoring — score ONLY what THIS slice's user messages explicitly signal: -2 explicit complaint/correction, -1 signs of dissatisfaction, +1 explicit approval, attributed to a bucket (card | recall | search | thinkdeep | interaction). Every non-zero delta MUST quote the user's exact words in evidence — no quote, NO entry. Nothing signaled → omit fitness entirely (an absent/empty array, never 0-delta filler). When the context lists a recall_rework / recall_repeat mechanical signal, treat it as a -1 CANDIDATE for the recall bucket (its detail line may serve as the evidence); recall_verify is neutral — no entry.
+7. Direction verdict — the context carries the current evolution direction (direction.md: what "better for the user" means across slices; the card is only its product). Judge whether the DIRECTION itself should move. "no_change" is the common case — one slice's events are card/playbook material, never direction material by themselves. Propose ONLY on cross-slice evidence: the full new document with the four fixed sections (# Direction / # Anti-goals / # Evidence / # Log), every conclusion abstract (still true in a month) and the Evidence section carrying slice pointers (YYYY-MM-DD-HHMM). A proposal violating this discipline is rejected by the kernel.
 
 Mutation vocabulary (the evolution.mutations array):
 - {"op":"setIdentity","content":"Name: Alan"} — one Identity head line (Name / Address them as / Pronouns / Alias).
@@ -290,9 +353,11 @@ OUTPUT CONTRACT: your final reply must be EXACTLY ONE JSON object — no prose, 
   "closed_marking": { "focus": string, "summary": string, "tags": string[], "tone": string } | null,
   "evolution": { "worth": boolean, "reason": string, "mutations": [ …ops above… ] },
   "backfill_marks": [ { "slice_id": string, "focus": string, "summary": string } ],
-  "strand_merges": [ { "from": string, "to": string } ]
+  "strand_merges": [ { "from": string, "to": string } ],
+  "fitness": [ { "bucket": "card"|"recall"|"search"|"thinkdeep"|"interaction", "delta": -2|-1|0|1, "evidence": string } ],
+  "direction": "no_change" | { "proposed": string, "summary": string, "evidence": string[], "expected_benefit": string } | null
 }
-closed_marking is null when no slice is closing; mutations is [] when nothing changes; backfill_marks is [] when no dry slices were provided; strand_merges is [] when no merge candidates were provided. Analysis, closed_marking, backfill_marks and strand_merges must be produced from the data in this payload ALONE — do not read memory for them. Reading memory is card-evolution forensics ONLY (substantiating mutations, especially self-model lessons), and only through the three evidence commands the workspace allows in this phase (readslice / agentlog / card); the search-type commands (timeline / strands / slicesummary) are gated off in the housekeeping phase and will be refused.`;
+closed_marking is null when no slice is closing; mutations is [] when nothing changes; backfill_marks is [] when no dry slices were provided; strand_merges is [] when no merge candidates were provided; fitness is [] (or omitted) when the slice carried no explicit signal; direction is "no_change" (or omitted) when the direction doc stays as it is. Analysis, closed_marking, backfill_marks, strand_merges and fitness must be produced from the data in this payload ALONE — do not read memory for them. Reading memory is card-evolution forensics ONLY (substantiating mutations, especially self-model lessons), and only through the three evidence commands the workspace allows in this phase (readslice / agentlog / card); the search-type commands (timeline / strands / slicesummary) are gated off in the housekeeping phase and will be refused.`;
 
 /** Compress a closing slice's turns (first turn + last 10, chars capped). */
 function compressTurns(turns: Array<{ role: string; content: string }>): string {
@@ -338,6 +403,21 @@ export function buildHousekeepingPayload(input: HousekeepingBridgeInput): {
     }`,
     `## Time\n\nUser's local date: ${input.todayLocal ?? "(unknown)"} · locale: ${input.locale ?? "en"} · card slice: ${input.sliceId}`,
   ];
+  if (input.directionContent !== undefined) {
+    sections.push(
+      `## Current evolution direction (direction.md — evaluate it per job 7)\n\n${
+        input.directionContent?.trim() ||
+        "(not set yet — this would be the FIRST direction; the bar is the same: abstract, cross-slice, evidence-anchored)"
+      }`,
+    );
+  }
+  if (input.signals && input.signals.length > 0) {
+    sections.push(
+      `## Mechanical signals this slice (job 6 input)\n\nInstrumentation recorded these this slice (recall verify/rework tracking):\n\n${input.signals
+        .map((s) => `- ${s.type} — ${s.detail}`)
+        .join("\n")}`,
+    );
+  }
   if (closing) {
     sections.push(
       `## Closing slice ${closing.sliceId}\n\nExisting tags: ${closing.tags.join(", ") || "(none)"}\n\nConversation (first turn + last turns):\n${compressTurns(closing.turns)}`,
@@ -566,6 +646,17 @@ export function adaptHousekeepingReport(
       note: a.emotional_signal.note,
     },
     memoryUpdate: a.memory_update ? { content: a.memory_update } : undefined,
+    // Fitness deltas ride the TurnAnalysis so housekeeping appends them through
+    // the SAME appendFitnessEvents path as the direct analyzer (§3a in
+    // steps.ts). Empty (the normal no-signal state) → undefined, no writes.
+    fitness:
+      report.fitness.length > 0
+        ? report.fitness.map((f) => ({
+            bucket: f.bucket,
+            delta: f.delta,
+            evidence: f.evidence,
+          }))
+        : undefined,
     evolveCard: sliceClosing
       ? { worth: report.evolution.worth, reason: report.evolution.reason }
       : undefined,
@@ -760,6 +851,33 @@ export async function applyBridgeCardEvolution(input: {
 
   await writeCurrentPreviously(applied.card, input.batch);
   await writePreviously(input.sliceId, applied.card, input.batch);
+
+  // v1.0 §2.7 — bridge-originated card mutations enter the SAME append-only
+  // archive (with the previous-mutation effectiveness evaluation) as the
+  // sub-agent path; the archive is the acceptance rule's only record, so
+  // skipping it here would silently blind the card target's effectiveness
+  // window. Best-effort: an archive failure must never eat the landed write.
+  const reason = input.reason.trim();
+  try {
+    const fitnessStore = await readFitness(input.batch);
+    await appendMutationWithEvaluation(
+      {
+        ts: new Date().toISOString(),
+        target: "card",
+        summary: oneSentence(reason) || "Card updated (bridge housekeeping report)",
+        evidence: reason ? [input.sliceId, reason] : [input.sliceId],
+        expectedBenefit: reason || "(none given)",
+      },
+      fitnessStore,
+      input.batch,
+    );
+  } catch (e) {
+    console.warn(
+      "[Evolution] bridge card-mutation archive write failed (the card write landed):",
+      e instanceof Error ? e.message : e,
+    );
+  }
+
   return {
     ran: true,
     changed: true,

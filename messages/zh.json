@@ -96,13 +96,9 @@
       "readAgentTimeline": "查看思考过程…",
       "currentTime": "看了看表",
       "recallRunning": "正在回忆关于「{query}」的内容…",
-      "recallDone": "回忆起 {count} 段关于「{query}」的对话",
-      "recallHits": "找到 {count} 段相关对话",
-      "recallNone": "未找到相关对话",
-      "recallRecommendedReads": "建议阅读",
-      "recallPriorityHigh": "高",
-      "recallPriorityMedium": "中",
-      "recallPriorityLow": "低",
+      "recallDone": "回忆了「{query}」· {count} 条引用",
+      "recallReferences": "引用依据",
+      "recallSearched": "查找范围",
       "webSearchRunning": "正在搜索「{query}」…",
       "webSearchDone": "搜索了「{query}」· {count} 个来源",
       "webSearchRecommendation": "建议",
@@ -154,7 +150,18 @@
       "clickToView": "点击查看",
       "thoughts": "思考",
       "applied": "正在应用更新...",
-      "partial": "（部分更新）"
+      "partial": "（部分更新）",
+      "triggerNet": "{bucket} · 近期净分 {score}",
+      "directionUnchanged": "方向：无变化",
+      "directionUpdated": "方向：{summary}",
+      "playbookUpdated": "{agent} 工作手册已更新：{summary}",
+      "buckets": {
+        "card": "卡片",
+        "recall": "回忆",
+        "search": "搜索",
+        "thinkdeep": "思考",
+        "interaction": "交流"
+      }
     },
     "phase": {
       "thinking": "正在思考…",

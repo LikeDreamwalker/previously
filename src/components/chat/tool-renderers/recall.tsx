@@ -3,8 +3,8 @@
 import type { ToolRenderState } from "@/lib/chat/tool-state";
 import { History } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { cn } from "@/lib/utils";
 import { PhaseIndicator } from "../phase-indicator";
+import { MarkdownRenderer } from "../markdown";
 import { progressStageTone } from "@/lib/chat/build-stream";
 
 interface RecallToolRendererProps {
@@ -14,29 +14,22 @@ interface RecallToolRendererProps {
   state: ToolRenderState;
   /** Live progress from `data-tool-progress` — the streaming subtitle. */
   streamingText?: string;
-  /** Progress stage — "running" (scanning) vs "thinking"/"done" (sub-agent steps / found). */
+  /** Progress stage — "running" (recalling) vs "thinking"/"done" (sub-agent steps). */
   streamingStage?: string;
 }
 
-interface RecallHit {
+interface RecallReference {
   slice_id: string;
-  relevance: number;
-  reason: string;
-  key_turns?: number[];
-}
-
-interface RecommendedRead {
-  slice_id: string;
-  priority: "high" | "medium" | "low";
-  reason: string;
+  quote: string;
   note?: string;
 }
 
 interface RecallOutput {
-  hits?: RecallHit[];
+  answer?: string;
+  references?: RecallReference[];
+  searched?: string[];
   confidence?: number;
-  reasoning?: string;
-  recommendedReads?: RecommendedRead[];
+  note?: string;
 }
 
 function resolveLabel(
@@ -45,27 +38,30 @@ function resolveLabel(
   running: boolean,
   t: ReturnType<typeof useTranslations>,
 ): string {
-  const query = typeof input?.query === "string" ? input.query : "";
-  const hitCount = Array.isArray(output?.hits) ? output.hits.length : 0;
+  const question =
+    typeof input?.question === "string" ? input.question : "";
+  const refCount = Array.isArray(output?.references)
+    ? output.references.length
+    : 0;
 
   if (running) {
-    return query
-      ? t("recallRunning", { query })
+    return question
+      ? t("recallRunning", { query: question })
       : t("recallRunning", { query: "…" });
   }
-  return query
-    ? t("recallDone", { query, count: hitCount })
-    : t("recallDone", { query: "…", count: hitCount });
+  return question
+    ? t("recallDone", { query: question, count: refCount })
+    : t("recallDone", { query: "…", count: refCount });
 }
 
 /**
  * Recall tool renderer using PhaseIndicator in streaming mode.
  *
- * Recall returns neutral pointers only — slice IDs, relevance, reasons,
- * key turn numbers. No raw content is returned; Pro uses readSlice
- * (with optional range) to fetch content from slices it actually needs.
- * Streaming mode gives it a running label + "Scanning…" subtitle while it
- * works; the subtitle fades and clicking expands the pointers.
+ * Recall is the episodic-recall colleague (v1.0): it answers the main agent's
+ * question in natural language, with every situational claim anchored to a
+ * verbatim quote + slice id in `references`, plus the `searched` trail it
+ * walked. Streaming mode gives it a running label + live exploration subtitle
+ * while it works; clicking expands the answer and its evidence.
  */
 export function RecallToolRenderer({
   toolName: _toolName,
@@ -78,114 +74,81 @@ export function RecallToolRenderer({
   const t = useTranslations("chat.tool");
 
   const inp = input as Record<string, unknown> | undefined;
-  const query = typeof inp?.query === "string" ? inp.query : "";
 
   const out = output as RecallOutput | undefined;
-  const hits = Array.isArray(out?.hits) ? out.hits : [];
-  const recommendedReads = Array.isArray(out?.recommendedReads)
-    ? out.recommendedReads
-    : [];
+  const answer = typeof out?.answer === "string" ? out.answer : "";
+  const references = Array.isArray(out?.references) ? out.references : [];
+  const searched = Array.isArray(out?.searched) ? out.searched : [];
   const confidence = typeof out?.confidence === "number" ? out.confidence : null;
-  const reasoning = typeof out?.reasoning === "string" ? out.reasoning : "";
+  const note = typeof out?.note === "string" ? out.note : "";
 
-  const hasHits = hits.length > 0;
-  const hasRecommended = recommendedReads.length > 0;
   const isRunning = state.running;
 
   const label = resolveLabel(inp, out, isRunning, t);
 
-  // Priority → badge classes for the recommended-reads list
-  const priorityBadge: Record<RecommendedRead["priority"], string> = {
-    high: "bg-emerald-500/15 text-emerald-600",
-    medium: "bg-amber-500/15 text-amber-600",
-    low: "bg-muted text-muted-foreground",
-  };
-
-  // Expanded content — pointers + recommendations only, no raw content
-  const expandedContent = hasHits || hasRecommended ? (
+  // Expanded content — the colleague's answer + its evidence trail.
+  const expandedContent = out ? (
     <div className="space-y-3">
-      {/* Reasoning */}
-      {reasoning && (
-        <p className="text-xs leading-relaxed text-muted-foreground italic">
-          {reasoning}
-        </p>
-      )}
+      {/* Answer */}
+      {answer && <MarkdownRenderer content={answer} />}
 
-      {/* Recommended reads — the recall agent's advisory output */}
-      {hasRecommended && (
+      {/* References — the auditable evidence anchors */}
+      {references.length > 0 && (
         <div>
           <p className="mb-1.5 text-xs font-semibold text-foreground/80">
-            {t("recallRecommendedReads")}
+            {t("recallReferences")}
           </p>
           <div className="space-y-1.5">
-            {recommendedReads.map((r, i) => (
+            {references.map((r, i) => (
               <div
                 key={i}
-                className="flex items-start gap-2 rounded-md border border-border/30 px-2 py-1.5"
+                className="rounded-md border border-border/30 px-2 py-1.5"
               >
-                <span
-                  className={cn(
-                    "mt-px shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
-                    priorityBadge[r.priority] ?? priorityBadge.medium,
-                  )}
-                >
-                  {t(`recallPriority${r.priority[0].toUpperCase()}${r.priority.slice(1)}`)}
+                <span className="font-mono text-xs text-muted-foreground">
+                  {r.slice_id}
                 </span>
-                <div className="min-w-0">
-                  <span className="font-mono text-xs text-muted-foreground">
-                    {r.slice_id}
-                  </span>
-                  <p className="text-xs leading-relaxed text-foreground/80">
-                    {r.reason}
+                <blockquote className="mt-1 border-l-2 border-border/60 pl-2 text-xs leading-relaxed text-foreground/80 italic">
+                  {r.quote}
+                </blockquote>
+                {r.note && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {r.note}
                   </p>
-                  {r.note && (
-                    <p className="text-xs italic text-muted-foreground">
-                      {r.note}
-                    </p>
-                  )}
-                </div>
+                )}
               </div>
             ))}
           </div>
         </div>
       )}
 
-      {/* Hits — pointers only */}
-      <div className="space-y-1.5">
-        {hits.map((hit, i) => (
-          <div
-            key={i}
-            className="border-b border-border/30 pb-2 last:border-0 last:pb-0"
-          >
-            <div className="flex items-start justify-between gap-2">
-              <span className="font-mono text-xs text-muted-foreground">
-                {hit.slice_id}
-              </span>
-              <span className="shrink-0 text-xs text-muted-foreground">
-                {Math.round(hit.relevance * 100)}%
-              </span>
-            </div>
-            <p className="text-xs leading-relaxed text-muted-foreground">
-              {hit.reason}
-            </p>
-            {hit.key_turns && hit.key_turns.length > 0 && (
-              <p className="text-xs text-muted-foreground">
-                Key turns: {hit.key_turns.join(", ")}
-              </p>
-            )}
-          </div>
-        ))}
-      </div>
+      {/* Searched trail — how complete this recall is */}
+      {searched.length > 0 && (
+        <div>
+          <p className="mb-1 text-xs font-semibold text-foreground/80">
+            {t("recallSearched")}
+          </p>
+          <ul className="space-y-0.5">
+            {searched.map((s, i) => (
+              <li key={i} className="text-xs text-muted-foreground">
+                {s}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
-      {/* Confidence */}
+      {/* Confidence + the executor's definitive-empty note */}
       {confidence !== null && (
         <p className="text-xs text-muted-foreground">
           Confidence: {Math.round(confidence * 100)}%
         </p>
       )}
+      {note && (
+        <p className="text-xs leading-relaxed text-muted-foreground italic">
+          {note}
+        </p>
+      )}
     </div>
-  ) : reasoning ? (
-    <p className="text-xs leading-relaxed text-muted-foreground">{reasoning}</p>
   ) : undefined;
 
   return (

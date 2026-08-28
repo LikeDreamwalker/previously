@@ -19,10 +19,10 @@ File storage is abstracted behind a local-filesystem vs. GitHub API switch, gate
 | `maintenance.ts` | Deprecated v1 module — retained as a stub. Sub-agent calls now live in `flash/recall.ts`, `flash/previously-agent.ts`, and `flash/turn-analyzer.ts`. |
 | `actions.ts` | Server actions (`"use server"`) for UI consumption: `getEpisodicState`, `getMoreSlices`, `getSliceContent`. Drives the episodic sidebar panel. |
 | `turn-parser.ts` | Pure functions to parse core.md into frontmatter + parsed turns, apply range filters, reassemble filtered slices |
-| `flash/recall.ts` | Recall mini-agent (main model via the shared runner) — searches past conversations and returns structured pointers |
-| `flash/turn-analyzer.ts` | The one housekeeping sub-agent call (main model via the shared runner): message tags + semantic hint + intent + (on close) slice marking |
+| `flash/recall.ts` | Recall sub-agent colleague (main model via the shared runner) — answers natural-language questions about past conversations, reading slices itself (timeline/strands/summaries/full reads, quota-bounded); every situational claim is anchored to verbatim-quote references |
+| `flash/turn-analyzer.ts` | The one housekeeping sub-agent call (main model via the shared runner): message tags + semantic hint + intent + (on close) slice marking + fitness scoring (Task 7 — per-slice evidence-anchored deltas per bucket, v1.0 §2.5; this slice's mechanical signals are an input) |
 | `flash/global-timeline.ts` | Global timeline file aggregating all slice summaries |
-| `flash/previously-agent.ts` | Previously Agent (main model via the shared sub-agent runner, thinking ON at low effort) — edits the user card through validated MUTATION tools (never a whole-file rewrite); rejected writes come back with compression instructions, the session loop brake force-lands repeated identical rejections, and a step-limit stop returns a PARTIAL card instead of failing |
+| `flash/previously-agent.ts` | Previously Agent (main model via the shared sub-agent runner, thinking ON at low effort) — the evolution loop's Phase 2 (product): edits the user card through validated MUTATION tools (never a whole-file rewrite); rejected writes come back with compression instructions, the session loop brake force-lands repeated identical rejections, and a step-limit stop returns a PARTIAL card instead of failing. Also owns `writePlaybook` — the gated (triggered-bucket-only) mutation of a sub-agent's playbook — and reads direction.md as orientation |
 | `previously-format.ts` | previously.md format — v3 archive (read-only history) + v5 user card (Identity / Past = profile paragraph + anchor facts / Now = agent-expired hooks / Horizon = future commitments with `by` dates / Self-model); serialization, parsing, per-item caps, legacy migration |
 | `card-session.ts` | The mutation session behind the agent's write tools — in-memory CardDocument + per-entry validated mutations (`addNow` / `updatePastProfile` / `resolveHorizon` / …), self-model invariant backstop, loop brake (repeated identical rejections escalate → force-apply/skip), substance comparison. Pure, no I/O |
 | `flash/backfill-marks.ts` | Opportunistic dry-slice remediation — on a close boundary, a sub-agent (main model via the shared runner) fills focus/summary for up to 3 `needs_marking` slices, inside the turn's batch |
@@ -31,6 +31,8 @@ File storage is abstracted behind a local-filesystem vs. GitHub API switch, gate
 | `local-git.ts` | Best-effort git ledger for the local backend (isomorphic-git, no git binary needed): bare `fsWriteFile` = one commit, `flushBatch` = one commit for the batch. The filesystem stays the source of truth — commit failures are warned and swallowed, and the layer is inert when the memory root has no `.git` |
 | `slice-mutex.ts` | In-process per-sliceId async mutex (`withSliceLock`) serializing housekeeping/finalizeTurn on the same slice; acquired inside a single step only |
 | `turn-merge.ts` | `mergeTurnsWithRemote` — pure append-only turn merge used by finalizeTurn's write-conflict self-heal (re-read remote core.md, append missing turns by turnId, retry commit ≤ 2×) |
+| `rework-signal.ts` | Rework-signal instrumentation (v1.0 design §2.6) — module-level per-conversation record of recall outcomes; classifies each main-agent `readSlice` as `verify` / `rework` and emits both a machine-readable fitness signal and an audit line in the current slice's agent.md. Best-effort — never fails the calling tool |
+| `../evolution/` | Evolution data layer + loop (v1.0 design §2): `paths.ts` (file constants), `store.ts` (typed I/O over `memory/evolution/` + `memory/agent-playbooks/` — direction doc, per-sub-agent playbooks, bounded fitness event/signal store with structural evidence-anchoring, append-only mutations archive, windowed + since-window net scores), `triggers.ts` (deterministic trigger computation: net ≤ -3 over 10 slices, or a single evidence-anchored -2 this slice), `direction-agent.ts` (Phase-1 direction evaluator — proposes only, never writes; proposals validated structurally), `acceptance.ts` (§2.7 acceptance rule — archiving a mutation evaluates the previous one on the same target; append-only `ineffective` marks) |
 
 ## Key Flows
 
@@ -54,9 +56,11 @@ File storage is abstracted behind a local-filesystem vs. GitHub API switch, gate
 2. `getMoreSlices(before)` returns slices older than the given cursor, with cursor-based pagination.
 3. `getSliceContent(sliceId)` reads the full MD file, parses turns, and returns structured content for the detail view.
 
-### 4. Card evolution (every boundary, agent-gated + explicit trigger)
+### 4. Card evolution (every boundary, two-phase + explicit trigger)
 
-1. The evolution runs INLINE in the housekeeping step (v0.7b). Engineering owns the TRIGGER only: at a slice boundary the analyzer's own judgment gates the run — `analyzeTurn` returns `evolve_card.worth` for closing slices (failure defaults to true), and a legacy (pre-v5) card forces a run so format migration never waits. Explicit user requests — including behavioral corrections, not just "记住…" phrasing — are detected via `memory_update` and trigger an immediate run. Progress streams via `data-evolution` chunks.
+1. The evolution runs INLINE in the housekeeping step (v0.7b). Engineering owns the TRIGGER only: at a slice boundary the trigger is the deterministic fitness scoring (`computeEvolutionTriggers` — a bucket's 10-slice net ≤ -3, or any single evidence-anchored -2 this slice) combined with the card bucket's legacy gates — the analyzer's `evolve_card.worth` judgment (failure defaults to true) and a legacy (pre-v5) card forcing a run. No trigger and no card gate → NO evolution sub-agent runs. Explicit user requests — including behavioral corrections, not just "记住…" phrasing — are detected via `memory_update` and trigger an immediate (card-only) run. Progress streams via `data-evolution` chunks.
+1b. When a boundary triggers, evolution is TWO-PHASE (v1.0 §2.3): Phase 1 (`src/lib/evolution/direction-agent.ts`) evaluates `memory/evolution/direction.md` — "no change" is the common case and writes nothing; a structurally valid proposal (fixed four-section skeleton + slice pointers) lands via `writeDirection` + the mutations archive. Phase 2 (the Previously Agent) then evolves the card and the triggered buckets' playbooks under the current direction.
+1c. Fitness deltas (the analyzer's Task 7, or the bridge report's `fitness` array) are persisted right after the analysis via `appendFitnessEvents` — the store force-zeroes evidence-less deltas structurally. Every accepted card/direction/playbook mutation is archived append-only in `memory/evolution/mutations.md`, and archiving evaluates the PREVIOUS mutation on the same target (§2.7 effectiveness window — a bucket that kept losing points earns an `**Evaluation: ineffective**` line).
 2. There is NO mechanical card pass: expiry/overdue/caps are the agent's decisions, enforced inside its write tools. Housekeeping computes overdue Horizon items read-only for turn priming and injects the time context (user-local date, Now ages) into the prompt.
 3. The Previously Agent (main model via the shared runner, thinking on at low effort) edits an in-memory copy of the card through per-entry mutation tools (`addNow`, `updatePastProfile`, `resolveHorizon`, …). Over-limit / malformed writes are REJECTED with compression instructions — the agent decides what survives a cap; a loop brake escalates repeated identical rejections (2nd: exact arithmetic; 3rd: force-apply truncated for length violations, skip + finish-now otherwise). A pass that hits the step cap without `finish` returns a PARTIAL card (mutations kept, note flagged) instead of failing. It normally ends with a `finish` call.
 4. The serialized result is written back only when the card's substance changed (stamps ignored) — both the live card and the per-slice snapshot.
@@ -90,6 +94,18 @@ memory/episodic/
         _index.json             -- monthly index of all slices in this month
   strands.json                  -- the strand index: strand (keyword) -> slice paths
   timeline.md                   -- global timeline (all slice summaries)
+```
+
+The v1.0 evolution data layer (design §2, `src/lib/evolution/`) adds two more
+locations OUTSIDE `memory/episodic/`:
+
+```
+memory/evolution/
+  direction.md                  -- cross-slice evolution direction (design §2.2)
+  fitness.json                  -- bounded fitness events + mechanical signals (§2.5/§2.6)
+  mutations.md                  -- append-only mutation archive (§2.7)
+memory/agent-playbooks/
+  recall.md / search.md / thinkdeep.md   -- per-sub-agent evolved playbooks (§2.4)
 ```
 
 **Strands.** A slice carries `tags` (keywords). A **strand** is a keyword woven

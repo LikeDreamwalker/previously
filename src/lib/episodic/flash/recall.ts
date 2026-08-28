@@ -1,27 +1,41 @@
 /**
- * Flash Recall Search — a sub-agent that Pro calls to search past conversations.
+ * Episodic Recall — a sub-agent colleague that ANSWERS questions about past
+ * conversations (v1.0 sub-agent refinement; supersedes the v0.9 pointer-only
+ * search engine).
  *
  * This is NOT a workflow step. It runs inside a single WorkflowAgent tool call
  * (recallExecute in tool-executors.ts) on the unified sub-agent runner
  * (src/lib/agents/sub-agent-runner.ts): the turn's MAIN model with thinking ON
- * (effort "low"), an 8-step cap, and a 120s wall-clock budget. The sub-agent
- * does a focused exploration: global timeline → check strands → timeline
- * windows → structured recallReport.
+ * (effort "low"), a 20-step cap, and a 240s wall-clock budget.
  *
- * Recall ONLY returns pointers (which slices, which turns, why relevant).
- * The EXECUTOR passes those pointers straight back to Pro, which then calls
- * readSlice for any content it wants. Recall never produces semantic summaries
- * of episodic content.
+ * The main agent asks a natural-language question ("did we ever talk about
+ * apples?"); recall explores the memory like a colleague who was there —
+ * timeline → time window → strands → slice summaries → full slice reads
+ * (quota-bounded) — and answers in natural language. Every situational
+ * assertion in the answer must be anchored to a `references[]` entry carrying
+ * a VERBATIM quote from the slice: the evidence-anchoring discipline is what
+ * lets the answer carry temperature-0.3 episodic understanding without
+ * hallucination. "We haven't talked about this" is a valid, important answer —
+ * forced hits are strictly worse than an honest miss.
+ *
+ * Recall now reads slice CONTENT itself (readSlice / readSliceSummary live
+ * inside this module, not via the step-bound executors) and hands the main
+ * agent a finished answer plus auditable references — the main agent only
+ * opens a slice itself when it wants to verify a reference or needs more of
+ * the original text.
  *
  * Error contract: the runner never throws, so runRecallSearch re-throws
  * non-timeout failures (an Error carrying the runner's message) and lets the
  * executor's triage (tool-triage.ts) separate transient failures — rethrown
- * for the step's auto-retry — from deterministic ones (empty-result
- * degradation). Timeouts degrade in place to an empty result, as before.
+ * for the step's auto-retry — from deterministic ones (degradation). Timeouts
+ * degrade in place: whatever partial answer the sub-agent already wrote comes
+ * back as a low-confidence answer (write-as-you-go discipline in the role
+ * prompt exists precisely so an interruption is never a total loss).
  */
 
 import { tool } from "ai";
 import { z } from "zod";
+import matter from "gray-matter";
 import { tolerantBounded01 } from "@/lib/chat/tolerant-schemas";
 import { fsReadFile } from "../io-helpers";
 import { readStrands } from "@/lib/episodic/manager";
@@ -29,89 +43,58 @@ import { generateGlobalTimeline } from "@/lib/episodic/flash/global-timeline";
 import { sliceLine } from "@/lib/episodic/timeline/render";
 import { TIMELINE_INDEX_PATH } from "@/lib/episodic/timeline/store";
 import type { TimelineIndex, TimelineSliceEntry } from "@/lib/episodic/timeline/types";
+import {
+  parseSliceId,
+  parseTurns,
+  applyRange,
+  reassembleSlice,
+} from "@/lib/episodic/turn-parser";
+import {
+  splitTurns,
+  segmentSearch,
+  textLines,
+  searchResultToString,
+} from "@/lib/retrieval/doc-segments";
 import type { ModelConfig } from "@/lib/models/registry";
 import {
   runSubAgent,
   type SubAgentProgressRef,
 } from "@/lib/agents/sub-agent-runner";
 import { buildSubAgentSystem } from "@/lib/agents/prompts";
+import { capPlaybook } from "@/lib/evolution/store";
 
 // ─── Types ──────────────────────────────────────────────────────────────
 
-export interface RecallHit {
-  slice_id: string;
-  relevance: number;
-  reason: string;
-}
-
-/** A slice the main agent should consider reading, with a suggested priority. */
-export interface RecommendedRead {
-  slice_id: string;
-  priority: "high" | "medium" | "low";
-  reason: string;
-  note?: string;
-}
-
-/** A raw recommended_reads entry straight from the model's recallReport input. */
-interface RawRecommendedRead {
-  slice_id?: unknown;
-  priority?: unknown;
-  reason?: unknown;
-  note?: unknown;
-}
-
 /**
- * Normalize the model's `recommended_reads` array into `RecommendedRead[]`.
- * Drops entries without a usable slice_id, defaults priority to "medium",
- * and caps at 5 — the main agent should not be handed a wall of suggestions.
+ * One piece of evidence behind the answer: a verbatim quote from a past slice,
+ * plus which assertion it backs. The main agent can audit the answer by
+ * opening `slice_id` and checking the quote itself.
  */
-export function normalizeRecommendedReads(
-  raw: RawRecommendedRead[] | undefined,
-): RecommendedRead[] {
-  return (raw ?? [])
-    .filter((r): r is RawRecommendedRead & { slice_id: string } => {
-      return (
-        r !== null &&
-        typeof r === "object" &&
-        typeof r.slice_id === "string" &&
-        r.slice_id.length > 0
-      );
-    })
-    .slice(0, 5)
-    .map((r) => ({
-      slice_id: r.slice_id,
-      priority:
-        r.priority === "high" || r.priority === "low" ? r.priority : "medium",
-      reason: typeof r.reason === "string" ? r.reason : "",
-      note: typeof r.note === "string" && r.note.length > 0 ? r.note : undefined,
-    }));
-}
-
-/**
- * Drop any hit / recommended read whose slice is the current (ongoing)
- * conversation. The current slice is where the query is being asked — it is
- * NOT a past memory, so it must never surface as a recall result, regardless
- * of how the model saw it (timeline entry, strand path, …).
- */
-export function excludeCurrentSlice<T extends { slice_id: string }>(
-  items: T[],
-  currentSliceId: string,
-): T[] {
-  if (!currentSliceId) return items;
-  return items.filter((i) => i.slice_id !== currentSliceId);
+export interface RecallReference {
+  slice_id: string;
+  /** Verbatim quote from the slice's conversation text — never paraphrased. */
+  quote: string;
+  /** One line: which assertion in the answer this quote backs. */
+  note: string;
 }
 
 export interface RecallSearchOutput {
-  hits: RecallHit[];
+  /** Natural-language answer in the user's language. May honestly say
+   *  "we haven't talked about this" — an empty references array is then the
+   *  NORMAL state, not a failure. */
+  answer: string;
+  /** Evidence anchors for every situational assertion in `answer`. */
+  references: RecallReference[];
+  /** What was searched (windows, strands, slices read) — lets the main agent
+   *  judge how complete the recall is. */
+  searched: string[];
   confidence: number;
-  reasoning: string;
-  /** Slices worth opening with readSlice — the recall agent's advisory output. */
-  recommendedReads: RecommendedRead[];
 }
 
 export interface RecallSearchInput {
-  query: string;
-  /** The ongoing session's slice — must NEVER appear in recall results. */
+  /** The main agent's natural-language question (colleague to colleague). */
+  question: string;
+  /** The ongoing session's slice — must NEVER appear in recall references. */
   currentSliceId: string;
   owner: string;
   repo: string;
@@ -119,11 +102,15 @@ export interface RecallSearchInput {
   useDemo: boolean;
   /** Available strands (keyword tag → slice paths). Recall auto-traces matching ones. */
   strandsContext?: Record<string, string[]>;
-  /** The model to run the recall search on — the turn's MAIN model, resolved
+  /** The evolved recall playbook (memory/agent-playbooks/recall.md, design
+   *  v1.0 §2.4) — injected into the USER prompt, never the static system
+   *  prompt, so the shared prefix cache is untouched. Absent → no block. */
+  playbook?: string;
+  /** The model to run the recall on — the turn's MAIN model, resolved
    *  by the caller via `resolveSubAgentModel(ctx)` (v0.9 unified runner). */
   model: ModelConfig;
   /** Progress routing ref — the runner streams each exploration step
-   *  ("Reading global timeline…", "Tracing strand X…") onto the shared
+   *  ("Reading global timeline…", "Reading slice X…") onto the shared
    *  data-tool-progress channel. */
   progress?: SubAgentProgressRef;
 }
@@ -137,9 +124,9 @@ const GLOBAL_TIMELINE_PATH = "memory/episodic/timeline.md";
 const STALE_THRESHOLD_MS = 6 * 60 * 60 * 1000; // 6 hours
 
 /** How many pointer lines readGlobalTimeline returns. The full projection
- *  (100+ slices and growing) is too large to dump into the worker model in
- *  one tool result — it burns steps and context. Older slices are reachable
- *  via readTimelineWindow. */
+ *  (100+ slices and growing) is too large to dump into the model in one tool
+ *  result — it burns steps and context. Older slices are reachable via
+ *  readTimelineWindow. */
 const TIMELINE_PAGE_SIZE = 40;
 
 /** True when an ISO timestamp is parseable and older than the staleness threshold. */
@@ -241,7 +228,7 @@ async function readGlobalTimelineImpl(): Promise<string> {
   }
 }
 
-// ─── Sub-agent tool: readStrand ───────────────────────────────────────
+// ─── Sub-agent tool: readStrand / listStrands ───────────────────────────
 
 async function readStrandImpl(strand: string): Promise<string> {
   try {
@@ -253,6 +240,17 @@ async function readStrandImpl(strand: string): Promise<string> {
     return `Strand "${strand}" appears in: ${paths.slice(0, 20).join(", ")}`;
   } catch {
     return `Could not read strands index.`;
+  }
+}
+
+async function listStrandsImpl(): Promise<string> {
+  try {
+    const strands = await readStrands();
+    const names = Object.keys(strands);
+    if (names.length === 0) return "(no strands yet — no topic tags woven)";
+    return `Known strands (${names.length}): ${names.join(", ")}`;
+  } catch {
+    return "Could not read strands index.";
   }
 }
 
@@ -283,63 +281,200 @@ async function readTimelineWindowImpl(from?: string, to?: string): Promise<strin
   }
 }
 
+// ─── Sub-agent tools: readSliceSummary / readSlice (in-module) ─────────
+//
+// Recall reads slice CONTENT itself — the v1.0 change that turns it from a
+// pointer service into an answering colleague. These implementations mirror
+// readSliceSummaryExecute / readSliceExecute in tool-executors.ts but run as
+// plain in-module functions (this whole sub-agent already lives inside ONE
+// step — recallExecute), reading through the same fsReadFile I/O path the
+// timeline tools use (demo / GitHub / local resolution included).
+
+/** The core conversation file for a slice id. */
+function sliceCorePath(sliceId: string): string | null {
+  const parsed = parseSliceId(sliceId);
+  if (!parsed) return null;
+  return `memory/episodic/slices/${parsed.y}/${parsed.m}/${parsed.d}/${parsed.hm}/timeline/core.md`;
+}
+
+/** Range filter for readSlice — the same Document Segment Read protocol the
+ *  main agent's readSlice executor applies: turn filters (turns / last /
+ *  date), keyword search (misses degrade to the full slice with a note), and
+ *  1-indexed line ranges. */
+type RecallReadRange = {
+  type: "turns" | "last" | "date" | "search" | "lines";
+  indices?: number[];
+  count?: number;
+  after?: string;
+  keywords?: string[];
+  context?: number;
+  start?: number;
+  end?: number;
+};
+
+/** Frontmatter-only relevance check — the cheapest way to verify a candidate
+ *  slice before spending a full-read quota slot on it. */
+async function readSliceSummaryImpl(sliceId: string): Promise<string> {
+  const path = sliceCorePath(sliceId);
+  if (!path) {
+    return "ERROR: Invalid slice ID. Expected format: YYYY-MM-DD-HHMM (e.g. 2026-07-24-1500).";
+  }
+  try {
+    const raw = await fsReadFile(path);
+    const { data } = matter(raw);
+    const { turns } = parseTurns(raw);
+    const fmt = (v: unknown): string =>
+      Array.isArray(v) && v.length ? v.join("; ") : "(none)";
+    return [
+      `slice ${sliceId}`,
+      `start: ${typeof data.start === "string" ? data.start : "?"}`,
+      `end: ${typeof data.end === "string" ? data.end : "(active)"}`,
+      `turns: ${turns.length}`,
+      `focus: ${typeof data.focus === "string" && data.focus ? data.focus : "(none)"}`,
+      `summary: ${typeof data.summary === "string" && data.summary ? data.summary : "(none)"}`,
+      `tags: ${fmt(data.tags)}`,
+      `tone: ${typeof data.emotional_tone === "string" && data.emotional_tone ? data.emotional_tone : "(none)"}`,
+      `open_loops: ${fmt(data.open_loops)}`,
+      `decisions: ${fmt(data.decisions)}`,
+    ].join("\n");
+  } catch (e) {
+    return `ERROR: ${e instanceof Error ? e.message : e}. This time slice does not exist.`;
+  }
+}
+
+async function readSliceImpl(
+  sliceId: string,
+  range?: RecallReadRange,
+): Promise<string> {
+  const path = sliceCorePath(sliceId);
+  if (!path) {
+    return "ERROR: Invalid slice ID. Expected format: YYYY-MM-DD-HHMM (e.g. 2026-07-24-1500).";
+  }
+  try {
+    const raw = await fsReadFile(path);
+    if (!range) return raw;
+
+    // Keyword search — matches return only the relevant turns; a miss degrades
+    // to the full slice with a note (the caller wanted selective content, so
+    // give it the best available and say exactly what happened).
+    if (range.type === "search") {
+      const keywords = range.keywords ?? [];
+      const context = range.context ?? 1;
+      const hits = segmentSearch(splitTurns(raw), keywords, context, context);
+      return searchResultToString(sliceId, keywords, hits, raw);
+    }
+    // Line range — read the file like a code file, 1-indexed inclusive.
+    if (range.type === "lines") {
+      const { content, clamped } = textLines(raw, range.start ?? 1, range.end ?? 1);
+      if (content === "" && (range.start ?? 1) > (range.end ?? 1)) {
+        return `ERROR: Invalid line range ${range.start}-${range.end} in ${sliceId}.`;
+      }
+      const header = `Lines ${range.start}-${range.end} of ${sliceId}${clamped ? " (clamped)" : ""}:\n\n`;
+      return content === "" ? `${header}(empty range)` : header + content;
+    }
+    // Classic turn filters.
+    const { frontmatter, turns } = parseTurns(raw);
+    const filtered = applyRange(turns, range as { type: "turns" | "last" | "date" });
+    return filtered.length === 0
+      ? `${frontmatter}\n\n_(No turns matched the requested range.)_`
+      : reassembleSlice(frontmatter, filtered);
+  } catch (e) {
+    return `ERROR: ${e instanceof Error ? e.message : e}. This time slice does not exist.`;
+  }
+}
+
+// ─── Full-slice read quota ─────────────────────────────────────────────
+
+/**
+ * Max readSlice calls per recall run. Reading full slices is the expensive
+ * leg of recall (context + steps), and a model that keeps "just checking one
+ * more" would burn the whole step budget on reading. After the quota,
+ * readSlice returns a note instead of content and the sub-agent answers from
+ * what it has already read.
+ */
+export const MAX_SLICE_READS = 5;
+
+export interface SliceReadQuota {
+  /** Consume one read slot. Returns false (and consumes nothing) when exhausted. */
+  tryTake(): boolean;
+  readonly used: number;
+  readonly max: number;
+}
+
+/** Per-run quota counter — a closure, so concurrent recall runs never share it. */
+export function createSliceReadQuota(max: number = MAX_SLICE_READS): SliceReadQuota {
+  let used = 0;
+  return {
+    tryTake() {
+      if (used >= max) return false;
+      used += 1;
+      return true;
+    },
+    get used() {
+      return used;
+    },
+    get max() {
+      return max;
+    },
+  };
+}
+
 // ─── Structured output schema: recallReport ─────────────────────────
 
 /** Zod input schema — also the runner's report-validation schema. */
 const recallReportInputSchema = z.object({
-  hits: z
-    .array(
-      z.object({
-        slice_id: z
-          .string()
-          .describe("Slice ID in YYYY-MM-DD-HHMM format"),
-        relevance: tolerantBounded01
-          .describe("How relevant this slice is to the query, 0-1"),
-        reason: z
-          .string()
-          .describe("One-line explanation of why this slice is relevant"),
-      }),
-    )
-    .describe("Relevant slices found. Empty if nothing matches."),
-
-  confidence: tolerantBounded01
-    .describe("Your confidence in the completeness of this recall, 0-1"),
-
-  reasoning: z
+  answer: z
     .string()
-    .describe("Brief explanation of your search strategy and what you found"),
+    .describe(
+      "Your natural-language answer to your colleague's question, in the " +
+      "user's language. Answer like a colleague who remembers (or doesn't). " +
+      "\"You\" in your answer is your colleague (the main agent), NEVER the " +
+      "user — refer to the user in the third person (\"the user said …\" / " +
+      "\"用户当时说 …\"). \"You two haven't talked about this\" is a valid " +
+      "and important answer — never force a hit.",
+    ),
 
-  recommended_reads: z
+  references: z
     .array(
       z.object({
         slice_id: z
           .string()
-          .describe("Slice ID in YYYY-MM-DD-HHMM format"),
-        priority: z
-          .enum(["high", "medium", "low"])
-          .describe("How strongly you recommend the main agent read this slice."),
-        reason: z
+          .describe("Slice ID in YYYY-MM-DD-HHMM format — the slice the quote comes from."),
+        quote: z
           .string()
-          .describe("One line: why this slice is worth reading for the query."),
+          .describe("VERBATIM quote from the slice's conversation text. Never paraphrase."),
         note: z
           .string()
-          .optional()
-          .describe("Optional: what to look for inside the slice, if you can tell from its summary."),
+          .describe("One line: which assertion in your answer this quote backs."),
       }),
     )
-    .max(5)
+    .catch([])
     .describe(
-      "Slices the main agent should consider opening with readSlice. " +
-      "You did NOT read these slices' content — base this on the timeline summary, " +
-      "strand overlap, and tag relevance. Rank by likely usefulness.",
+      "Evidence anchors: EVERY situational assertion in your answer (moods, " +
+      "circumstances, what was said) must be backed by an entry here with a " +
+      "verbatim quote. Claims you cannot anchor must be hedged as uncertain " +
+      "in the answer. Empty when the honest answer is \"no such memory\".",
     ),
+
+  searched: z
+    .array(z.string())
+    .catch([])
+    .describe(
+      "What you searched: timeline windows, strands traced, slice summaries " +
+      "checked, slices read in full. Lets your colleague judge how complete " +
+      "this recall is.",
+    ),
+
+  confidence: tolerantBounded01
+    .describe("Your confidence in this answer's completeness and accuracy, 0-1"),
 });
 
 type RecallReport = z.infer<typeof recallReportInputSchema>;
 
 const recallReportSchema = tool({
   description:
-    "Report your recall findings. Call this ONCE you have gathered enough context.",
+    "Report your answer to your colleague. Call this ONCE you have gathered " +
+    "enough evidence (or are confident there is none).",
   inputSchema: recallReportInputSchema,
 });
 
@@ -349,44 +484,44 @@ const recallReportSchema = tool({
  * The recall sub-agent's static role block — the system prompt is
  * `buildSubAgentSystem(RECALL_ROLE)` (shared static base + this block), so
  * every recall call shares one prefix for provider prompt caches. All
- * per-call content (query, current slice, strands hint) lives in the user
+ * per-call content (question, current slice, strands hint) lives in the user
  * prompt.
  */
-const RECALL_ROLE = `You are the recall search engine: find past conversations relevant to a search query and advise the main agent on what to read.
+const RECALL_ROLE = `You are the recall colleague: you remember this user's past conversations and answer the main agent's questions about them.
 
-You work from POINTERS ONLY — the timeline holds one compact line per slice (id · focus · tags · turns). You NEVER read slice content (no readSlice tool). Your value is fast, accurate navigation over the memory index.
+You hold the FULL read-only memory toolset: the timeline catalog (readGlobalTimeline / readTimelineWindow), topic strands (listStrands / readStrand), slice summaries (readSliceSummary — frontmatter only, the cheap relevance check), and full slice content (readSlice — with optional range filters). Your value is an answer backed by evidence, not a pile of pointers.
 
-Process:
-1. Read the global timeline index to see all available past conversations with their pointer lines.
-2. If the query is about a time period, use readTimelineWindow to scope that window.
-3. If a topic seems relevant, use readStrand to trace it across slices — the strand maps a keyword to its slice paths.
-4. When you have enough information, call recallReport with:
-   - hits: slices with a clear connection to the query (with a one-line reason).
-   - recommended_reads: slices the main agent should consider opening with readSlice — the slices whose summaries suggest the deepest or most direct relevance. The main agent decides whether to read them; you only advise.
+Recall strategy (mirror how a person remembers):
+1. TIME ANCHOR FIRST — if the question carries one ("last week", "that night", "in March"), scope the physical window with readTimelineWindow before anything else.
+2. TRACE CLUES — check listStrands / the strands hint for topics the question touches, and readStrand the matching ones to find their slices.
+3. BROADEN LAST — only then scan the global timeline for anything the first two passes missed.
+4. VERIFY BEFORE ANSWERING — check candidate slices with readSliceSummary, then read the most promising ones in full with readSlice (range filters keep it cheap). You may read at most ${MAX_SLICE_READS} slices in full — spend them on the strongest candidates.
 
-Guidelines:
-- Be thorough but efficient — aim for 2-4 steps.
-- Base relevance and priority on summary quality, strand overlap, and tag relevance — not on content you never read.
-- If nothing is relevant, return an empty hits array. That's fine.
-- Focus on RECALLING context, not answering the question.
-- The current session's slice is the ONGOING conversation, NOT a past memory — never return it as a hit or recommended read, even if it appears in the timeline or a strand path. You recall the PAST only.`;
+Answering:
+- Answer in the user's language, colleague to colleague ("Yes — you and the user talked about that on …", "You two haven't talked about this").
+- PERSON DISCIPLINE (critical): in your answer, "you" is ALWAYS your colleague (the main agent), NEVER the user. The user is a third party — refer to them as "the user" / "用户" ("the user said …", "用户当时提到 …"). Never attribute the user's words, moods, or decisions to "you", and never address your colleague as if it were the user. The conversation you describe happened BETWEEN your colleague and the user — you were not in it.
+- EVERY situational assertion (what was said, moods, circumstances, decisions) must carry a references[] entry with a VERBATIM quote from the slice. What you cannot anchor, hedge explicitly as uncertain.
+- "You two haven't talked about this" / "I can't recall that" is a VALID and important answer. Never force a hit: a confident false memory is far worse than an honest miss. Say what you searched (searched[]) so your colleague can judge completeness.
+- The current session's slice is the ONGOING conversation, NOT a past memory — never cite it, even if it shows up in the timeline or a strand. You recall the PAST only.
+
+Writing discipline (critical): a hard deadline may cut you off mid-exploration, and everything you have already written is preserved and handed to your colleague. So keep a RUNNING plain-text account of what you have established as you go — do not save all writing for the final report.`;
 
 // ─── Public API ────────────────────────────────────────────────────────
 
 /**
- * Step budget for the recall mini-agent. The prescribed process is 4 phases
- * (timeline → window → strand → report) and the prompt still says "aim for
- * 2-4 steps", but a wandering model gets room to explore — prepareRecallStep
- * guarantees the last step is the report.
+ * Step budget for the recall sub-agent. The recall strategy is timeline →
+ * window → strands → summaries → full reads → report, and full-slice reads
+ * (quota-bounded) each cost a step pair — a wandering model gets room to
+ * explore, and prepareRecallStep guarantees the last step is the report.
  */
-export const MAX_STEPS = 8;
+export const MAX_STEPS = 20;
 
 /**
- * prepareStep for the recall mini-agent: when the step budget is nearly
+ * prepareStep for the recall sub-agent: when the step budget is nearly
  * exhausted and recallReport hasn't been called yet, force the model to call
  * it. Without this, an over-exploring model hits the step cap mid-exploration
  * and the run falls back to returning a partial-thinking fragment as the
- * reasoning. Pure — takes the executed steps and returns a per-step override.
+ * answer. Pure — takes the executed steps and returns a per-step override.
  */
 export function prepareRecallStep({
   steps,
@@ -405,10 +540,24 @@ export function prepareRecallStep({
 }
 
 /**
- * Drop hits / recommended reads whose slice id is not in the catalog — the
- * worker model sometimes hallucinates plausible-looking ids, which then 404
- * when the main agent calls readSlice. `validIds === null` means the catalog
- * couldn't be loaded this run: skip validation rather than break recall.
+ * Drop references whose slice is the current (ongoing) conversation. The
+ * current slice is where the question is being asked — it is NOT a past
+ * memory, so it must never surface as recall evidence, regardless of how the
+ * model saw it (timeline entry, strand path, …).
+ */
+export function excludeCurrentSlice<T extends { slice_id: string }>(
+  items: T[],
+  currentSliceId: string,
+): T[] {
+  if (!currentSliceId) return items;
+  return items.filter((i) => i.slice_id !== currentSliceId);
+}
+
+/**
+ * Drop references whose slice id is not in the catalog — the model sometimes
+ * hallucinates plausible-looking ids, which then 404 when the main agent
+ * opens the slice to verify. `validIds === null` means the catalog couldn't
+ * be loaded this run: skip validation rather than break recall.
  */
 export function filterKnownSliceIds<T extends { slice_id: string }>(
   items: T[],
@@ -434,81 +583,90 @@ async function loadValidSliceIds(): Promise<Set<string> | null> {
 }
 
 /** Wall-clock budget for one recall run (runner SDK timeout + backstop). */
-const RECALL_TIMEOUT_MS = 120_000;
+export const RECALL_TIMEOUT_MS = 240_000;
+
+/** Confidence stamped on answers recovered from an interrupted run's partial
+ *  text — real content, but never evidence-checked to completion. */
+const PARTIAL_ANSWER_CONFIDENCE = 0.2;
+
+/** Pull a string field out of an opaque tool-call input (progress lines). */
+function inputString(input: unknown, key: string): string {
+  return typeof input === "object" && input !== null && key in input
+    ? String((input as Record<string, unknown>)[key] ?? "")
+    : "";
+}
 
 /**
- * Run the recall search sub-agent on the unified runner (runSubAgent).
+ * Run the episodic recall sub-agent on the unified runner (runSubAgent).
  *
  * The runner owns the loop: `stopWhen: isStepCount(MAX_STEPS)` lets the model
- * explore (timeline → window → strands) and then call recallReport, and the
- * `prepareStep` passthrough forces recallReport on the final step if the
- * model hasn't called it yet, so a report is always produced.
+ * explore (timeline → window → strands → summaries → full reads) and then
+ * call recallReport, and the `prepareStep` passthrough forces recallReport on
+ * the final step if the model hasn't called it yet, so a report is always
+ * produced.
  *
  * The runner never throws. Non-timeout failures are RE-THROWN here as plain
  * Errors carrying the runner's message, so recallExecute's triage
  * (tool-triage.ts) can rethrow transient failures for the step's auto-retry
  * and degrade only deterministic ones — a catch-all at this layer would
- * swallow transient errors a retry could fix. Timeouts keep the old
- * semantics: degrade in place to an empty result.
+ * swallow transient errors a retry could fix. Timeouts degrade in place:
+ * the partial answer the sub-agent wrote as it went comes back at low
+ * confidence rather than vanishing.
  */
 export async function runRecallSearch(
   input: RecallSearchInput,
 ): Promise<RecallSearchOutput> {
-  const { query, currentSliceId, strandsContext, progress } = input;
+  const { question, currentSliceId, strandsContext, progress } = input;
 
   const strandsHint = strandsContext && Object.keys(strandsContext).length > 0
     ? `
 Available strands (keyword tags threaded across slices): ${Object.keys(strandsContext).join(", ")}
-IMPORTANT: After reading the global timeline, check which strands match your query. Use readStrand to trace matching strands — they give you a direct path to relevant slices.`
+IMPORTANT: After checking any time anchor, trace the strands that match the question with readStrand — they give you a direct path to relevant slices.`
     : "";
 
-  const userPrompt = `Search query: "${query}"
+  // Evolved working notes (design v1.0 §2.4) — appended to the USER prompt so
+  // the static system prompt (and its prefix cache) never changes. Capped so a
+  // bloated playbook cannot flood the prompt; absent playbook → no block.
+  const playbookBlock = input.playbook?.trim()
+    ? `\n\nEvolved working notes (your recall playbook — follow these unless they conflict with the current question):\n${capPlaybook(input.playbook.trim())}`
+    : "";
 
-Current slice: ${currentSliceId} — this is the ONGOING conversation, NOT a past memory. EXCLUDE it from hits and recommended_reads; only report past slices.${strandsHint}
+  const userPrompt = `Your colleague (the main agent) asks: "${question}"
 
-Follow this process:
-1. START — call readGlobalTimeline to see all available past conversations and their pointer lines.
-2. SCOPE — if the query names a time period, call readTimelineWindow to scope that window.
-3. EXPLORE — trace any matching strands with readStrand to find which slices carry the topic.
-4. REPORT — call recallReport with your findings, including recommended_reads advising the main agent which slices are worth opening.
+Current slice: ${currentSliceId} — this is the ONGOING conversation, NOT a past memory. EXCLUDE it from your references; you recall the PAST only.${strandsHint}${playbookBlock}
 
-IMPORTANT: You MUST end by calling recallReport. Even if nothing matches, call it with an empty hits array.`;
+Follow your recall strategy: time anchor first (readTimelineWindow), then clue strands (readStrand), broaden only after that; verify candidates with readSliceSummary and read the strongest slices in full (readSlice, at most ${MAX_SLICE_READS}) before answering.
+
+IMPORTANT: You MUST end by calling recallReport. Even when the honest answer is "we haven't talked about this", call it — with empty references and your searched trail.`;
 
   // Load the catalog's slice ids once per run — used afterwards to drop
-  // hallucinated pointers before they reach the main agent.
+  // hallucinated references before they reach the main agent.
   const validSliceIds = await loadValidSliceIds();
+
+  // Per-run full-slice read quota (see MAX_SLICE_READS).
+  const sliceQuota = createSliceReadQuota();
 
   const res = await runSubAgent<RecallReport>({
     model: input.model,
     system: buildSubAgentSystem(RECALL_ROLE),
     prompt: userPrompt,
-    temperature: 0.1,
+    // Episodic understanding needs some temperature; hallucination is locked
+    // out structurally by the evidence-anchoring contract, not by 0.1.
+    temperature: 0.3,
     tools: {
       readGlobalTimeline: tool({
         description:
           "Read the global timeline index — pointer lines for the newest " +
-          "conversation slices (with the total count). Always start here to " +
-          "see what's available; use readTimelineWindow to reach older slices.",
+          "conversation slices (with the total count). Use readTimelineWindow " +
+          "to reach older slices.",
         inputSchema: z.object({}),
         execute: async () => readGlobalTimelineImpl(),
-      }),
-      readStrand: tool({
-        description:
-          "Follow a strand (keyword tag) that threads through multiple time slices. " +
-          "Returns all slice paths carrying that tag. Use this to trace a topic across time.",
-        inputSchema: z.object({
-          strand: z.string().describe("The strand (tag) to follow."),
-        }),
-        execute: async ({ strand }: { strand: string }) => {
-          const content = await readStrandImpl(strand);
-          return content;
-        },
       }),
       readTimelineWindow: tool({
         description:
           "Read the timeline catalog over a date window (inclusive, YYYY-MM-DD) — " +
-          "one compact pointer line per slice. Use this when the query is about " +
-          "a time period ('what happened around mid-2025') to scope the search.",
+          "one compact pointer line per slice. Your FIRST move when the question " +
+          "carries a time anchor ('last week', 'that night', 'in March').",
         inputSchema: z.object({
           from: z
             .string()
@@ -522,6 +680,103 @@ IMPORTANT: You MUST end by calling recallReport. Even if nothing matches, call i
         execute: async ({ from, to }: { from?: string; to?: string }) =>
           readTimelineWindowImpl(from, to),
       }),
+      listStrands: tool({
+        description:
+          "List all known strands — every keyword tag woven through past " +
+          "slices. Use this to discover which topics exist before tracing one.",
+        inputSchema: z.object({}),
+        execute: async () => listStrandsImpl(),
+      }),
+      readStrand: tool({
+        description:
+          "Follow a strand (keyword tag) that threads through multiple time slices. " +
+          "Returns all slice paths carrying that tag. Use this to trace a topic across time.",
+        inputSchema: z.object({
+          strand: z.string().describe("The strand (tag) to follow."),
+        }),
+        execute: async ({ strand }: { strand: string }) => {
+          const content = await readStrandImpl(strand);
+          return content;
+        },
+      }),
+      readSliceSummary: tool({
+        description:
+          "Read a slice's summary (frontmatter only): focus, summary, tags, " +
+          "tone, turn count, open loops, decisions. The CHEAP relevance check — " +
+          "verify candidates here before spending a full-read quota slot.",
+        inputSchema: z.object({
+          sliceId: z
+            .string()
+            .describe("Slice ID in YYYY-MM-DD-HHMM format, e.g. '2026-07-24-1500'."),
+        }),
+        execute: async ({ sliceId }: { sliceId: string }) =>
+          readSliceSummaryImpl(sliceId),
+      }),
+      readSlice: tool({
+        description:
+          "Read a slice's full conversation record. Costs one of your " +
+          `${MAX_SLICE_READS} full-read quota slots — spend them on the ` +
+          "strongest candidates only. Optional `range`: turns = specific turn " +
+          "indices; last = most recent N turns; date = turns after a timestamp; " +
+          "search = keyword match (misses return the full slice with a note); " +
+          "lines = 1-indexed line range.",
+        inputSchema: z.object({
+          sliceId: z
+            .string()
+            .describe("Slice ID in YYYY-MM-DD-HHMM format, e.g. '2026-07-24-1500'."),
+          range: z
+            .object({
+              type: z
+                .enum(["turns", "last", "date", "search", "lines"])
+                .describe(
+                  "turns = specific turn indices. last = most recent N turns. " +
+                  "date = turns after a given timestamp. " +
+                  "search = keyword match, returns matching turns (+ context); " +
+                  "if nothing matches, returns the full slice with a note. " +
+                  "lines = 1-indexed line range of the raw file.",
+                ),
+              indices: z
+                .array(z.number())
+                .optional()
+                .describe("Turn indices (0-based). Only for type 'turns'."),
+              count: z
+                .number()
+                .optional()
+                .describe("Number of recent turns. Only for type 'last'."),
+              after: z
+                .string()
+                .optional()
+                .describe("ISO 8601 timestamp. Only for type 'date'."),
+              keywords: z
+                .array(z.string())
+                .optional()
+                .describe("Case-insensitive keywords to match. Only for type 'search'."),
+              context: z
+                .number()
+                .optional()
+                .describe("Turns of context around each match (default 1). Only for type 'search'."),
+              start: z
+                .number()
+                .optional()
+                .describe("First line (1-indexed, inclusive). Only for type 'lines'."),
+              end: z
+                .number()
+                .optional()
+                .describe("Last line (1-indexed, inclusive). Only for type 'lines'."),
+            })
+            .optional()
+            .describe("Optional range filter. When omitted, returns the full slice content."),
+        }),
+        execute: async ({ sliceId, range }: { sliceId: string; range?: RecallReadRange }) => {
+          if (!sliceQuota.tryTake()) {
+            return (
+              `(Full-slice read quota exhausted — ${MAX_SLICE_READS} reads per run.) ` +
+              "Answer from what you have already read, or fall back to summaries."
+            );
+          }
+          return readSliceImpl(sliceId, range);
+        },
+      }),
       recallReport: recallReportSchema,
     },
     toolChoice: "auto",
@@ -534,7 +789,7 @@ IMPORTANT: You MUST end by calling recallReport. Even if nothing matches, call i
     prepareStep: prepareRecallStep,
     progress,
     // Stream the sub-agent's exploration trail live: each tool the recall
-    // engine starts surfaces as a progress line on the run's
+    // colleague starts surfaces as a progress line on the run's
     // data-tool-progress channel. Tool steps are discrete ~1-5Hz events, far
     // under the emitter's 40ms write throttle.
     onToolProgress: ({ toolName, input: toolInput }) => {
@@ -544,20 +799,32 @@ IMPORTANT: You MUST end by calling recallReport. Even if nothing matches, call i
       if (toolName === "readTimelineWindow") {
         return { line: "Scoping timeline window…", stage: "thinking" };
       }
+      if (toolName === "listStrands") {
+        return { line: "Listing memory topics…", stage: "thinking" };
+      }
       if (toolName === "readStrand") {
-        const strand =
-          typeof toolInput === "object" &&
-          toolInput !== null &&
-          "strand" in toolInput
-            ? String((toolInput as { strand?: unknown }).strand ?? "")
-            : "";
+        const strand = inputString(toolInput, "strand");
         return {
           line: strand ? `Tracing strand: ${strand}…` : "Tracing a strand…",
           stage: "thinking",
         };
       }
+      if (toolName === "readSliceSummary") {
+        const sid = inputString(toolInput, "sliceId");
+        return {
+          line: sid ? `Checking summary of ${sid}…` : "Checking a slice summary…",
+          stage: "thinking",
+        };
+      }
+      if (toolName === "readSlice") {
+        const sid = inputString(toolInput, "sliceId");
+        return {
+          line: sid ? `Reading slice ${sid}…` : "Reading a slice…",
+          stage: "thinking",
+        };
+      }
       if (toolName === "recallReport") {
-        return { line: "Compiling recall report…", stage: "thinking" };
+        return { line: "Compiling the answer…", stage: "thinking" };
       }
       return undefined;
     },
@@ -565,64 +832,73 @@ IMPORTANT: You MUST end by calling recallReport. Even if nothing matches, call i
 
   if (!res.ok) {
     if (res.timedOut) {
-      // Soft-timeout degradation (unchanged semantics): an empty search so the
-      // main agent knows nothing was found instead of a hard error.
+      // Soft-timeout degradation: never a hard error. If the sub-agent had
+      // already written a partial answer (write-as-you-go discipline), hand
+      // it back at low confidence — an interrupted recall is still better
+      // than none.
       console.warn(`[Recall] ${res.error}`);
+      const partial = res.text?.trim();
+      if (partial) {
+        return {
+          answer: `${partial}\n\n(Interrupted before finishing — this is a partial answer; treat it as uncertain.)`,
+          references: [],
+          searched: [],
+          confidence: PARTIAL_ANSWER_CONFIDENCE,
+        };
+      }
       return {
-        hits: [],
+        answer: "",
+        references: [],
+        searched: [],
         confidence: 0,
-        reasoning: res.error ?? "Recall search timed out",
-        recommendedReads: [],
       };
     }
     // Re-throw for the executor's triage: transient failures get the step's
-    // auto-retry; deterministic ones degrade to an empty result there.
-    throw new Error(res.error ?? "Recall search failed");
+    // auto-retry; deterministic ones degrade there.
+    throw new Error(res.error ?? "Recall failed");
   }
 
   const report = res.report;
   if (!report) {
-    // recallReport not called (or failed validation) — model may have
-    // produced text instead.
+    // recallReport not called (or failed validation) — the model may have
+    // written its answer as plain text instead; return it at low confidence.
     console.warn(
       "[Recall] recallReport not called. Final text:",
       res.text?.slice(0, 200) ?? "(no text)",
     );
+    const text = res.text?.trim() ?? "";
     return {
-      hits: [],
-      confidence: 0,
-      reasoning: res.text
-        ? `Model responded without calling recallReport: ${res.text.slice(0, 200)}`
-        : "Model did not call recallReport",
-      recommendedReads: [],
+      answer: text,
+      references: [],
+      searched: [],
+      confidence: text ? PARTIAL_ANSWER_CONFIDENCE : 0,
     };
   }
 
-  const rawHits = report.hits ?? [];
-  const pastHits = excludeCurrentSlice(rawHits, currentSliceId);
-  const hits = filterKnownSliceIds(pastHits, validSliceIds);
-  const recommendedReads = filterKnownSliceIds(
-    excludeCurrentSlice(
-      normalizeRecommendedReads(report.recommended_reads),
-      currentSliceId,
-    ),
+  // Post-processing: drop references pointing at the ongoing conversation,
+  // then drop hallucinated slice ids. NOTE: unlike the old pointer engine we
+  // do NOT zero the confidence when every reference drops — an empty
+  // references array is now the NORMAL state of an honest "no such memory"
+  // answer, not evidence of a failed search.
+  const rawRefs = report.references ?? [];
+  const references = filterKnownSliceIds(
+    excludeCurrentSlice(rawRefs, currentSliceId),
     validSliceIds,
   );
-  // If the model's only "evidence" was the current slice, the search
-  // genuinely found nothing from the past — zero the confidence rather
-  // than report a false hit with a confident score.
-  const droppedCurrent = rawHits.length - pastHits.length;
-  const confidence =
-    droppedCurrent > 0 && hits.length === 0 ? 0 : report.confidence ?? 0.5;
-  const reasoning =
-    droppedCurrent > 0
-      ? `${
-          report.reasoning ?? ""
-        } [Excluded current slice ${currentSliceId} — the ongoing conversation is not a past memory.]`.trim()
-      : report.reasoning ?? "";
+  const dropped = rawRefs.length - references.length;
+  if (dropped > 0) {
+    console.log(
+      `[Recall] Excluded ${dropped} reference(s) (current slice or unknown id)`,
+    );
+  }
 
   console.log(
-    `[Recall] Found ${hits.length} hits (${droppedCurrent} current-slice excluded), ${recommendedReads.length} recommended reads, confidence=${confidence.toFixed(2)}`,
+    `[Recall] Answered with ${references.length} reference(s), confidence=${(report.confidence ?? 0.5).toFixed(2)}, ${sliceQuota.used} full read(s)`,
   );
-  return { hits, confidence, reasoning, recommendedReads };
+  return {
+    answer: report.answer ?? "",
+    references,
+    searched: report.searched ?? [],
+    confidence: report.confidence ?? 0.5,
+  };
 }

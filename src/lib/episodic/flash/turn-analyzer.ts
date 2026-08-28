@@ -2,7 +2,7 @@
  * Turn Analyzer — the single structured sub-agent call inside the
  * housekeeping step.
  *
- * One pass, four outputs (structured, thinking on at low effort, cheap):
+ * One pass, structured outputs (thinking on at low effort, cheap):
  *   1. message_tags   — keyword tags for the current user message (woven into strands).
  *   2. semantic_hint  — which EXISTING strands this message is about, plus why
  *      (an LLM understands paraphrase / cross-language). v0.9: no longer fed
@@ -13,6 +13,11 @@
  *      about to close (only when one closed this turn).
  *   4. evolve_card    — whether the closing slice holds anything worth
  *      sedimenting onto the user card (only when one closed this turn).
+ *   5. fitness        — this slice's evidence-anchored satisfaction deltas per
+ *      bucket (v1.0 design §2.5 — the analyzer SCORES, never aggregates; the
+ *      deterministic trigger math lives in src/lib/evolution/triggers.ts).
+ *      This slice's mechanical signals (recall verify/rework, §2.6) are an
+ *      input, each recall_rework/recall_repeat a -1 candidate for recall.
  *
  * The model is passed in — since v0.9 it is the turn's MAIN model, run through
  * the shared sub-agent runner (src/lib/agents/sub-agent-runner.ts): thinking
@@ -28,6 +33,7 @@ import { buildSubAgentSystem } from "@/lib/agents/prompts";
 import type { ModelConfig } from "@/lib/models/registry";
 import type { EmotionalTone, Turn } from "@/lib/episodic/types";
 import type { EmotionalSignal } from "@/lib/turn-priming";
+import type { FitnessBucket, FitnessSignal } from "@/lib/evolution/store";
 
 export interface SemanticHint {
   strands: string[];
@@ -61,6 +67,21 @@ export interface NewTagProposal {
 /** Best-fit card section for an explicit memory update (v5 card sections). */
 export const CARD_SECTIONS = ["identity", "past", "now", "horizon", "self_model"] as const;
 export type CardSection = (typeof CARD_SECTIONS)[number];
+
+/**
+ * One fitness delta for one bucket (v1.0 design §2.5). The analyzer SCORES,
+ * the code aggregates — a delta is only ever a single, evidence-anchored
+ * observation about THIS slice; the sliding-window trigger math lives in
+ * src/lib/evolution/triggers.ts. An evidence-less non-zero delta is
+ * force-zeroed at the store boundary (appendFitnessEvents).
+ */
+export interface FitnessDelta {
+  bucket: FitnessBucket;
+  delta: -2 | -1 | 0 | 1;
+  /** The user's EXACT words backing a non-zero delta (or the supplied
+   *  mechanical-signal detail for a recall -1 candidate). */
+  evidence: string;
+}
 
 export interface TurnAnalysis {
   /**
@@ -103,6 +124,12 @@ export interface TurnAnalysis {
    */
   evolveCard?: { worth: boolean; reason: string };
   closedMarking?: ClosedMarking;
+  /**
+   * This slice's fitness deltas (design §2.5), 0-5 entries. Absent entirely
+   * when nothing in the slice explicitly signaled satisfaction or
+   * dissatisfaction — "no signal" means NO entry, not a 0-entry.
+   */
+  fitness?: FitnessDelta[];
 }
 
 export interface AnalyzeTurnInput {
@@ -112,6 +139,13 @@ export interface AnalyzeTurnInput {
   existingStrandNames: string[];
   /** Present only when a slice is about to close this turn — enables Task 3. */
   closingSlice?: { turns: Turn[]; tags: string[] };
+  /**
+   * This slice's mechanical fitness signals (design §2.6 — recall
+   * verify/rework instrumentation). Each recall_rework / recall_repeat is a
+   * -1 CANDIDATE for the recall bucket in Task 7; its detail may serve as
+   * the evidence.
+   */
+  signals?: FitnessSignal[];
 }
 
 const analyzeSchema = z.object({
@@ -234,6 +268,39 @@ const analyzeSchema = z.object({
     })
     .optional()
     .describe("Only when a slice just closed."),
+  fitness: z
+    .array(
+      z.object({
+        bucket: z
+          .enum(["card", "recall", "search", "thinkdeep", "interaction"])
+          .describe(
+            "What the signal attributes to: card = the user card's content; recall = the " +
+            "recall colleague's answers; search = the research colleague; thinkdeep = the " +
+            "thinking pod; interaction = the main agent's general conduct.",
+          ),
+        delta: z
+          .union([z.literal(-2), z.literal(-1), z.literal(0), z.literal(1)])
+          .describe(
+            "-2 = explicit complaint/correction; -1 = signs of dissatisfaction; " +
+            "+1 = explicit approval. 0 only when you must record a signal-free observation.",
+          ),
+        evidence: z
+          .string()
+          .describe(
+            "The user's EXACT words (verbatim quote) backing a non-zero delta. No quote → " +
+            "do NOT emit the entry. For a recall -1 candidate from a supplied mechanical " +
+            "signal, the signal's detail line serves as the evidence — quoting it is allowed.",
+          ),
+      }),
+    )
+    // Truncate, never reject: an over-long fitness list must not nuke the
+    // whole analysis (same leniency as the bridge report schema).
+    .transform((a) => a.slice(0, 5))
+    .optional()
+    .describe(
+      "Fitness scoring (Task 7): ONLY what THIS slice's user messages explicitly signal. " +
+      "Nothing signaled → emit NO entry (an absent fitness field, not a 0-delta list).",
+    ),
 });
 
 /** Compress a closing slice's turns for Task 3 — first turn + last 10, chars capped. */
@@ -251,7 +318,7 @@ function compressSliceTurns(turns: Turn[]): string {
  * between calls, so provider prefix caches hit on every analysis. All dynamic
  * content (message, existing topics, closing slice) goes into the user prompt.
  */
-const ANALYZER_SYSTEM = buildSubAgentSystem(`You are the memory analyzer for a personal AI platform. One pass, six tasks (Task 6 ONLY when the user message includes a closing slice). Keep every field short — this is metadata, not prose.
+const ANALYZER_SYSTEM = buildSubAgentSystem(`You are the memory analyzer for a personal AI platform. One pass, seven tasks (Task 6 ONLY when the user message includes a closing slice). Keep every field short — this is metadata, not prose.
 
 ## Task 1 — Tag the current message
 
@@ -300,7 +367,18 @@ ALSO return evolve_card — your judgment on whether anything in this closing sl
 - worth: true when the slice contains a durable fact about the user, a stated preference or correction, a commitment / deadline / awaited reply (a Horizon item), the resolution of an open loop, or an operating lesson for the agent
 - worth: false ONLY when the slice holds zero card-worthy content — pure greetings, logistics, ephemeral chit-chat
 - reason: one line on what deserves sedimentation, or why nothing does
-When in doubt, worth: true — a wasted review is cheap, a missed evolution is permanent memory loss.`);
+When in doubt, worth: true — a wasted review is cheap, a missed evolution is permanent memory loss.
+
+## Task 7 — Score fitness signals (ONLY what this slice explicitly signals)
+
+Score the user's EXPLICIT satisfaction/dissatisfaction signals in THIS slice, attributed to a bucket. This is the evolution loop's selection pressure — another agent aggregates your deltas; you only report single, evidence-anchored observations.
+
+- Buckets: card (the user card's content), recall (the recall colleague's answers), search (the research colleague), thinkdeep (the thinking pod), interaction (the main agent's general conduct).
+- delta: -2 = explicit complaint or correction ("that's wrong", "stop doing X"); -1 = signs of dissatisfaction (frustration, asking again, disappointment); +1 = explicit approval ("exactly what I needed", "记住了真好"). 0 = no signal — but prefer emitting NO entry at all.
+- EVIDENCE RULE (hard): every non-zero delta MUST quote the user's exact words in evidence. No quote → do not emit the entry. A delta without evidence is force-zeroed downstream anyway — don't waste it.
+- Score ONLY what this slice's user messages say. Never infer satisfaction from your own performance guesses; never score on the agent's behalf.
+- Mechanical signals: when the input lists a recall_rework / recall_repeat signal, treat it as a -1 CANDIDATE for the recall bucket (the main agent re-did recall's job — implicit distrust). The signal's detail line may serve as the evidence. recall_verify is neutral — no entry.
+- Max 5 entries. Nothing signaled → omit the fitness field entirely.`);
 
 /** The dynamic user prompt: current message, existing topics, closing slice. */
 function buildPrompt(input: AnalyzeTurnInput): string {
@@ -324,9 +402,21 @@ Existing tags on this slice: ${input.closingSlice.tags.join(", ") || "(none)"}
 Return closed_marking AND evolve_card per your Task 6 instructions.`
     : "";
 
+  const signalsSection =
+    input.signals && input.signals.length > 0
+      ? `
+
+## Mechanical signals this slice (Task 7 input)
+
+Instrumentation recorded these this slice (design: recall verify/rework tracking):
+${input.signals.map((s) => `- ${s.type} — ${s.detail}`).join("\n")}
+
+Each recall_rework / recall_repeat is a -1 CANDIDATE for the recall bucket (its detail may serve as evidence). recall_verify is neutral — no entry.`
+      : "";
+
   return `Message: "${input.userMessage.slice(0, 1000)}"
 
-Existing topics (pick from these FIRST — they are the durable memory index): ${existing}${closingSection}`;
+Existing topics (pick from these FIRST — they are the durable memory index): ${existing}${closingSection}${signalsSection}`;
 }
 
 /**
@@ -440,6 +530,16 @@ export async function analyzeTurn(input: AnalyzeTurnInput): Promise<TurnAnalysis
               ? (d.closed_marking.tone as EmotionalTone)
               : null,
           }
+        : undefined,
+      // Fitness deltas pass through verbatim (capped) — the store boundary
+      // (appendFitnessEvents) owns the evidence force-zero backstop; do NOT
+      // duplicate it here.
+      fitness: d.fitness
+        ? d.fitness.slice(0, 5).map((f) => ({
+            bucket: f.bucket,
+            delta: f.delta,
+            evidence: typeof f.evidence === "string" ? f.evidence : "",
+          }))
         : undefined,
     };
 }

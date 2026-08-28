@@ -77,6 +77,25 @@ import {
 import { checkSliceAge } from "@/lib/episodic/slicer";
 import { fsReadFile, fsWriteFile } from "@/lib/episodic/io-helpers";
 import {
+  appendFitnessEvents,
+  bucketNetScore,
+  ensureEvolutionFiles,
+  readDirection,
+  readFitness,
+  readRecentSignals,
+  writeDirection,
+} from "@/lib/evolution/store";
+import {
+  computeEvolutionTriggers,
+  EVOLVE_WINDOW_SLICES,
+} from "@/lib/evolution/triggers";
+import { appendMutationWithEvaluation } from "@/lib/evolution/acceptance";
+import {
+  DIRECTION_RECENT_EVENTS,
+  runDirectionAgent,
+  validateDirectionProposal,
+} from "@/lib/evolution/direction-agent";
+import {
   buildAgentIdentityPrompt,
   parseIdentityFromPreviously,
 } from "@/lib/identity";
@@ -264,6 +283,12 @@ async function emitEvolutionResult(
       ...(result.error ? { error: result.error } : {}),
       // A pass cut off without a finish call — the card is partial work.
       ...(result.partial ? { partial: true } : {}),
+      // v1.0 calibration details (design §2.3/§2.5): why the run fired, the
+      // Phase-1 direction verdict, and the playbook mutations applied. All
+      // optional — absent on analyzer-gated / explicit-request / bridge runs.
+      ...(result.triggers?.length ? { triggers: result.triggers } : {}),
+      ...(result.direction ? { direction: result.direction } : {}),
+      ...(result.playbooks?.length ? { playbooks: result.playbooks } : {}),
     },
   } as UIMessageChunk);
 }
@@ -546,6 +571,13 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   // shared runner, v0.9) is its own visible housekeeping sub-step.
   await emitStep("analyze", true);
   const existingStrands = await readStrands(batch);
+  // This slice's mechanical fitness signals (v1.0 §2.6 — recall verify/rework
+  // instrumentation) ride the analyzer input (Task 7) and the bridge payload.
+  const thisSliceSignals = diskSlice
+    ? (await readRecentSignals(20)).filter(
+        (s) => s.sliceId === diskSlice.slice_id,
+      )
+    : [];
   // Phase outsourcing (client mode + bridge brain, kill-switch
   // PREVIOUSLY_PHASE_OUTSOURCE=0): ONE bridge call covers BOTH LLM stages —
   // the turn analysis AND the card-evolution proposal (applied in §4b via
@@ -556,6 +588,9 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   let analysis: TurnAnalysis;
   let bridgeReport: HousekeepingPhaseReport | null = null;
   let bridgeCardRaw: string | undefined;
+  /** The direction doc, read for the bridge payload (reused when applying the
+   *  report's direction outcome in §4b). */
+  let bridgeDirection: string | null = null;
   /** Dry-slice ids offered to the bridge call — the apply step (§3b) honors
    *  backfill marks for exactly these ids, never anything the agent invented. */
   let bridgeDryCandidateIds: string[] = [];
@@ -569,6 +604,7 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   let bridgeStrandMergeNames: Set<string> | null = null;
   if (phaseOutsource) {
     bridgeCardRaw = await readCurrentPreviously(batch);
+    bridgeDirection = await readDirection();
     // Dry-slice re-marking rides the SAME bridge call (job 4 of the report)
     // instead of the old per-slice backfill sub-agent spawns — on a close
     // boundary the candidates are gathered here and marked via the report.
@@ -644,6 +680,9 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
                 slices: paths.length,
               }))
             : undefined,
+        signals:
+          thisSliceSignals.length > 0 ? thisSliceSignals : undefined,
+        directionContent: bridgeDirection,
         todayLocal:
           localDateKey(input.startedAtIso, input.clientTimezone) ?? undefined,
         locale: input.locale,
@@ -677,6 +716,7 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
         closeSignal && diskSlice
           ? { turns: diskSlice.turns, tags: diskSlice.tags }
           : undefined,
+      signals: thisSliceSignals.length > 0 ? thisSliceSignals : undefined,
     });
   }
   const candidateTags = analysis.memoryWorthy
@@ -775,6 +815,38 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
     slice = createSlice(lastUserMessage, clientTimezone, input.turnId);
     createdNewSlice = true;
     console.log(`[Episodic] Created new slice: ${slice.slice_id}`);
+  }
+
+  // ── 3a. Fitness events (v1.0 §2.5) — persist the analyzer's deltas ──────
+  // The analyzer SCORES (single evidence-anchored deltas), the store aggregates.
+  // Both paths land here: the direct analyzer's analysis.fitness and the bridge
+  // report's fitness array (mapped onto the same shape by
+  // adaptHousekeepingReport). An analyzer/bridge failure carries no fitness
+  // field → nothing is appended. The events are attributed to the slice they
+  // were scored on — the CLOSED slice on a boundary, else the active one. The
+  // store's evidence force-zero is the structural backstop, not duplicated.
+  if (analysis.fitness && analysis.fitness.length > 0) {
+    try {
+      const scoredSliceId =
+        closeSignal && diskSlice ? diskSlice.slice_id : slice.slice_id;
+      const ts = new Date().toISOString();
+      await appendFitnessEvents(
+        analysis.fitness.map((f) => ({
+          ts,
+          sliceId: scoredSliceId,
+          bucket: f.bucket,
+          delta: f.delta,
+          evidence: f.evidence,
+        })),
+        batch,
+      );
+    } catch (e) {
+      // Scoring is instrumentation — a store failure must never take a turn down.
+      console.warn(
+        "[Evolution] fitness event append failed:",
+        e instanceof Error ? e.message : e,
+      );
+    }
   }
 
   // ── 3b. Dry-slice backfill (opportunistic, only on a close boundary) ────
@@ -887,6 +959,13 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   // only; every content decision (expiry, overdue handling, caps, format)
   // belongs to the agent, enforced INSIDE its write tools — there is no
   // mechanical pass that silently edits the card.
+  // v1.0 (design §2.3): at a slice boundary the trigger is TWO-PHASE — a
+  // deterministic fitness-trigger check (computeEvolutionTriggers) plus the
+  // card bucket's legacy gates decides WHETHER anything runs; Phase 1
+  // (direction-agent) evaluates direction.md, Phase 2 (the Previously Agent)
+  // evolves card + triggered-bucket playbooks under it. Accepted mutations
+  // are archived with their expected benefit (design §2.7) inside
+  // runCardEvolution / the direction write below.
   // Triggers:
   //   (a) slice boundary — gated by the ANALYZER's judgment (evolveCard.worth);
   //       on analyzer failure the gate defaults to running (a wasted worker
@@ -959,6 +1038,68 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
         // Bridge path: the evolution decision + mutation proposals arrived in
         // the SAME bridge call as the analysis — apply them through the
         // card-session machinery (applyBridgeCardEvolution), no second spawn.
+        //
+        // Phase-1 verdict first (v1.0 §6): the outsourced call's direction
+        // outcome rides the same report and is applied through the SAME write
+        // paths as the direction sub-agent flow — the structural validation is
+        // identical (validateDirectionProposal), and a rejected proposal
+        // surfaces as an amber warning row on the housekeeping card, never a
+        // silent skip. The verdict is captured here so it can ride the
+        // terminal evolution frame below; a failed/rejected write leaves it
+        // UNSET (a failure must not masquerade as "no_change").
+        let bridgeDirectionOutcome: EvolutionResult["direction"];
+        if (bridgeReport && bridgeReport.direction === "no_change") {
+          bridgeDirectionOutcome = { outcome: "no_change" };
+        } else if (
+          bridgeReport &&
+          bridgeReport.direction &&
+          bridgeReport.direction !== "no_change"
+        ) {
+          const proposed = bridgeReport.direction;
+          const validation = validateDirectionProposal(
+            proposed.proposed,
+            bridgeDirection,
+          );
+          if (validation.ok) {
+            try {
+              const fitnessStore = await readFitness(batch);
+              await writeDirection(proposed.proposed.trim(), batch);
+              const summary =
+                proposed.summary.trim() ||
+                "Direction updated (bridge housekeeping report)";
+              await appendMutationWithEvaluation(
+                {
+                  ts: new Date().toISOString(),
+                  target: "direction",
+                  summary,
+                  evidence: proposed.evidence,
+                  expectedBenefit:
+                    proposed.expected_benefit.trim() || "(none given)",
+                },
+                fitnessStore,
+                batch,
+              );
+              bridgeDirectionOutcome = { outcome: "updated", summary };
+              console.log("[Evolution] direction updated (bridge report)");
+            } catch (e) {
+              hkActivity.warning = `Direction write failed: ${e instanceof Error ? e.message : e}`;
+              sendHousekeepingCard(false);
+            }
+          } else {
+            hkActivity.warning = `Direction proposal rejected: ${validation.reason}`;
+            sendHousekeepingCard(false);
+          }
+        }
+        // The verdict rides every terminal frame of this branch.
+        const withDirection = (
+          result: EvolutionResult,
+        ): EvolutionResult => ({
+          ...result,
+          ...(bridgeDirectionOutcome
+            ? { direction: bridgeDirectionOutcome }
+            : {}),
+        });
+
         if (!bridgeReport) {
           await emitEvolutionResult(stream, {
             ran: false,
@@ -982,50 +1123,166 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
             mutations: bridgeReport.evolution.mutations,
             batch,
           });
-          await emitEvolutionResult(stream, evolutionResult);
+          await emitEvolutionResult(stream, withDirection(evolutionResult));
           freezeEvolutionSummary(slice);
           console.log(
             `[Evolution] bridge slice-close: changed=${evolutionResult.changed}${legacyCard ? " (legacy card migration)" : ""}`,
           );
         } else {
           // Report-judged skip — the terminal chunk keeps the skip visible.
+          await emitEvolutionResult(
+            stream,
+            withDirection({
+              ran: false,
+              changed: false,
+              droppedRecent: 0,
+              note: `Slice boundary — nothing worth sedimenting (${bridgeReport.evolution.reason || "no reason given"}).`,
+            }),
+          );
+        }
+      } else {
+        // ── v1.0 two-phase evolution (design §2.3/§2.5) ───────────────────
+        // The deterministic trigger check runs at EVERY slice boundary BEFORE
+        // deciding what to run: per-bucket windowed net scores + this slice's
+        // evidence-anchored -2 events (computeEvolutionTriggers), combined
+        // with the card bucket's legacy gates (analyzer worth / legacy-card
+        // force). No trigger and no card gate → NO evolution sub-agent runs —
+        // the mandatory per-boundary check IS this code-level scoring
+        // (mandatory check ≠ mandatory mutation).
+        const fitnessStore = await readFitness(batch);
+        const triggers = computeEvolutionTriggers(
+          fitnessStore,
+          analysis.fitness ?? [],
+        );
+        // The terminal frame's "why it ran" rows (v1.0 §2.5): each fired
+        // bucket with its current windowed net score. Empty when the run was
+        // gated by the analyzer / a legacy card instead — the card then shows
+        // no score rows.
+        const triggerRows: NonNullable<EvolutionResult["triggers"]> =
+          triggers.map((t) => ({
+            bucket: t.bucket,
+            score: bucketNetScore(fitnessStore, t.bucket, EVOLVE_WINDOW_SLICES),
+          }));
+        const cardGate = shouldRunCardEvolution(analysis) || legacyCard;
+
+        if (triggers.length > 0 || cardGate) {
+          // Phase 1 — Direction: evaluate whether direction.md itself should
+          // move (low frequency, high bar — "no change" is the common case and
+          // writes nothing). A failed Phase 1 never blocks Phase 2; the
+          // degradation is logged and noted on the evolution result.
+          // The verdict rides the terminal frame — EXCEPT on failure, where
+          // the field stays unset (a failed check is not a "no_change").
+          let direction: string | null = null;
+          let directionNote = "";
+          let directionOutcome: EvolutionResult["direction"];
+          try {
+            await ensureEvolutionFiles();
+            direction = await readDirection();
+            const dirResult = await runDirectionAgent({
+              model: input.modelConfig,
+              current: direction,
+              recentEvents: fitnessStore.events.slice(-DIRECTION_RECENT_EVENTS),
+              analysis,
+              sliceId: diskSlice.slice_id,
+            });
+            if (dirResult.outcome === "proposed") {
+              await writeDirection(dirResult.direction, batch);
+              const archived = await appendMutationWithEvaluation(
+                {
+                  ts: new Date().toISOString(),
+                  target: "direction",
+                  summary: dirResult.summary,
+                  evidence: dirResult.evidence,
+                  expectedBenefit: dirResult.expectedBenefit,
+                },
+                fitnessStore,
+                batch,
+              );
+              direction = dirResult.direction;
+              directionOutcome = {
+                outcome: "updated",
+                summary: dirResult.summary,
+              };
+              console.log(
+                `[Evolution] direction updated: ${dirResult.summary}` +
+                  (archived.markedIneffective
+                    ? ` (previous direction mutation ${archived.evaluatedPreviousTs} marked ineffective)`
+                    : ""),
+              );
+            } else if (dirResult.outcome === "no_change") {
+              directionOutcome = { outcome: "no_change" };
+            } else {
+              console.warn(
+                `[Evolution] direction evaluation unavailable: ${dirResult.reason}`,
+              );
+              directionNote = " Direction evaluation unavailable this run.";
+            }
+          } catch (e) {
+            console.warn(
+              "[Evolution] direction phase failed:",
+              e instanceof Error ? e.message : e,
+            );
+            directionNote = " Direction evaluation unavailable this run.";
+          }
+
+          // Phase 2 — Product: evolve the card (+ triggered-bucket playbooks)
+          // under the current direction. The triggered buckets gate the
+          // agent's writePlaybook; the events/signals are its evidence.
+          const triggeredBuckets = triggers.map((t) => t.bucket);
+          evolutionResult = await runCardEvolution({
+            model: input.modelConfig,
+            sliceId: diskSlice.slice_id,
+            closedSliceId: diskSlice.slice_id,
+            recentTurns: diskSlice.turns.map((t) => ({ role: t.role, content: t.content })),
+            currentSliceTags: diskSlice.tags,
+            signal: "slice_closed",
+            focus: explicitUpdate?.content,
+            readers: buildCardReaders(input),
+            onProgress: onEvolutionProgress,
+            onEvolutionLine,
+            batch,
+            todayDate: todayLocal,
+            direction,
+            triggeredBuckets,
+            fitnessEvents: fitnessStore.events
+              .filter((e) => triggeredBuckets.includes(e.bucket))
+              .slice(-15),
+            fitnessSignals: thisSliceSignals,
+          });
+          if (directionNote) {
+            evolutionResult = {
+              ...evolutionResult,
+              note: evolutionResult.note + directionNote,
+            };
+          }
+          // Fold the "why it ran" / "what the direction check concluded"
+          // calibration details into the terminal frame — for BOTH the
+          // changed and the checked-no-updates outcomes.
+          evolutionResult = {
+            ...evolutionResult,
+            ...(triggerRows.length > 0 ? { triggers: triggerRows } : {}),
+            ...(directionOutcome ? { direction: directionOutcome } : {}),
+          };
+          await emitEvolutionResult(stream, evolutionResult);
+          freezeEvolutionSummary(slice);
+          console.log(
+            `[Evolution] inline slice-close: changed=${evolutionResult.changed}` +
+              (triggers.length > 0
+                ? ` (triggers: ${triggers.map((t) => t.bucket).join(", ")})`
+                : "") +
+              (legacyCard ? " (legacy card migration)" : ""),
+          );
+        } else {
+          // Analyzer-judged skip — still emit a terminal chunk so the
+          // auto-evolution stays visibly alive (a silent skip reads as "it
+          // never runs"), with the reason recorded.
           await emitEvolutionResult(stream, {
             ran: false,
             changed: false,
             droppedRecent: 0,
-            note: `Slice boundary — nothing worth sedimenting (${bridgeReport.evolution.reason || "no reason given"}).`,
+            note: `Slice boundary — nothing worth sedimenting (${analysis.evolveCard?.reason ?? "no reason given"}).`,
           });
         }
-      } else if (shouldRunCardEvolution(analysis) || legacyCard) {
-        evolutionResult = await runCardEvolution({
-          model: input.modelConfig,
-          sliceId: diskSlice.slice_id,
-          closedSliceId: diskSlice.slice_id,
-          recentTurns: diskSlice.turns.map((t) => ({ role: t.role, content: t.content })),
-          currentSliceTags: diskSlice.tags,
-          signal: "slice_closed",
-          focus: explicitUpdate?.content,
-          readers: buildCardReaders(input),
-          onProgress: onEvolutionProgress,
-          onEvolutionLine,
-          batch,
-          todayDate: todayLocal,
-        });
-        await emitEvolutionResult(stream, evolutionResult);
-        freezeEvolutionSummary(slice);
-        console.log(
-          `[Evolution] inline slice-close: changed=${evolutionResult.changed}${legacyCard ? " (legacy card migration)" : ""}`,
-        );
-      } else {
-        // Analyzer-judged skip — still emit a terminal chunk so the
-        // auto-evolution stays visibly alive (a silent skip reads as "it
-        // never runs"), with the reason recorded.
-        await emitEvolutionResult(stream, {
-          ran: false,
-          changed: false,
-          droppedRecent: 0,
-          note: `Slice boundary — nothing worth sedimenting (${analysis.evolveCard?.reason ?? "no reason given"}).`,
-        });
       }
     } else if (explicitUpdate && slice) {
       if (phaseOutsource) {
@@ -1059,6 +1316,10 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
           });
         }
       } else {
+        // v1.0: the direction doc is orientation for the product phase even on
+        // an explicit-request run (Phase-1 evaluation stays boundary-scoped;
+        // no fitness buckets trigger here, so writePlaybook stays gated off).
+        const direction = await readDirection().catch(() => null);
         evolutionResult = await runCardEvolution({
           model: input.modelConfig,
           sliceId: slice.slice_id,
@@ -1071,6 +1332,8 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
           onEvolutionLine,
           batch,
           todayDate: todayLocal,
+          direction,
+          triggeredBuckets: [],
         });
         await emitEvolutionResult(stream, evolutionResult);
         freezeEvolutionSummary(slice);

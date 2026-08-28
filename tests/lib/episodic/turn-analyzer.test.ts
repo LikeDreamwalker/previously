@@ -300,6 +300,96 @@ describe("analyzeTurn", () => {
     const result = await analyzeTurn({ model, userMessage: "x", existingStrandNames: [] });
     expect(result.evolveCard).toBeUndefined();
   });
+
+  // ── Task 7: fitness deltas (v1.0 design §2.5) ──────────────────────────
+
+  it("parses fitness deltas verbatim (capped at 5)", async () => {
+    ai.streamText.mockResolvedValue(
+      makeToolCall({
+        message_tags: { reuse: [], create: [] },
+        semantic_hint: { strands: [], reason: "" },
+        intent: { type: "chat", reason: "user correcting recall" },
+        memory_worthy: true,
+        emotional_signal: { intensity: "strong", register: "frustrated", note: "annoyed" },
+        fitness: [
+          { bucket: "recall", delta: -2, evidence: "这根本不是我们聊过的内容" },
+          { bucket: "interaction", delta: 1, evidence: "exactly what I needed" },
+          ...Array.from({ length: 5 }, (_, i) => ({
+            bucket: "card",
+            delta: 0,
+            evidence: `filler ${i}`,
+          })),
+        ],
+      }),
+    );
+    const result = await analyzeTurn({ model, userMessage: "x", existingStrandNames: [] });
+    expect(result.fitness).toHaveLength(5);
+    expect(result.fitness![0]).toEqual({
+      bucket: "recall",
+      delta: -2,
+      evidence: "这根本不是我们聊过的内容",
+    });
+  });
+
+  it("passes an evidence-less delta through (the store boundary force-zeroes it — no duplication here)", async () => {
+    ai.streamText.mockResolvedValue(
+      makeToolCall({
+        message_tags: { reuse: [], create: [] },
+        semantic_hint: { strands: [], reason: "" },
+        intent: { type: "chat", reason: "chat" },
+        memory_worthy: true,
+        emotional_signal: { intensity: "none", register: "neutral", note: "" },
+        fitness: [{ bucket: "card", delta: -1, evidence: "  " }],
+      }),
+    );
+    const result = await analyzeTurn({ model, userMessage: "x", existingStrandNames: [] });
+    expect(result.fitness).toEqual([{ bucket: "card", delta: -1, evidence: "  " }]);
+  });
+
+  it("omits fitness when the model emits none (the no-signal state)", async () => {
+    ai.streamText.mockResolvedValue(
+      makeToolCall({
+        message_tags: { reuse: [], create: [] },
+        semantic_hint: { strands: [], reason: "" },
+        intent: { type: "chat", reason: "greeting" },
+        memory_worthy: false,
+        emotional_signal: { intensity: "none", register: "neutral", note: "" },
+      }),
+    );
+    const result = await analyzeTurn({ model, userMessage: "你好", existingStrandNames: [] });
+    expect(result.fitness).toBeUndefined();
+  });
+
+  it("lists the supplied mechanical signals in the user prompt", async () => {
+    ai.streamText.mockResolvedValue(
+      makeToolCall({
+        message_tags: { reuse: [], create: [] },
+        semantic_hint: { strands: [], reason: "" },
+        intent: { type: "chat", reason: "chat" },
+        memory_worthy: true,
+        emotional_signal: { intensity: "none", register: "neutral", note: "" },
+      }),
+    );
+    await analyzeTurn({
+      model,
+      userMessage: "x",
+      existingStrandNames: [],
+      signals: [
+        {
+          ts: "2026-08-27T10:00:00Z",
+          sliceId: "2026-08-27-1000",
+          type: "recall_rework",
+          detail: "main agent read slice 2026-08-20-1430 outside recall's references",
+        },
+      ],
+    });
+    const arg = ai.streamText.mock.calls.at(-1)?.[0] as { prompt: string; system: string };
+    expect(arg.prompt).toContain("Mechanical signals this slice");
+    expect(arg.prompt).toContain("recall_rework");
+    // Static prompt carries the scoring discipline, not the per-call signal.
+    expect(arg.system).toContain("Task 7");
+    expect(arg.system).not.toContain("recall's references");
+  });
 });
 
 describe("shouldRunCardEvolution", () => {

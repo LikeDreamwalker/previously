@@ -113,8 +113,8 @@ const CHAT_ID_KEY = "previously:chatId";
 // ─── Sending window (v0.8) ────────────────────────────────────────────────
 // The client keeps the full conversation for rendering, but only the LAST N
 // messages travel to the server each turn. Everything earlier is already
-// stored in the current slice; if the agent needs deeper context it reads it
-// via recall / readSliceSummary / readTimelineWindow — it must NOT be handed
+// stored in the current slice; if the agent needs deeper context it gets it
+// via recall / readSlice — it must NOT be handed
 // the whole client history (that is the context-bloat + storage-accumulation
 // source). The UI never trims; only the wire payload does.
 const SEND_MESSAGE_WINDOW = 10; // ~5 turns of working memory

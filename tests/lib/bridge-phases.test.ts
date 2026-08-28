@@ -46,6 +46,22 @@ vi.mock("@/lib/episodic", () => ({
   writePreviously: vi.fn(async () => {}),
 }));
 
+// The card-evolution archive path must not touch the real memory/evolution/
+// files from tests — mock the store read + the append-only archive write.
+const evolutionArchive = vi.hoisted(() => ({
+  appendMutationWithEvaluation: vi.fn(async () => ({
+    evaluatedPreviousTs: null as string | null,
+    markedIneffective: false,
+  })),
+  readFitness: vi.fn(async () => ({ events: [], signals: [] })),
+}));
+vi.mock("@/lib/evolution/acceptance", () => ({
+  appendMutationWithEvaluation: evolutionArchive.appendMutationWithEvaluation,
+}));
+vi.mock("@/lib/evolution/store", () => ({
+  readFitness: evolutionArchive.readFitness,
+}));
+
 const runBridgeMock = vi.mocked(runBridge);
 const writeCurrentMock = vi.mocked(writeCurrentPreviously);
 const writeSliceMock = vi.mocked(writePreviously);
@@ -77,6 +93,8 @@ const VALID_REPORT: HousekeepingPhaseReport = {
   },
   backfill_marks: [],
   strand_merges: [],
+  fitness: [],
+  direction: null,
 };
 
 function baseInput() {
@@ -177,6 +195,34 @@ describe("buildHousekeepingPayload", () => {
     const { context } = buildHousekeepingPayload(baseInput());
     expect(context).not.toContain("Strand merge candidates");
   });
+
+  it("carries the direction doc + mechanical signals in context when provided", () => {
+    const { task, context } = buildHousekeepingPayload({
+      ...baseInput(),
+      directionContent: "# Direction\n\nKeep answers concrete.",
+      signals: [
+        {
+          ts: "2026-08-22T10:00:00Z",
+          sliceId: SLICE,
+          type: "recall_rework",
+          detail: "main agent read slice 2026-08-20-1430 outside recall's references",
+        },
+      ],
+    });
+    expect(task).toContain("Fitness scoring");
+    expect(task).toContain("Direction verdict");
+    expect(task).toContain('"fitness"');
+    expect(task).toContain('"direction"');
+    expect(context).toContain("Current evolution direction");
+    expect(context).toContain("Keep answers concrete.");
+    expect(context).toContain("Mechanical signals this slice");
+    expect(context).toContain("recall_rework");
+  });
+
+  it("omits the signals section when none are provided", () => {
+    const { context } = buildHousekeepingPayload(baseInput());
+    expect(context).not.toContain("Mechanical signals this slice");
+  });
 });
 
 // ─── lenient extraction ──────────────────────────────────────────────────
@@ -272,6 +318,86 @@ describe("runHousekeepingBridge", () => {
     const res = await runHousekeepingBridge(baseInput());
     expect(res.ok).toBe(true);
     if (res.ok) expect(res.report.strand_merges).toEqual([]);
+  });
+
+  it("tolerates omitted fitness / direction fields (v1.0 — old reports stay valid)", async () => {
+    const sparse = JSON.parse(JSON.stringify(VALID_REPORT));
+    delete sparse.fitness;
+    delete sparse.direction;
+    runBridgeMock.mockResolvedValue({
+      status: "ok",
+      result: JSON.stringify(sparse),
+      elapsedMs: 5,
+    });
+    const res = await runHousekeepingBridge(baseInput());
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.report.fitness).toEqual([]);
+    expect(res.report.direction).toBeNull();
+  });
+
+  it("parses fitness deltas and a direction proposal when present", async () => {
+    const rich = JSON.parse(JSON.stringify(VALID_REPORT));
+    rich.fitness = [
+      { bucket: "recall", delta: -1, evidence: "main agent re-read slice 2026-08-20-1430 outside recall's references" },
+      { bucket: "interaction", delta: 1, evidence: "exactly what I needed" },
+    ];
+    rich.direction = {
+      proposed: "# Direction\n\nKeep answers concrete.\n\n# Anti-goals\n\nNo fluff.\n\n# Evidence\n\n- 2026-08-20-1430\n- 2026-08-22-1015\n\n# Log\n\n- 2026-08-22: first direction.",
+      summary: "First direction: concreteness",
+      evidence: ["2026-08-20-1430"],
+      expected_benefit: "Less vague advice",
+    };
+    runBridgeMock.mockResolvedValue({
+      status: "ok",
+      result: JSON.stringify(rich),
+      elapsedMs: 5,
+    });
+    const res = await runHousekeepingBridge(baseInput());
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.report.fitness).toHaveLength(2);
+    expect(res.report.fitness[0]).toEqual({
+      bucket: "recall",
+      delta: -1,
+      evidence: "main agent re-read slice 2026-08-20-1430 outside recall's references",
+    });
+    expect(res.report.direction).not.toBeNull();
+    expect(res.report.direction).not.toBe("no_change");
+    if (res.report.direction && res.report.direction !== "no_change") {
+      expect(res.report.direction.proposed).toContain("# Direction");
+      expect(res.report.direction.summary).toBe("First direction: concreteness");
+    }
+  });
+
+  it("accepts direction: \"no_change\" verbatim", async () => {
+    const rich = JSON.parse(JSON.stringify(VALID_REPORT));
+    rich.direction = "no_change";
+    runBridgeMock.mockResolvedValue({
+      status: "ok",
+      result: JSON.stringify(rich),
+      elapsedMs: 5,
+    });
+    const res = await runHousekeepingBridge(baseInput());
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.report.direction).toBe("no_change");
+  });
+
+  it("truncates an over-cap fitness array instead of rejecting the report", async () => {
+    const fat = JSON.parse(JSON.stringify(VALID_REPORT));
+    fat.fitness = Array.from({ length: 8 }, (_, i) => ({
+      bucket: "interaction",
+      delta: 1,
+      evidence: `e${i}`,
+    }));
+    runBridgeMock.mockResolvedValue({
+      status: "ok",
+      result: JSON.stringify(fat),
+      elapsedMs: 5,
+    });
+    const res = await runHousekeepingBridge(baseInput());
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.report.fitness).toHaveLength(5);
   });
 
   it("truncates over-cap arrays instead of rejecting the whole report", async () => {
@@ -480,6 +606,21 @@ describe("adaptHousekeepingReport / degradedAnalysis", () => {
     expect(a.messageTags).toEqual({ reuse: [], create: [] });
     expect(a.evolveCard).toBeUndefined();
   });
+
+  it("maps report fitness deltas onto TurnAnalysis.fitness (empty → undefined)", () => {
+    const withFitness: HousekeepingPhaseReport = {
+      ...VALID_REPORT,
+      fitness: [
+        { bucket: "recall", delta: -1, evidence: "re-read outside references" },
+      ],
+    };
+    const a = adaptHousekeepingReport(withFitness, false);
+    expect(a.fitness).toEqual([
+      { bucket: "recall", delta: -1, evidence: "re-read outside references" },
+    ]);
+    // The no-signal state carries NO fitness field — housekeeping appends nothing.
+    expect(adaptHousekeepingReport(VALID_REPORT, false).fitness).toBeUndefined();
+  });
 });
 
 // ─── card-mutation application (card-session machinery) ──────────────────
@@ -558,6 +699,34 @@ describe("applyBridgeCardEvolution", () => {
     expect(res.summary).toBe("A durable interview commitment was stated.");
     expect(writeCurrentMock).toHaveBeenCalledOnce();
     expect(writeSliceMock).toHaveBeenCalledWith(SLICE, expect.any(String), undefined);
+    // v1.0 §2.7 — the bridge write-back enters the same mutation archive as
+    // the sub-agent path, with the slice id + reason as its evidence trail.
+    expect(evolutionArchive.appendMutationWithEvaluation).toHaveBeenCalledOnce();
+    expect(evolutionArchive.appendMutationWithEvaluation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        target: "card",
+        evidence: [SLICE, "A durable interview commitment was stated."],
+        expectedBenefit: "A durable interview commitment was stated.",
+      }),
+      expect.anything(),
+      undefined,
+    );
+  });
+
+  it("never eats the landed card write when the archive write fails", async () => {
+    evolutionArchive.appendMutationWithEvaluation.mockRejectedValueOnce(
+      new Error("disk blew up"),
+    );
+    const res = await applyBridgeCardEvolution({
+      card: newCardTemplate(SLICE),
+      sliceId: SLICE,
+      today: "2026-08-22",
+      reason: "A durable interview commitment was stated.",
+      mutations: [{ op: "addNow", content: "prepping the friday interview" }],
+    });
+    expect(res.changed).toBe(true);
+    expect(writeCurrentMock).toHaveBeenCalledOnce();
+    expect(writeSliceMock).toHaveBeenCalledOnce();
   });
 
   it("writes nothing when every mutation was rejected", async () => {
@@ -572,5 +741,6 @@ describe("applyBridgeCardEvolution", () => {
     expect(res.note).toContain("rejected by validation");
     expect(writeCurrentMock).not.toHaveBeenCalled();
     expect(writeSliceMock).not.toHaveBeenCalled();
+    expect(evolutionArchive.appendMutationWithEvaluation).not.toHaveBeenCalled();
   });
 });

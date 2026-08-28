@@ -27,6 +27,8 @@ const eslintConfig = [
       ".next/**",
       "out/**",
       "build/**",
+      // Packaged-kernel build artifact (gitignored; see scripts/pack-standalone.mjs).
+      "dist-kernel/**",
       "next-env.d.ts",
     ],
   },

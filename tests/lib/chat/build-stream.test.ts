@@ -187,6 +187,44 @@ describe("buildStream — data-evolution as a standalone stream item", () => {
     );
     expect((midRun[0] as { running: boolean }).running).toBe(true);
   });
+
+  it("passes the v1.0 calibration fields (triggers / direction / playbooks) through on the terminal chunk", () => {
+    const parts = [
+      evolutionChunk({ status: "running", step: "reviewing" }),
+      evolutionChunk({
+        status: "done",
+        hasChanges: false,
+        note: "reviewed",
+        triggers: [{ bucket: "recall", score: -4 }],
+        direction: { outcome: "updated", summary: "direction v1" },
+        playbooks: [{ agent: "recall", summary: "fewer unverified answers" }],
+      }),
+    ];
+    const items = buildStream(parts, false);
+    const evo = items[0] as {
+      kind: "evolution";
+      running: boolean;
+      data: Record<string, unknown>;
+    };
+    expect(evo.running).toBe(false);
+    expect(evo.data).toMatchObject({
+      status: "done",
+      triggers: [{ bucket: "recall", score: -4 }],
+      direction: { outcome: "updated", summary: "direction v1" },
+      playbooks: [{ agent: "recall", summary: "fewer unverified answers" }],
+    });
+  });
+
+  it("leaves the calibration fields absent on legacy / analyzer-gated terminal chunks", () => {
+    const parts = [
+      evolutionChunk({ status: "done", hasChanges: false, note: "checked" }),
+    ];
+    const items = buildStream(parts, false);
+    const evo = items[0] as { data: Record<string, unknown> };
+    expect(evo.data.triggers).toBeUndefined();
+    expect(evo.data.direction).toBeUndefined();
+    expect(evo.data.playbooks).toBeUndefined();
+  });
 });
 
 describe("buildStream — part classification order", () => {

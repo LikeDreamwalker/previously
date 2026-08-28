@@ -178,3 +178,115 @@ describe("retry on hard failure", () => {
     expect(runSubAgentMock).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("writePlaybook — the v1.0 playbook mutation gate", () => {
+  it("REJECTS a playbook write whose bucket did NOT trigger this run", async () => {
+    let rejection = "";
+    runSubAgentMock.mockImplementation(async (opts) => {
+      rejection = await callTool(opts, "writePlaybook", {
+        agent: "recall",
+        content: "Read full slices on emotional topics first.",
+        evidence: ["2026-08-20-1430"],
+        expectedBenefit: "fewer shallow recalls",
+      });
+      return { ok: true, report: { reasoning: "tried", summary: "" }, text: "" };
+    });
+    // triggeredBuckets absent entirely — the explicit-request path.
+    const out = await runPreviouslyAgent(baseInput());
+    expect(rejection).toContain("REJECTED");
+    expect(rejection).toContain("did NOT trigger");
+    expect(out.playbookWrites).toBeUndefined();
+  });
+
+  it("ACCEPTS a playbook write for a triggered bucket and stages it (capped) for the caller", async () => {
+    runSubAgentMock.mockImplementation(async (opts) => {
+      const ok = await callTool(opts, "writePlaybook", {
+        agent: "recall",
+        content: "Read full slices on emotional topics first.",
+        evidence: ["2026-08-20-1430", ""],
+        expectedBenefit: "fewer shallow recalls",
+      });
+      expect(ok).toContain("OK");
+      return { ok: true, report: { reasoning: "done", summary: "", expectedBenefit: "fewer shallow recalls" }, text: "" };
+    });
+    const out = await runPreviouslyAgent(
+      baseInput({ triggeredBuckets: ["recall"] }),
+    );
+    expect(out.playbookWrites).toEqual([
+      {
+        agent: "recall",
+        content: "Read full slices on emotional topics first.",
+        evidence: ["2026-08-20-1430"], // blank evidence entries dropped
+        expectedBenefit: "fewer shallow recalls",
+      },
+    ]);
+    expect(out.expectedBenefit).toBe("fewer shallow recalls");
+  });
+
+  it("rejects a write for a DIFFERENT playbook bucket than the triggered one", async () => {
+    let rejection = "";
+    runSubAgentMock.mockImplementation(async (opts) => {
+      rejection = await callTool(opts, "writePlaybook", {
+        agent: "thinkdeep",
+        content: "x",
+        evidence: [],
+        expectedBenefit: "y",
+      });
+      return { ok: true, report: { reasoning: "t", summary: "" }, text: "" };
+    });
+    const out = await runPreviouslyAgent(baseInput({ triggeredBuckets: ["recall"] }));
+    expect(rejection).toContain("REJECTED");
+    expect(out.playbookWrites).toBeUndefined();
+  });
+
+  it("a rewrite within one pass REPLACES the earlier staged draft", async () => {
+    runSubAgentMock.mockImplementation(async (opts) => {
+      await callTool(opts, "writePlaybook", {
+        agent: "search",
+        content: "first draft",
+        evidence: [],
+        expectedBenefit: "a",
+      });
+      await callTool(opts, "writePlaybook", {
+        agent: "search",
+        content: "second draft",
+        evidence: [],
+        expectedBenefit: "b",
+      });
+      return { ok: true, report: { reasoning: "t", summary: "" }, text: "" };
+    });
+    const out = await runPreviouslyAgent(baseInput({ triggeredBuckets: ["search"] }));
+    expect(out.playbookWrites).toHaveLength(1);
+    expect(out.playbookWrites![0].content).toBe("second draft");
+  });
+
+  it("the direction + triggered-bucket context lands in the USER prompt, never the system prompt", async () => {
+    runSubAgentMock.mockResolvedValue({
+      ok: true,
+      report: { reasoning: "nothing", summary: "" },
+      text: "",
+    });
+    await runPreviouslyAgent(
+      baseInput({
+        direction: "# Direction\n\nKeep answers concrete.",
+        triggeredBuckets: ["recall"],
+        fitnessEvents: [
+          {
+            ts: "2026-08-26T10:00:00Z",
+            sliceId: "2026-08-26-1000",
+            bucket: "recall",
+            delta: -2,
+            evidence: "这根本不是我们聊过的内容",
+          },
+        ],
+      }),
+    );
+    const opts = runSubAgentMock.mock.calls[0][0];
+    expect(opts.prompt).toContain("## Evolution direction");
+    expect(opts.prompt).toContain("Keep answers concrete.");
+    expect(opts.prompt).toContain("Triggered buckets: recall");
+    expect(opts.prompt).toContain("这根本不是我们聊过的内容");
+    expect(opts.system).not.toContain("Triggered buckets");
+    expect(opts.system).not.toContain("Keep answers concrete.");
+  });
+});

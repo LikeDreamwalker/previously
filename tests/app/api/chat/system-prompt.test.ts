@@ -166,7 +166,7 @@ describe("bridgeNotice (subscription bridge mode)", () => {
     expect(BRIDGE_NOTICE).toContain("skills/recall.md");
     expect(BRIDGE_NOTICE).toContain("POINTERS");
     // The countermand + output contract survive the rewrite.
-    expect(BRIDGE_NOTICE).toContain("thinkDeep decomposition does NOT apply");
+    expect(BRIDGE_NOTICE).toContain("thinkDeep guidance elsewhere in this prompt does NOT apply");
     expect(BRIDGE_NOTICE).toContain("rendered verbatim");
   });
 });

@@ -40,12 +40,21 @@ const episodic = vi.hoisted(() => ({
   upsertTimelineEntry: vi.fn(async () => {}),
   deterministicSliceMark: vi.fn(() => ({ focus: "fallback focus", summary: "fallback summary" })),
   readStrands: vi.fn(async () => ({})),
-  analyzeTurn: vi.fn(async () => ({
-    messageTags: { reuse: [], create: [] },
-    semanticHint: { strands: [], reason: "" },
-    memoryWorthy: true,
-    emotionalSignal: { intensity: "none", register: "neutral", note: "" },
-  })),
+  analyzeTurn: vi.fn(
+    async (): Promise<{
+      messageTags: { reuse: string[]; create: Array<{ tag: string; reason: string }> };
+      semanticHint: { strands: string[]; reason: string };
+      memoryWorthy: boolean;
+      emotionalSignal: { intensity: string; register: string; note: string };
+      evolveCard?: { worth: boolean; reason: string };
+      fitness?: Array<{ bucket: string; delta: -2 | -1 | 0 | 1; evidence: string }>;
+    }> => ({
+      messageTags: { reuse: [], create: [] },
+      semanticHint: { strands: [], reason: "" },
+      memoryWorthy: true,
+      emotionalSignal: { intensity: "none", register: "neutral", note: "" },
+    }),
+  ),
   shouldRunCardEvolution: vi.fn(
     (a: { evolveCard?: { worth: boolean } }) => a.evolveCard?.worth ?? true,
   ),
@@ -58,6 +67,11 @@ const evolution = vi.hoisted(() => ({
     async (_input: {
       onProgress?: (step: "reading" | "reviewing" | "applied") => void;
       onEvolutionLine?: (line: string, stage: "thinking" | "writing") => void;
+      // v1.0 two-phase pass-through fields (asserted by the boundary tests).
+      direction?: string | null;
+      triggeredBuckets?: string[];
+      fitnessEvents?: unknown[];
+      fitnessSignals?: unknown[];
     }): Promise<{
       ran: boolean;
       changed: boolean;
@@ -66,6 +80,7 @@ const evolution = vi.hoisted(() => ({
       summary?: string;
       partial?: boolean;
       error?: string;
+      playbooks?: Array<{ agent: string; summary: string }>;
     }> => ({ ran: true, changed: false, droppedRecent: 0, note: "reviewed" }),
   ),
 }));
@@ -80,6 +95,58 @@ vi.mock("@/lib/episodic/flash/backfill-marks", () => ({
 vi.mock("@/lib/episodic/slicer", () => ({
   checkSliceAge: () => sliceAged,
 }));
+
+// The v1.0 evolution loop (fitness store / triggers / direction agent /
+// acceptance archive) is mocked at its module boundaries so the step tests
+// stay hermetic — the real modules would read/write memory/evolution/ on the
+// local fs.
+const evolutionLoop = vi.hoisted(() => ({
+  computeEvolutionTriggers: vi.fn((): Array<{ bucket: string; reason: string }> => []),
+  runDirectionAgent: vi.fn(
+    async (): Promise<{
+      outcome: "no_change" | "proposed" | "failed";
+      direction?: string;
+      reason: string;
+      summary?: string;
+      evidence?: string[];
+      expectedBenefit?: string;
+    }> => ({
+      outcome: "no_change",
+      reason: "nothing cross-slice",
+    }),
+  ),
+  validateDirectionProposal: vi.fn(() => ({ ok: true as const })),
+  appendMutationWithEvaluation: vi.fn(async () => ({
+    evaluatedPreviousTs: null,
+    markedIneffective: false,
+  })),
+  store: {
+    appendFitnessEvents: vi.fn(
+      async (_events: unknown[], _batch?: unknown) => {},
+    ),
+    bucketNetScore: vi.fn(
+      (_store: unknown, _bucket: string, _window?: number) => -4,
+    ),
+    ensureEvolutionFiles: vi.fn(async () => {}),
+    readDirection: vi.fn(async (): Promise<string | null> => null),
+    readFitness: vi.fn(async () => ({ events: [], signals: [] })),
+    readRecentSignals: vi.fn(async () => []),
+    writeDirection: vi.fn(async () => {}),
+  },
+}));
+vi.mock("@/lib/evolution/triggers", () => ({
+  computeEvolutionTriggers: evolutionLoop.computeEvolutionTriggers,
+  EVOLVE_WINDOW_SLICES: 10,
+}));
+vi.mock("@/lib/evolution/direction-agent", () => ({
+  DIRECTION_RECENT_EVENTS: 30,
+  runDirectionAgent: evolutionLoop.runDirectionAgent,
+  validateDirectionProposal: evolutionLoop.validateDirectionProposal,
+}));
+vi.mock("@/lib/evolution/acceptance", () => ({
+  appendMutationWithEvaluation: evolutionLoop.appendMutationWithEvaluation,
+}));
+vi.mock("@/lib/evolution/store", () => evolutionLoop.store);
 
 // Mock AI SDK for Flash tag extraction in housekeeping (and any sub-agent
 // going through the unified runner, which streams via streamText).
@@ -405,6 +472,124 @@ describe("housekeeping boundary evolution gating", () => {
     }
   });
 
+  // ── v1.0 two-phase orchestration (design §2.3/§2.5) ─────────────────────
+
+  it("two-phase on a triggered boundary: Phase 1 (direction) runs BEFORE Phase 2, which receives direction + triggers", async () => {
+    setupClosingSlice();
+    mockAnalysis({ worth: true, reason: "durable" });
+    evolutionLoop.store.readDirection.mockResolvedValue("# Direction\n\nBe concrete.");
+    evolutionLoop.computeEvolutionTriggers.mockReturnValue([
+      { bucket: "recall", reason: "net -3" },
+    ]);
+    const order: string[] = [];
+    evolutionLoop.runDirectionAgent.mockImplementationOnce(async () => {
+      order.push("direction");
+      return { outcome: "no_change" as const, reason: "bar not met" };
+    });
+    evolution.runCardEvolution.mockImplementationOnce(async (input) => {
+      order.push("product");
+      expect(input.direction).toBe("# Direction\n\nBe concrete.");
+      expect(input.triggeredBuckets).toEqual(["recall"]);
+      return { ran: true, changed: false, droppedRecent: 0, note: "reviewed" };
+    });
+    try {
+      await housekeeping(makeInput("wrapping up"));
+      expect(order).toEqual(["direction", "product"]);
+      // no_change writes nothing.
+      expect(evolutionLoop.store.writeDirection).not.toHaveBeenCalled();
+      expect(evolutionLoop.appendMutationWithEvaluation).not.toHaveBeenCalled();
+    } finally {
+      evolutionLoop.store.readDirection.mockResolvedValue(null);
+      evolutionLoop.computeEvolutionTriggers.mockReturnValue([]);
+    }
+  });
+
+  it("a non-card bucket trigger runs Phase 2 even when worth=false and the card is v5", async () => {
+    setupClosingSlice();
+    mockAnalysis({ worth: false, reason: "pure logistics" });
+    episodic.readCurrentPreviously.mockResolvedValue(
+      "# Previously On\n\n_Active slice: 2026-07-14-0900 | Format: user card v2 | Updated: 2026-07-14T09:30:00.000Z_\n",
+    );
+    evolutionLoop.computeEvolutionTriggers.mockReturnValue([
+      { bucket: "thinkdeep", reason: 'immediate -2: "stop overthinking"' },
+    ]);
+    try {
+      await housekeeping(makeInput("wrapping up"));
+      expect(evolutionLoop.runDirectionAgent).toHaveBeenCalledOnce();
+      expect(evolution.runCardEvolution).toHaveBeenCalledOnce();
+    } finally {
+      episodic.readCurrentPreviously.mockResolvedValue("");
+      evolutionLoop.computeEvolutionTriggers.mockReturnValue([]);
+    }
+  });
+
+  it("no trigger and no card gate → NEITHER evolution sub-agent runs", async () => {
+    setupClosingSlice();
+    mockAnalysis({ worth: false, reason: "pure logistics" });
+    episodic.readCurrentPreviously.mockResolvedValue(
+      "# Previously On\n\n_Active slice: 2026-07-14-0900 | Format: user card v2 | Updated: 2026-07-14T09:30:00.000Z_\n",
+    );
+    try {
+      await housekeeping(makeInput("wrapping up"));
+      expect(evolutionLoop.runDirectionAgent).not.toHaveBeenCalled();
+      expect(evolution.runCardEvolution).not.toHaveBeenCalled();
+    } finally {
+      episodic.readCurrentPreviously.mockResolvedValue("");
+    }
+  });
+
+  it("applies an accepted direction proposal: writeDirection + archive, then Phase 2 sees the NEW direction", async () => {
+    setupClosingSlice();
+    mockAnalysis({ worth: true, reason: "durable" });
+    evolutionLoop.runDirectionAgent.mockResolvedValueOnce({
+      outcome: "proposed",
+      direction: "# Direction\n\nNew direction.",
+      reason: "cross-slice evidence",
+      summary: "direction v1",
+      evidence: ["2026-07-14-0900"],
+      expectedBenefit: "sharper evolution",
+    });
+    evolution.runCardEvolution.mockImplementationOnce(async (input) => {
+      expect(input.direction).toBe("# Direction\n\nNew direction.");
+      return { ran: true, changed: false, droppedRecent: 0, note: "reviewed" };
+    });
+    await housekeeping(makeInput("wrapping up"));
+    expect(evolutionLoop.store.writeDirection).toHaveBeenCalledWith(
+      "# Direction\n\nNew direction.",
+      expect.anything(),
+    );
+    expect(evolutionLoop.appendMutationWithEvaluation).toHaveBeenCalledWith(
+      expect.objectContaining({ target: "direction", summary: "direction v1" }),
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it("persists the analyzer's fitness deltas via appendFitnessEvents, attributed to the closed slice", async () => {
+    setupClosingSlice();
+    episodic.analyzeTurn.mockResolvedValue({
+      messageTags: { reuse: [], create: [] },
+      semanticHint: { strands: [], reason: "" },
+      memoryWorthy: true,
+      emotionalSignal: { intensity: "none", register: "neutral", note: "" },
+      fitness: [
+        { bucket: "recall", delta: -2, evidence: "这根本不是我们聊过的内容" },
+      ],
+    });
+    await housekeeping(makeInput("wrapping up"));
+    expect(evolutionLoop.store.appendFitnessEvents).toHaveBeenCalledOnce();
+    const [events, batch] = evolutionLoop.store.appendFitnessEvents.mock.calls[0];
+    expect(events).toEqual([
+      expect.objectContaining({
+        sliceId: "2026-07-14-0900", // the CLOSED slice, not the new one
+        bucket: "recall",
+        delta: -2,
+        evidence: "这根本不是我们聊过的内容",
+      }),
+    ]);
+    expect(batch).toBeDefined();
+  });
+
   it("streams throttled live thinking lines on data-evolution, one merged id", async () => {
     setupClosingSlice();
     mockAnalysis({ worth: true, reason: "a durable preference was stated" });
@@ -475,6 +660,101 @@ describe("housekeeping boundary evolution gating", () => {
       partial: true,
       hasChanges: true,
       summary: "记下了面试",
+    });
+  });
+
+  it("terminal frame carries the trigger rows + direction verdict on a triggered boundary (v1.0)", async () => {
+    setupClosingSlice();
+    mockAnalysis({ worth: false, reason: "pure logistics" }); // card gate OFF — the trigger alone forces the run
+    episodic.readCurrentPreviously.mockResolvedValue(
+      "# Previously On\n\n_Active slice: 2026-07-14-0900 | Format: user card v2 | Updated: 2026-07-14T09:30:00.000Z_\n",
+    );
+    evolutionLoop.computeEvolutionTriggers.mockReturnValue([
+      { bucket: "recall", reason: "net -4" },
+    ]);
+    evolutionLoop.runDirectionAgent.mockResolvedValueOnce({
+      outcome: "no_change",
+      reason: "bar not met",
+    });
+    try {
+      await housekeeping(makeInput("wrapping up"));
+      const terminal = workflowMock.written
+        .filter((c) => c.type === "data-evolution")
+        .at(-1);
+      expect(terminal?.data).toMatchObject({
+        status: "done",
+        hasChanges: false, // checked, no updates — the calibration details still show
+        triggers: [{ bucket: "recall", score: -4 }], // mocked bucketNetScore
+        direction: { outcome: "no_change" },
+      });
+    } finally {
+      episodic.readCurrentPreviously.mockResolvedValue("");
+      evolutionLoop.computeEvolutionTriggers.mockReturnValue([]);
+    }
+  });
+
+  it("surfaces an accepted direction proposal as direction.updated with its summary", async () => {
+    setupClosingSlice();
+    mockAnalysis({ worth: true, reason: "durable" });
+    evolutionLoop.runDirectionAgent.mockResolvedValueOnce({
+      outcome: "proposed",
+      direction: "# Direction\n\nNew direction.",
+      reason: "cross-slice evidence",
+      summary: "direction v1",
+      evidence: ["2026-07-14-0900"],
+      expectedBenefit: "sharper evolution",
+    });
+    await housekeeping(makeInput("wrapping up"));
+    const terminal = workflowMock.written
+      .filter((c) => c.type === "data-evolution")
+      .at(-1);
+    expect(terminal?.data).toMatchObject({
+      direction: { outcome: "updated", summary: "direction v1" },
+    });
+    // No bucket fired (analyzer-gated run) → no score rows.
+    expect(
+      (terminal?.data as { triggers?: unknown }).triggers,
+    ).toBeUndefined();
+  });
+
+  it("omits the direction field when the Phase-1 check failed — a failure is not a no_change", async () => {
+    setupClosingSlice();
+    mockAnalysis({ worth: true, reason: "durable" });
+    evolutionLoop.runDirectionAgent.mockResolvedValueOnce({
+      outcome: "failed",
+      reason: "worker timeout",
+    });
+    await housekeeping(makeInput("wrapping up"));
+    const terminal = workflowMock.written
+      .filter((c) => c.type === "data-evolution")
+      .at(-1);
+    expect(
+      (terminal?.data as { direction?: unknown }).direction,
+    ).toBeUndefined();
+    expect((terminal?.data as { note: string }).note).toContain(
+      "Direction evaluation unavailable",
+    );
+  });
+
+  it("passes Phase-2 playbook writes through to the terminal frame", async () => {
+    setupClosingSlice();
+    mockAnalysis({ worth: true, reason: "durable" });
+    evolution.runCardEvolution.mockResolvedValueOnce({
+      ran: true,
+      changed: false,
+      droppedRecent: 0,
+      note: "reviewed",
+      playbooks: [
+        { agent: "recall", summary: "fewer unverified recall answers" },
+      ],
+    });
+    await housekeeping(makeInput("wrapping up"));
+    const terminal = workflowMock.written
+      .filter((c) => c.type === "data-evolution")
+      .at(-1);
+    expect(terminal?.data).toMatchObject({
+      status: "done",
+      playbooks: [{ agent: "recall", summary: "fewer unverified recall answers" }],
     });
   });
 });

@@ -26,6 +26,19 @@ vi.mock("@/lib/episodic", () => ({
   writeCurrentPreviously: vi.fn(),
   writePreviously: vi.fn(),
 }));
+// The v1.0 mutation-archive boundary (fitness store / playbook write /
+// acceptance archive) is mocked so the tests stay hermetic — the real modules
+// would read/write memory/evolution/ on the local fs.
+vi.mock("@/lib/evolution/store", () => ({
+  readFitness: vi.fn(async () => ({ events: [], signals: [] })),
+  writePlaybook: vi.fn(async () => {}),
+}));
+vi.mock("@/lib/evolution/acceptance", () => ({
+  appendMutationWithEvaluation: vi.fn(async () => ({
+    evaluatedPreviousTs: null,
+    markedIneffective: false,
+  })),
+}));
 
 const runPreviouslyAgentMock = vi.mocked(runPreviouslyAgent);
 const readMock = vi.mocked(readCurrentPreviously);
@@ -136,5 +149,37 @@ describe("write-back rules", () => {
     const onEvolutionLine = vi.fn();
     await runCardEvolution({ ...baseInput(), onEvolutionLine });
     expect(runPreviouslyAgentMock.mock.calls[0][0].onLine).toBe(onEvolutionLine);
+  });
+
+  it("surfaces accepted playbook writes with their archive summaries (v1.0 §2.4)", async () => {
+    runPreviouslyAgentMock.mockResolvedValue({
+      updatedCard: BASE,
+      reasoning: "recall keeps guessing",
+      summary: "",
+      mutations: [],
+      playbookWrites: [
+        {
+          agent: "recall" as const,
+          content: "On emotional topics, read the full slice first.",
+          evidence: ["2026-08-17-0515"],
+          expectedBenefit: "fewer unverified recall answers",
+        },
+      ],
+    });
+    const res = await runCardEvolution(baseInput());
+    expect(res.playbooks).toEqual([
+      { agent: "recall", summary: "fewer unverified recall answers" },
+    ]);
+  });
+
+  it("omits the playbooks field when no playbook mutation landed", async () => {
+    runPreviouslyAgentMock.mockResolvedValue({
+      updatedCard: BASE,
+      reasoning: "nothing new",
+      summary: "",
+      mutations: [],
+    });
+    const res = await runCardEvolution(baseInput());
+    expect(res.playbooks).toBeUndefined();
   });
 });

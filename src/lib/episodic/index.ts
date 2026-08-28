@@ -49,7 +49,7 @@ export {
   runRecallSearch,
 } from "./flash/recall";
 export type {
-  RecallHit,
+  RecallReference,
   RecallSearchOutput,
   RecallSearchInput,
 } from "./flash/recall";

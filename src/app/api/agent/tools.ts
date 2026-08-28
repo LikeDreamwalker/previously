@@ -26,7 +26,6 @@ import {
   readAgentTimelineExecute,
   readPreviouslyExecute,
   webSearchExecute,
-  webFetchExecute,
   recallExecute,
   thinkDeepExecute,
   currentTimeExecute,
@@ -82,11 +81,11 @@ const toolContextSchema = z.object({
 export const conceptTools = {
   readSlice: tool({
     description:
-      "Read a time slice's conversation record (core timeline). " +
-      "LAST RESORT for memory access — prefer readSliceSummary (cheapest: " +
-      "frontmatter only) for a relevance check and readTimelineWindow (date " +
-      "window of the catalog) for orientation. Reach readSlice only when you " +
-      "need the actual conversation text. " +
+      "Open a time slice's original conversation record (core timeline). " +
+      "VERIFICATION CHANNEL ONLY — past memory is recall's job: ask it in " +
+      "natural language and it reads the slices for you. Open a slice " +
+      "yourself only to verify one of recall's references or when you need " +
+      "the verbatim original text. " +
       "Use the optional `range` parameter to fetch only specific turns instead " +
       "of the entire slice — a full slice is the most expensive option. " +
       "`search` matches keywords across the slice (misses return the full slice " +
@@ -274,19 +273,18 @@ export const conceptTools = {
 
 // ─── Chat tool set ───────────────────────────────────────────────────────
 //
-// The CHAT agent gets the granular memory tools — the cheap pointers first
-// (recall / readTimelineWindow / readSliceSummary), readSlice as the last
-// resort for actual text — plus readPreviously / readAgentTimeline and the
-// delegation tools (`recall` hands the actual search to the Flash recall
-// engine; webSearch / thinkDeep). The raw browse tools (listSlices /
-// listStrands / readStrand) stay the recall engine's job — the main agent does
-// not walk directories itself.
+// The CHAT agent's surface is deliberately narrow (v1.0 sub-agent refinement):
+// the granular memory-browse and page-fetch tools moved DOWN into the
+// sub-agents — recall (an episodic-recall colleague that reads slices itself)
+// and webSearch (a researcher that fetches pages itself). The main agent keeps
+// readSlice as the VERIFICATION channel (audit a recall reference against the
+// original text), readPreviously for the card history, and the delegation
+// entries (recall / webSearch / thinkDeep). The removed tools
+// (readSliceSummary / readTimelineWindow / readAgentTimeline / webFetch) stay
+// defined in conceptTools / tool-executors for the sub-agent side.
 export const chatTools = {
   readSlice: conceptTools.readSlice,
-  readSliceSummary: conceptTools.readSliceSummary,
-  readTimelineWindow: conceptTools.readTimelineWindow,
   readPreviously: conceptTools.readPreviously,
-  readAgentTimeline: conceptTools.readAgentTimeline,
   currentTime: tool({
     description:
       "Check the current time — the user's local time (minute precision, with " +
@@ -304,114 +302,67 @@ export const chatTools = {
   }),
   recall: tool({
     description:
-      "Search past conversation slices for context relevant to the current " +
-      "query. Use this when you need to recall what was discussed in previous " +
-      "sessions, or when the user references something you need to look up in " +
-      "their history. Returns POINTERS — which slices are relevant and why " +
-      "(slice ids, relevance, reasons) — plus recommended reads with suggested " +
-      "priorities. It never returns conversation content. " +
-      "Timeline lines and card summaries are only enough to decide WHETHER to " +
-      "dig — never enough to QUOTE. Open the slice with readSlice (optionally " +
-      "with a range) before citing specifics from a past event. " +
-      "If the search returns NO relevant matches, do NOT call recall again for " +
-      "this topic — there is no past context to find; answer from the conversation " +
-      "and your knowledge.",
+      "Ask the recall colleague — a sub-agent who REMEMBERS your past " +
+      "conversations with the user. Ask in natural language, colleague to " +
+      "colleague (\"Did we ever talk with the user about apples?\", \"Do you " +
+      "remember when they found that job?\"). Refer to the user in the THIRD " +
+      "PERSON in your question — the colleague is not the user, and it " +
+      "describes the user back to you in the third person too. It reads the " +
+      "answers in natural language; every situational claim in its answer " +
+      "carries a reference with a VERBATIM quote and the slice id — those " +
+      "references are attached for your audit. An honest \"we haven't talked " +
+      "about this\" is a valid, definitive answer: when it says so, do NOT " +
+      "call recall again for the same topic. Open a slice yourself (readSlice) " +
+      "only when you need to verify one of its references or need more of the " +
+      "original text.",
     inputSchema: z.object({
-      query: z
+      question: z
         .string()
-        .describe("What to search for in past conversations. Be specific about the topic, person, project, or question you need context on."),
+        .describe("A natural-language question about past conversations, asked colleague to colleague. Be specific about the topic, person, event, or period you are asking about."),
     }),
     contextSchema: toolContextSchema,
     execute: recallExecute,
   }),
   webSearch: tool({
     description:
-      "Search the live web for current or external information — news, " +
-      "releases, prices, docs, anything time-sensitive or beyond the user's " +
-      "memory. Returns a concise cited answer, source links, AND a " +
-      "recommendation on what to do with the results (which sources look " +
-      "strongest, what is uncertain, whether to fetch a specific page). " +
-      "Do not use it for things already in memory or that you reliably know. " +
-      "Read individual pages the search points to with webFetch.",
+      "Hand a research question to the web-research colleague — a sub-agent " +
+      "that searches the live web AND reads the most promising pages itself, " +
+      "then returns a real answer that combines what it found with its own " +
+      "knowledge (web claims carry source mentions), plus its confidence " +
+      "assessment (what is solid, what is uncertain or conflicting) and a few " +
+      "suggested pages for your own follow-up. Use it for current or external " +
+      "information — news, releases, prices, docs, anything time-sensitive or " +
+      "beyond the user's memory. Do not use it for things already in memory " +
+      "or that you reliably know.",
     inputSchema: z.object({
       query: z
         .string()
-        .describe("A specific, self-contained search question."),
+        .describe("A specific, self-contained research question."),
     }),
     contextSchema: toolContextSchema,
     execute: webSearchExecute,
   }),
-  webFetch: tool({
-    description:
-      "Fetch and return the raw text content of a specific URL. The page is " +
-      "fetched server-side; scripts and styles are stripped. Returns up to " +
-      "~15K characters of extracted prose. Use this to read a page the user " +
-      "pasted, or to dive into a source that webSearch suggested. Do NOT use " +
-      "for search — use webSearch to find things, webFetch to read a page. " +
-      "Optional `range`: `search` matches keywords across the page (misses " +
-      "return the full text with a note); `lines` reads a 1-indexed line range.",
-    inputSchema: z.object({
-      url: z
-        .string()
-        .describe("The full URL to fetch, e.g. 'https://example.com/article'."),
-      range: z
-        .object({
-          type: z
-            .enum(["search", "lines"])
-            .describe(
-              "search = keyword match, returns matching paragraphs (+ context); " +
-              "if nothing matches, returns the full page text with a note. " +
-              "lines = 1-indexed line range of the extracted text.",
-            ),
-          keywords: z
-            .array(z.string())
-            .optional()
-            .describe("Case-insensitive keywords to match. Only for type 'search'."),
-          context: z
-            .number()
-            .optional()
-            .describe("Paragraphs of context around each match (default 1). Only for type 'search'."),
-          start: z
-            .number()
-            .optional()
-            .describe("First line (1-indexed, inclusive). Only for type 'lines'."),
-          end: z
-            .number()
-            .optional()
-            .describe("Last line (1-indexed, inclusive). Only for type 'lines'."),
-        })
-        .optional()
-        .describe("Optional selective read. When omitted, returns the full extracted text."),
-    }),
-    contextSchema: toolContextSchema,
-    execute: webFetchExecute,
-  }),
   thinkDeep: tool({
     description:
-      "Dispatch ONE reasoning fragment — a small, self-contained logical " +
-      "question reasoned through independently by a think-only copy of yourself " +
-      "(no search, no memory tools — embed every fact it needs in the question). " +
-      "Returns the conclusion plus its thinking trail. " +
-      "DEFAULT behavior: at the start of a substantive turn, decompose the user's " +
-      "question into its independent threads and dispatch each as its OWN " +
-      "thinkDeep call BEFORE writing your answer — do not wait for the user to " +
-      "ask, and do not reason through a multi-angle question monolithically " +
-      "(that is what times out). Verify a claim, weigh a trade-off, poke holes " +
-      "in a position, answer a sub-question. Only skip it for genuinely " +
-      "single-threaded turns: a simple fact you already hold, a routine " +
-      "acknowledgment, an emotionally-engaged support turn, or a recall from " +
-      "memory. Embed ALL facts the fragment needs in the question — the " +
-      "sub-agent cannot search or read memory. Tag each fragment with the right " +
-      "effort: low for simple logical verification, medium for a comparison, " +
-      "high for deep structural analysis. A fragment may come back partial " +
-      "(`status: timeout`) — its `answer` and `reasoning` hold what it already " +
-      "produced; work with them, or gather the missing facts yourself and " +
-      "dispatch a finer fragment. Synthesize the fragments into your answer in " +
-      "your own voice.",
+      "Dispatch a question to a clean-room thinking pod — a think-only copy " +
+      "of yourself reasoning in complete isolation from your current context " +
+      "(no search, no memory tools — embed every fact it needs in the " +
+      "question). Call it when you need rigorous, objective reasoning that " +
+      "your live context would contaminate: your context is polluted or too " +
+      "loaded to think straight, you want an unbiased second pass over a " +
+      "conclusion you already lean towards, or a question deserves fresh, " +
+      "uncontaminated thought. It is NOT a default step of every turn — most " +
+      "turns you simply answer. Returns the conclusion plus its thinking " +
+      "trail; a pod may come back partial (`status: timeout`) — its `answer` " +
+      "and `reasoning` hold what it already produced; work with them, or " +
+      "gather the missing facts yourself and dispatch a finer question. " +
+      "Tag each question with the right effort: low for simple logical " +
+      "verification, medium for a comparison, high for deep structural " +
+      "analysis. Synthesize what comes back into your answer in your own voice.",
     inputSchema: z.object({
       question: z
         .string()
-        .describe("Self-contained sub-question for the reasoning fragment. Include all necessary context and facts — the sub-agent has no tools and cannot look anything up."),
+        .describe("Self-contained question for the thinking pod. Include all necessary context and facts — it has no tools and cannot look anything up."),
       effort: z
         .enum(["low", "medium", "high"])
         .optional()
@@ -473,14 +424,10 @@ export function buildChatToolsContext(
 ): Record<keyof typeof chatTools, ToolContext> & { delegateTask?: ToolContext } {
   const contexts: Record<keyof typeof chatTools, ToolContext> = {
     readSlice: ctx,
-    readSliceSummary: ctx,
-    readTimelineWindow: ctx,
     readPreviously: ctx,
-    readAgentTimeline: ctx,
     currentTime: ctx,
     recall: ctx,
     webSearch: ctx,
-    webFetch: ctx,
     thinkDeep: ctx,
   };
   // Keep the context map in lockstep with getChatTools(): a registered tool
