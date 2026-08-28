@@ -721,7 +721,7 @@ describe("housekeeping boundary evolution gating", () => {
     ).toBeUndefined();
   });
 
-  it("omits the direction field when the Phase-1 check failed — a failure is not a no_change", async () => {
+  it("surfaces a failed Phase-1 check as direction.failed with the reason — a failure is not a silent no_change", async () => {
     setupClosingSlice();
     mockAnalysis({ worth: true, reason: "durable" });
     evolutionLoop.runDirectionAgent.mockResolvedValueOnce({
@@ -732,12 +732,9 @@ describe("housekeeping boundary evolution gating", () => {
     const terminal = workflowMock.written
       .filter((c) => c.type === "data-evolution")
       .at(-1);
-    expect(
-      (terminal?.data as { direction?: unknown }).direction,
-    ).toBeUndefined();
-    expect((terminal?.data as { note: string }).note).toContain(
-      "Direction evaluation unavailable",
-    );
+    expect(terminal?.data).toMatchObject({
+      direction: { outcome: "failed", summary: "worker timeout" },
+    });
   });
 
   it("passes Phase-2 playbook writes through to the terminal frame", async () => {
