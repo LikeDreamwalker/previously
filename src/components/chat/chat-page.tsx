@@ -265,10 +265,10 @@ function Inner({
   const clockLandedRef = useRef<(() => void) | null>(null);
 
   // Persona picked from URL — server actions need it because they can't
-  // access searchParams on the server side. Defaults to "personal_14".
+  // access searchParams on the server side. Defaults to "user".
   const persona = useMemo(() => {
-    if (typeof window === "undefined") return "personal_14";
-    return new URLSearchParams(window.location.search).get("persona") || "personal_14";
+    if (typeof window === "undefined") return "user";
+    return new URLSearchParams(window.location.search).get("persona") || "user";
   }, []);
 
   // Load the newest slice on mount — feeds the NowPlaceholder gap anchor and

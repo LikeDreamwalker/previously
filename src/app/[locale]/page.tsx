@@ -21,7 +21,7 @@ export default async function HomePage({
   const { persona } = await searchParams;
   const isDemo = resolveDataSource() === "demo";
   if (isDemo) {
-    setDemoPersona(persona || "personal_14");
+    setDemoPersona(persona || "user");
   }
   // Preload the user config server-side so ChatPage seeds its model state from
   // real values instead of flashing the defaults and then reconciling via a

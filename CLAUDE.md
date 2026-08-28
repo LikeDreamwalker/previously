@@ -116,7 +116,7 @@ The episodic memory subsystem (`src/lib/episodic/`, see `src/lib/episodic/CLAUDE
 - **Timeline**: per-slice `timeline/core.md` + `agent.md` are woven into the global timeline (`timeline/weave.ts`, `timeline/store.ts`, `timeline/render.ts`); `flash/global-timeline.ts` aggregates slice summaries and `flash/backfill-marks.ts` backfills close-time markings on historical slices.
 - **Card evolution**: at a slice boundary the Previously Agent edits the card through validated mutation tools (`card-session.ts`); there is no mechanical card pass — expiry/caps/overdue handling are the agent's decisions, enforced inside the tools.
 - **Strands** (semantic layer): a slice carries `tags` (keywords); a **strand** is a keyword woven through all the slices that carry it. `memory/episodic/strands.json` maps each strand → its slice paths ("the whole history of that thing" across time) — the thin, lossless semantic-memory index over the episodic slices. Built at slice-close via `updateStrands`; `flash/strand-consolidator.ts` merges near-duplicate strands; a richer first-class strand (rolling summary + recall integration) is a future milestone.
-- **Demo data source**: `STORAGE=demo` (or auto-detected when no `GITHUB_TOKEN` and not dev) makes memory reads read-only against remote benchmark data. There is no `DEMO_MODE` env var — data-source resolution lives in `src/lib/data-source/resolve.ts`.
+- **Demo data source**: `STORAGE=demo` (or auto-detected when no `GITHUB_TOKEN` and not dev) makes memory reads read-only against the `previously-lab/you` dataset repo (remote via `BENCHMARK_BASE_URL`, or a local sibling `../you` clone in dev). There is no `DEMO_MODE` env var — data-source resolution lives in `src/lib/data-source/resolve.ts`.
 
 ### Model Layer (multi-provider)
 
@@ -187,7 +187,7 @@ Tool calls use friendly outer labels with real tool names in expanded view.
 STORAGE set?                          (auto-detect when unset)
 ├─ local   → Local filesystem: full read/write (dev default)
 ├─ github  → GitHub API: full read/write (needs GITHUB_TOKEN)
-└─ demo    → Remote benchmark data: read-only, CANNOT write
+└─ demo    → previously-lab/you dataset: read-only, CANNOT write
 AI calls require at least one configured provider key (see getConfiguredProviders()).
 ```
 

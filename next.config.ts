@@ -16,11 +16,11 @@ const nextConfig: NextConfig = {
   // Keep runtime data directories out of the standalone trace. `memory/` is
   // traced only because getMemoryRoot()/demo-fs resolve paths dynamically via
   // `join(process.cwd(), ...)` — at runtime client mode re-roots memory at
-  // MEMORY_ROOT and demo-fs reads `<cwd>/../benchmark-data`, so neither reads
+  // MEMORY_ROOT and demo-fs reads `<cwd>/../you`, so neither reads
   // the copies Next would ship inside .next/standalone. Shipping them bloats
   // the @previously-lab/kernel artifact with local dev data.
   outputFileTracingExcludes: {
-    "*": ["./memory/**/*", "./benchmark-data/**/*"],
+    "*": ["./memory/**/*", "./you/**/*"],
   },
   turbopack: {
     root: process.cwd(),
