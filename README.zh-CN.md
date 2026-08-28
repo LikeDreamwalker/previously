@@ -17,7 +17,7 @@
 <p align="center">
   <a href="https://previously.ldwid.com"><strong>previously.ldwid.com</strong></a>
   ·
-  <a href="https://previously.ldwid.com/playground"><strong>在线 Playground</strong></a>
+  <a href="https://previously.ldwid.com/docs/recall"><strong>在线 Playground</strong></a>
   ·
   <a href="https://previously.ldwid.com/docs"><strong>文档</strong></a>
   ·
@@ -101,7 +101,7 @@ Previously 用**时间切片**取代聊天线程：一种按人类记忆真实�
 > 切片 = 发生了什么。线索 = 关于什么。两者合起来，你就同时有了情景记忆和语义记忆——按时间记，也按主题记。
 
 <p align="center">
-  <img alt="横向时间线——每个圆点就是一个切片" src="public/screenshots/timeline-strip.png" width="800">
+  <img alt="时间线滚轮——所有切片在同一根轴上，打开即是现在" src="public/screenshots/timeline-strip.png" width="140">
 </p>
 
 当你问到涉及过去的事，主 Agent 会向一位**回忆同事（recall colleague）**提问——一个专门的子 Agent，像人回忆一样检索：先锁时间窗，再追话题线索，最后限额深读切片全文。它用自然语言回答，每个断言都挂原文引用，并附上它找过的路径——「我们不记得聊过这个」也是诚实、合法的答案。结果以一张卡片渲染在回答上方。
@@ -141,6 +141,7 @@ Previously 用**时间切片**取代聊天线程：一种按人类记忆真实�
 - **处处是你的本地时间**——读工具预渲染你的本地时间，Agent 永远不会算错时区
 - **琐碎回合不进记忆**——语义门把「谢谢」「继续」挡在时间线之外
 - **多模型**——DeepSeek、Anthropic 以及任何 OpenAI 兼容供应商，工具栏可自选主模型
+- **客户端模式**——整个系统可以作为本地内核运行：大脑用你本机已有的 Claude/Codex/Kimi 订阅（零配置、零 API key），或自带 API key（BYOK）获得与云端一致的完整流式体验
 - **耐久后台任务**——长任务跨断线持续运行并回报进度
 - **English & 中文**——完整国际化，支持暗色主题
 
@@ -148,7 +149,7 @@ Previously 用**时间切片**取代聊天线程：一种按人类记忆真实�
 
 ## 在 Playground 里试试
 
-文档站内嵌了一个**交互式 Playground**：**[previously.ldwid.com/playground](https://previously.ldwid.com/playground)**——基于 [`you`](https://github.com/previously-lab/you) 数据集（97 个时间片，2024→2026，由 [Loom](https://github.com/previously-lab/loom) 生成）真实跑回忆与自进化。无需注册、无需 API key：点一个预设问题，看 Agent 真的想起来。
+文档站里嵌了一个**交互式 Playground**——基于 [`you`](https://github.com/previously-lab/you) 数据集（97 个时间片，2024→2026，由 [Loom](https://github.com/previously-lab/loom) 生成）真实跑回忆与自进化。无需注册、无需 API key：在[回忆文档页](https://previously.ldwid.com/docs/recall)点一个预设问题，看 Agent 真的想起来——思考流、检索轨迹、流式回答，全是真跑出来的。
 
 ---
 
@@ -157,7 +158,7 @@ Previously 用**时间切片**取代聊天线程：一种按人类记忆真实�
 **简单方式——本地客户端（推荐）。** 一个 npm 包把内核装到你本机；记忆是本地 git 仓库，大脑可以用你已有的 Claude/Codex/Kimi 订阅（零 API key），也可以自带 key：
 
 ```bash
-npm i -g @previously-lab/client
+npm i -g @previously-lab/client@preview
 previously     # 首次运行进入引导式初始化
 ```
 
