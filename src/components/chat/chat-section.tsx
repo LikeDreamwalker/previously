@@ -4,15 +4,12 @@ import { memo, useEffect } from "react";
 import type { ReactNode } from "react";
 import type { UIMessage } from "ai";
 import { ChatMessage } from "./chat-message";
-import { LoadingTip } from "./loading-tip";
-import { Message, MessageContent } from "@/components/ui/message";
 import { useTranslations } from "next-intl";
 import { formatErrorDetail } from "@/lib/chat/workflow-errors";
 
 interface ChatSectionProps {
   messages: UIMessage[];
   isStreaming: boolean;
-  isLoading: boolean;
   error: Error | undefined;
   lastUserMessageAt: string | null;
   /** Regenerate handler — threaded to the LAST assistant message only. */
@@ -22,14 +19,11 @@ interface ChatSectionProps {
 export const ChatSection = memo(function ChatSection({
   messages,
   isStreaming,
-  isLoading,
   error,
   lastUserMessageAt,
   onRegenerate,
 }: ChatSectionProps) {
   const lastMessage = messages[messages.length - 1];
-  const hasAssistant = messages.some((m) => m.role === "assistant");
-  const showPlaceholder = isLoading && !hasAssistant;
   // Regenerate re-answers the last user message — only meaningful on the
   // LATEST assistant reply (and never mid-stream; ChatMessage also gates).
   const lastAssistantId = [...messages].reverse().find((m) => m.role === "assistant")?.id;
@@ -60,17 +54,9 @@ export const ChatSection = memo(function ChatSection({
         />
       ))}
 
-      {/* Placeholder bubble — shown during the brief "submitted" window
-          before the first assistant message arrives. */}
-      {showPlaceholder && (
-        <div className="py-1">
-          <Message align="start" className="gap-1">
-            <MessageContent className="min-w-0">
-              <LoadingTip />
-            </MessageContent>
-          </Message>
-        </div>
-      )}
+      {/* The pre-first-chunk placeholder is retired with the loading tips
+          (content refresh pending) — the input bar's stop state is the
+          in-flight affordance. */}
 
       {error && <ErrorBanner error={error} />}
     </>

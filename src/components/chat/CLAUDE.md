@@ -31,7 +31,6 @@ ChatPage (chat-page.tsx)  ← "use client", top-level useChat container
 │   │       │   │   ├── WebSearchRenderer    (webSearch)
 │   │       │   │   └── DefaultRenderer      (unknown tools)
 │   │       │   └── MarkdownRenderer  ← text parts (react-markdown + GFM + highlight)
-│   │       ├── LoadingTip placeholder (before first assistant message arrives)
 │   │       └── Error banner
 │   └── [Historical — past slice selected]
 │       └── HistoricalChatView
@@ -53,15 +52,15 @@ ChatPage (chat-page.tsx)  ← "use client", top-level useChat container
    - `data-evolution` → its OWN `EvolutionCard` item at the position the chunks arrive (between the housekeeping context and strands phases); while running it streams the live thinking line of whichever evolution agent is active (Phase 1 direction evaluation rides the same channel as step "direction", then Phase 2's Previously Agent takes over as reading/reviewing), the terminal chunk carries the summary / mutations diff / note / error / partial flag, plus the v1.0 calibration details (fitness `triggers` + net scores, the Phase-1 `direction` verdict — including `failed` with its reason, Phase-2 `playbooks`)
    - `text` → buffered and flushed into `MarkdownRenderer` blocks
 3. Items render in natural stream order inside `AnimatePresence` for enter/exit animations.
-4. A `LoadingTip` pulses at the bottom while streaming.
-5. `MessageActions` (copy/regenerate) render in `MessageFooter` — `ChatSection` threads `onRegenerate` to the LAST assistant message only; the SDK's `regenerate({messageId})` truncates the rejected reply locally and re-requests with trigger `regenerate-message`, which the transport turns into the body's `regenerate` flag (the server then skips the duplicate user-turn append and records an `interaction_regenerate` fitness signal). The input bar's stop button calls `handleStop`, which aborts the stream, clears the stored run id (so a reload never resurrects a deliberately-stopped turn), and reports an `interaction_interrupt` signal to `POST /api/episodic/signal` (fire-and-forget).
+4. The loading tips (`loading-tip.tsx`) are RETIRED for now (content refresh pending) — no streaming indicator or pre-first-chunk placeholder; the input bar's stop state is the in-flight affordance.
+5. `MessageActions` (copy/regenerate) render in `MessageFooter` — `ChatSection` threads `onRegenerate` to the LAST assistant message only; the SDK's `regenerate({messageId})` truncates the rejected reply locally and re-requests with trigger `regenerate-message`, which the transport turns into the body's `regenerate` flag (the server then skips the duplicate user-turn append and records an `interaction_regenerate` fitness signal). The input bar's stop button calls `handleStop`, which aborts the stream, cancels the durable run via `POST /api/chat/<runId>/cancel` (stop means STOP — no recorded agent reply), clears the stored run id (so a reload never resurrects a deliberately-stopped turn), and reports an `interaction_interrupt` signal to `POST /api/episodic/signal` (fire-and-forget).
 
 ## File Map
 
 | File | Description |
 |------|-------------|
 | `chat-page.tsx` | Top-level `"use client"` container: `useChat` hook, `WorkflowChatTransport` wiring, timeline state, hero/messages/timeline regions, sticky `ChatInput` |
-| `chat-section.tsx` | Renders the message list (`ChatMessage` per message), the pre-first-part loading placeholder, and the error banner |
+| `chat-section.tsx` | Renders the message list (`ChatMessage` per message) and the error banner |
 | `chat-message.tsx` | Per-message renderer: unified stream pipeline (`buildStream`) — classifies parts into reasoning/text/tool/phase, wraps in `AnimatePresence` |
 | `chat-input.tsx` | Textarea with image attachments (paste/drag-drop/file picker), auto-resize, submit/stop buttons, demo trigger |
 | `phase-indicator.tsx` | Reusable expandable header bar: two modes — `streaming` (typewriter subtitle, elapsed timer) and `static` (manual expand, chevron). Used by ThinkingSteps, HousekeepingCard, RecallToolRenderer, and non-compact data-phase items |
@@ -87,7 +86,7 @@ ChatPage (chat-page.tsx)  ← "use client", top-level useChat container
 | `empty-briefing.tsx` | The empty-live "arrival" briefing: a letter-spaced `PREVIOUSLY ON` eyebrow + the user's name over a soft brand glow (film-title-card framing), then a hot-start summary drawn from real memory — the active slice's focus ("上次聊到"), open loops ("还欠着的事"), and contextual suggestion chips ("可以接着聊"). Every section only renders when it has real data; the name doubles as the persona switcher in demo mode; "view full previously" opens the same Previously On dialog the slice view uses |
 | `time-display.tsx` | Date/time formatting: `sameDay()` check, `TimeDisplay` with date/time modes |
 | `cognition-popover.tsx` | Per-turn agent thoughts dialog: Brain icon trigger, lazy-loaded Markdown content |
-| `loading-tip.tsx` | Loading indicator cycling through i18n tips with fade transitions |
+| `loading-tip.tsx` | RETIRED (unused, kept for a content refresh) — loading indicator cycling through i18n tips |
 | `markdown.tsx` | Markdown renderer: react-markdown with remark-gfm, rehype-highlight, custom components for code/table/link/list/blockquote |
 | `code-block.tsx` | Fenced code block: header bar with language label + copy button, scrollable code area |
 | `message-actions.tsx` | Copy-to-clipboard and Regenerate buttons, shown on hover via group-hover opacity |

@@ -620,6 +620,7 @@ export function assembleSystemPrompt(opts: {
     `## What I know about the user (inference model — ${dateAnchor})`,
     previouslyContent,
     "The above is the current profile and operating model — distilled hypotheses, each carrying `refs` to its evidence. If any line seems outdated or contradicts what the user just said, cite its refs and say so; the correction flows into the archive. Every `refs` pointer is a drill-down entry: verify it through recall (or open the referenced slice with readSlice) before citing specifics from a past event — the card answers WHO the user is, not what was said.",
+    "GROUNDING RULE — never answer the past from a summary. Everything this prompt says about the past (this card, the timeline one-liners below) is a distilled POINTER, not the event itself; a summary paraphrased as fact is a hallucination in waiting. Before you assert any specific about a past conversation — what was said, decided, promised, felt — the original must already be in THIS conversation: a recall answer from earlier this conversation (its references count), or slice text you opened yourself with readSlice this conversation. With neither at hand, call recall FIRST (or readSlice when you already hold the exact slice id), then answer. Exempt: what the user just said in this conversation, and the slice you are currently in.",
     overdueBlock,
     sliceHeadBlock,
     timelineBrief,

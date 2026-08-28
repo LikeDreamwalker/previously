@@ -21,7 +21,6 @@ import {
   Paperclip,
   XCircle,
 } from "lucide-react";
-import { LoadingTip } from "./loading-tip";
 import type { ToolRenderState } from "@/lib/chat/tool-state";
 import {
   buildStream,
@@ -413,12 +412,8 @@ export const ChatMessage = memo(function ChatMessage({
             </div>
           )}
 
-          {/* Loading indicator — persists for the full bubble lifetime */}
-          {isStreaming && isAssistant && (
-            <div className="pt-1.5">
-              <LoadingTip />
-            </div>
-          )}
+          {/* Loading tips are retired for now (content refresh pending) — the
+              streaming bubble shows no bottom indicator. */}
 
           {/* Silence heartbeat — only when the stream has gone quiet mid-turn */}
           {isStreaming && silent && (

@@ -236,3 +236,13 @@ describe("appendBridgeTimeSuffix (outbound-only tail injection)", () => {
     expect(appendBridgeTimeSuffix(msgs, LINE)).toEqual(msgs);
   });
 });
+
+describe("the grounding rule (never answer the past from a summary)", () => {
+  it("is pinned in the static rules, between the card and the timeline brief", () => {
+    const s = build();
+    expect(s).toContain("GROUNDING RULE");
+    expect(s).toContain("call recall FIRST");
+    expect(s.indexOf("GROUNDING RULE")).toBeGreaterThan(s.indexOf(PREVIOUSLY));
+    expect(s.indexOf("GROUNDING RULE")).toBeLessThan(s.indexOf(TIMELINE));
+  });
+});

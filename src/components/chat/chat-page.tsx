@@ -543,14 +543,24 @@ function Inner({
     [regenerate, status],
   );
 
-  // ── Stop: abort the local stream AND drop the stored run id, so a reload
-  // never resurrects a turn the user deliberately cut off (onChatEnd only
-  // fires on a finish chunk, which an abort never receives). The durable run
-  // itself keeps writing memory server-side — the interruption is reported as
-  // a fitness signal, best-effort.
+  // ── Stop means STOP: abort the local stream, cancel the durable run
+  // server-side (no further steps, no recorded agent reply — the slice keeps
+  // the already-persisted user turn, "a question without an answer"), drop
+  // the stored run id so a reload never resurrects a turn the user cut off
+  // (onChatEnd only fires on a finish chunk, which an abort never receives),
+  // and report the interruption as a fitness signal. All best-effort.
   const handleStop = useCallback(() => {
+    const runId = readStoredRunId();
     void stop();
     clearStoredRunId();
+    if (runId) {
+      fetch(`/api/chat/${encodeURIComponent(runId)}/cancel`, {
+        method: "POST",
+        keepalive: true,
+      }).catch(() => {
+        /* best-effort — the local abort already stopped the UI */
+      });
+    }
     fetch("/api/episodic/signal", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -661,7 +671,6 @@ function Inner({
                   <ChatSection
                     messages={messages}
                     isStreaming={isStreaming}
-                    isLoading={isLoading}
                     error={error}
                     lastUserMessageAt={lastUserMessageAt}
                     onRegenerate={handleRegenerate}
