@@ -288,6 +288,65 @@ describe("runSubAgent", () => {
     expect(workflow.writer.releaseLock).toHaveBeenCalled();
   });
 
+  it("downgrades a required tool choice to auto on DeepSeek (thinking × forced choice is a provider 400)", async () => {
+    fakeStream({
+      toolCalls: [{ toolName: "report", input: { verdict: "ok", count: 1 } }],
+    });
+    const res = await runSubAgent(baseOpts({ toolChoice: "required" }));
+    expect(res.ok).toBe(true);
+    expect(res.report).toEqual({ verdict: "ok", count: 1 });
+    expect(lastCall().toolChoice).toBe("auto");
+    // Thinking stays ON for the primary attempt.
+    expect(lastCall().providerOptions).toMatchObject({
+      deepseek: { thinking: { type: "enabled" } },
+    });
+    expect(ai.streamText).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries once with thinking OFF + required when the DeepSeek auto attempt yields no report", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    ai.streamText
+      .mockImplementationOnce(async () => ({
+        text: Promise.resolve("prose answer, no tool call"),
+        toolCalls: Promise.resolve([]),
+        reasoningText: Promise.resolve(undefined),
+        sources: Promise.resolve([]),
+        warnings: Promise.resolve([]),
+      }))
+      .mockImplementationOnce(async () => ({
+        text: Promise.resolve(""),
+        toolCalls: Promise.resolve([
+          { toolName: "report", input: { verdict: "retried", count: 2 } },
+        ]),
+        reasoningText: Promise.resolve(undefined),
+        sources: Promise.resolve([]),
+        warnings: Promise.resolve([]),
+      }));
+    const res = await runSubAgent(baseOpts({ toolChoice: "required" }));
+    expect(res.ok).toBe(true);
+    expect(res.report).toEqual({ verdict: "retried", count: 2 });
+    expect(ai.streamText).toHaveBeenCalledTimes(2);
+    const second = ai.streamText.mock.calls[1]?.[0] as Record<string, unknown>;
+    expect(second.toolChoice).toBe("required");
+    expect(second.providerOptions).toMatchObject({
+      deepseek: { thinking: { type: "disabled" } },
+    });
+    warn.mockRestore();
+  });
+
+  it("keeps toolChoice required as-is for non-DeepSeek providers", async () => {
+    fakeStream({
+      toolCalls: [{ toolName: "report", input: { verdict: "ok", count: 1 } }],
+    });
+    await runSubAgent(
+      baseOpts({
+        toolChoice: "required",
+        model: { ...model, sdk: "anthropic" },
+      }),
+    );
+    expect(lastCall().toolChoice).toBe("required");
+  });
+
   it("delivers live lines to onLine even without a toolCallId (evolution path)", async () => {
     fakeStream({
       chunks: [

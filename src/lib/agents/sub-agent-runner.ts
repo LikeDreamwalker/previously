@@ -7,9 +7,13 @@
  *   - model:      the caller passes a resolved ModelConfig; tool executors can
  *                 resolve the turn's main model via `resolveSubAgentModel(ctx)`
  *                 (`ctx.mainModel ?? resolveMainModelFromConfig()`).
- *   - thinking:   always ON via `normalizeReasoningEffort(sdk, id, true, effort)`
- *                 (effort defaults to "low"); provider quirks (DeepSeek explicit
- *                 low, Anthropic budgets) are inherited from the effort injector.
+ *   - thinking:   ON by default via `normalizeReasoningEffort(sdk, id, true,
+ *                 effort)` (effort defaults to "low"); provider quirks
+ *                 (DeepSeek explicit low, Anthropic budgets) are inherited
+ *                 from the effort injector. DeepSeek exception: thinking mode
+ *                 rejects a forced tool_choice, so a `toolChoice: "required"`
+ *                 report goes out as auto + thinking first, and a missing
+ *                 report retries once with thinking OFF + required.
  *   - streaming:  `streamText` (not generateText) so `onChunk` captures BOTH
  *                 channels progressively — the reasoning trail (stage
  *                 "thinking") and the answer text (stage "writing") stream LIVE
@@ -246,8 +250,11 @@ export interface RunSubAgentOptions<Report> {
   }) => ProgressLine | undefined;
   /** Wall-clock budget in ms (SDK timeout hook + withStepTimeout backstop). */
   timeoutMs?: number;
-  /** Reasoning effort — thinking is always ON. Default "low". */
+  /** Reasoning effort — thinking is ON by default. Default "low". */
   effort?: "low" | "medium" | "high";
+  /** Thinking toggle. Default ON. A forced-report call that hit the DeepSeek
+   *  thinking×tool_choice wall is retried with this OFF automatically. */
+  thinking?: boolean;
   /** Sampling temperature. Default 0.1 (structured metadata, not prose). */
   temperature?: number;
   /** Optional progress streaming (noop without a toolCallId). */
@@ -310,6 +317,7 @@ export async function runSubAgent<Report = unknown>(
     onToolProgress,
     timeoutMs = DEFAULT_TIMEOUT_MS,
     effort = "low",
+    thinking = true,
     temperature = 0.1,
     progress,
     startLine,
@@ -327,17 +335,26 @@ export async function runSubAgent<Report = unknown>(
   const emitter = createProgressEmitter(progress);
   if (startLine) emitter.emit(startLine, "running");
 
-  // Thinking is always requested; the injector owns provider-specific mapping.
-  const providerOptions = normalizeReasoningEffort(
-    effortSdk ?? model?.sdk,
-    model?.id ?? "prebuilt",
-    true,
-    effort,
-  );
+  // Thinking is requested by default; the injector owns provider-specific
+  // mapping. Computed PER ATTEMPT — the DeepSeek retry below flips it off.
+  //
+  // DeepSeek constraint (probed 2026-08-28): thinking mode rejects a FORCED
+  // tool_choice with a 400 ("Thinking mode does not support this
+  // tool_choice"), which surfaces as the AI SDK's "No output generated" —
+  // thinking-ON + auto works, thinking-OFF + required works. So a required
+  // report on DeepSeek goes out as auto + thinking first, and a missing
+  // report retries once with thinking off + required. A forced-report agent
+  // must never hard-fail on this provider quirk (the direction agent's
+  // bootstrap otherwise locks itself out forever).
+  const sdk = effortSdk ?? model?.sdk;
+  const deepseekDowngrade =
+    thinking && sdk === "deepseek" && toolChoice === "required";
+  const firstChoice = deepseekDowngrade ? "auto" : toolChoice;
 
   // Accumulated by onChunk — the written answer (text-delta) and the thinking
   // trail (reasoning-delta). Both are returned on completion AND interruption
   // (thinkDeep's partial semantics: a timeout keeps whatever was streamed).
+  // Reset per attempt.
   let text = "";
   let reasoning = "";
 
@@ -362,7 +379,18 @@ export async function runSubAgent<Report = unknown>(
     sources: Array<{ sourceType: string; url?: string; title?: string }>;
   }
 
-  const run = async (): Promise<StreamFinal> => {
+  const run = async (
+    callToolChoice: "auto" | "required" | "none",
+    callThinking: boolean,
+  ): Promise<StreamFinal> => {
+    text = "";
+    reasoning = "";
+    const providerOptions = normalizeReasoningEffort(
+      sdk,
+      model?.id ?? "prebuilt",
+      callThinking,
+      effort,
+    );
     // streamText (not generateText) so onChunk captures BOTH channels
     // progressively — never lost, even mid-thought.
     const stream = await streamText({
@@ -370,7 +398,7 @@ export async function runSubAgent<Report = unknown>(
       system,
       prompt,
       tools,
-      toolChoice,
+      toolChoice: callToolChoice,
       temperature,
       providerOptions,
       ...(maxSteps !== undefined ? { stopWhen: isStepCount(maxSteps) } : {}),
@@ -428,7 +456,10 @@ export async function runSubAgent<Report = unknown>(
   try {
     // withStepTimeout — BACKSTOP: if the SDK abort somehow doesn't surface,
     // the step still returns a structured result before the platform wall.
-    const res = await withStepTimeout(run, timeoutMs + BACKSTOP_GRACE_MS);
+    const res = await withStepTimeout(
+      () => run(firstChoice, thinking),
+      timeoutMs + BACKSTOP_GRACE_MS,
+    );
     if (!res.ok) {
       // Backstop fired — return whatever was accumulated before the cutoff.
       return {
@@ -439,11 +470,33 @@ export async function runSubAgent<Report = unknown>(
         error: `Sub-agent did not finish within ${Math.round(timeoutMs / 1000)}s.`,
       };
     }
-    const result = res.result!;
-    const report =
+    let result = res.result!;
+    let report =
       reportToolName && reportSchema
         ? extractToolReport(result.toolCalls, reportToolName, reportSchema)
         : undefined;
+    if (
+      deepseekDowngrade &&
+      reportToolName &&
+      reportSchema &&
+      !report
+    ) {
+      // The auto-choice attempt ended without the required report (the model
+      // answered in prose). Retry once with the other known-good DeepSeek
+      // combo: thinking OFF + tool_choice required — the report is guaranteed
+      // by the provider, at the cost of the reasoning trail.
+      console.warn(
+        `[sub-agent] no ${reportToolName} report on DeepSeek auto choice — retrying with thinking off + required`,
+      );
+      const retry = await withStepTimeout(
+        () => run("required", false),
+        timeoutMs + BACKSTOP_GRACE_MS,
+      );
+      if (retry.ok) {
+        result = retry.result!;
+        report = extractToolReport(result.toolCalls, reportToolName, reportSchema);
+      }
+    }
     return {
       ok: true,
       report,
