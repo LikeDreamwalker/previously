@@ -55,6 +55,7 @@ src/lib/identity/*.generated.ts
 
 # ===== Runtime memory (local dev writes; real data lives via GitHub API) =====
 memory/episodic/
+memory/evolution/
 memory/user/config.json
 
 # ===== Testing =====
