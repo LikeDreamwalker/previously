@@ -63,6 +63,8 @@ writeFileSync(
         "Consumed as a dependency by previously-client; not intended for direct use.",
       private: false,
       files: ["standalone", "README.md"],
+      // npm --provenance verifies repository.url against the publishing repo.
+      repository: { type: "git", url: "https://github.com/previously-lab/agent" },
     },
     null,
     2
