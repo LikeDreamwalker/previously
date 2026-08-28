@@ -235,7 +235,7 @@ async function emitPhase(
  */
 function emitEvolutionProgress(
   stream: StepStream,
-  step: "reading" | "reviewing",
+  step: "direction" | "reading" | "reviewing",
   live?: string,
   liveStage?: "thinking" | "writing",
 ): void {
@@ -1025,7 +1025,7 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
     lastStage: undefined,
     sentAny: false,
   };
-  let evolutionStep: "reading" | "reviewing" = "reading";
+  let evolutionStep: "direction" | "reading" | "reviewing" = "reading";
   const onEvolutionProgress = (step: "reading" | "reviewing" | "applied") => {
     if (step === "applied") return; // the terminal result chunk follows
     evolutionStep = step;
@@ -1208,11 +1208,14 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
           // move (low frequency, high bar — "no change" is the common case and
           // writes nothing). A failed Phase 1 never blocks Phase 2; the
           // degradation is logged and noted on the evolution result.
-          // The verdict rides the terminal frame — EXCEPT on failure, where
-          // the field stays unset (a failed check is not a "no_change").
+          // The evaluation runs LIVE on the evolution card (step "direction" +
+          // the agent's streaming reasoning line) and its verdict rides the
+          // terminal frame — including failures (a silent failure reads as "it
+          // never runs").
           let direction: string | null = currentDirection;
-          let directionNote = "";
           let directionOutcome: EvolutionResult["direction"];
+          evolutionStep = "direction";
+          emitEvolutionProgress(stream, "direction");
           try {
             const dirResult = await runDirectionAgent({
               model: input.modelConfig,
@@ -1222,6 +1225,7 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
               recentEvents: fitnessStore.events.slice(-DIRECTION_RECENT_EVENTS),
               analysis,
               sliceId: diskSlice.slice_id,
+              onLine: onEvolutionLine,
             });
             if (dirResult.outcome === "proposed") {
               await writeDirection(dirResult.direction, batch);
@@ -1253,14 +1257,15 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
               console.warn(
                 `[Evolution] direction evaluation unavailable: ${dirResult.reason}`,
               );
-              directionNote = " Direction evaluation unavailable this run.";
+              directionOutcome = {
+                outcome: "failed",
+                summary: dirResult.reason,
+              };
             }
           } catch (e) {
-            console.warn(
-              "[Evolution] direction phase failed:",
-              e instanceof Error ? e.message : e,
-            );
-            directionNote = " Direction evaluation unavailable this run.";
+            const reason = e instanceof Error ? e.message : String(e);
+            console.warn("[Evolution] direction phase failed:", reason);
+            directionOutcome = { outcome: "failed", summary: reason };
           }
 
           if (triggers.length > 0 || cardGate) {
@@ -1288,12 +1293,6 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
                 .slice(-15),
               fitnessSignals: thisSliceSignals,
             });
-            if (directionNote) {
-              evolutionResult = {
-                ...evolutionResult,
-                note: evolutionResult.note + directionNote,
-              };
-            }
             // Fold the "why it ran" / "what the direction check concluded"
             // calibration details into the terminal frame — for BOTH the
             // changed and the checked-no-updates outcomes.
@@ -1319,7 +1318,7 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
               ran: false,
               changed: false,
               droppedRecent: 0,
-              note: `Slice boundary — nothing worth sedimenting (direction bootstrap check ran).${directionNote}`,
+              note: "Slice boundary — nothing worth sedimenting (direction bootstrap check ran).",
               ...(directionOutcome ? { direction: directionOutcome } : {}),
             });
           }

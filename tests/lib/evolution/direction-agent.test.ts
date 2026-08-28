@@ -263,6 +263,16 @@ describe("runDirectionAgent", () => {
     expect(arg.prompt).toContain("Don't decompose emotional venting");
   });
 
+  it("runs uncapped in steps with a 240s wall-clock budget (the old 1-step/60s cap caused silent failures)", async () => {
+    ai.streamText.mockResolvedValue(
+      makeToolCall({ outcome: "no_change", reason: "nothing" }),
+    );
+    await runDirectionAgent(baseInput());
+    const arg = ai.streamText.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(arg.stopWhen).toBeUndefined();
+    expect(arg.timeout).toBe(240_000);
+  });
+
   it("bootstrap mode accepts a first direction anchored to a single slice", async () => {
     const onePointer = VALID_PROPOSAL.replace(
       "- 2026-08-22-1015 — user praised a concrete one",

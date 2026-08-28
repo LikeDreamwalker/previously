@@ -40,13 +40,23 @@ function EvolutionDetail({ data }: { data: EvolutionStepData }) {
         </ul>
       )}
       {hasDirection && (
-        <p className="text-xs leading-relaxed text-muted-foreground">
-          {data.direction!.outcome === "updated" &&
-          data.direction!.summary?.trim()
-            ? t("directionUpdated", {
-                summary: data.direction!.summary.trim(),
+        <p
+          className={
+            data.direction!.outcome === "failed"
+              ? "text-xs leading-relaxed text-red-500/90"
+              : "text-xs leading-relaxed text-muted-foreground"
+          }
+        >
+          {data.direction!.outcome === "failed"
+            ? t("directionFailed", {
+                reason: data.direction!.summary?.trim() || "—",
               })
-            : t("directionUnchanged")}
+            : data.direction!.outcome === "updated" &&
+                data.direction!.summary?.trim()
+              ? t("directionUpdated", {
+                  summary: data.direction!.summary.trim(),
+                })
+              : t("directionUnchanged")}
         </p>
       )}
       {hasPlaybooks && (
@@ -90,12 +100,12 @@ function EvolutionDetail({ data }: { data: EvolutionStepData }) {
 /**
  * The standalone evolution card — the inline card-evolution run (Previously
  * Agent) at its natural stream position (between the housekeeping context and
- * strands phases). While running, the Previously Agent's realtime thinking
- * line streams as the typewriter subtitle (falling back to the coarse
- * reading/reviewing step until the first live line arrives); the terminal
- * state shows the agent's one-sentence summary (falling back to the change
- * counts) with the mutations diff + note expandable, "checked, no updates",
- * or the failure reason in red.
+ * strands phases). While running, the agent's realtime thinking line streams
+ * as the typewriter subtitle (falling back to the coarse direction/reading/
+ * reviewing step until the first live line arrives); the terminal state shows
+ * the agent's one-sentence summary (falling back to the change counts) with
+ * the mutations diff + note expandable, "checked, no updates", or the failure
+ * reason in red.
  */
 export function EvolutionCard({
   running,
@@ -152,13 +162,15 @@ export function EvolutionCard({
   };
 
   const stepText =
-    data.step === "reading"
-      ? t("reading")
-      : data.step === "reviewing"
-        ? t("reviewing")
-        : data.step === "applied"
-          ? t("applied")
-          : undefined;
+    data.step === "direction"
+      ? t("direction")
+      : data.step === "reading"
+        ? t("reading")
+        : data.step === "reviewing"
+          ? t("reviewing")
+          : data.step === "applied"
+            ? t("applied")
+            : undefined;
 
   return (
     <PhaseIndicator

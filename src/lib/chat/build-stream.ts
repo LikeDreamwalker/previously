@@ -82,12 +82,16 @@ export type EvolutionStepData = {
     score: number;
   }>;
   /**
-   * v1.0: the Phase-1 direction verdict (design §2.3). A FAILED direction
-   * check omits the field entirely — a failure must never masquerade as
-   * "no_change". `summary` is the one-sentence account of what changed when
-   * the direction was updated.
+   * v1.0: the Phase-1 direction verdict (design §2.3). Absent only when the
+   * check did not run; a FAILED check reports outcome "failed" with the
+   * reason in `summary` — a failure must never masquerade as "no_change".
+   * Otherwise `summary` is the one-sentence account of what changed when the
+   * direction was updated.
    */
-  direction?: { outcome: "no_change" | "updated"; summary?: string };
+  direction?: {
+    outcome: "no_change" | "updated" | "failed";
+    summary?: string;
+  };
   /** v1.0: the playbook mutations applied this run (design §2.4). */
   playbooks?: Array<{
     agent: "recall" | "search" | "thinkdeep";

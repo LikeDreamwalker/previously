@@ -161,8 +161,10 @@
       "applied": "Applying update...",
       "partial": "(partial update)",
       "triggerNet": "{bucket} · net score {score}",
+      "direction": "Evaluating the evolution direction...",
       "directionUnchanged": "Direction: unchanged",
       "directionUpdated": "Direction: {summary}",
+      "directionFailed": "Direction: evaluation failed ({reason})",
       "playbookUpdated": "{agent} playbook updated: {summary}",
       "buckets": {
         "card": "Card",

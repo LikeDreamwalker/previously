@@ -100,9 +100,14 @@ export interface EvolutionResult {
     bucket: "card" | "recall" | "search" | "thinkdeep" | "interaction";
     score: number;
   }>;
-  /** v1.0: the Phase-1 direction verdict — omitted entirely when the
-   *  direction check failed or did not run. */
-  direction?: { outcome: "no_change" | "updated"; summary?: string };
+  /** v1.0: the Phase-1 direction verdict — omitted entirely when the check
+   *  did not run. A FAILED check surfaces as outcome "failed" (never
+   *  masquerading as "no_change"; a silent failure reads as "it never runs"). */
+  direction?: {
+    outcome: "no_change" | "updated" | "failed";
+    /** The update summary, or the failure reason when outcome is "failed". */
+    summary?: string;
+  };
   /** v1.0: playbook mutations applied this run (Phase 2). */
   playbooks?: Array<{
     agent: "recall" | "search" | "thinkdeep";

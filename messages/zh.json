@@ -161,8 +161,10 @@
       "applied": "正在应用更新...",
       "partial": "（部分更新）",
       "triggerNet": "{bucket} · 近期净分 {score}",
+      "direction": "正在评估进化方向...",
       "directionUnchanged": "方向：无变化",
       "directionUpdated": "方向：{summary}",
+      "directionFailed": "方向：评估失败（{reason}）",
       "playbookUpdated": "{agent} 工作手册已更新：{summary}",
       "buckets": {
         "card": "卡片",

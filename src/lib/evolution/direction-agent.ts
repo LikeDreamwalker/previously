@@ -133,6 +133,10 @@ export interface DirectionAgentInput {
   analysis: TurnAnalysis;
   /** The slice whose boundary triggered this evaluation. */
   sliceId: string;
+  /** Live-line callback — the caller (housekeeping) wires this onto the
+   *  data-evolution channel so the evaluation's reasoning streams onto the
+   *  evolution card. Raw per-delta; the caller owns throttling. */
+  onLine?: (line: string, stage: "thinking" | "writing") => void;
 }
 
 export type DirectionAgentResult =
@@ -292,15 +296,18 @@ ${renderAnalysis(input.analysis)}
 Evaluate: does the THEORY itself need to move? "no_change" is the common case — say so plainly. Promote only what the evidence corroborates.`;
 }
 
-const MAX_STEPS = 1;
-const TIMEOUT_MS = 60_000;
+/** Wall-clock budget — a single forced report call, but thinking on a slow
+ *  model can easily exceed a minute (the old 60s cap was the main source of
+ *  silent "failed" outcomes). Aligned with the recall colleague's budget. */
+const TIMEOUT_MS = 240_000;
 
 /**
- * Run the direction evaluation. Never throws: runner failures degrade to
- * { outcome: "failed" } (the caller proceeds to Phase 2 with the existing
- * direction), and a structurally invalid proposal degrades to
- * { outcome: "no_change" } with the rejection reason logged — a bad direction
- * write is worse than a skipped one.
+ * Run the direction evaluation. Uncapped steps (the report is a single forced
+ * tool call anyway); the wall-clock budget above is the bound. Never throws:
+ * runner failures degrade to { outcome: "failed" } (the caller proceeds to
+ * Phase 2 with the existing direction), and a structurally invalid proposal
+ * degrades to { outcome: "no_change" } with the rejection reason logged — a
+ * bad direction write is worse than a skipped one.
  */
 export async function runDirectionAgent(
   input: DirectionAgentInput,
@@ -319,8 +326,8 @@ export async function runDirectionAgent(
     toolChoice: "required",
     reportToolName: "directionReport",
     reportSchema: directionReportSchema,
-    maxSteps: MAX_STEPS,
     timeoutMs: TIMEOUT_MS,
+    onLine: input.onLine,
   });
 
   if (!res.ok) {
