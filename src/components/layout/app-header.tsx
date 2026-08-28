@@ -1,15 +1,16 @@
 "use client";
 
 import { Link } from "@/i18n/navigation";
-import { BookOpen, Settings } from "lucide-react";
-import { useLocale, useTranslations } from "next-intl";
+import { BookOpen } from "lucide-react";
+import { useLocale } from "next-intl";
 import { ThemeToggle } from "@/components/chat/theme-toggle";
 import { LocaleToggle } from "@/components/chat/locale-toggle";
 import { VersionBadge } from "@/components/layout/version-badge";
 import { DemoBadge } from "@/components/layout/demo-badge";
+import { ClientBadge } from "@/components/layout/client-badge";
+import { SettingsLink } from "@/components/layout/settings-link";
 
 export function AppHeader({ isDemo = false }: { isDemo?: boolean }) {
-  const t = useTranslations("nav");
   const locale = useLocale();
 
   return (
@@ -25,6 +26,7 @@ export function AppHeader({ isDemo = false }: { isDemo?: boolean }) {
 
       <nav className="flex items-center gap-1">
         {isDemo && <DemoBadge />}
+        <ClientBadge />
         <a
           href="https://github.com/previously-lab/agent"
           target="_blank"
@@ -43,13 +45,7 @@ export function AppHeader({ isDemo = false }: { isDemo?: boolean }) {
           <BookOpen className="h-3.5 w-3.5 shrink-0" />
           <span className="hidden sm:inline">Docs</span>
         </a>
-        <Link
-          href="/settings"
-          className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
-        >
-          <Settings className="h-3.5 w-3.5 shrink-0" />
-          <span className="hidden sm:inline">Settings</span>
-        </Link>
+        <SettingsLink />
 
         <span className="w-px h-4 bg-border/50 mx-1" />
         <ThemeToggle />

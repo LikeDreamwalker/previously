@@ -1,9 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   ALL_MODELS,
+  BYOK_PROVIDERS,
   getAvailableModels,
+  getByokModel,
   getModel,
-  getModelOverrides,
   resolveModelId,
   getDefaultModelId,
 } from "@/lib/models/registry";
@@ -12,10 +16,16 @@ const SAVED_ENV = { ...process.env };
 
 describe("model registry", () => {
   beforeEach(() => {
-    // Deterministic env: no provider keys configured by default.
+    // Deterministic env: no provider keys configured by default, no
+    // client-mode state (PREVIOUSLY_HOME / brain / default-model injection).
     delete process.env.DEEPSEEK_API_KEY;
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.OPENAI_API_KEY;
+    delete process.env.PREVIOUSLY_MODE;
+    delete process.env.PREVIOUSLY_HOME;
+    delete process.env.PREVIOUSLY_BRAIN;
+    delete process.env.PREVIOUSLY_BRAIN_AGENT;
+    delete process.env.PREVIOUSLY_DEFAULT_MODEL;
   });
 
   afterEach(() => {
@@ -48,8 +58,13 @@ describe("model registry", () => {
     }
   });
 
-  it("does not override thinking in curated overrides (derives from capability)", () => {
-    expect(getModelOverrides("deepseek-v4-flash")?.defaultThinking).toBeUndefined();
+  it("defaults effort to LOW for every user-selectable model", () => {
+    // Fast responses are the product rule; deep thinking is thinkDeep's job.
+    // startTurn pins effort=low server-side regardless — the catalog default
+    // must agree so the UI seed and the actual call never diverge.
+    for (const m of ALL_MODELS) {
+      expect(m.defaultEffort).toBe("low");
+    }
   });
 
   // ─── getAvailableModels (env-gated) ─────────────────────────────────
@@ -119,5 +134,115 @@ describe("model registry", () => {
 
   it("falls back to a hardcoded default when nothing is configured", () => {
     expect(getDefaultModelId()).toBe("deepseek-v4-flash");
+  });
+
+  // ─── BYOK (client mode, config.json `byok` section) ─────────────────
+
+  describe("getByokModel", () => {
+    const byok = { provider: "deepseek", apiKey: "sk-byok", model: "deepseek-chat" };
+
+    it("returns undefined without a byok section or in cloud mode", () => {
+      process.env.PREVIOUSLY_MODE = "client";
+      expect(getByokModel(null)).toBeUndefined();
+      expect(getByokModel(undefined)).toBeUndefined();
+      process.env.PREVIOUSLY_MODE = "cloud";
+      expect(getByokModel(byok)).toBeUndefined();
+    });
+
+    it("builds the byok/<model> entry on the openai-compatible sdk path", () => {
+      process.env.PREVIOUSLY_MODE = "client";
+      const m = getByokModel(byok);
+      expect(m).toMatchObject({
+        id: "byok/deepseek-chat",
+        provider: "byok",
+        providerName: "Your API key",
+        sdk: "openai",
+        // The preset baseURL comes from BYOK_PROVIDERS, the key from config.
+        baseURL: "https://api.deepseek.com",
+        apiKey: "sk-byok",
+        defaultThinking: false,
+        defaultEffort: "low",
+      });
+      expect(m?.name).toContain("(BYOK)");
+      expect(m?.capabilities.thinking).toBe(false);
+    });
+
+    it("uses the custom baseUrl for custom providers", () => {
+      process.env.PREVIOUSLY_MODE = "client";
+      const m = getByokModel({
+        provider: "custom",
+        apiKey: "sk-x",
+        baseUrl: "https://llm.example.com/v1",
+        model: "my-model",
+      });
+      expect(m?.id).toBe("byok/my-model");
+      expect(m?.baseURL).toBe("https://llm.example.com/v1");
+    });
+
+    it("covers every preset the settings UI offers (minus custom)", () => {
+      // The UI's provider list mirrors these keys — a drift breaks validation
+      // (client-config validateByok accepts exactly these + custom).
+      expect(BYOK_PROVIDERS.map((p) => p.key)).toEqual([
+        "deepseek",
+        "openai",
+        "moonshotai",
+        "alibaba",
+        "google",
+        "mistral",
+        "xai",
+        "groq",
+      ]);
+    });
+  });
+
+  // ─── getDefaultModelId with BYOK (no env-key models) ────────────────
+
+  describe("getDefaultModelId with BYOK", () => {
+    let home: string;
+
+    const writeByok = (byok: unknown) =>
+      writeFile(join(home, "config.json"), JSON.stringify({ byok }));
+
+    beforeEach(async () => {
+      home = await mkdtemp(join(tmpdir(), "previously-home-"));
+      process.env.PREVIOUSLY_MODE = "client";
+      process.env.PREVIOUSLY_HOME = home;
+    });
+
+    afterEach(async () => {
+      await rm(home, { recursive: true, force: true });
+    });
+
+    it("prefers the byok entry when no env-key model is available", async () => {
+      await writeByok({ provider: "deepseek", apiKey: "sk-byok", model: "deepseek-chat" });
+      expect(getDefaultModelId()).toBe("byok/deepseek-chat");
+    });
+
+    it("keeps the first env-key model as the default when one is available", async () => {
+      await writeByok({ provider: "deepseek", apiKey: "sk-byok", model: "deepseek-chat" });
+      process.env.ANTHROPIC_API_KEY = "sk-ant-test";
+      expect(getDefaultModelId()).toMatch(/^claude-/);
+    });
+
+    it("uses PREVIOUSLY_DEFAULT_MODEL when the byok section omits model", async () => {
+      await writeByok({ provider: "deepseek", apiKey: "sk-byok" });
+      process.env.PREVIOUSLY_DEFAULT_MODEL = "deepseek-v4-pro";
+      expect(getDefaultModelId()).toBe("byok/deepseek-v4-pro");
+    });
+
+    it("falls back to ALL_MODELS[0] on a missing/corrupt config.json (never throws)", async () => {
+      // Missing file.
+      expect(getDefaultModelId()).toBe("deepseek-v4-flash");
+      // Corrupt file.
+      await writeFile(join(home, "config.json"), "{ not json");
+      expect(getDefaultModelId()).toBe("deepseek-v4-flash");
+    });
+
+    it("resolves a byok default id back to its config (the start-turn chain)", async () => {
+      await writeByok({ provider: "deepseek", apiKey: "sk-byok", model: "deepseek-chat" });
+      const id = getDefaultModelId();
+      expect(getModel(id)?.provider).toBe("byok");
+      expect(getModel(id)?.apiKey).toBe("sk-byok");
+    });
   });
 });

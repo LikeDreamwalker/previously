@@ -21,6 +21,7 @@
     "archive": "存档",
     "docs": "文档",
     "settings": "设置",
+    "settingsBusy": "回复进行中——完成后即可修改设置",
     "expand": "展开",
     "collapse": "收起",
     "timelineToggle": "切换时间线"
@@ -44,6 +45,12 @@
     "toastDesc": "这是一个只读预览，包含预设角色数据。",
     "dismissAction": "知道了"
   },
+  "clientBadge": {
+    "badgeLabel": "本地",
+    "badgeTitle": "你正在本地运行",
+    "badgeDesc": "此 Previously 实例运行在这台机器上。你的数据保存在本地，独立于任何云端部署。",
+    "versionLabel": "内核版本"
+  },
   "persona": {
     "dialogTitle": "选择角色"
   },
@@ -52,8 +59,6 @@
       "placeholder": "发送消息…",
       "attach": "附件",
       "attachUnsupported": "当前模型不支持图片输入",
-      "effortLocked": "演示模式下思维强度已固定",
-      "settingsTooltip": "设置",
       "stopTooltip": "停止生成",
       "sendTooltip": "发送消息",
       "modelTooltip": "切换 AI 模型",
@@ -61,9 +66,22 @@
       "modelGroup": {
         "deepseek": "DeepSeek",
         "anthropic": "Anthropic",
-        "openai": "OpenAI"
+        "openai": "OpenAI",
+        "bridge": "订阅桥接"
       },
-      "thinkingLabel": "深度思考"
+      "bridgeHint": "使用你本地的 {agent} 订阅额度。为获得最佳体验(流式输出、工具调用),建议改用 API 模型。",
+      "byokHint": "使用你自己的 API key(推荐)——直连 API:流式、快、无需本地 CLI。",
+      "bridgeNotInstalled": "未安装",
+      "bridgeConfigure": "去配置",
+      "docsTooltip": "记忆文档",
+      "docsLabel": "记忆文档",
+      "docs": {
+        "previously": "前情提要",
+        "direction": "进化方向",
+        "mutations": "变更档案"
+      },
+      "docsLoading": "加载中…",
+      "docsEmpty": "暂无内容"
     },
     "attachment": "附件",
     "actions": {
@@ -87,13 +105,9 @@
       "readAgentTimeline": "查看思考过程…",
       "currentTime": "看了看表",
       "recallRunning": "正在回忆关于「{query}」的内容…",
-      "recallDone": "回忆起 {count} 段关于「{query}」的对话",
-      "recallHits": "找到 {count} 段相关对话",
-      "recallNone": "未找到相关对话",
-      "recallRecommendedReads": "建议阅读",
-      "recallPriorityHigh": "高",
-      "recallPriorityMedium": "中",
-      "recallPriorityLow": "低",
+      "recallDone": "回忆了「{query}」· {count} 条引用",
+      "recallReferences": "引用依据",
+      "recallSearched": "查找范围",
       "webSearchRunning": "正在搜索「{query}」…",
       "webSearchDone": "搜索了「{query}」· {count} 个来源",
       "webSearchRecommendation": "建议",
@@ -145,7 +159,20 @@
       "clickToView": "点击查看",
       "thoughts": "思考",
       "applied": "正在应用更新...",
-      "partial": "（部分更新）"
+      "partial": "（部分更新）",
+      "triggerNet": "{bucket} · 近期净分 {score}",
+      "direction": "正在评估进化方向...",
+      "directionUnchanged": "方向：无变化",
+      "directionUpdated": "方向：{summary}",
+      "directionFailed": "方向：评估失败（{reason}）",
+      "playbookUpdated": "{agent} 工作手册已更新：{summary}",
+      "buckets": {
+        "card": "卡片",
+        "recall": "回忆",
+        "search": "搜索",
+        "thinkdeep": "思考",
+        "interaction": "交流"
+      }
     },
     "phase": {
       "thinking": "正在思考…",
@@ -176,6 +203,8 @@
       "turnError": "发生错误",
       "housekeeping": "准备中…",
       "housekeepingDone": "上下文就绪",
+      "bridgeHousekeeping": "整理记忆中…",
+      "bridgeHousekeepingDegraded": "本地桥接不可用 — 已改用基础规则整理",
       "stillWorking": "仍在处理…",
       "stageRecalling": "回忆中…",
       "stageReasoning": "推理中…",
@@ -249,34 +278,30 @@
   },
   "settings": {
     "pageTitle": "设置",
-    "pageSubtitle": "你的个人信息与对话偏好。",
-    "profile": {
-      "heading": "个人信息",
-      "desc": "agent 在为谁服务。你的名字会显示在首页;其余信息帮助 agent 更了解你。",
-      "name": "名字",
-      "namePlaceholder": "希望被如何显示（例如你的全名）",
-      "pronouns": "代词",
-      "pronounsPlaceholder": "例如 he/him",
-      "addressAs": "称呼",
-      "addressAsPlaceholder": "agent 该怎么称呼你",
-      "timezone": "时区",
-      "timezonePlaceholder": "例如 America/Chicago",
-      "about": "关于你",
-      "aboutPlaceholder": "任何你希望 agent 了解的信息：你是谁、在做什么、偏好如何。",
-      "save": "保存",
-      "saving": "保存中…",
-      "saved": "已保存 ✓",
-      "saveFailed": "保存失败，请重试。"
+    "pageSubtitleClient": "本地内核模式",
+    "pageSubtitleCloud": "云端模式",
+    "groups": {
+      "general": {
+        "title": "通用",
+        "desc": "Agent 行为——在所有部署模式下生效。"
+      },
+      "local": {
+        "title": "本地设置",
+        "desc": "本内核以本地客户端实例运行——以下设置保存在本机。"
+      },
+      "cloud": {
+        "title": "云端设置",
+        "desc": "版本检查，以及与上游模板仓库的代码同步。"
+      }
     },
     "config": {
       "heading": "Agent 行为",
       "desc": "调整 Agent 的切片、回忆和上下文管理方式。保存到你的记忆仓库中，无需重新部署。",
       "maxSliceMinutes": "切片时长（分钟）",
       "maxTurnsPerSlice": "片内容量上限（安全阀）",
-      "save": "保存配置",
-      "saving": "保存中...",
       "saved": "已保存 ✓",
-      "saveFailed": "保存失败，请重试。"
+      "saveFailed": "保存失败，请重试。",
+      "restoreDefaults": "恢复默认设置"
     },
     "version": {
       "heading": "版本与更新",
@@ -294,11 +319,6 @@
         "failRetry": "同步失败。请检查 GitHub token 权限后重试。"
       }
     },
-    "form": {
-      "modelSection": "对话模型",
-      "thinkingLabel": "推理思考",
-      "thinkingDesc": "在聊天中显示模型推理"
-    },
     "error": {
       "title": "加载设置失败",
       "message": "无法加载设置。"
@@ -307,6 +327,49 @@
       "heading": "演示模式",
       "description": "你正在浏览一个只读演示，包含预设角色数据。连接你自己的 GitHub 仓库即可解锁完整记忆功能——个人资料编辑、持久化设置和后台任务。",
       "setupLink": "配置指南 →"
+    },
+    "client": {
+      "heading": "Client",
+      "desc": "本内核正以本地客户端实例运行。这里展示本地状态并管理执行设置——保存到客户端主目录（config.json），而非记忆仓库。",
+      "loadFailed": "无法加载客户端状态",
+      "statusHeading": "运行状态",
+      "agentsHeading": "本地 Agent",
+      "agentsDesc": "在本机 PATH 上检测到的 agent CLI。",
+      "agentsLoading": "正在检测本地 agent...",
+      "agentsLoadFailed": "无法检测本地 agent",
+      "agentInstalled": "已安装",
+      "agentNotInstalled": "未安装",
+      "versionLabel": "内核",
+      "homeLabel": "客户端主目录",
+      "homeMissing": "PREVIOUSLY_HOME 未设置——请通过客户端 CLI 启动内核",
+      "memoryRootLabel": "记忆目录",
+      "bridgeLabel": "订阅桥接",
+      "bridgeActive": "已启用——主模型经 {agent} 执行",
+      "bridgeInactive": "未启用——正在使用 API key 模型",
+      "modelsLabel": "可用模型",
+      "modelsEmpty": "无——请配置 API key 或订阅桥接",
+      "colAgent": "Agent",
+      "colStatus": "状态",
+      "colVersion": "版本",
+      "colPath": "路径",
+      "engineLocalAgent": "本地 Agent",
+      "engineLocalAgentDesc": "主模型通过本机订阅 CLI 执行——无需 API key；每次调用拉起所选 agent 的 CLI。",
+      "engineLabel": "引擎",
+      "brainByok": "自带 API Key（推荐）",
+      "byokWhyRecommended": "为什么推荐？架构所限——只有使用自己的 API key，才能体验完整的 Previously 能力（流式输出、响应更快、无 CLI 冷启动）。",
+      "byokDesc": "推荐——体验最完整(流式、快、无 CLI 冷启动)。密钥仅保存在本机 config.json,除发送给所选服务商外不会离开本机。",
+      "byokProviderLabel": "服务商",
+      "byokProviderCustom": "自定义(OpenAI 兼容)",
+      "byokApiKeyLabel": "API key",
+      "byokBaseUrlLabel": "Base URL",
+      "byokModelLabel": "模型",
+      "byokModelPlaceholder": "例如 deepseek-chat",
+      "brainAgentLabel": "桥接 agent",
+      "brainHeading": "模型引擎",
+      "bridgeAgentNotDetected": "本机未检测到 {agent}——已保存的配置可能在其他机器上有效，或 PATH 已变化。",
+      "saved": "已保存 ✓",
+      "saveFailed": "保存失败，请重试。",
+      "applyHint": "改动自动保存，引擎切换即时生效，无需重启——进行中的调用会按旧配置自然跑完。"
     }
   },
   "memory": {

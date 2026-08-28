@@ -73,6 +73,15 @@ export interface TurnInput {
    * start-turn.ts. Cross-references core.md and agent.md.
    */
   turnId: string;
+  /**
+   * True when this turn RE-RUNS the previous user message (the client
+   * regenerate action — SDK trigger "regenerate-message"). Housekeeping then
+   * skips the user-turn append (the question is already in the slice) and the
+   * context_lost heuristic (a legitimately assistant-less history), and emits
+   * an interaction_regenerate fitness signal. The new agent turn is recorded
+   * normally — the rejected reply stays in the slice as what happened.
+   */
+  regenerate?: boolean;
 }
 
 /** Summary of a synchronous card evolution run (v0.7b — inline in housekeeping). */
@@ -94,6 +103,25 @@ export interface EvolutionResult {
   /** Set when the pass ended without a finish call (step cap / timeout) — the
    *  card carries whatever mutations landed before the cutoff. */
   partial?: boolean;
+  /** v1.0: the fitness buckets that forced this run + their current net
+   *  scores — surfaced in the terminal data-evolution frame. */
+  triggers?: Array<{
+    bucket: "card" | "recall" | "search" | "thinkdeep" | "interaction";
+    score: number;
+  }>;
+  /** v1.0: the Phase-1 direction verdict — omitted entirely when the check
+   *  did not run. A FAILED check surfaces as outcome "failed" (never
+   *  masquerading as "no_change"; a silent failure reads as "it never runs"). */
+  direction?: {
+    outcome: "no_change" | "updated" | "failed";
+    /** The update summary, or the failure reason when outcome is "failed". */
+    summary?: string;
+  };
+  /** v1.0: playbook mutations applied this run (Phase 2). */
+  playbooks?: Array<{
+    agent: "recall" | "search" | "thinkdeep";
+    summary: string;
+  }>;
 }
 
 /** Result of the housekeeping step — slice + prepared context for the agent. */
@@ -162,12 +190,6 @@ export interface TurnOutcome {
  * synthesizing around dispatched sub-agents) were removed when thinkDeep
  * became an agent-as-a-tool: reasoning fragments now flow back inline through
  * tool results, so there is no separate wait/integrate phase to announce.
- *
- * TODO(v0.6): client-side reconnection — when the chat transport detects a
- * dropped connection, it should replay the stream from the last-seen index
- * (already supported by WorkflowChatTransport) and derive the terminal status
- * from the last assistant message. The run→turn mapping can live in
- * localStorage alongside the runId, not on disk.
  */
 export type TurnStatus =
   | "active" // LLM is generating or tools are executing

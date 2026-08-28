@@ -1,4 +1,5 @@
 import type { SVGProps } from "react";
+import { Terminal } from "lucide-react";
 
 type IconProps = SVGProps<SVGSVGElement>;
 
@@ -220,14 +221,45 @@ const providerIconMap: Record<string, React.FC<IconProps>> = {
   cohere: CohereIcon,
   meta: MetaIcon,
   perplexity: PerplexityIcon,
+  // Subscription bridge — generic fallback for a bare `bridge` id.
+  bridge: Terminal,
 };
+
+/**
+ * Brand icons for the bridge agent CLIs, keyed by the agent suffix of a
+ * `bridge/<agent>` model id (the same SVGs as the provider brands).
+ */
+const bridgeAgentIconMap: Record<string, React.FC<IconProps>> = {
+  claude: AnthropicIcon,
+  codex: OpenAIIcon,
+  kimi: MoonshotIcon,
+};
+
+/**
+ * Brand icon for a bridge agent CLI ("claude" | "codex" | "kimi") — the
+ * vendor's real logo (same SVGs as the provider brands); unknown agents get
+ * the generic terminal fallback.
+ */
+export function BridgeAgentIcon({
+  agent,
+  ...props
+}: IconProps & { agent: string }) {
+  const Icon = bridgeAgentIconMap[agent] ?? Terminal;
+  return <Icon {...props} />;
+}
 
 interface ProviderIconProps extends IconProps {
   provider: string;
+  /** Model id — resolves per-agent brand icons for `bridge/<agent>` ids. */
+  id?: string;
 }
 
 /** Render a provider brand icon, falling back to a generic icon for unknown providers. */
-export function ProviderIcon({ provider, ...props }: ProviderIconProps) {
+export function ProviderIcon({ provider, id, ...props }: ProviderIconProps) {
+  if (provider === "bridge" && id?.startsWith("bridge/")) {
+    const AgentIcon = bridgeAgentIconMap[id.slice("bridge/".length)];
+    if (AgentIcon) return <AgentIcon {...props} />;
+  }
   const Icon = providerIconMap[provider] ?? DefaultProviderIcon;
   return <Icon {...props} />;
 }

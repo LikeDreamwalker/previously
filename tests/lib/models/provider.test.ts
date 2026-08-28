@@ -18,6 +18,10 @@ const {
     kind: "openai",
     id,
     baseURL: opts?.baseURL,
+    // The real SDK model always carries a mutable config bag — createModel's
+    // BYOK decoration writes apiKey/baseURL into it for the workflow step
+    // serialization round trip.
+    config: {} as Record<string, unknown>,
   })),
 }));
 
@@ -103,10 +107,59 @@ describe("createModel", () => {
         apiKey: "sk-test",
       }),
     );
-    expect(model).toEqual({
+    expect(model).toMatchObject({
       kind: "openai",
       id: "kimi-latest",
       baseURL: "https://api.moonshot.ai/v1",
+    });
+    // Env-key models are NOT decorated — the deployment's env key must not be
+    // written into the serialized (on-disk .workflow-data/) payload.
+    expect(
+      (model as unknown as { config: Record<string, unknown> }).config,
+    ).toEqual({});
+  });
+
+  it("prefers an explicit config apiKey (BYOK) over the environment", () => {
+    const model = createModel({
+      ...cfg("openai", "byok/gpt-5.4", "https://api.openai.com/v1"),
+      apiKey: "sk-from-config",
+    });
+    expect(createOpenAIMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        baseURL: "https://api.openai.com/v1",
+        apiKey: "sk-from-config",
+      }),
+    );
+    // The `byok/` selection prefix is stripped — the API gets the bare model.
+    expect(model).toMatchObject({ kind: "openai", id: "gpt-5.4" });
+    // BYOK decoration: apiKey/baseURL are re-attached as JSON-safe config
+    // fields so the workflow step runtime's rebuildOpenAIModel can restore
+    // them (register-model-classes.ts) — without this the turn dies with
+    // AI_LoadAPIKeyError.
+    expect(
+      (model as unknown as { config: Record<string, unknown> }).config,
+    ).toEqual({
+      apiKey: "sk-from-config",
+      baseURL: "https://api.openai.com/v1",
+    });
+  });
+
+  it("keys the provider-instance cache on the apiKey (a changed key = a new instance)", () => {
+    // Distinct baseURL so earlier tests' cache entries can't interfere.
+    const base = "https://cache-key-test.example/v1";
+    createModel({ ...cfg("openai", "m1", base), apiKey: "sk-one" });
+    createModel({ ...cfg("openai", "m1", base), apiKey: "sk-one" });
+    expect(createOpenAIMock).toHaveBeenCalledTimes(1);
+    createModel({ ...cfg("openai", "m1", base), apiKey: "sk-two" });
+    expect(createOpenAIMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("dispatches bridge-sdk models to the subscription bridge model", () => {
+    const model = createModel(cfg("bridge", "bridge/claude"));
+    expect(model).toMatchObject({
+      provider: "previously-bridge",
+      modelId: "bridge/claude",
+      specificationVersion: "v3",
     });
   });
 });

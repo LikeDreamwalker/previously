@@ -12,7 +12,7 @@
  * purely a catalog concern — no dispatch code changes.
  */
 
-export type ProviderSdk = "deepseek" | "anthropic" | "openai";
+export type ProviderSdk = "deepseek" | "anthropic" | "openai" | "bridge";
 
 export interface ProviderRoute {
   key: string;
@@ -30,7 +30,9 @@ const routeByKey = new Map(CURATED_ROUTES.map((r) => [r.key, r]));
 /**
  * Resolve how to call a provider's models. Unknown providers default to the
  * OpenAI-compatible path; the catalog supplies baseURL + envKey from models.dev
- * for those.
+ * for those. "bridge" is not a models.dev provider at all — it is the local
+ * subscription bridge (client mode + PREVIOUSLY_BRAIN=bridge), registered by
+ * ./registry and dispatched to the custom LanguageModel in ./bridge-model.
  */
 export function resolveProviderRoute(key: string): ProviderRoute {
   return routeByKey.get(key) ?? { key, sdk: "openai" };

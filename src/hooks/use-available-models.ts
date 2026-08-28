@@ -16,6 +16,10 @@ export interface AvailableModel {
   maxTokens: number;
   defaultThinking: boolean;
   defaultEffort: "low" | "medium" | "high";
+  /** Bridge/BYOK options only: informational copy about the engine. */
+  hint?: string;
+  /** Bridge options only: whether the agent CLI was detected on PATH. */
+  available?: boolean;
 }
 
 // Module-level shared promise — the model selector and the chat page both need

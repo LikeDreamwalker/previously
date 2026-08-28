@@ -31,6 +31,8 @@ import type {
 } from "@/lib/chat/turn-types";
 import { DEPLOY_GUIDE_URL } from "@/lib/capabilities";
 import { annotateCardTimes, localDateKey } from "@/lib/time/relative";
+import { formatLocalTime } from "@/lib/turn-priming";
+import { parseSliceId } from "@/lib/episodic/turn-parser";
 import {
   findOverdueHorizonItems,
   parseCard,
@@ -460,6 +462,88 @@ export function sliceAlignedWindow(
   return windowed;
 }
 
+// ─── Bridge mode — notice + fresh-time injection ─────────────────────────
+
+/**
+ * L5b — the subscription-bridge limitation notice, injected as the
+ * `bridgeNotice` block only when the turn's main model is a bridge model
+ * (`modelConfig.sdk === "bridge"`). Exported so tests can pin the contract.
+ *
+ * The model is a local subscription CLI spawned by the Previously client, so
+ * NO kernel tools are mounted for the turn (see createChatAgent). The prompt
+ * blocks above still name recall/readSlice, so the notice must say explicitly
+ * that they are not available here — an unannounced tool-less model would
+ * hallucinate calls to them. Memory access instead happens on the bridge side
+ * through the client's CONSTRAINED read-only reader commands, described by the
+ * per-call workspace instruction file (CLAUDE.md / AGENTS.md); past-looking
+ * questions are delegated to a recall sub-agent per the workspace
+ * `skills/recall.md` spec (materialized by the client from the payload's
+ * `skills.recall`, see src/lib/bridge-skills.ts), which returns pointers only.
+ */
+export const BRIDGE_NOTICE = `## Subscription bridge mode
+
+You are running as the user's local subscription CLI, invoked by the Previously client. Memory access goes through the read-only reader commands (\`previously timeline\`, \`previously strands\`, \`previously slicesummary\`, \`previously readslice\`, \`previously card\`, \`previously agentlog\`) described by the instruction file (CLAUDE.md or AGENTS.md) in your working directory; read it first, and do not read or write the memory directory directly. When a question touches the past, spawn a sub-agent to search per the \`skills/recall.md\` spec in your workspace (if your runtime supports sub-agents) — it navigates the memory index with the read-only reader commands and returns POINTERS (slice ids) only; bring only those pointers back into the main context, then open the slices yourself with \`previously readslice\`. The kernel tools mentioned elsewhere in this prompt (recall, readSlice, webSearch, thinkDeep, delegateTask, …) are NOT available to you here: any thinkDeep guidance elsewhere in this prompt does NOT apply in this mode — use your own native deep-reasoning and search capabilities instead. Conversation persistence and memory evolution are handled outside your process; never try to save or update memory yourself. Your final reply is rendered verbatim in a chat UI — output only the answer, no preamble or meta-commentary.`;
+
+/**
+ * Bridge-mode fresh clock read. The system prompt is slice-frozen (prefix
+ * caching) and the bridge CLI mounts no kernel tools — so it has no
+ * `currentTime` tool to ask for the real "now". Instead the turn stamps the
+ * time onto the OUTBOUND tail of the last user message (never the system
+ * prompt, never written back to the client history). Zero I/O: the slice's
+ * remaining minutes are derived from the slice id itself (its UTC start is
+ * encoded in the id, same trick as the currentTime executor). When the
+ * remaining time can't be derived (unparseable id, past the cap), only the
+ * time part is sent.
+ *
+ * Pure — `nowIso` is the route-stamped turn start (TurnInput.startedAtIso),
+ * so the workflow sandbox never touches a live clock.
+ */
+export function buildBridgeTimeLine(opts: {
+  sliceId: string;
+  maxSliceMinutes: number;
+  timezone: string;
+  nowIso: string;
+}): string {
+  const t = formatLocalTime(opts.nowIso, opts.timezone);
+  const offset = t.offset ? `, ${t.offset}` : "";
+  let line = `\n\n[Current time: ${t.local} (${t.zone}${offset}) / ${t.utc}`;
+  const parsed = parseSliceId(opts.sliceId);
+  if (parsed) {
+    const startMs = Date.parse(
+      `${parsed.y}-${parsed.m}-${parsed.d}T${parsed.hm.slice(0, 2)}:${parsed.hm.slice(2)}:00.000Z`,
+    );
+    const nowMs = Date.parse(opts.nowIso);
+    if (!Number.isNaN(startMs) && !Number.isNaN(nowMs)) {
+      const elapsedMin = Math.max(0, Math.floor((nowMs - startMs) / 60_000));
+      const remaining = opts.maxSliceMinutes - elapsedMin;
+      if (remaining > 0) line += `; slice closes in ~${remaining} min`;
+    }
+  }
+  return line + "]";
+}
+
+/**
+ * Append a line to the LAST user message's text tail (outbound copy — the
+ * input array and its message objects are left untouched). No-op when the
+ * window carries no user message.
+ */
+export function appendBridgeTimeSuffix(
+  messages: ModelMessage[],
+  line: string,
+): ModelMessage[] {
+  const out = [...messages];
+  for (let i = out.length - 1; i >= 0; i--) {
+    const m = out[i];
+    if (m.role !== "user") continue;
+    out[i] =
+      typeof m.content === "string"
+        ? { ...m, content: m.content + line }
+        : { ...m, content: [...m.content, { type: "text" as const, text: line }] };
+    break;
+  }
+  return out;
+}
+
 // ─── System prompt assembly (pure — slice-level freeze) ──────────────────
 
 /**
@@ -484,6 +568,8 @@ export function sliceAlignedWindow(
  *   L4 timelineBrief   — frozen mode: absolute dates, slices closed before
  *                        this one began
  *   L5 strandsBlock + demoNotice — low-frequency / static
+ *   L5b bridgeNotice — client-mode subscription-bridge limitation notice;
+ *                        constant for the deployment's brain config
  *
  * Nothing per-turn remains: the `Sent:` timestamp, intent, emotional register
  * and semantic links were retired in v0.9 (the analyzer still runs; its
@@ -507,6 +593,12 @@ export function assembleSystemPrompt(opts: {
   strandsBlock: string;
   /** Pre-built "## Demo mode…" block, or "" to omit. */
   demoNotice: string;
+  /**
+   * Pre-built "## Subscription bridge…" limitation notice (bridge main model
+   * has no kernel tools), or ""/undefined to omit. Optional so existing
+   * callers/tests are unaffected.
+   */
+  bridgeNotice?: string;
   /** Pre-built overdue-Horizon block (L2b), or "" when nothing is overdue. */
   overdueBlock: string;
   /** "YYYY-MM-DD" slice-head local date — anchors the card-freshness header. */
@@ -519,6 +611,7 @@ export function assembleSystemPrompt(opts: {
     timelineBrief,
     strandsBlock,
     demoNotice,
+    bridgeNotice,
     overdueBlock,
     dateAnchor,
   } = opts;
@@ -526,12 +619,14 @@ export function assembleSystemPrompt(opts: {
     identityPrompt,
     `## What I know about the user (inference model — ${dateAnchor})`,
     previouslyContent,
-    "The above is the current profile and operating model — distilled hypotheses, each carrying `refs` to its evidence. If any line seems outdated or contradicts what the user just said, cite its refs and say so; the correction flows into the archive. Every `refs` pointer is a drill-down entry: open the referenced slice with readSlice before citing specifics from a past event — the card answers WHO the user is, not what was said.",
+    "The above is the current profile and operating model — distilled hypotheses, each carrying `refs` to its evidence. If any line seems outdated or contradicts what the user just said, cite its refs and say so; the correction flows into the archive. Every `refs` pointer is a drill-down entry: verify it through recall (or open the referenced slice with readSlice) before citing specifics from a past event — the card answers WHO the user is, not what was said.",
+    "GROUNDING RULE — never answer the past from a summary. Everything this prompt says about the past (this card, the timeline one-liners below) is a distilled POINTER, not the event itself; a summary paraphrased as fact is a hallucination in waiting. Before you assert any specific about a past conversation — what was said, decided, promised, felt — the original must already be in THIS conversation: a recall answer from earlier this conversation (its references count), or slice text you opened yourself with readSlice this conversation. With neither at hand, call recall FIRST (or readSlice when you already hold the exact slice id), then answer. Exempt: what the user just said in this conversation, and the slice you are currently in.",
     overdueBlock,
     sliceHeadBlock,
     timelineBrief,
     strandsBlock,
     demoNotice,
+    bridgeNotice ?? "",
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -603,14 +698,22 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
     ),
     sliceHeadBlock,
     timelineBrief: timelineBrief
-      ? `${timelineBrief}\nTimeline lines are pointers — if a line looks relevant, read the slice (readSliceSummary / readSlice) before answering from it.`
+      ? `${timelineBrief}\nTimeline lines are pointers — if a line looks relevant, ask recall about it (a natural-language question) before answering from it.`
       : "",
     strandsBlock: strandsMenu
-      ? `## Memory topics\n\n${strandsMenu}\nWhen the user mentions these topics, use recall to search for related memories. If a search finds nothing relevant, do not retry it — answer from what you have.`
+      ? `## Memory topics\n\n${strandsMenu}\nWhen the user mentions these topics, ask recall about related past conversations. If it answers that there is no such memory, do not ask again — answer from what you have.`
       : "",
     demoNotice: input.useDemo
       ? `## Demo mode (read-only)\n\nYou are running in demo mode. You can browse sample data, recall past conversations, and search the live web — but **writes are not persisted**. No GitHub repo is connected; you are seeing pre-seeded sample memories.\n\nWhen the user asks to save anything or create memories, tell them naturally:\n- This is demo mode and data cannot be saved\n- They need to deploy their own instance to unlock full read/write capabilities\n\nDeployment guide: ${DEPLOY_GUIDE_URL}\n\nIt's perfectly normal for users to explore in demo mode — help them understand what this product can do and what they'll get after deploying.`
       : "",
+    // Bridge main model (client mode, PREVIOUSLY_BRAIN=bridge): the model is
+    // a local subscription CLI spawned by the Previously client, so NO kernel
+    // tools are mounted for this turn (see createChatAgent). The static notice
+    // (BRIDGE_NOTICE) says so explicitly — an unannounced tool-less model
+    // would hallucinate calls to the kernel tools the other blocks name. It is
+    // constant for the deployment's brain config, so the freeze is intact.
+    bridgeNotice:
+      input.modelConfig.sdk === "bridge" ? BRIDGE_NOTICE : "",
     // Derived from the RAW card + the slice-head local date — both frozen, so
     // this block is byte-stable within the slice (see buildOverdueBlock).
     overdueBlock: buildOverdueBlock(
@@ -755,7 +858,23 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
     let allCognition = "";
     let finalFinishReason = "stop";
     let finalMessages: ModelMessage[] = [];
-    let currentMessages = historyWindow;
+    // Bridge main model: no kernel tools means no currentTime tool, and the
+    // system prompt must stay slice-frozen — so the fresh clock read rides
+    // the tail of the LAST user message on the OUTBOUND copy only (the client
+    // history is never rewritten). Same length as historyWindow, so the
+    // extractAllAssistantText start index below is unaffected.
+    let currentMessages =
+      input.modelConfig.sdk === "bridge"
+        ? appendBridgeTimeSuffix(
+            historyWindow,
+            buildBridgeTimeLine({
+              sliceId: slice.slice_id,
+              maxSliceMinutes: input.config.slicing.maxSliceMinutes,
+              timezone: input.clientTimezone,
+              nowIso: input.startedAtIso,
+            }),
+          )
+        : historyWindow;
     let continuations = 0;
     let timeoutContinuations = 0;
     /** Client-visible explanation when the turn ends as a terminal error. */

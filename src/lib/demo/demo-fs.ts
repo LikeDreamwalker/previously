@@ -6,8 +6,8 @@
  *     No token required. Writes are NO-OP.
  *
  *   Local (BENCHMARK_BASE_URL not set, e.g. dev):
- *     Reads from a local benchmark-data repo on disk.
- *     Path: ../benchmark-data/{persona}/{relative}
+ *     Reads from a local clone of the `you` dataset repo on disk.
+ *     Path: ../you/{persona}/{relative}
  *
  * The module is only called when the data-source resolver returns "demo".
  * It never checks DEMO_MODE — the caller (data-source/resolve.ts) owns that
@@ -20,10 +20,10 @@ import { join } from "path";
 const BENCHMARK_BASE = process.env.BENCHMARK_BASE_URL ?? "";
 const IS_REMOTE = !!BENCHMARK_BASE;
 
-// Local fallback: look for benchmark-data as a sibling of the project root
-const LOCAL_DATA_DIR = join(process.cwd(), "..", "benchmark-data");
+// Local fallback: look for the `you` dataset repo as a sibling of the project root
+const LOCAL_DATA_DIR = join(process.cwd(), "..", "you");
 
-const DEFAULT_PERSONA = "personal_14";
+const DEFAULT_PERSONA = "user";
 
 /** Currently selected persona id — set by the page from URL searchParams. */
 let currentPersona = DEFAULT_PERSONA;

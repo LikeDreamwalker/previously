@@ -28,12 +28,16 @@ function TooltipTrigger({
   ...props
 }: TooltipPrimitive.Trigger.Props & { render?: React.ReactElement; className?: string }) {
   if (render) {
+    // Children must be forwarded — Base UI merges them into the `render`
+    // element; dropping them here renders an empty (invisible) trigger.
     return (
       <TooltipPrimitive.Trigger
         data-slot="tooltip-trigger"
         render={render}
         {...props}
-      />
+      >
+        {children}
+      </TooltipPrimitive.Trigger>
     );
   }
   return (

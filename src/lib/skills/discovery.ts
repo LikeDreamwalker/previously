@@ -140,10 +140,18 @@ export function discoverSkills(
 
 /**
  * Get the skill directories for the project.
+ *
+ * cwd holds the two conventional project dirs; PREVIOUSLY_SKILLS_DIR adds a
+ * single deployment-provided directory — client-mode kernels run with the
+ * install dir as cwd, so the project dirs never exist there and skills would
+ * silently disappear without it.
  */
 export function getProjectSkillDirectories(): string[] {
-  return [
+  const dirs = [
     join(process.cwd(), ".claude", "skills"),
     join(process.cwd(), ".agents", "skills"),
   ];
+  const envDir = process.env.PREVIOUSLY_SKILLS_DIR?.trim();
+  if (envDir) dirs.push(envDir);
+  return dirs;
 }

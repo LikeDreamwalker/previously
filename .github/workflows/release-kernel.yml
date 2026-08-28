@@ -1,0 +1,91 @@
+name: Release kernel package
+
+# Publishes the standalone kernel build as the `@previously-lab/kernel` npm package
+# whenever a version tag (v*) is pushed. The client CLI installs this package
+# as a dependency so end-user machines never run a Next build.
+#
+# Same upstream-only guard as bump-version.yml: forks carry a copy of this
+# workflow and must not publish from accidental tags.
+#
+# Version note: bump-version.yml syncs APP_VERSION only AFTER the GitHub
+# Release exists, so the tag is the version authority at packaging time —
+# it is passed to pack-kernel.mjs as PREVIOUSLY_KERNEL_VERSION.
+#
+# REQUIRED SECRET: configure `NPM_TOKEN` (an npm automation token with publish
+# rights on the @previously-lab/kernel package) in the repository settings.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  release-kernel:
+    # Only run on the upstream repository — never on forks.
+    if: github.repository == 'previously-lab/agent'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm --provenance attestation
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - name: Derive version from tag
+        run: echo "PREVIOUSLY_KERNEL_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build standalone kernel
+        run: pnpm build:standalone
+
+      - name: Factory audit — zero symlinks in the artifact
+        run: |
+          COUNT=$(find .next/standalone -type l | wc -l)
+          if [ "$COUNT" -ne 0 ]; then
+            echo "standalone artifact contains $COUNT symlink(s) — pack-standalone must dereference everything"
+            find .next/standalone -type l | head -20
+            exit 1
+          fi
+
+      - name: Smoke test — standalone server boots and answers /api/version
+        run: |
+          TMP_HOME="$(mktemp -d)"
+          PORT=3199 HOSTNAME=127.0.0.1 PREVIOUSLY_HOME="$TMP_HOME" PREVIOUSLY_MODE=client STORAGE=local \
+            MEMORY_ROOT="$TMP_HOME/memory" WORKFLOW_TARGET_WORLD=local \
+            node .next/standalone/server.js &
+          SERVER_PID=$!
+          for i in $(seq 1 30); do
+            RESP=$(curl -sf http://127.0.0.1:3199/api/version) && break
+            sleep 1
+          done
+          kill $SERVER_PID 2>/dev/null || true
+          echo "response: $RESP"
+          echo "$RESP" | grep -q '"mode":"client"' || { echo "smoke test failed"; exit 1; }
+
+      - name: Assemble @previously-lab/kernel package
+        run: pnpm pack:kernel
+
+      - name: Pack tarball
+        working-directory: dist-kernel
+        run: npm pack
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: previously-lab-kernel-tarball
+          path: dist-kernel/previously-lab-kernel-*.tgz
+          retention-days: 30
+
+      - name: Publish @previously-lab/kernel to npm
+        run: npm publish ./dist-kernel --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

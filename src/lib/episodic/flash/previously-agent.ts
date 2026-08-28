@@ -47,6 +47,8 @@ import { z } from "zod";
 import type { ModelConfig } from "@/lib/models/registry";
 import { runSubAgent } from "@/lib/agents/sub-agent-runner";
 import { buildSubAgentSystem } from "@/lib/agents/prompts";
+import { capPlaybook, type FitnessBucket, type FitnessEvent, type FitnessSignal } from "@/lib/evolution/store";
+import type { PlaybookAgent } from "@/lib/evolution/paths";
 import {
   parseCard,
   findOverdueHorizonItems,
@@ -85,6 +87,20 @@ export type PreviouslySignal =
   | "slice_closed"
   | "self_reflection";
 
+/**
+ * One playbook mutation the agent proposed and the code ACCEPTED (the bucket
+ * was triggered). Written to disk by the caller (runCardEvolution) together
+ * with its mutations-archive record — this module stays side-effect-free
+ * except through the caller-provided reader callbacks.
+ */
+export interface PlaybookWrite {
+  agent: PlaybookAgent;
+  /** capPlaybook-capped content — the injection budget is enforced here. */
+  content: string;
+  evidence: string[];
+  expectedBenefit: string;
+}
+
 export interface PreviouslyAgentInput {
   signal: PreviouslySignal;
   note: string;
@@ -103,6 +119,27 @@ export interface PreviouslyAgentInput {
   /** The user's LOCAL calendar date (YYYY-MM-DD) — Now ages / overdue checks
    *  compare against the user's clock, and it is the default `since`. */
   todayLocal?: string;
+
+  // ── Two-phase evolution inputs (v1.0 design §2.3, Phase 2 = product) ──
+
+  /**
+   * The current evolution direction (memory/evolution/direction.md) — the
+   * CRITERIA the card and playbooks evolve under; the card is the RESULT.
+   * Orientation only: null/absent means no direction has been set yet.
+   */
+  direction?: string | null;
+  /**
+   * The fitness buckets that TRIGGERED this run (design §2.5 — deterministic,
+   * code-level scoring in src/lib/evolution/triggers.ts). Playbook writes are
+   * gated on this: writePlaybook REJECTS any agent whose bucket is not listed.
+   */
+  triggeredBuckets?: FitnessBucket[];
+  /** Recent fitness events for the triggered buckets — the evidence to
+   *  re-read before deciding what to change (scores are sensors, not judges). */
+  fitnessEvents?: FitnessEvent[];
+  /** This slice's mechanical signals (recall verify/rework) — context for
+   *  recall-bucket triggers. */
+  fitnessSignals?: FitnessSignal[];
 
   // ── Tool implementations (callbacks provided by the executor) ──────
 
@@ -145,6 +182,15 @@ export interface PreviouslyAgentOutput {
    * a failure as a clean no-change result.
    */
   failed?: boolean;
+  /**
+   * Accepted playbook mutations (v1.0 §2.4 — one per triggered recall /
+   * search / thinkdeep bucket). NOT yet written to disk — the caller applies
+   * them (writePlaybook + mutations archive) next to the card write-back.
+   */
+  playbookWrites?: PlaybookWrite[];
+  /** The agent's one-line expected benefit for this pass's changes (design
+   *  §2.7 — archived with the mutation record). */
+  expectedBenefit?: string;
 }
 
 // ─── Standing rules (distilled from DIRECTIVES) ──────────────────────────
@@ -155,9 +201,9 @@ export interface PreviouslyAgentOutput {
  * Previously Agent judges against the same rules the core agent follows.
  */
 const STANDING_RULES = [
-  "recall and readSlice are the memory tools — always available, never refused",
+  "recall (the episodic-recall colleague) and readSlice (verification only) are the memory tools — always available, never refused",
   "replies use the user's LOCAL time (given each turn), not UTC",
-  "complex questions are decomposed into thinkDeep fragments; trivial ones are answered inline",
+  "thinkDeep is a clean-room thinking pod for isolated, unbiased reasoning — not a default step of every turn",
   "the card and its entries are written in English",
   "every claim in the card carries refs to its evidence slice",
 ];
@@ -193,6 +239,7 @@ You edit an in-memory copy of the card through write tools. Each write is valida
 | \`addNow(text, refs, since?)\` / \`removeNow(match)\` / \`promoteNowToPast(match)\` | Current-state hook, ≤ ${NOW_ITEM_MAX_CHARS} chars, refs required, ≤ ${CARD_NOW_MAX} total. \`since\` defaults to today. Promote moves the hook to Past anchors (keeps refs). |
 | \`addHorizon(text, by, refs)\` / \`resolveHorizon(match, note?)\` | Open loop, ≤ ${HORIZON_ITEM_MAX_CHARS} chars, \`by: YYYY-MM-DD\` + refs required, ≤ ${HORIZON_MAX} total. Resolve removes it — the ONLY way a Horizon item leaves. |
 | \`addSelfModel(text)\` / \`removeSelfModel(match)\` | Operating lesson, ≤ ${SELF_MODEL_LINE_MAX_CHARS} chars, ≤ ${CARD_SELF_MODEL_MAX} total. |
+| \`writePlaybook(agent, content, evidence, expectedBenefit)\` | Rewrite a sub-agent colleague's working notes (agent ∈ recall / search / thinkdeep). GATED: accepted ONLY when that colleague's bucket triggered this run (the task lists the triggered buckets) — otherwise REJECTED. |
 | \`readSlice(sliceId, range?)\` | Read conversation from any slice. Verify what the user actually said. |
 | \`readAgentTimeline(sliceId)\` | Read agent.md — the reasoning + tool calls. Mine it for self-model lessons. |
 | \`readPreviously(sliceId)\` | Read a past slice's card snapshot. Check how long a fact has been held. |
@@ -210,6 +257,14 @@ Compare the conversation in the task against the current card. Incorporate anyth
 - A user correction / explicit preference → update the Past paragraph and/or Self-model to reflect it.
 - Fragmented or non-English card content → rewrite those entries cleanly (ONE flowing English Past paragraph, every entry in English) while preserving substance.
 - Nothing new AND the card is already clean → make no writes; just \`finish\` with a short reasoning.
+
+## Evolution direction and playbooks
+
+You are Phase 2 (product) of a two-phase evolution loop. Phase 1 (a colleague) owns direction.md — the cross-slice statement of what "better for the user" means. When the task includes the current direction, treat it as the CRITERIA you evolve under: the card is the RESULT, the direction is the standard it is judged against. You never edit the direction itself.
+
+You also maintain your colleagues' PLAYBOOKS — short working notes injected into the recall / search / thinkdeep sub-agents' prompts (e.g. "on emotional topics, read the full slice before concluding"). A playbook write is a MUTATION with a hard gate: \`writePlaybook\` is accepted ONLY for a colleague whose bucket the task says triggered this run, and every write must carry its evidence (slice pointers / user quotes) and its expected benefit. A playbook is short guidance, not an archive — rewrite it in place, cap applies.
+
+Scores are sensors, not judges: a triggered bucket means RE-READ the original evidence (the fitness events in the task quote the user's own words; readSlice the slices they point to) and then decide for yourself what — if anything — to change. A trigger never obliges a mutation.
 
 ## Identity head — stable, minimal
 
@@ -311,6 +366,45 @@ function buildUserPrompt(input: PreviouslyAgentInput): string {
     ? `\n**Current slice tags**: ${currentSliceTags.join(", ")}`
     : "";
 
+  // Two-phase evolution (v1.0 §2.3): the direction is the CRITERIA this pass
+  // evolves under; the fitness section is present only when specific buckets
+  // triggered (and gates writePlaybook — an untriggered write is rejected).
+  const directionSection = input.direction?.trim()
+    ? `
+
+## Evolution direction (the criteria — the card is the result)
+
+${input.direction.trim()}`
+    : "";
+
+  const triggered = input.triggeredBuckets ?? [];
+  const fitnessSection =
+    triggered.length > 0
+      ? `
+
+## Fitness triggers (why this run happened — scores are sensors, not judges)
+
+Triggered buckets: ${triggered.join(", ")}
+${
+  (input.fitnessEvents ?? []).length > 0
+    ? `\nRecent evidence for the triggered buckets (the user's own words — re-read the slices they point to before deciding):\n${(input.fitnessEvents ?? [])
+        .map(
+          (e) =>
+            `- [${e.ts}] slice ${e.sliceId} · ${e.bucket} ${e.delta > 0 ? `+${e.delta}` : e.delta} — "${e.evidence}"`,
+        )
+        .join("\n")}`
+    : ""
+}${
+  (input.fitnessSignals ?? []).length > 0
+    ? `\nMechanical signals this slice:\n${(input.fitnessSignals ?? [])
+        .map((s) => `- ${s.type} — ${s.detail}`)
+        .join("\n")}`
+    : ""
+}
+
+A triggered bucket authorizes (never obliges) a \`writePlaybook\` for the matching colleague (${["recall", "search", "thinkdeep"].filter((b) => triggered.includes(b as FitnessBucket)).join(", ") || "none of the playbook colleagues triggered — writePlaybook will REJECT every call"}).`
+      : "";
+
   return `## Time context
 
 ${buildTimeContext(input)}
@@ -319,7 +413,7 @@ ${buildTimeContext(input)}
 
 ${signalLabels[signal]}
 Note: "${note}"${tagsNote}
-Current slice: \`${currentSliceId}\`${deepNote}
+Current slice: \`${currentSliceId}\`${deepNote}${directionSection}${fitnessSection}
 
 ## Current card (your working copy starts from this)
 
@@ -334,7 +428,11 @@ ${recentTurns.length > 0
 
 // ─── Tools ────────────────────────────────────────────────────────────────
 
-function buildTools(input: PreviouslyAgentInput, session: CardSession) {
+function buildTools(
+  input: PreviouslyAgentInput,
+  session: CardSession,
+  playbookWrites: PlaybookWrite[],
+) {
   return {
     // ── Write tools (mutations on the session's working document) ──
     setIdentity: tool({
@@ -428,6 +526,61 @@ function buildTools(input: PreviouslyAgentInput, session: CardSession) {
       inputSchema: z.object({ match: z.string() }),
       execute: async ({ match }) => sessionRemoveSelfModel(session, match),
     }),
+    // ── Playbook mutation (v1.0 §2.4 — the evolution agent is the single
+    // writer of card / direction / playbooks; the write lands on an in-memory
+    // list here and is persisted by the caller with its archive record) ──
+    writePlaybook: tool({
+      description:
+        "Rewrite a sub-agent colleague's playbook (short working notes injected into its " +
+        "prompt) — agent ∈ recall / search / thinkdeep. HARD GATE: accepted ONLY when that " +
+        "colleague's bucket triggered this run (the task lists them); otherwise REJECTED. " +
+        "Carry the evidence (slice pointers / user quotes) and the expected benefit — a " +
+        "mutation without them is not archivable.",
+      inputSchema: z.object({
+        agent: z.enum(["recall", "search", "thinkdeep"]),
+        content: z
+          .string()
+          .describe("The FULL new playbook — short behavioral guidance, rewritten in place."),
+        evidence: z
+          .array(z.string())
+          .describe("Slice pointers / verbatim user quotes backing this change."),
+        expectedBenefit: z
+          .string()
+          .describe("One line: what improves if this playbook holds."),
+      }),
+      execute: async ({ agent, content, evidence, expectedBenefit }) => {
+        // Code-level gate: no bucket trigger → no playbook write, with the
+        // reason spelled out (the model sees this and moves on).
+        const triggered = input.triggeredBuckets ?? [];
+        if (!triggered.includes(agent)) {
+          return (
+            `REJECTED — the "${agent}" bucket did NOT trigger this run ` +
+            `(triggered: ${triggered.join(", ") || "none"}). Playbook writes need a ` +
+            "fitness trigger; leave the playbook as it is."
+          );
+        }
+        if (!content.trim()) {
+          return "REJECTED — playbook content is empty.";
+        }
+        const capped = capPlaybook(content.trim());
+        // One write per agent per pass: a rewrite replaces this pass's earlier
+        // draft (the playbook is a whole-document overwrite anyway).
+        const existingIdx = playbookWrites.findIndex((w) => w.agent === agent);
+        const write: PlaybookWrite = {
+          agent,
+          content: capped,
+          evidence: evidence.filter((e) => e.trim().length > 0),
+          expectedBenefit: expectedBenefit.trim(),
+        };
+        if (existingIdx >= 0) playbookWrites.splice(existingIdx, 1, write);
+        else playbookWrites.push(write);
+        return (
+          `OK — ${agent} playbook staged (${capped.length} chars` +
+          (capped.length < content.trim().length ? ", truncated to the cap" : "") +
+          "). It is applied when this pass ends."
+        );
+      },
+    }),
     // ── Read tools ──────────────────────────────────────────────────
     readSlice: tool({
       description:
@@ -481,7 +634,8 @@ function buildTools(input: PreviouslyAgentInput, session: CardSession) {
         "REQUIRED — call this LAST to end the pass. `reasoning`: 1-3 sentences for the " +
         "developer log. `summary`: ONE short sentence IN THE USER'S LANGUAGE describing " +
         "what this evolution changed (shown to the user and the core agent) — empty string " +
-        "when nothing changed. Call finish even when nothing changed.",
+        "when nothing changed. `expectedBenefit`: one line on what improves for the user — " +
+        "archived with the mutation record. Call finish even when nothing changed.",
       inputSchema: z.object({
         reasoning: z.string().describe("1-3 sentences for the developer log."),
         summary: z
@@ -489,6 +643,13 @@ function buildTools(input: PreviouslyAgentInput, session: CardSession) {
           .describe(
             "One short sentence in the user's language describing what changed, e.g. " +
             "'记下了你周五的面试安排，把等 HR 回复标记为进行中'. Empty when nothing changed.",
+          ),
+        expectedBenefit: z
+          .string()
+          .optional()
+          .describe(
+            "One line: what improves for the user if this change holds (archived with the " +
+            "mutation record, design: every mutation carries its expected benefit).",
           ),
       }),
     }),
@@ -504,11 +665,13 @@ const TIMEOUT_MS = 90_000;
 const finishReportSchema = z.object({
   reasoning: z.string(),
   summary: z.string().catch(""),
+  expectedBenefit: z.string().catch("").optional(),
 });
 
 interface AttemptOutcome {
   reasoning: string;
   summary: string;
+  expectedBenefit?: string;
   failed?: boolean;
   partial?: boolean;
 }
@@ -516,13 +679,14 @@ interface AttemptOutcome {
 async function attemptCall(
   input: PreviouslyAgentInput,
   session: CardSession,
+  playbookWrites: PlaybookWrite[],
   temperature: number,
 ): Promise<AttemptOutcome> {
-  const res = await runSubAgent<{ reasoning: string; summary: string }>({
+  const res = await runSubAgent<{ reasoning: string; summary: string; expectedBenefit?: string }>({
     model: input.model,
     system: PREVIOUSLY_SYSTEM,
     prompt: buildUserPrompt(input),
-    tools: buildTools(input, session),
+    tools: buildTools(input, session, playbookWrites),
     reportToolName: "finish",
     reportSchema: finishReportSchema,
     maxSteps: MAX_STEPS,
@@ -533,7 +697,13 @@ async function attemptCall(
   });
 
   if (res.ok && res.report) {
-    return { reasoning: res.report.reasoning, summary: res.report.summary };
+    return {
+      reasoning: res.report.reasoning,
+      summary: res.report.summary,
+      ...(res.report.expectedBenefit?.trim()
+        ? { expectedBenefit: res.report.expectedBenefit.trim() }
+        : {}),
+    };
   }
   if (res.ok) {
     // Step limit reached without finish (or a plain-text stop / unparseable
@@ -554,13 +724,14 @@ async function attempt(
   temperature: number,
 ): Promise<PreviouslyAgentOutput> {
   // A fresh session per attempt — a retried pass never inherits half-applied
-  // mutations.
+  // mutations. The staged playbook writes are likewise per-attempt.
   const session = createCardSession(
     input.previouslyContent,
     input.currentSliceId,
     today,
   );
-  const r = await attemptCall(input, session, temperature);
+  const playbookWrites: PlaybookWrite[] = [];
+  const r = await attemptCall(input, session, playbookWrites, temperature);
   const failed = r.failed === true;
   return {
     updatedCard: failed ? "" : serializeSession(session),
@@ -569,6 +740,10 @@ async function attempt(
     mutations: session.log,
     failed: failed || undefined,
     partial: r.partial,
+    // Playbook writes stage independently of the card's finish state: a
+    // partial pass may still have landed a valid playbook mutation.
+    ...(playbookWrites.length > 0 && !failed ? { playbookWrites } : {}),
+    ...(r.expectedBenefit ? { expectedBenefit: r.expectedBenefit } : {}),
   };
 }
 

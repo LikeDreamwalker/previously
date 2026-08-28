@@ -17,8 +17,10 @@ ChatPage (chat-page.tsx)  ← "use client", top-level useChat container
 │   │   ├── EmptyBriefing (when no messages and not loading — the "Previously On" arrival briefing)
 │   │   └── ChatSection (chat-section.tsx)
 │   │       ├── ChatMessage (per message)
-│   │       │   ├── HousekeepingCard  ← compact data-phase group (slice/analyze/tags/context/strands)
+│   │       │   ├── HousekeepingCard  ← compact data-phase group (slice/analyze/tags/context/strands) — EDGE mode only
 │   │       │   ├── EvolutionCard  ← data-evolution parts (standalone stream-positioned card with live thinking line)
+│   │       │   ├── BridgeToolCard  ← data-phase parts carrying a `tools` array (bridge mode: CLI tool activity during the chat answer)
+│   │       │   ├── BridgeHousekeepingCard  ← the `bridgeHousekeeping` data-phase parts (client mode: one streaming card for the whole housekeeping phase — CLI tool rows + live narration + deterministic wrap-up checklist in `data.steps`)
 │   │       │   ├── ThinkingSteps  ← reasoning parts (Brain icon, streaming subtitle)
 │   │       │   ├── PhaseIndicator  ← non-compact data-phase parts (terminal states)
 │   │       │   ├── ToolRenderer  ← dispatches tool-* parts to per-tool renderers
@@ -29,7 +31,6 @@ ChatPage (chat-page.tsx)  ← "use client", top-level useChat container
 │   │       │   │   ├── WebSearchRenderer    (webSearch)
 │   │       │   │   └── DefaultRenderer      (unknown tools)
 │   │       │   └── MarkdownRenderer  ← text parts (react-markdown + GFM + highlight)
-│   │       ├── LoadingTip placeholder (before first assistant message arrives)
 │   │       └── Error banner
 │   └── [Historical — past slice selected]
 │       └── HistoricalChatView
@@ -47,28 +48,30 @@ ChatPage (chat-page.tsx)  ← "use client", top-level useChat container
 2. `ChatMessage.buildStream()` classifies each part in a single pass:
    - `reasoning` → merged consecutively into one `ThinkingSteps` block (streaming mode with typewriter subtitle)
    - `tool-*` → merged by `toolCallId` into a single `ToolRenderer` card (folds input-streaming → input-available → output-available)
-   - `data-phase` → compact phases merge by name into ONE `HousekeepingCard` checklist (emits `{running: true}` at start, `{running: false}` at end); non-compact phases render as `PhaseIndicator` (static mode, Activity icon)
-   - `data-evolution` → its OWN `EvolutionCard` item at the position the chunks arrive (between the housekeeping context and strands phases); while running it streams the Previously Agent's live thinking line, the terminal chunk carries the summary / mutations diff / note / error / partial flag
+   - `data-phase` → compact phases merge by name into ONE `HousekeepingCard` checklist (emits `{running: true}` at start, `{running: false}` at end; EDGE mode only — client mode never emits compact phases); phases carrying a `tools` array (bridge-mode CLI activity) merge by name into a bridge item — phase `bridgeHousekeeping` renders as `BridgeHousekeepingCard` (streaming: tool rows + `live` narration + wrap-up `steps` checklist), anything else as `BridgeToolCard`; other non-compact phases render as `PhaseIndicator` (static mode, Activity icon)
+   - `data-evolution` → its OWN `EvolutionCard` item at the position the chunks arrive (between the housekeeping context and strands phases); while running it streams the live thinking line of whichever evolution agent is active (Phase 1 direction evaluation rides the same channel as step "direction", then Phase 2's Previously Agent takes over as reading/reviewing), the terminal chunk carries the summary / mutations diff / note / error / partial flag, plus the v1.0 calibration details (fitness `triggers` + net scores, the Phase-1 `direction` verdict — including `failed` with its reason, Phase-2 `playbooks`)
    - `text` → buffered and flushed into `MarkdownRenderer` blocks
 3. Items render in natural stream order inside `AnimatePresence` for enter/exit animations.
-4. A `LoadingTip` pulses at the bottom while streaming.
-5. `MessageActions` (copy/regenerate) render in `MessageFooter` — gated on `onRegenerate` prop.
+4. The loading tips (`loading-tip.tsx`) are RETIRED for now (content refresh pending) — no streaming indicator or pre-first-chunk placeholder; the input bar's stop state is the in-flight affordance.
+5. `MessageActions` (copy/regenerate) render in `MessageFooter` — `ChatSection` threads `onRegenerate` to the LAST assistant message only; the SDK's `regenerate({messageId})` truncates the rejected reply locally and re-requests with trigger `regenerate-message`, which the transport turns into the body's `regenerate` flag (the server then skips the duplicate user-turn append and records an `interaction_regenerate` fitness signal). The input bar's stop button calls `handleStop`, which aborts the stream, cancels the durable run via `POST /api/chat/<runId>/cancel` (stop means STOP — no recorded agent reply), clears the stored run id (so a reload never resurrects a deliberately-stopped turn), and reports an `interaction_interrupt` signal to `POST /api/episodic/signal` (fire-and-forget).
 
 ## File Map
 
 | File | Description |
 |------|-------------|
 | `chat-page.tsx` | Top-level `"use client"` container: `useChat` hook, `WorkflowChatTransport` wiring, timeline state, hero/messages/timeline regions, sticky `ChatInput` |
-| `chat-section.tsx` | Renders the message list (`ChatMessage` per message), the pre-first-part loading placeholder, and the error banner |
+| `chat-section.tsx` | Renders the message list (`ChatMessage` per message) and the error banner |
 | `chat-message.tsx` | Per-message renderer: unified stream pipeline (`buildStream`) — classifies parts into reasoning/text/tool/phase, wraps in `AnimatePresence` |
 | `chat-input.tsx` | Textarea with image attachments (paste/drag-drop/file picker), auto-resize, submit/stop buttons, demo trigger |
 | `phase-indicator.tsx` | Reusable expandable header bar: two modes — `streaming` (typewriter subtitle, elapsed timer) and `static` (manual expand, chevron). Used by ThinkingSteps, HousekeepingCard, RecallToolRenderer, and non-compact data-phase items |
-| `housekeeping-card.tsx` | The grouped prep card: compact data-phase checklist (slice / analyze / tags / context / strands). Built on PhaseIndicator |
-| `evolution-card.tsx` | The standalone card-evolution card (data-evolution, Previously Agent): streaming mode with the agent's live thinking line as the typewriter subtitle while running, then the settled headline — "evolved: summary" (+ partial marker) with an expandable mutations diff + note, "checked, no updates", or the failure reason in red. Built on PhaseIndicator |
+| `housekeeping-card.tsx` | The grouped prep card (EDGE mode): compact data-phase checklist (slice / analyze / tags / context / strands). Built on PhaseIndicator |
+| `bridge-tools-card.tsx` | The generic bridge-tool indicator (client+bridge mode): one ToolLayout row per protocol-2 CLI tool event (icon + name + status, expandable summary), plus the CLI's rolling narration line (`live`, mono muted + pulsing caret, running-only) under a brand-tinted header. Renders `bridge-tools` stream items for the chat answer (phase `stageWorking`) |
+| `bridge-housekeeping-card.tsx` | The CLIENT-mode housekeeping card (`bridge-tools` item, phase `bridgeHousekeeping`): the whole housekeeping phase as one streaming surface — live narration + CLI tool rows (same look as BridgeToolCard) + the kernel's deterministic wrap-up checklist (`data.steps`) filling in around the single bridge call |
+| `evolution-card.tsx` | The standalone card-evolution card (data-evolution, Previously Agent): streaming mode with the agent's live thinking line as the typewriter subtitle while running, then the settled headline — "evolved: summary" (+ partial marker) with the expandable detail, "checked, no updates", or the failure reason in red. The detail leads with the v1.0 calibration sections (trigger rows with net scores, the Phase-1 direction verdict line, per-agent playbook updates — each rendered only when present), then the mutations diff + note. Built on PhaseIndicator |
 | `thinking.tsx` | Reasoning display: Brain icon, streaming subtitle, elapsed timer, expandable Markdown. Uses PhaseIndicator in streaming mode |
 | `tool-renderer.tsx` | Central dispatch hub: maps `toolName` to specific renderers, extracts `ToolRenderState` from raw SDK state |
 | `tool-layout.tsx` | Shared expandable tool card: status icon (spinner/dot/error/interrupted), name, summary, meta, CSS grid-animated details panel |
-| `tool-renderers/recall.tsx` | Recall tool: History icon, query summary, hit count + confidence, expandable hits list with pointers |
+| `tool-renderers/recall.tsx` | Recall tool: History icon, question label, reference count + confidence, expandable answer with verbatim-quote references and the searched trail |
 | `tool-renderers/memory-tool.tsx` | Memory read tools (readSlice, readPreviously, readTimeline, readStrand, readAgentTimeline): Search icon, path label, formatted output |
 | `tool-renderers/list-files.tsx` | List tools (listSlices, listStrands): folder/file icons, item count |
 | `tool-renderers/current-time.tsx` | currentTime tool (v0.9 "watch check"): single-line card with the returned local time |
@@ -83,7 +86,7 @@ ChatPage (chat-page.tsx)  ← "use client", top-level useChat container
 | `empty-briefing.tsx` | The empty-live "arrival" briefing: a letter-spaced `PREVIOUSLY ON` eyebrow + the user's name over a soft brand glow (film-title-card framing), then a hot-start summary drawn from real memory — the active slice's focus ("上次聊到"), open loops ("还欠着的事"), and contextual suggestion chips ("可以接着聊"). Every section only renders when it has real data; the name doubles as the persona switcher in demo mode; "view full previously" opens the same Previously On dialog the slice view uses |
 | `time-display.tsx` | Date/time formatting: `sameDay()` check, `TimeDisplay` with date/time modes |
 | `cognition-popover.tsx` | Per-turn agent thoughts dialog: Brain icon trigger, lazy-loaded Markdown content |
-| `loading-tip.tsx` | Loading indicator cycling through i18n tips with fade transitions |
+| `loading-tip.tsx` | RETIRED (unused, kept for a content refresh) — loading indicator cycling through i18n tips |
 | `markdown.tsx` | Markdown renderer: react-markdown with remark-gfm, rehype-highlight, custom components for code/table/link/list/blockquote |
 | `code-block.tsx` | Fenced code block: header bar with language label + copy button, scrollable code area |
 | `message-actions.tsx` | Copy-to-clipboard and Regenerate buttons, shown on hover via group-hover opacity |
@@ -100,7 +103,7 @@ ChatPage (chat-page.tsx)  ← "use client", top-level useChat container
 
 - **Arrival = in-flight work or nothing**: on mount, `ChatPage` asks the server whether the persisted run is still pending/running (`isChatRunActive`) BEFORE `Inner`/`useChat` mount — the server is the only authority on run liveness; the client never infers slice boundaries from timestamps or silence windows. A live run → restore the working conversation + `resume` (the replay rebuilds the trailing partial turn). Anything else → the localStorage stash is CLEARED and the live view opens blank on the arrival briefing. Completed conversation is never resurrected client-side: it belongs to its slice on the timeline, and continuity ("上次聊到" / suggested follow-ups) is the briefing's job. The stash therefore can't accumulate stale turns across refreshes.
 - **Unified stream in AnimatePresence**: All inline parts (reasoning, tool, phase, text) render inside a single `AnimatePresence` block within the assistant bubble. Items animate in/out naturally as they arrive. `buildStream()` merges consecutive items of the same type (reasoning deltas, tool parts by callId) to prevent unnecessary remounts.
-- **Evolution is its own stream-positioned card**: self-evolution status is per-turn and streams inline during housekeeping (`data-evolution` chunks between the context and strands phases). `buildStream` maps the chunks to a standalone `evolution` StreamItem rendered by `EvolutionCard` (PhaseIndicator streaming mode) — running shows the Previously Agent's realtime thinking line (`live`, typewriter subtitle; the coarse reading/reviewing step is the fallback), the terminal state shows the agent's summary (with a partial marker when the run was cut short) / "checked, no updates" / failure reason, with the mutations diff + note expandable once settled. Legacy chunks without a `status` field still classify via the old `running` flag. There is no lifted client state.
+- **Evolution is its own stream-positioned card**: self-evolution status is per-turn and streams inline during housekeeping (`data-evolution` chunks between the context and strands phases). `buildStream` maps the chunks to a standalone `evolution` StreamItem rendered by `EvolutionCard` (PhaseIndicator streaming mode) — running shows the active evolution agent's realtime thinking line (`live`, typewriter subtitle; the coarse direction/reading/reviewing step is the fallback — "direction" while the Phase-1 direction agent evaluates, then reading/reviewing for Phase 2), the terminal state shows the agent's summary (with a partial marker when the run was cut short) / "checked, no updates" / failure reason, with the detail expandable once settled. The detail tells the whole v1.0 evolution story ABOVE the mutations diff + note: WHY the run fired (trigger rows: bucket display name + windowed net score — only when fitness buckets forced the run), what Phase 1 concluded (one direction line: unchanged / the update summary / a red failed line with the reason — a failure never masquerades as "no_change" and is never silently dropped), and which colleague playbooks changed (one line per agent). All three are optional payload fields — legacy/bridge chunks without them render exactly as before. Legacy chunks without a `status` field still classify via the old `running` flag. There is no lifted client state.
 - **PhaseIndicator as the universal indicator**: Instead of duplicating expandable card patterns, thinking, the housekeeping card, recall, and data-phase items all use PhaseIndicator (not ToolLayout which is for tool calls). This avoids the confusion between indicators and tools.
 - **ChatPage owns the orchestration, ChatSection owns the message list, ChatMessage owns the rendering**: Three-layer separation keeps concerns isolated.
 - **Timeline as a focal wheel**: A full-height virtual-scrolled column of the slice catalog on the left. The row nearest the vertical center is enlarged (scale + opacity fall off with distance); a center selection band highlights it; the central readout rolls its digits (odometer-style) when the focused slice changes. Scrolling up = into the past (digits count down), down = toward now. **Content loads only on explicit click** — scrolling is pure preview (readout + focus text), so browsing costs zero requests. This matters because slice reads are GitHub API calls in production. **The blue selection mark follows the LOADED slice** (whose content the right side shows), not the scroll preview — it moves only when the user clicks.

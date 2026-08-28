@@ -187,6 +187,44 @@ describe("buildStream — data-evolution as a standalone stream item", () => {
     );
     expect((midRun[0] as { running: boolean }).running).toBe(true);
   });
+
+  it("passes the v1.0 calibration fields (triggers / direction / playbooks) through on the terminal chunk", () => {
+    const parts = [
+      evolutionChunk({ status: "running", step: "reviewing" }),
+      evolutionChunk({
+        status: "done",
+        hasChanges: false,
+        note: "reviewed",
+        triggers: [{ bucket: "recall", score: -4 }],
+        direction: { outcome: "updated", summary: "direction v1" },
+        playbooks: [{ agent: "recall", summary: "fewer unverified answers" }],
+      }),
+    ];
+    const items = buildStream(parts, false);
+    const evo = items[0] as {
+      kind: "evolution";
+      running: boolean;
+      data: Record<string, unknown>;
+    };
+    expect(evo.running).toBe(false);
+    expect(evo.data).toMatchObject({
+      status: "done",
+      triggers: [{ bucket: "recall", score: -4 }],
+      direction: { outcome: "updated", summary: "direction v1" },
+      playbooks: [{ agent: "recall", summary: "fewer unverified answers" }],
+    });
+  });
+
+  it("leaves the calibration fields absent on legacy / analyzer-gated terminal chunks", () => {
+    const parts = [
+      evolutionChunk({ status: "done", hasChanges: false, note: "checked" }),
+    ];
+    const items = buildStream(parts, false);
+    const evo = items[0] as { data: Record<string, unknown> };
+    expect(evo.data.triggers).toBeUndefined();
+    expect(evo.data.direction).toBeUndefined();
+    expect(evo.data.playbooks).toBeUndefined();
+  });
 });
 
 describe("buildStream — part classification order", () => {
@@ -239,6 +277,157 @@ describe("buildStream — tool progress routing", () => {
     ];
     const items = buildStream(parts, false);
     expect(items[0]).toMatchObject({ kind: "tool", streamingText: "Found 3 matches", streamingStage: "done" });
+  });
+});
+
+describe("buildStream — bridge tool activity (data-phase with tools)", () => {
+  const toolRows = [
+    { name: "Read", summary: "Read memory/a.md", status: "ok" },
+    { name: "Bash", summary: "Bash pnpm test", status: "start" },
+  ];
+
+  it("becomes a bridge-tools item (merged by phase, last chunk wins)", () => {
+    const parts = [
+      part({
+        type: "data-phase",
+        data: { phase: "stageWorking", running: true, summaries: ["Read memory/a.md"], tools: [toolRows[0]] },
+      }),
+      part({
+        type: "data-phase",
+        data: { phase: "stageWorking", running: false, summaries: ["Read memory/a.md", "Bash pnpm test"], tools: toolRows },
+      }),
+    ];
+    const items = buildStream(parts, false);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      kind: "bridge-tools",
+      phase: "stageWorking",
+      running: false,
+      tools: toolRows,
+    });
+  });
+
+  it("keeps housekeeping and chat bridge activity as separate items (distinct phases)", () => {
+    const parts = [
+      part({
+        type: "data-phase",
+        data: { phase: "bridgeHousekeeping", running: false, summaries: [], tools: [toolRows[0]] },
+      }),
+      phaseChunks("strands", true),
+      part({
+        type: "data-phase",
+        data: { phase: "stageWorking", running: true, summaries: [], tools: toolRows },
+      }),
+    ];
+    const items = buildStream(parts, false);
+    expect(items.map((i) => i.kind)).toEqual([
+      "bridge-tools",
+      "housekeeping",
+      "bridge-tools",
+    ]);
+    expect((items[0] as { phase: string }).phase).toBe("bridgeHousekeeping");
+    expect((items[2] as { phase: string }).phase).toBe("stageWorking");
+  });
+
+  it("keeps the legacy tools-less data-phase rendering as a plain phase item", () => {
+    const parts = [
+      part({
+        type: "data-phase",
+        data: { phase: "stageWorking", running: true, summaries: ["Read x"] },
+      }),
+    ];
+    const items = buildStream(parts, false);
+    expect(items[0]).toMatchObject({ kind: "phase", phase: "stageWorking" });
+  });
+
+  it("carries the rolling narration line (live), last frame wins", () => {
+    const parts = [
+      part({
+        type: "data-phase",
+        data: { phase: "bridgeHousekeeping", running: true, summaries: [], tools: [], live: "Reading the slice" },
+      }),
+      part({
+        type: "data-phase",
+        data: { phase: "bridgeHousekeeping", running: true, summaries: [], tools: [], live: "Reading the slice…" },
+      }),
+      part({
+        type: "data-phase",
+        data: { phase: "bridgeHousekeeping", running: false, summaries: [], tools: [], live: "Reading the slice…" },
+      }),
+    ];
+    const items = buildStream(parts, false);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      kind: "bridge-tools",
+      phase: "bridgeHousekeeping",
+      running: false,
+      live: "Reading the slice…",
+      tools: [],
+    });
+  });
+
+  it("carries the client-mode wrap-up steps, last frame wins", () => {
+    const parts = [
+      part({
+        type: "data-phase",
+        data: {
+          phase: "bridgeHousekeeping",
+          running: true,
+          summaries: [],
+          tools: [],
+          steps: [{ phase: "slice", running: true }],
+        },
+      }),
+      part({
+        type: "data-phase",
+        data: {
+          phase: "bridgeHousekeeping",
+          running: true,
+          summaries: [],
+          tools: [toolRows[0]],
+          live: "Analyzing the turn",
+          steps: [
+            { phase: "slice", running: true },
+            { phase: "analyze", running: true },
+          ],
+        },
+      }),
+      part({
+        type: "data-phase",
+        data: {
+          phase: "bridgeHousekeeping",
+          running: false,
+          summaries: [],
+          tools: [toolRows[0]],
+          steps: [
+            { phase: "slice", running: false, summaries: ["2026-08-22-1015"] },
+            { phase: "analyze", running: false, summaries: ["work"] },
+          ],
+        },
+      }),
+    ];
+    const items = buildStream(parts, false);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      kind: "bridge-tools",
+      phase: "bridgeHousekeeping",
+      running: false,
+      tools: [toolRows[0]],
+      steps: [
+        { phase: "slice", running: false, summaries: ["2026-08-22-1015"] },
+        { phase: "analyze", running: false, summaries: ["work"] },
+      ],
+    });
+    // A frame without a steps field leaves the accumulated steps untouched.
+    const parts2 = [
+      ...parts,
+      part({
+        type: "data-phase",
+        data: { phase: "bridgeHousekeeping", running: false, summaries: [], tools: [toolRows[0]] },
+      }),
+    ];
+    const items2 = buildStream(parts2, false);
+    expect((items2[0] as { steps?: unknown[] }).steps).toHaveLength(2);
   });
 });
 
@@ -316,5 +505,95 @@ describe("progressStageTone", () => {
     // legacy "reasoning" (pre-4-state) still reads as thinking
     expect(progressStageTone("reasoning")).toBe("thinking");
     expect(progressStageTone(undefined)).toBe("thinking");
+  });
+});
+
+describe("buildStream — bridge authoritative re-emit (divergent deltas)", () => {
+  it("replaces earlier text items instead of concatenating", () => {
+    // The bridge model re-emits the envelope result marked authoritative when
+    // the advisory deltas diverged — the UI must show ONLY the final text.
+    const parts = [
+      part({ type: "text", text: "draft" }),
+      part({
+        type: "text",
+        text: "final answer",
+        providerMetadata: { "previously-bridge": { authoritative: true } },
+      }),
+    ];
+    const items = buildStream(parts, false);
+    expect(items).toEqual([{ kind: "text", content: "final answer" }]);
+  });
+
+  it("replaces text already flushed to items by an interleaved data-phase", () => {
+    const parts = [
+      part({ type: "text", text: "draft" }),
+      part({
+        type: "data-phase",
+        data: { phase: "stageWorking", running: true, summaries: [], tools: [] },
+      }),
+      part({
+        type: "text",
+        text: "final answer",
+        providerMetadata: { "previously-bridge": { authoritative: true } },
+      }),
+    ];
+    const items = buildStream(parts, false);
+    expect(items.map((i) => i.kind)).toEqual(["bridge-tools", "text"]);
+    expect(items[1]).toMatchObject({ kind: "text", content: "final answer" });
+  });
+
+  it("leaves unmarked consecutive text parts concatenated (normal mode unchanged)", () => {
+    const parts = [
+      part({ type: "text", text: "a" }),
+      part({ type: "text", text: "b" }),
+    ];
+    const items = buildStream(parts, false);
+    expect(items).toEqual([{ kind: "text", content: "ab" }]);
+  });
+});
+
+describe("buildStream — bridge housekeeping degradation warning", () => {
+  it("passes the warning through to the bridge-tools item (last frame wins)", () => {
+    const parts = [
+      part({
+        type: "data-phase",
+        data: { phase: "bridgeHousekeeping", running: true, summaries: [], tools: [] },
+      }),
+      part({
+        type: "data-phase",
+        data: { phase: "bridgeHousekeeping", running: false, summaries: [], tools: [], warning: "timeout" },
+      }),
+    ];
+    const items = buildStream(parts, false);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      kind: "bridge-tools",
+      phase: "bridgeHousekeeping",
+      running: false,
+      warning: "timeout",
+    });
+  });
+});
+
+describe("deriveAgentStage — bridge data-phase", () => {
+  it("reads the bridge chat activity phase as working, clearing when it settles", () => {
+    expect(
+      deriveAgentStage([
+        part({ type: "data-phase", data: { phase: "stageWorking", running: true, tools: [] } }),
+      ]),
+    ).toBe("working");
+    expect(
+      deriveAgentStage([
+        part({ type: "data-phase", data: { phase: "stageWorking", running: false, tools: [] } }),
+      ]),
+    ).toBeNull();
+  });
+
+  it("ignores the bridge housekeeping phase (the prep card is showing)", () => {
+    expect(
+      deriveAgentStage([
+        part({ type: "data-phase", data: { phase: "bridgeHousekeeping", running: true, tools: [] } }),
+      ]),
+    ).toBeNull();
   });
 });

@@ -19,6 +19,28 @@ function namedError(
 }
 
 describe("classifyWorkflowError", () => {
+  it("classifies bridge model failures as model errors (message prefix)", () => {
+    // The step error itself (name is deliberately "FatalError" so the step
+    // runtime doesn't retry a deterministic CLI failure).
+    const direct = classifyWorkflowError(
+      namedError("FatalError", 'Bridge model "bridge/kimi" failed (bridge-not-found): x'),
+    );
+    expect(direct.kind).toBe("model");
+    expect(direct.userMessage).toContain("subscription bridge");
+    // Across the workflow VM the step error arrives with a runtime preamble —
+    // the prefix match is unanchored. Note the message even contains a
+    // "520"-looking line number here, which must NOT win over the bridge
+    // prefix (that substring would otherwise hit the transient 5xx regex).
+    const wrapped = classifyWorkflowError(
+      namedError(
+        "WorkflowRunFailedError",
+        'Step "step//@ai-sdk/workflow@1.0.22//doStreamStep" failed after 3 retries: Bridge model "bridge/kimi" failed (exit-code): Bridge exited with code 1. stderr: node:internal/modules/cjs/loader:1520',
+      ),
+    );
+    expect(wrapped.kind).toBe("model");
+    expect(wrapped.userMessage).toBeTruthy();
+  });
+
   it("classifies AbortError as abort", () => {
     expect(classifyWorkflowError(namedError("AbortError")).kind).toBe("abort");
   });

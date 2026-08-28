@@ -5,10 +5,8 @@ import { WorkflowChatTransport } from "@ai-sdk/workflow";
 import { useMemo, useState, useRef, useCallback, useEffect } from "react";
 import type { UIMessage } from "ai";
 import { ChatInput } from "./chat-input";
-import type { ModelDefaults } from "./model-selector";
 import { useAvailableModels } from "@/hooks/use-available-models";
 import { ChatSection } from "./chat-section";
-import { buildMockSteps } from "@/lib/chat/mock-stream";
 import { HistoricalChatView } from "./historical-chat-view";
 import { RelativeTimeReadout } from "./relative-time";
 import { EmptyBriefing } from "./empty-briefing";
@@ -33,17 +31,16 @@ import { saveUserConfig } from "@/lib/config/actions";
 import type { UserConfig } from "@/lib/config/types";
 import { useTranslations, useLocale } from "next-intl";
 import { toast } from "sonner";
+import { setTurnBusy } from "./turn-busy";
 import { formatErrorDetail } from "@/lib/chat/workflow-errors";
 
 interface ChatPageProps {
-  /** Server-preloaded user config (RSC) — seeds model/thinking/effort so the
-   *  chat starts on the real values instead of flashing defaults. */
+  /** Server-preloaded user config (RSC) — seeds the selected model so the
+   *  chat starts on the real value instead of flashing defaults. */
   initialConfig?: UserConfig;
-  /** The demo model lock is active (DEMO_LOCK) — model/effort controls disable. */
-  demoLocked?: boolean;
 }
 
-export function ChatPage({ initialConfig, demoLocked = false }: ChatPageProps) {
+export function ChatPage({ initialConfig }: ChatPageProps) {
   // Mount-time arrival decision. Only the SERVER can say whether the persisted
   // run is still in flight, so this verdict is async — Inner (and therefore
   // useChat) mounts only after it lands, keeping useChat's init a synchronous,
@@ -63,7 +60,6 @@ export function ChatPage({ initialConfig, demoLocked = false }: ChatPageProps) {
   return (
     <Inner
       initialConfig={initialConfig}
-      demoLocked={demoLocked}
       shouldResume={arrival.shouldResume}
       initialMessages={arrival.initialMessages}
     />
@@ -116,8 +112,8 @@ const CHAT_ID_KEY = "previously:chatId";
 // ─── Sending window (v0.8) ────────────────────────────────────────────────
 // The client keeps the full conversation for rendering, but only the LAST N
 // messages travel to the server each turn. Everything earlier is already
-// stored in the current slice; if the agent needs deeper context it reads it
-// via recall / readSliceSummary / readTimelineWindow — it must NOT be handed
+// stored in the current slice; if the agent needs deeper context it gets it
+// via recall / readSlice — it must NOT be handed
 // the whole client history (that is the context-bloat + storage-accumulation
 // source). The UI never trims; only the wire payload does.
 const SEND_MESSAGE_WINDOW = 10; // ~5 turns of working memory
@@ -207,30 +203,23 @@ function fileToDataUrl(file: File): Promise<string> {
 
 function Inner({
   initialConfig,
-  demoLocked = false,
   shouldResume,
   initialMessages,
 }: {
   initialConfig?: UserConfig;
-  /** Demo model lock active — model + thinking intensity locked server-side. */
-  demoLocked?: boolean;
   /** The mount-time arrival verdict (resolveArrival) — see ChatPage. */
   shouldResume: boolean;
   initialMessages: UIMessage[];
 }) {
-  // ── Model / thinking / effort — reactive, persisted to config.json ─────
+  // ── Model selection — reactive, persisted to config.json ─────────────
   // The single source of truth is memory/user/config.json (cross-device, no
   // localStorage). The RSC page preloads it (initialConfig) so there's no
   // default-flash + mount reconcile; saves still write back via server action.
+  // Thinking/effort are NOT client state: the server pins thinking ON at low
+  // effort for every turn (see start-turn.ts).
   const locale = useLocale();
   const [selectedModel, setSelectedModel] = useState(
     initialConfig?.model.provider ?? "deepseek-v4-flash",
-  );
-  const [thinking, setThinking] = useState(
-    initialConfig?.model.thinking ?? true,
-  );
-  const [effort, setEffort] = useState<"low" | "medium" | "high">(
-    initialConfig?.model.reasoningEffort ?? "medium",
   );
 
   // The live catalog (shared fetch with ModelSelector) — gates the image
@@ -240,32 +229,11 @@ function Inner({
     availableModels.find((m) => m.id === selectedModel)?.supportsVision ??
     false;
 
-  // Switching models applies that model's defaults (thinking + effort) so the
-  // agent is configured sensibly for the newly selected model.
-  const handleModelChange = useCallback(
-    (modelId: string, defaults: ModelDefaults) => {
-      setSelectedModel(modelId);
-      setThinking(defaults.thinking);
-      setEffort(defaults.effort);
-      void saveUserConfig({
-        model: {
-          provider: modelId,
-          thinking: defaults.thinking,
-          reasoningEffort: defaults.effort,
-        },
-      });
-    },
-    [],
-  );
-
-  const handleEffortChange = useCallback((next: "low" | "medium" | "high") => {
-    setEffort(next);
-    void saveUserConfig({ model: { reasoningEffort: next } });
-  }, []);
-
-  const handleThinkingChange = useCallback((next: boolean) => {
-    setThinking(next);
-    void saveUserConfig({ model: { thinking: next } });
+  const handleModelChange = useCallback((modelId: string) => {
+    setSelectedModel(modelId);
+    void saveUserConfig({
+      model: { provider: modelId },
+    });
   }, []);
 
   const [lastUserMessageAt, setLastUserMessageAt] = useState<string | null>(null);
@@ -297,10 +265,10 @@ function Inner({
   const clockLandedRef = useRef<(() => void) | null>(null);
 
   // Persona picked from URL — server actions need it because they can't
-  // access searchParams on the server side. Defaults to "personal_14".
+  // access searchParams on the server side. Defaults to "user".
   const persona = useMemo(() => {
-    if (typeof window === "undefined") return "personal_14";
-    return new URLSearchParams(window.location.search).get("persona") || "personal_14";
+    if (typeof window === "undefined") return "user";
+    return new URLSearchParams(window.location.search).get("persona") || "user";
   }, []);
 
   // Load the newest slice on mount — feeds the NowPlaceholder gap anchor and
@@ -369,52 +337,6 @@ function Inner({
     [persona, selectedSliceId, loadedSliceStart],
   );
 
-  // ── Mock demo state ─────────────────────────────────────────────────
-  const [demoMessages, setDemoMessages] = useState<UIMessage[]>([]);
-  const [demoStreaming, setDemoStreaming] = useState(false);
-  const demoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const runDemo = useCallback(() => {
-    if (demoTimerRef.current) return;
-
-    setDemoMessages([]);
-    setDemoStreaming(true);
-    setLastUserMessageAt(new Date().toISOString());
-
-    const steps = buildMockSteps();
-    let current: UIMessage = {
-      id: `demo-msg-${Date.now()}`,
-      role: "assistant",
-      parts: [],
-      createdAt: new Date(),
-    } as UIMessage;
-
-    let cursor = 0;
-    const advance = () => {
-      if (cursor >= steps.length) {
-        setDemoStreaming(false);
-        demoTimerRef.current = null;
-        return;
-      }
-      const step = steps[cursor];
-      demoTimerRef.current = setTimeout(() => {
-        current = step.apply(current);
-        setDemoMessages([current]);
-        cursor++;
-        advance();
-      }, step.delay);
-    };
-    advance();
-  }, []);
-
-  const stopDemo = useCallback(() => {
-    if (demoTimerRef.current) {
-      clearTimeout(demoTimerRef.current);
-      demoTimerRef.current = null;
-    }
-    setDemoStreaming(false);
-  }, []);
-
   // Refresh-resume goes through the SDK's own path: `resume: true` calls
   // resumeStream() on mount, and prepareReconnectToStreamRequest redirects it
   // to the durable run (`/api/chat/<runId>/stream?startIndex=0`), which rebuilds
@@ -429,6 +351,7 @@ function Inner({
     sendMessage,
     status,
     stop,
+    regenerate,
     error,
   } = useChat({
     // v5 SDK: initial conversation state is passed as `messages` (ChatInit).
@@ -471,8 +394,6 @@ function Inner({
             // the slice and reachable via the memory tools (see SEND_MESSAGE_WINDOW).
             messages: sendWindow,
             model: selectedModel,
-            thinking,
-            effort,
             timezone:
               typeof Intl !== "undefined"
                 ? Intl.DateTimeFormat().resolvedOptions().timeZone
@@ -480,6 +401,12 @@ function Inner({
             // UI locale — the turn's relative-time annotations follow it.
             locale,
             loadedSliceIds: timelineSlices.map((s) => s.slice_id),
+            // The regenerate action re-runs the previous user message — the
+            // server must NOT re-append it to the slice (and records an
+            // interaction_regenerate fitness signal). See TurnInput.regenerate.
+            ...(config.trigger === "regenerate-message"
+              ? { regenerate: true }
+              : {}),
           },
         };
       },
@@ -514,28 +441,28 @@ function Inner({
   });
 
   // ── Persist the conversation (debounced) so a refresh restores it via
-  // `initialMessages`. Don't let the demo stream (demoMessages) wipe a real
-  // persisted conversation.
+  // `initialMessages`.
   const firstRenderRef = useRef(true);
   useEffect(() => {
     if (firstRenderRef.current) {
       firstRenderRef.current = false;
       return;
     }
-    if (demoMessages.length > 0) return;
     const id = setTimeout(() => {
       writeStoredMessages(messages.slice(-PERSIST_MESSAGE_CAP));
     }, 100);
     return () => clearTimeout(id);
-  }, [messages, demoMessages.length]);
+  }, [messages]);
 
-  const isStreaming = status === "streaming" || demoStreaming;
+  const isStreaming = status === "streaming";
   const isLoading = status === "submitted" || isStreaming;
 
-  const allMessages = useMemo(() => {
-    if (demoMessages.length > 0) return demoMessages;
-    return messages;
-  }, [messages, demoMessages]);
+  // Publish the in-flight state so the header can disable the settings entry
+  // mid-turn (engine/model changes must not land while a call is running).
+  useEffect(() => {
+    setTurnBusy(isLoading);
+    return () => setTurnBusy(false);
+  }, [isLoading]);
 
   // ── Background-completion toast ──────────────────────────────────────────
   // A turn that finishes while the tab is backgrounded is exactly the
@@ -552,7 +479,7 @@ function Inner({
   }, [status]);
 
   useEffect(() => {
-    const last = allMessages[allMessages.length - 1];
+    const last = messages[messages.length - 1];
     if (!last || last.role !== "assistant") return;
     const parts = (last.parts ?? []) as Array<{
       type?: string;
@@ -570,7 +497,7 @@ function Inner({
         toast.success(t("turnStatus.backgroundDone"));
       }
     }
-  }, [allMessages, t]);
+  }, [messages, t]);
 
   const handleSubmit = async (message: string, images: File[]) => {
     if (selectedSliceId !== "now" || transition) {
@@ -602,6 +529,47 @@ function Inner({
     // v0.9: buildStream folds those chunks into the housekeeping card, so the
     // client needs no evolution-specific state at all.
   };
+
+  // ── Regenerate: re-answer the last user message. The SDK truncates the
+  // rejected assistant message locally and re-requests with trigger
+  // "regenerate-message" (which prepareSendMessagesRequest turns into the
+  // body's regenerate flag). Only the LAST assistant message gets the button
+  // (ChatSection gates), and never mid-turn.
+  const handleRegenerate = useCallback(
+    (messageId: string) => {
+      if (status !== "ready") return;
+      void regenerate({ messageId });
+    },
+    [regenerate, status],
+  );
+
+  // ── Stop means STOP: abort the local stream, cancel the durable run
+  // server-side (no further steps, no recorded agent reply — the slice keeps
+  // the already-persisted user turn, "a question without an answer"), drop
+  // the stored run id so a reload never resurrects a turn the user cut off
+  // (onChatEnd only fires on a finish chunk, which an abort never receives),
+  // and report the interruption as a fitness signal. All best-effort.
+  const handleStop = useCallback(() => {
+    const runId = readStoredRunId();
+    void stop();
+    clearStoredRunId();
+    if (runId) {
+      fetch(`/api/chat/${encodeURIComponent(runId)}/cancel`, {
+        method: "POST",
+        keepalive: true,
+      }).catch(() => {
+        /* best-effort — the local abort already stopped the UI */
+      });
+    }
+    fetch("/api/episodic/signal", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "interaction_interrupt" }),
+      keepalive: true,
+    }).catch(() => {
+      /* instrumentation — never surface */
+    });
+  }, [stop]);
 
   // Hydration guard: the persisted conversation only exists client-side, so the
   // server renders the empty state. Keep the FIRST client render matching the
@@ -689,7 +657,7 @@ function Inner({
               transition={{ duration: 0.3 }}
               className="h-full"
             >
-              {(!hydrated || (allMessages.length === 0 && !isLoading)) ? (
+              {(!hydrated || (messages.length === 0 && !isLoading)) ? (
                 <EmptyBriefing
                   persona={persona}
                   active={activeSlice}
@@ -701,11 +669,11 @@ function Inner({
                   {/* No left padding — the timeline itself is the separator.
                       pb-36 = safe area clearing the fixed bottom input bar. */}
                   <ChatSection
-                    messages={allMessages}
+                    messages={messages}
                     isStreaming={isStreaming}
-                    isLoading={isLoading}
                     error={error}
                     lastUserMessageAt={lastUserMessageAt}
+                    onRegenerate={handleRegenerate}
                   />
                 </div>
               )}
@@ -740,17 +708,11 @@ function Inner({
             <ChatInput
               onSubmit={handleSubmit}
               isLoading={isLoading}
-              onStop={demoStreaming ? stopDemo : stop}
-              onDemo={runDemo}
-              demoRunning={demoStreaming}
+              onStop={handleStop}
+              persona={persona}
               visionEnabled={visionSupported}
-              demoLocked={demoLocked}
               currentModelId={selectedModel}
-              currentEffort={effort}
-              thinking={thinking}
               onModelChange={handleModelChange}
-              onEffortChange={handleEffortChange}
-              onThinkingChange={handleThinkingChange}
             />
           </div>
         </div>

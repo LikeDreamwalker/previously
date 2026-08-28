@@ -16,10 +16,6 @@ export const DEFAULTS: UserConfig = {
     thinking: true,
     reasoningEffort: "medium" as const,
   },
-  worker: {
-    mode: "auto" as const,
-    provider: "",
-  },
   onboarded: false,
   datasource: "demo",
 };
@@ -32,15 +28,9 @@ export const DEFAULTS: UserConfig = {
 export function mergeConfig(overrides: Partial<UserConfig>): UserConfig {
   const model = { ...DEFAULTS.model, ...overrides.model };
   model.provider = resolveModelId(model.provider);
-  const worker = {
-    ...DEFAULTS.worker,
-    ...(overrides.worker ?? {}),
-  };
-  if (worker.provider) worker.provider = resolveModelId(worker.provider);
   return {
     slicing: { ...DEFAULTS.slicing, ...overrides.slicing },
     model,
-    worker,
     onboarded: overrides.onboarded ?? DEFAULTS.onboarded,
     datasource: overrides.datasource ?? DEFAULTS.datasource,
   };
@@ -60,6 +50,5 @@ export function mergeConfigOverrides(
     ...overrides,
     slicing: { ...current.slicing, ...overrides.slicing },
     model: { ...current.model, ...overrides.model },
-    worker: { ...current.worker, ...overrides.worker },
   });
 }

@@ -16,11 +16,17 @@
 import type { ModelConfig } from "./registry";
 import {
   ALL_MODELS,
-  getModelOverrides,
   getAvailableModels,
+  getBridgeModels,
+  getByokModel,
   resolveModelId,
 } from "./registry";
 import type { ProviderSdk } from "./providers";
+import { isClientMode } from "../mode";
+import {
+  readClientConfig,
+  type ClientConfigSnapshot,
+} from "../client-config";
 
 const CACHE_TTL_MS = 30 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 10_000;
@@ -168,7 +174,7 @@ const SOURCES: ProviderSource[] = [
     envKeys: ["ANTHROPIC_API_KEY"],
     sdk: "anthropic",
     list: anthropicList,
-    defaults: { thinking: true, vision: true, maxTokens: 200000, effort: "medium" },
+    defaults: { thinking: true, vision: true, maxTokens: 200000, effort: "low" },
   },
   {
     key: "openai",
@@ -252,7 +258,6 @@ function buildConfig(
   const curated = ALL_MODELS.find((m) => m.id === normalized);
   if (curated) return curated;
 
-  const override = getModelOverrides(normalized);
   return {
     id: normalized,
     name: name ?? normalized,
@@ -267,7 +272,7 @@ function buildConfig(
       maxTokens: source.defaults.maxTokens,
     },
     defaultThinking: source.defaults.thinking,
-    defaultEffort: override?.defaultEffort ?? source.defaults.effort,
+    defaultEffort: source.defaults.effort,
   };
 }
 
@@ -316,6 +321,39 @@ export async function resolveAvailableModels(): Promise<ModelConfig[]> {
     if (seen.has(m.id)) continue;
     seen.add(m.id);
     models.push(m);
+  }
+
+  // Local agent engine + BYOK (client mode, PREVIOUSLY_HOME/config.json):
+  // config.json is read ONCE here and drives both config-backed engines, so
+  // an engine switch saved from the settings UI applies on the next resolve
+  // (POST /api/client/config resets this cache) with no kernel restart —
+  // in-flight calls keep their already-resolved model. The bridge entries
+  // need no provider API key, so they are appended outside the env-key
+  // provider loop above (default agent first). A missing/unreadable
+  // config.json must not break model listing — degrade to env-only (the
+  // settings API already surfaces that state honestly).
+  let clientConfig: ClientConfigSnapshot | null = null;
+  if (isClientMode()) {
+    try {
+      clientConfig = await readClientConfig();
+    } catch {
+      clientConfig = null; // unreadable/corrupt — env-only registration
+    }
+  }
+  for (const bridge of getBridgeModels(clientConfig?.brain)) {
+    if (!seen.has(bridge.id)) {
+      seen.add(bridge.id);
+      models.push(bridge);
+    }
+  }
+
+  // BYOK: the user's own-API-key model, listed AFTER the bridge entries —
+  // local agent outsourcing stays the default, BYOK is the recommended
+  // upgrade.
+  const byok = getByokModel(clientConfig?.byok);
+  if (byok && !seen.has(byok.id)) {
+    seen.add(byok.id);
+    models.push(byok);
   }
 
   cache = { at: now, models };

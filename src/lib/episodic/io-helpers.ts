@@ -14,9 +14,10 @@
  * writes earlier in the same batch are visible to later reads (read-your-
  * writes, preserving ordering dependencies). `flushBatch(batch, message)`
  * commits all queued writes as a single git commit (GitHub mode) or writes
- * them to disk (local). Because the batch is a per-call object — not a module
- * global — two turns running concurrently in one process can never flush each
- * other's writes.
+ * them to disk and records one best-effort git commit when the memory root
+ * is a git repo (local — see local-git.ts). Because the batch is a per-call
+ * object — not a module global — two turns running concurrently in one
+ * process can never flush each other's writes.
  *
  * Extracted from manager.ts to avoid circular imports: global-timeline.ts and
  * recall.ts need these helpers, but importing them from manager.ts would create
@@ -38,6 +39,8 @@ import {
 } from "@/lib/demo/demo-fs";
 import { resolveDataSource, isDemo } from "@/lib/data-source/resolve";
 import { getRepoConfig } from "@/lib/capabilities";
+import { getMemoryRoot } from "@/lib/whitelist";
+import { commitPaths, isGitRepo } from "./local-git";
 
 // ─── Environment detection ───────────────────────────────────────────────
 
@@ -62,7 +65,9 @@ export function createBatch(): WriteBatch {
 }
 
 /**
- * Commit all queued writes as a single git commit.
+ * Commit all queued writes as a single git commit (GitHub mode; local mode
+ * writes to disk and records one best-effort commit via local-git when the
+ * memory root is a git repo).
  * If the queue is empty this is a no-op.
  *
  * On SUCCESS the batch is emptied. On FAILURE the entries are kept, so the
@@ -94,11 +99,39 @@ export async function flushBatch(
     return;
   }
 
-  // Local filesystem — no commit overhead, just write individually
+  // Local filesystem — write individually, then record one git commit for
+  // the whole batch (mirrors the GitHub backend's N-files-1-commit batch).
   for (const { path, content } of entries) {
     await writeFileLocal(path, content);
   }
   batch.entries.clear();
+  await commitLocalWrites(
+    entries.map((e) => e.path),
+    message,
+  );
+}
+
+/**
+ * Best-effort git ledger for local-backend writes. Only commits when the
+ * memory root is itself a git repo; otherwise this is a no-op and local
+ * writes behave exactly as before. `paths` are whitelisted app paths
+ * (`memory/...`); the ledger repo root is the memory root, so the `memory/`
+ * prefix is stripped to get repo-relative paths. Non-memory paths (tasks/,
+ * sessions/) live outside the memory repo and are skipped. Never throws —
+ * see local-git.ts.
+ */
+async function commitLocalWrites(paths: string[], message: string): Promise<void> {
+  const root = getMemoryRoot();
+  if (!isGitRepo(root)) return;
+  const relPaths: string[] = [];
+  for (const p of paths) {
+    const normalized = p.replace(/\\/g, "/");
+    if (normalized.startsWith("memory/")) {
+      relPaths.push(normalized.slice("memory/".length));
+    }
+  }
+  if (relPaths.length === 0) return;
+  await commitPaths(root, relPaths, message);
 }
 
 // ─── Public I/O helpers ─────────────────────────────────────────────────
@@ -139,7 +172,11 @@ export async function fsWriteFile(
     const { owner, repo } = getRepoConfig();
     return writeFileGitHub(path, content, repo, owner);
   }
-  return writeFileLocal(path, content);
+  const result = await writeFileLocal(path, content);
+  // Mirror the GitHub backend's one-write-one-commit ledger (best-effort,
+  // no-op unless the memory root is a git repo).
+  await commitLocalWrites([path], `Update ${path.replace(/\\/g, "/").replace(/^memory\//, "")}`);
+  return result;
 }
 
 export async function fsListFiles(

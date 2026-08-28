@@ -97,31 +97,63 @@ async function markOneSlice(
 }
 
 /**
- * Re-mark up to BACKFILL_MAX_PER_TURN needs-marking slices. Returns how many
- * were marked. Never throws; never touches `excludeSliceIds` (the caller lists
- * the active + just-closed slices there).
+ * Gather up to BACKFILL_MAX_PER_TURN needs-marking candidates with their
+ * compressed conversations — the picking half of backfill, exported so the
+ * housekeeping bridge call can fold the marking into its ONE report
+ * (phase outsourcing) instead of spawning a sub-agent per slice.
+ * Never throws; never touches `excludeSliceIds`.
  */
-export async function backfillDrySliceMarks(opts: {
-  model: ModelConfig;
+export async function collectDrySliceCandidates(opts: {
   excludeSliceIds: string[];
   batch: WriteBatch;
-}): Promise<number> {
+}): Promise<Array<{ sliceId: string; conversation: string }>> {
   try {
     const idx = await readTimelineIndex(opts.batch);
-    if (!idx) return 0;
+    if (!idx) return [];
     const exclude = new Set(opts.excludeSliceIds);
     const candidates = idx.slices
       .filter((s) => s.needs_marking && !exclude.has(s.id))
       .slice(0, BACKFILL_MAX_PER_TURN);
-    if (candidates.length === 0) return 0;
-
-    let marked = 0;
+    const out: Array<{ sliceId: string; conversation: string }> = [];
     for (const entry of candidates) {
       try {
         const corePath = sliceCorePath(entry.id.split("-").join("/"));
         const raw = await fsReadFile(corePath, opts.batch);
-        const mark = await markOneSlice(opts.model, raw);
-        if (!mark) continue;
+        const { turns } = parseTurns(raw);
+        if (turns.length === 0) continue;
+        out.push({ sliceId: entry.id, conversation: compressTurns(turns) });
+      } catch {
+        // best-effort — skip this slice silently
+      }
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Write focus/summary marks into dry slices' frontmatter and refresh the
+ * timeline catalog — the write half of backfill, shared by the sub-agent
+ * path (below) and the housekeeping bridge report (phase outsourcing).
+ * Returns how many were marked. Never throws.
+ */
+export async function applyMarksToDrySlices(
+  marks: Array<{ id: string; focus: string; summary: string }>,
+  batch: WriteBatch,
+): Promise<number> {
+  try {
+    if (marks.length === 0) return 0;
+    const idx = await readTimelineIndex(batch);
+    if (!idx) return 0;
+
+    let marked = 0;
+    for (const mark of marks.slice(0, BACKFILL_MAX_PER_TURN)) {
+      try {
+        const entry = idx.slices.find((s) => s.id === mark.id);
+        if (!entry || !entry.needs_marking) continue;
+        const corePath = sliceCorePath(mark.id.split("-").join("/"));
+        const raw = await fsReadFile(corePath, batch);
 
         // Write the marks into the slice's frontmatter (body untouched).
         const parsed = matter(raw);
@@ -131,7 +163,7 @@ export async function backfillDrySliceMarks(opts: {
         await fsWriteFile(
           corePath,
           matter.stringify(parsed.content, fm),
-          opts.batch,
+          batch,
         );
 
         // Refresh the catalog entry to match.
@@ -147,10 +179,47 @@ export async function backfillDrySliceMarks(opts: {
     if (marked > 0) {
       idx.needs_marking = idx.slices.filter((s) => s.needs_marking).length;
       idx.updated_at = new Date().toISOString();
-      await writeTimelineIndex(idx, opts.batch);
-      await writeTimelineMd(renderTimelineMd(idx), opts.batch);
+      await writeTimelineIndex(idx, batch);
+      await writeTimelineMd(renderTimelineMd(idx), batch);
     }
     return marked;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Re-mark up to BACKFILL_MAX_PER_TURN needs-marking slices. Returns how many
+ * were marked. Never throws; never touches `excludeSliceIds` (the caller lists
+ * the active + just-closed slices there).
+ */
+export async function backfillDrySliceMarks(opts: {
+  model: ModelConfig;
+  excludeSliceIds: string[];
+  batch: WriteBatch;
+}): Promise<number> {
+  try {
+    const candidates = await collectDrySliceCandidates({
+      excludeSliceIds: opts.excludeSliceIds,
+      batch: opts.batch,
+    });
+    if (candidates.length === 0) return 0;
+
+    const marks: Array<{ id: string; focus: string; summary: string }> = [];
+    for (const candidate of candidates) {
+      // Per-candidate isolation: one unreadable core.md (or a marking
+      // failure) skips THAT slice — the rest still get marked.
+      try {
+        const corePath = sliceCorePath(candidate.sliceId.split("-").join("/"));
+        const raw = await fsReadFile(corePath, opts.batch);
+        const mark = await markOneSlice(opts.model, raw);
+        if (!mark) continue;
+        marks.push({ id: candidate.sliceId, ...mark });
+      } catch {
+        // skip this candidate
+      }
+    }
+    return await applyMarksToDrySlices(marks, opts.batch);
   } catch {
     return 0;
   }

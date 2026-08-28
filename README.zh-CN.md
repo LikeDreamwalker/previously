@@ -17,7 +17,7 @@
 <p align="center">
   <a href="https://previously.ldwid.com"><strong>previously.ldwid.com</strong></a>
   ·
-  <a href="https://previously-demo.ldwid.com"><strong>在线演示</strong></a>
+  <a href="https://previously.ldwid.com/playground"><strong>在线 Playground</strong></a>
   ·
   <a href="https://previously.ldwid.com/docs"><strong>文档</strong></a>
   ·
@@ -104,13 +104,13 @@ Previously 用**时间切片**取代聊天线程：一种按人类记忆真实�
   <img alt="横向时间线——每个圆点就是一个切片" src="public/screenshots/timeline-strip.png" width="800">
 </p>
 
-当你问到涉及过去的事，Agent 会跑一次**回忆（recall）**：一个廉价模型先扫近期切片的摘要找出指针，然后主模型把值得读的切片完整读一遍。结果以一张卡片渲染在回答上方。
+当你问到涉及过去的事，主 Agent 会向一位**回忆同事（recall colleague）**提问——一个专门的子 Agent，像人回忆一样检索：先锁时间窗，再追话题线索，最后限额深读切片全文。它用自然语言回答，每个断言都挂原文引用，并附上它找过的路径——「我们不记得聊过这个」也是诚实、合法的答案。结果以一张卡片渲染在回答上方。
 
 <p align="center">
   <img alt="回忆卡片——匹配到的切片，带相关度分数与理由" src="public/screenshots/recall-card.png" width="640">
 </p>
 
-完整的图景——双层回忆流水线、文件结构、YAML 结构，以及背后的认知科学——见 [记忆模型](https://previously.ldwid.com/docs/memory-model) 与 [架构](https://previously.ldwid.com/docs/architecture) 文档。
+完整的图景——回忆同事的契约、文件结构、YAML 结构，以及背后的认知科学——见 [记忆模型](https://previously.ldwid.com/docs/memory-model) 与 [架构](https://previously.ldwid.com/docs/architecture) 文档。
 
 ---
 
@@ -136,8 +136,8 @@ Previously 用**时间切片**取代聊天线程：一种按人类记忆真实�
 
 - **情景记忆**——时间切片存储，只有一条规则（沉默 30 分钟就关闭切片）
 - **过程可见**——思考、回忆、工具调用全部实时内联流出，没有黑箱
-- **双层回忆**——廉价 worker 模型负责扫描与维护记忆；主模型深读真正重要的部分
-- **会了解你的记忆**——一张紧凑的用户卡片（身份、画像、近期动态），随对话按「每片一次」演化，而不是越写越厚的档案
+- **同事制回忆**——回忆子 Agent 以证据锚定、附原文引用的方式回答；主 Agent 只保留校验通道
+- **达尔文式自进化**——方向文档（`memory/evolution/direction.md`）定义「怎样才算对你更好」；证据锚定的 fitness 评分决定「要不要进化」；每个被接受的变更都进入 append-only 的变异档案。用户卡片只是这个回路的产物，而不是回路本身
 - **处处是你的本地时间**——读工具预渲染你的本地时间，Agent 永远不会算错时区
 - **琐碎回合不进记忆**——语义门把「谢谢」「继续」挡在时间线之外
 - **多模型**——DeepSeek、Anthropic 以及任何 OpenAI 兼容供应商，工具栏可自选主模型
@@ -146,15 +146,24 @@ Previously 用**时间切片**取代聊天线程：一种按人类记忆真实�
 
 ---
 
-## 试试演示
+## 在 Playground 里试试
 
-一个只读演示已上线：**[previously-demo.ldwid.com](https://previously-demo.ldwid.com)**。它内置了一个虚构人格——Caleb，2022 到 2025 年共 30 个切片——你可以浏览时间线、翻看过去几年的切片、自由聊天。所有记忆写入已禁用；刷新页面即重置。
+文档站内嵌了一个**交互式 Playground**：**[previously.ldwid.com/playground](https://previously.ldwid.com/playground)**——基于 [`you`](https://github.com/previously-lab/you) 数据集（97 个时间片，2024→2026，由 [Loom](https://github.com/previously-lab/loom) 生成）真实跑回忆与自进化。无需注册、无需 API key：点一个预设问题，看 Agent 真的想起来。
 
 ---
 
 ## 自己跑一个
 
-Previously 生来就是自托管的。它是一个部署在 Vercel 上的 Next.js 应用，用你自己的 GitHub 仓库做存储。
+**简单方式——本地客户端（推荐）。** 一个 npm 包把内核装到你本机；记忆是本地 git 仓库，大脑可以用你已有的 Claude/Codex/Kimi 订阅（零 API key），也可以自带 key：
+
+```bash
+npm i -g @previously-lab/client
+previously     # 首次运行进入引导式初始化
+```
+
+见 [previously-lab/client](https://github.com/previously-lab/client) 与[文档](https://previously.ldwid.com/docs/getting-started)。
+
+**云端方式——自托管本仓库。** 一个部署在 Vercel 上的 Next.js 应用，用你自己的 GitHub 仓库做存储：
 
 1. **创建仓库** — 点击 [Previously 仓库](https://github.com/previously-lab/agent) 的 "Use this template" 按钮，或直接 fork，然后设为**私有**。你的记忆就存在这里。
 
@@ -167,7 +176,7 @@ Previously 生来就是自托管的。它是一个部署在 Vercel 上的 Next.j
    | `GITHUB_REPO_NAME` | 你的私有仓库名 |
    | `DEEPSEEK_API_KEY` | DeepSeek API key（任何 AI SDK 支持的供应商均可） |
 
-3. **或者本地运行** — `git clone` 你的仓库，`pnpm install`，`pnpm dev`。
+3. **或者本地运行** — `git clone` 你的仓库，`pnpm install`，`pnpm dev`。加 `PREVIOUSLY_MODE=client` 即为完全本地内核（文件系统存储，无需 GitHub 仓库）——`@previously-lab/client` 打包的正是这个模式。
 
 存储有三种模式，由 `STORAGE` 控制：
 

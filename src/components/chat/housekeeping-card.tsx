@@ -13,7 +13,7 @@ import { cn } from "@/lib/utils";
  * were granularized. Card evolution is NOT a housekeeping phase — it renders
  * as its own stream-positioned card (see evolution-card.tsx).
  */
-const PHASE_DONE_KEYS: Record<string, string> = {
+export const PHASE_DONE_KEYS: Record<string, string> = {
   slicing: "sliced",
   slice: "sliced",
   tags: "tagged",
@@ -23,9 +23,12 @@ const PHASE_DONE_KEYS: Record<string, string> = {
 };
 
 /**
- * The grouped housekeeping card — the compact prep phases (slice / analyze /
- * tags / context / strands) fold into one faint brand-tinted card with a live
- * checklist. Collapsible while running.
+ * The grouped housekeeping card (EDGE mode) — the compact prep phases (slice /
+ * analyze / tags / context / strands) fold into one faint brand-tinted card
+ * with a live checklist. Collapsible while running.
+ * Client mode does NOT use this: its housekeeping is one bridge agent call +
+ * deterministic wrap-up, rendered as the streaming BridgeHousekeepingCard
+ * (bridge-housekeeping-card.tsx).
  */
 export function HousekeepingCard({ steps }: { steps: HousekeepingStep[] }) {
   const t = useTranslations("chat.phase");

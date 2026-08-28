@@ -1,92 +1,67 @@
 import { describe, it, expect } from "vitest";
 import {
-  normalizeRecommendedReads,
+  createSliceReadQuota,
   excludeCurrentSlice,
+  MAX_SLICE_READS,
 } from "@/lib/episodic/flash/recall";
 
-describe("normalizeRecommendedReads", () => {
-  it("passes through well-formed reads", () => {
-    const result = normalizeRecommendedReads([
-      { slice_id: "2026-07-24-1500", priority: "high", reason: "Direct match", note: "See the decision" },
-      { slice_id: "2026-06-10-0900", priority: "low", reason: "Tangential" },
-    ]);
-    expect(result).toEqual([
-      { slice_id: "2026-07-24-1500", priority: "high", reason: "Direct match", note: "See the decision" },
-      { slice_id: "2026-06-10-0900", priority: "low", reason: "Tangential", note: undefined },
-    ]);
+describe("createSliceReadQuota", () => {
+  it("allows exactly `max` full reads, then refuses", () => {
+    const quota = createSliceReadQuota(2);
+    expect(quota.tryTake()).toBe(true);
+    expect(quota.tryTake()).toBe(true);
+    expect(quota.tryTake()).toBe(false);
+    expect(quota.used).toBe(2);
+    expect(quota.max).toBe(2);
   });
 
-  it("defaults an unknown or missing priority to medium", () => {
-    const result = normalizeRecommendedReads([
-      { slice_id: "2026-07-24-1500", reason: "No priority" },
-      { slice_id: "2026-07-24-1501", priority: "urgent", reason: "Invalid priority" },
-    ]);
-    expect(result.map((r) => r.priority)).toEqual(["medium", "medium"]);
+  it("a refused take does not consume a slot", () => {
+    const quota = createSliceReadQuota(1);
+    expect(quota.tryTake()).toBe(true);
+    expect(quota.tryTake()).toBe(false);
+    expect(quota.tryTake()).toBe(false);
+    expect(quota.used).toBe(1);
   });
 
-  it("drops entries without a usable slice_id", () => {
-    const result = normalizeRecommendedReads([
-      { slice_id: "", priority: "high", reason: "empty id" },
-      { slice_id: undefined, priority: "high", reason: "missing id" },
-      { slice_id: 42 as unknown as string, priority: "high", reason: "wrong type" },
-      { slice_id: "2026-07-24-1500", priority: "high", reason: "valid" },
-    ]);
-    expect(result).toHaveLength(1);
-    expect(result[0]?.slice_id).toBe("2026-07-24-1500");
+  it("defaults to the run's MAX_SLICE_READS", () => {
+    const quota = createSliceReadQuota();
+    expect(quota.max).toBe(MAX_SLICE_READS);
+    for (let i = 0; i < MAX_SLICE_READS; i++) {
+      expect(quota.tryTake()).toBe(true);
+    }
+    expect(quota.tryTake()).toBe(false);
   });
 
-  it("caps at 5 reads", () => {
-    const many = Array.from({ length: 8 }, (_, i) => ({
-      slice_id: `2026-07-24-${String(1500 + i)}`,
-      reason: `entry ${i}`,
-    }));
-    expect(normalizeRecommendedReads(many)).toHaveLength(5);
-  });
-
-  it("defaults a missing reason to empty string and drops empty notes", () => {
-    const result = normalizeRecommendedReads([
-      { slice_id: "2026-07-24-1500", reason: undefined, note: "" },
-    ]);
-    expect(result).toEqual([
-      { slice_id: "2026-07-24-1500", priority: "medium", reason: "", note: undefined },
-    ]);
-  });
-
-  it("returns an empty array for undefined input", () => {
-    expect(normalizeRecommendedReads(undefined)).toEqual([]);
+  it("instances are independent (no shared state between runs)", () => {
+    const a = createSliceReadQuota(1);
+    const b = createSliceReadQuota(1);
+    expect(a.tryTake()).toBe(true);
+    expect(a.tryTake()).toBe(false);
+    expect(b.tryTake()).toBe(true);
   });
 });
 
 describe("excludeCurrentSlice", () => {
-  it("drops the current slice from hits", () => {
-    const hits = [
-      { slice_id: "2026-07-24-1500", relevance: 0.9, reason: "past", key_turns: [2] },
-      { slice_id: "2026-08-05-1644", relevance: 0.8, reason: "current", key_turns: [0] },
-      { slice_id: "2026-06-10-0900", relevance: 0.5, reason: "past", key_turns: [] },
+  it("drops the current slice from references", () => {
+    const refs = [
+      { slice_id: "2026-07-24-1500", quote: "past", note: "backs X" },
+      { slice_id: "2026-08-05-1644", quote: "current", note: "backs Y" },
+      { slice_id: "2026-06-10-0900", quote: "past", note: "backs Z" },
     ];
-    const result = excludeCurrentSlice(hits, "2026-08-05-1644");
-    expect(result.map((h) => h.slice_id)).toEqual([
+    const result = excludeCurrentSlice(refs, "2026-08-05-1644");
+    expect(result.map((r) => r.slice_id)).toEqual([
       "2026-07-24-1500",
       "2026-06-10-0900",
     ]);
   });
 
-  it("drops the current slice from recommended reads", () => {
-    const reads = [
-      { slice_id: "2026-08-05-1644", priority: "high", reason: "self-match" },
-      { slice_id: "2026-07-24-1500", priority: "medium", reason: "real match" },
-    ];
-    const result = excludeCurrentSlice(reads, "2026-08-05-1644");
-    expect(result.map((r) => r.slice_id)).toEqual(["2026-07-24-1500"]);
-  });
-
   it("leaves results untouched when the current slice id is empty", () => {
-    const hits = [{ slice_id: "2026-07-24-1500", relevance: 0.9, reason: "x", key_turns: [] }];
-    expect(excludeCurrentSlice(hits, "")).toEqual(hits);
+    const refs = [{ slice_id: "2026-07-24-1500", quote: "x", note: "" }];
+    expect(excludeCurrentSlice(refs, "")).toEqual(refs);
   });
 
-  it("returns an empty array when every hit is the current slice", () => {
-    const hits = [{ slice_id: "2026-08-05-1644", relevance: 0.9, reason: "self", key_turns: [0] }];
-    expect(excludeCurrentSlice(hits, "2026-08-05-1644")).toEqual([]);
+  it("returns an empty array when every reference is the current slice", () => {
+    const refs = [{ slice_id: "2026-08-05-1644", quote: "self", note: "" }];
+    expect(excludeCurrentSlice(refs, "2026-08-05-1644")).toEqual([]);
   });
 });

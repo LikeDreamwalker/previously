@@ -1,93 +1,40 @@
 "use client";
 
-import { useState, useRef, useCallback, useEffect, type FormEvent, type ChangeEvent } from "react";
+import { useState, useRef, type FormEvent, type ChangeEvent } from "react";
 import { useTranslations } from "next-intl";
-import { ArrowUp, Square, Paperclip, X, Settings, FlaskConical, Zap } from "lucide-react";
+import { ArrowUp, Square, Paperclip, X } from "lucide-react";
 import { useImageAttachments } from "@/hooks/use-image-attachments";
-import { Link } from "@/i18n/navigation";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { ModelSelector, type ModelDefaults } from "./model-selector";
-
-/**
- * Effort tiers depend on the model family. DeepSeek's native tiers are "low"
- * and "high" — "medium" is not meaningfully distinct (V4 Pro promotes it
- * server-side), so the cycle offers just two levels there. Anthropic and
- * OpenAI-compatible providers expose all three. "medium" stays in the type for
- * stored configs / other providers; on DeepSeek a stored "medium" snaps to
- * "high" (it has no native medium tier).
- */
-type EffortLevel = "low" | "medium" | "high";
-
-const FULL_EFFORT_LEVELS = ["low", "medium", "high"] as const;
-const DEEPSEEK_EFFORT_LEVELS = ["low", "high"] as const;
-
-/** Effort tiers available for a model id — DeepSeek collapses to low/high. */
-function effortLevelsFor(modelId: string): readonly EffortLevel[] {
-  return modelId.startsWith("deepseek")
-    ? DEEPSEEK_EFFORT_LEVELS
-    : FULL_EFFORT_LEVELS;
-}
-
-const EFFORT_LABELS: Record<EffortLevel, string> = {
-  low: "Low",
-  medium: "Medium",
-  high: "High",
-};
-
-/** Stored effort may be outside the model's tier set — snap to a valid tier. */
-function normalizeEffort(level: EffortLevel, modelId: string): EffortLevel {
-  const levels = effortLevelsFor(modelId);
-  return (levels as readonly EffortLevel[]).includes(level)
-    ? level
-    : levels[levels.length - 1];
-}
-
-/** Display label for the model's effective tier (a DeepSeek "medium" → "High"). */
-function effortLabel(level: EffortLevel, modelId: string): string {
-  return EFFORT_LABELS[normalizeEffort(level, modelId)];
-}
+import { ModelSelector } from "./model-selector";
+import { MemoryDocs } from "./memory-docs";
 
 interface ChatInputProps {
   onSubmit: (message: string, images: File[]) => void;
   isLoading: boolean;
   onStop?: () => void;
-  onDemo?: () => void;
-  demoRunning?: boolean;
+  /** Demo-mode persona — forwarded to the MemoryDocs server action. */
+  persona?: string;
   /** Whether the selected model accepts image inputs (from /api/models). */
   visionEnabled?: boolean;
-  /** Demo mode: model + thinking intensity are pinned server-side. */
-  demoLocked?: boolean;
-  // Model + thinking/effort — owned by ChatPage so the request body and the
-  // toolbar stay in sync. ChatInput renders the controls, ChatPage persists.
+  // Model selection — owned by ChatPage so the request body and the toolbar
+  // stay in sync. ChatInput renders the control, ChatPage persists.
+  // Thinking is always ON at low effort (pinned server-side in start-turn.ts);
+  // there is no thinking/effort UI anymore.
   currentModelId: string;
-  currentEffort: EffortLevel;
-  thinking: boolean;
-  onModelChange: (modelId: string, defaults: ModelDefaults) => void;
-  onEffortChange: (effort: EffortLevel) => void;
-  onThinkingChange: (thinking: boolean) => void;
+  onModelChange: (modelId: string) => void;
 }
 
 export function ChatInput({
   onSubmit,
   isLoading,
   onStop,
-  onDemo,
-  demoRunning = false,
+  persona,
   visionEnabled = false,
-  demoLocked = false,
   currentModelId,
-  currentEffort,
-  thinking,
   onModelChange,
-  onEffortChange,
-  onThinkingChange,
 }: ChatInputProps) {
   const t = useTranslations("chat.input");
   const [value, setValue] = useState("");
-  const [mounted, setMounted] = useState(false);
-  useEffect(() => {
-    setMounted(true);
-  }, []);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragOver, setIsDragOver] = useState(false);
@@ -154,13 +101,6 @@ export function ChatInput({
     handleDrop(e);
   };
 
-  const cycleEffort = useCallback(() => {
-    const levels = effortLevelsFor(currentModelId);
-    const idx = levels.indexOf(normalizeEffort(currentEffort, currentModelId));
-    const next = levels[(idx + 1) % levels.length];
-    onEffortChange(next);
-  }, [currentEffort, currentModelId, onEffortChange]);
-
   const hasContent = value.trim().length > 0 || images.length > 0;
 
   return (
@@ -201,7 +141,7 @@ export function ChatInput({
           onChange={handleChange}
           onKeyDown={handleKeyDown}
           placeholder={t("placeholder")}
-          disabled={isLoading || demoRunning}
+          disabled={isLoading}
           rows={1}
           className="w-full resize-none overflow-y-auto bg-transparent text-foreground placeholder:text-muted-foreground focus:outline-none text-sm"
           style={{ minHeight: "24px", maxHeight: "72px" }}
@@ -239,77 +179,14 @@ export function ChatInput({
             accept="image/*"
           />
 
-          {/* Mock demo — visual showcase of all render capabilities */}
-          {onDemo && (
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <button
-                    type="button"
-                    onClick={onDemo}
-                    disabled={demoRunning || isLoading}
-                    className={`h-7 w-7 rounded-full transition-colors flex items-center justify-center ${
-                      demoRunning
-                        ? "bg-primary/10 text-primary"
-                        : "text-muted-foreground hover:text-amber-500 hover:bg-amber-500/10"
-                    } disabled:opacity-30`}
-                  >
-                    <FlaskConical className="h-3.5 w-3.5" />
-                  </button>
-                }
-              />
-              <TooltipContent side="top">
-                {demoRunning ? "Demo running…" : "Render demo"}
-              </TooltipContent>
-            </Tooltip>
-          )}
+          {/* Memory docs — previously / direction / mutations viewer */}
+          <MemoryDocs persona={persona} />
 
           {/* Model selector — NEW */}
           <ModelSelector
             currentModelId={currentModelId}
-            thinking={thinking}
             onModelChange={onModelChange}
-            onThinkingChange={onThinkingChange}
           />
-
-          {/* Thinking intensity — pinned in demo mode (demoLocked) */}
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <button
-                  type="button"
-                  onClick={cycleEffort}
-                  disabled={isLoading || demoRunning || demoLocked}
-                  className="h-7 rounded-full text-muted-foreground hover:text-foreground hover:bg-brand/10 transition-colors flex items-center justify-center gap-1 px-2 disabled:opacity-30"
-                >
-                  <Zap className="h-3 w-3" />
-                  <span className="text-[10px] font-medium leading-none">
-                    {mounted ? effortLabel(currentEffort, currentModelId) : "High"}
-                  </span>
-                </button>
-              }
-            />
-            <TooltipContent side="top">
-              {demoLocked
-                ? t("effortLocked")
-                : `Thinking: ${effortLabel(currentEffort, currentModelId)} — click to cycle`}
-            </TooltipContent>
-          </Tooltip>
-
-          {/* Settings */}
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Link
-                  href="/settings"
-                  className="h-7 w-7 rounded-full text-muted-foreground hover:text-foreground hover:bg-brand/10 transition-colors flex items-center justify-center"
-                >
-                  <Settings className="h-3.5 w-3.5" />
-                </Link>
-              }
-            />
-            <TooltipContent side="top">{t("settingsTooltip")}</TooltipContent>
-          </Tooltip>
         </div>
 
         {/* Right side */}

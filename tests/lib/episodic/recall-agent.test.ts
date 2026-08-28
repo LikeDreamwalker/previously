@@ -22,6 +22,7 @@ import {
   excludeCurrentSlice,
   runRecallSearch,
   MAX_STEPS,
+  MAX_SLICE_READS,
 } from "@/lib/episodic/flash/recall";
 import type { ModelConfig } from "@/lib/models/registry";
 import type { TimelineSliceEntry } from "@/lib/episodic/timeline/types";
@@ -42,9 +43,9 @@ const testModel: ModelConfig = {
   defaultEffort: "medium",
 };
 
-function recallInput(query = "q") {
+function recallInput(question = "q") {
   return {
-    query,
+    question,
     currentSliceId: "2026-08-05-1644",
     owner: "o",
     repo: "r",
@@ -207,120 +208,168 @@ describe("filterKnownSliceIds", () => {
 describe("recall result pipeline", () => {
   it("excludes the current slice, then drops hallucinated ids", () => {
     const valid = new Set(["2026-08-01-1000", "2026-08-05-1644"]);
-    const rawHits = [
-      { slice_id: "2026-08-01-1000", relevance: 0.9, reason: "past" },
-      { slice_id: "2026-08-05-1644", relevance: 0.8, reason: "current" },
-      { slice_id: "2026-07-01-0000", relevance: 0.7, reason: "hallucinated" },
+    const rawRefs = [
+      { slice_id: "2026-08-01-1000", quote: "past", note: "real" },
+      { slice_id: "2026-08-05-1644", quote: "current", note: "ongoing" },
+      { slice_id: "2026-07-01-0000", quote: "hallucinated", note: "fake" },
     ];
     const result = filterKnownSliceIds(
-      excludeCurrentSlice(rawHits, "2026-08-05-1644"),
+      excludeCurrentSlice(rawRefs, "2026-08-05-1644"),
       valid,
     );
-    expect(result.map((h) => h.slice_id)).toEqual(["2026-08-01-1000"]);
+    expect(result.map((r) => r.slice_id)).toEqual(["2026-08-01-1000"]);
   });
 });
 
 // ─── runRecallSearch on the unified runner ──────────────────────────────
 
 describe("runRecallSearch", () => {
-  it("passes the shared-base system, dynamic user prompt, step cap and prepareStep to the runner", async () => {
+  it("passes the shared-base system, dynamic user prompt, budgets and prepareStep to the runner", async () => {
     runner.runSubAgent.mockResolvedValue({
       ok: true,
       report: {
-        hits: [],
+        answer: "We haven't talked about this.",
+        references: [],
+        searched: ["global timeline"],
         confidence: 0.5,
-        reasoning: "nothing",
-        recommended_reads: [],
       },
       text: "",
     });
 
-    await runRecallSearch(recallInput("when did we discuss caching?"));
+    await runRecallSearch(recallInput("did we ever discuss caching?"));
 
     expect(runner.runSubAgent).toHaveBeenCalledTimes(1);
     const opts = runner.runSubAgent.mock.calls[0]![0];
     expect(opts.model).toBe(testModel);
-    expect(opts.system).toContain("recall search engine");
+    expect(opts.system).toContain("recall colleague");
     expect(opts.system).toContain("sub-agent of the Previously memory system");
-    expect(opts.prompt).toContain('Search query: "when did we discuss caching?"');
+    // A1: the colleague-relationship framing rides the shared static base.
+    expect(opts.system).toContain("colleague");
+    expect(opts.prompt).toContain(
+      'Your colleague (the main agent) asks: "did we ever discuss caching?"',
+    );
     expect(opts.prompt).toContain("2026-08-05-1644");
     expect(opts.prompt).not.toContain("sub-agent of the Previously");
     expect(opts.maxSteps).toBe(MAX_STEPS);
-    expect(opts.timeoutMs).toBe(120_000);
+    expect(opts.timeoutMs).toBe(240_000);
+    expect(opts.temperature).toBe(0.3);
     expect(opts.reportToolName).toBe("recallReport");
     expect(opts.prepareStep).toBe(prepareRecallStep);
     expect(Object.keys(opts.tools)).toEqual([
       "readGlobalTimeline",
-      "readStrand",
       "readTimelineWindow",
+      "listStrands",
+      "readStrand",
+      "readSliceSummary",
+      "readSlice",
       "recallReport",
     ]);
   });
 
-  it("maps the report through the exclusion pipeline", async () => {
+  it("maps the report through the reference exclusion pipeline", async () => {
     runner.runSubAgent.mockResolvedValue({
       ok: true,
       report: {
-        hits: [
-          { slice_id: "2026-08-01-1000", relevance: 0.9, reason: "past match" },
-          { slice_id: "2026-08-05-1644", relevance: 0.8, reason: "current" },
+        answer: "Yes — we talked about it.",
+        references: [
+          { slice_id: "2026-08-01-1000", quote: "past quote", note: "backs it" },
+          { slice_id: "2026-08-05-1644", quote: "current quote", note: "ongoing" },
         ],
+        searched: ["timeline window 2026-08-01 → 2026-08-05"],
         confidence: 0.8,
-        reasoning: "found things",
-        recommended_reads: [
-          { slice_id: "2026-08-01-1000", priority: "high", reason: "direct" },
-        ],
       },
       text: "",
     });
 
     const out = await runRecallSearch(recallInput());
-    expect(out.hits.map((h) => h.slice_id)).toEqual(["2026-08-01-1000"]);
-    expect(out.recommendedReads).toEqual([
-      { slice_id: "2026-08-01-1000", priority: "high", reason: "direct", note: undefined },
+    expect(out.answer).toBe("Yes — we talked about it.");
+    expect(out.references).toEqual([
+      { slice_id: "2026-08-01-1000", quote: "past quote", note: "backs it" },
     ]);
-    expect(out.reasoning).toContain("[Excluded current slice 2026-08-05-1644");
+    expect(out.searched).toEqual(["timeline window 2026-08-01 → 2026-08-05"]);
+    // The v1.0 semantics: an emptied references list does NOT zero the
+    // confidence — empty references is the normal state of an honest miss.
+    expect(out.confidence).toBe(0.8);
   });
 
-  it("zeros confidence when the only hits were the current slice", async () => {
+  it("keeps an honest empty-references answer intact", async () => {
     runner.runSubAgent.mockResolvedValue({
       ok: true,
       report: {
-        hits: [{ slice_id: "2026-08-05-1644", relevance: 0.9, reason: "self" }],
+        answer: "We haven't talked about this.",
+        references: [],
+        searched: ["global timeline", "strand: apples"],
         confidence: 0.9,
-        reasoning: "only itself",
-        recommended_reads: [],
       },
       text: "",
     });
     const out = await runRecallSearch(recallInput());
-    expect(out.hits).toEqual([]);
-    expect(out.confidence).toBe(0);
+    expect(out.answer).toContain("haven't talked");
+    expect(out.references).toEqual([]);
+    expect(out.confidence).toBe(0.9);
   });
 
-  it("falls back to the text fragment when recallReport was never called", async () => {
+  it("falls back to the text fragment at low confidence when recallReport was never called", async () => {
     runner.runSubAgent.mockResolvedValue({
       ok: true,
       report: undefined,
       text: "I could not find anything relevant",
     });
     const out = await runRecallSearch(recallInput());
-    expect(out.hits).toEqual([]);
-    expect(out.confidence).toBe(0);
-    expect(out.reasoning).toContain("Model responded without calling recallReport");
+    expect(out.answer).toBe("I could not find anything relevant");
+    expect(out.references).toEqual([]);
+    expect(out.confidence).toBeLessThan(0.5);
   });
 
-  it("degrades a timeout to an empty result instead of throwing", async () => {
+  it("degrades an empty timeout to an empty answer instead of throwing", async () => {
     runner.runSubAgent.mockResolvedValue({
       ok: false,
       timedOut: true,
       text: "",
-      error: "Sub-agent did not finish within 120s.",
+      error: "Sub-agent did not finish within 240s.",
     });
     const out = await runRecallSearch(recallInput());
-    expect(out.hits).toEqual([]);
+    expect(out.answer).toBe("");
+    expect(out.references).toEqual([]);
     expect(out.confidence).toBe(0);
-    expect(out.reasoning).toContain("120s");
+  });
+
+  it("returns the accumulated partial text as a low-confidence answer on timeout", async () => {
+    // Write-as-you-go pays off here: the interrupted run's partial answer is
+    // handed back instead of vanishing.
+    runner.runSubAgent.mockResolvedValue({
+      ok: false,
+      timedOut: true,
+      text: "We talked about apples last week, though I haven't verified…",
+      error: "Sub-agent did not finish within 240s.",
+    });
+    const out = await runRecallSearch(recallInput());
+    expect(out.answer).toContain("We talked about apples last week");
+    expect(out.answer).toContain("partial answer");
+    expect(out.confidence).toBeLessThan(0.5);
+    expect(out.references).toEqual([]);
+  });
+
+  it("caps full-slice reads at the per-run quota", async () => {
+    runner.runSubAgent.mockResolvedValue({
+      ok: true,
+      report: { answer: "a", references: [], searched: [], confidence: 0.5 },
+      text: "",
+    });
+    await runRecallSearch(recallInput());
+    const opts = runner.runSubAgent.mock.calls[0]![0];
+    const readSlice = opts.tools.readSlice as {
+      execute: (input: { sliceId: string }) => Promise<string>;
+    };
+    // Invalid ids error before any I/O — but still consume a quota slot.
+    for (let i = 0; i < MAX_SLICE_READS; i++) {
+      const out = await readSlice.execute({ sliceId: "not-a-slice" });
+      expect(out).toContain("ERROR: Invalid slice ID");
+    }
+    // Next read: quota exhausted — a note telling the model to answer from
+    // what it has already read.
+    const out = await readSlice.execute({ sliceId: "2026-08-01-1000" });
+    expect(out).toContain("quota exhausted");
   });
 
   it("re-throws non-timeout failures so the executor can triage transient errors for step retry", async () => {
@@ -336,7 +385,7 @@ describe("runRecallSearch", () => {
     );
 
     // Deterministic failures also propagate — the EXECUTOR's triage
-    // (tool-triage.ts) turns them into the empty-result degradation.
+    // (tool-triage.ts) turns them into the empty-answer degradation.
     runner.runSubAgent.mockResolvedValue({
       ok: false,
       text: "",

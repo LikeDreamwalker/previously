@@ -17,6 +17,12 @@ export type AnyPart = {
   output?: unknown;
   text?: string;
   data?: unknown;
+  /**
+   * Provider metadata survives stream → part assembly (unlike text block
+   * ids). The bridge model marks its authoritative re-emitted answer block
+   * with `providerMetadata["previously-bridge"].authoritative === true`.
+   */
+  providerMetadata?: Record<string, Record<string, unknown>>;
   /** File parts (user attachments): data URL + media metadata. */
   mediaType?: string;
   url?: string;
@@ -65,6 +71,32 @@ export type EvolutionStepData = {
   error?: string;
   /** Set when the run was cut short — only part of the update was applied. */
   partial?: boolean;
+  /**
+   * v1.0: the fitness buckets whose scores FORCED this run, each with its
+   * current windowed net score (design §2.5). Empty/omitted when the run was
+   * gated by the analyzer's judgment or an explicit user request instead —
+   * the card then shows no score rows.
+   */
+  triggers?: Array<{
+    bucket: "card" | "recall" | "search" | "thinkdeep" | "interaction";
+    score: number;
+  }>;
+  /**
+   * v1.0: the Phase-1 direction verdict (design §2.3). Absent only when the
+   * check did not run; a FAILED check reports outcome "failed" with the
+   * reason in `summary` — a failure must never masquerade as "no_change".
+   * Otherwise `summary` is the one-sentence account of what changed when the
+   * direction was updated.
+   */
+  direction?: {
+    outcome: "no_change" | "updated" | "failed";
+    summary?: string;
+  };
+  /** v1.0: the playbook mutations applied this run (design §2.4). */
+  playbooks?: Array<{
+    agent: "recall" | "search" | "thinkdeep";
+    summary: string;
+  }>;
 };
 
 /**
@@ -76,6 +108,17 @@ export type HousekeepingStep = {
   phase: string;
   running: boolean;
   summaries?: string[];
+};
+
+/**
+ * One row of the bridge-tool indicator — a protocol-2 tool-activity event from
+ * the local CLI (mirrors BridgeEvent in src/lib/bridge.ts; declared
+ * structurally so this pure module stays server-free).
+ */
+export type BridgeToolRow = {
+  name: string;
+  summary: string;
+  status: "start" | "ok" | "error";
 };
 
 export type StreamItem =
@@ -100,6 +143,28 @@ export type StreamItem =
       running: boolean;
       /** The latest data-evolution chunk's payload (last chunk wins). */
       data: EvolutionStepData;
+    }
+  | {
+      /** The bridge activity indicator (client+bridge mode): one row per
+       *  CLI tool event. Carried by data-phase chunks whose data carries a
+       *  `tools` array (chat phase "stageWorking" / housekeeping phase
+       *  "bridgeHousekeeping"); frames are cumulative, last chunk wins. */
+      kind: "bridge-tools";
+      phase: string;
+      running: boolean;
+      tools: BridgeToolRow[];
+      /** The CLI's rolling narration line (housekeeping deltas) — last
+       *  frame wins; shown only while running. */
+      live?: string;
+      /** Client-mode housekeeping only: the deterministic wrap-up rows
+       *  (slice / analyze / tags / context / strands) filling in as the
+       *  engineering steps complete around the single bridge call. Renders
+       *  as a checklist inside the bridge housekeeping card. */
+      steps?: HousekeepingStep[];
+      /** Client-mode housekeeping only: set when the bridge call failed and
+       *  the turn degraded to the deterministic path — the card shows an
+       *  amber warning instead of settling silently green. */
+      warning?: string;
     }
   | {
       kind: "phase";
@@ -145,6 +210,15 @@ export function deriveAgentStage(parts: readonly AnyPart[]): AgentStage | null {
       stage = "reasoning";
     } else if (p.type === "text") {
       stage = "composing";
+    } else if (p.type === "data-phase") {
+      // Bridge mode: the chat answer's activity frames (phase "stageWorking")
+      // are the only in-flight signal — light the pill while the CLI works.
+      // Housekeeping frames ("bridgeHousekeeping" / compact sub-steps) are
+      // ignored: the prep card is showing, same as normal mode.
+      const d = p.data as { phase?: string; running?: boolean } | undefined;
+      if (d?.phase === "stageWorking") {
+        stage = d.running === false ? null : "working";
+      }
     } else if (p.type === "data-tool-progress") {
       const toolName = (p.data as { toolName?: string } | undefined)?.toolName;
       if (toolName) stage = isRecallTool(toolName) ? "recalling" : "working";
@@ -241,7 +315,17 @@ export function buildStream(
         items.push({ kind: "reasoning", text: reasoningText });
       }
     } else if (p.type === "text") {
-      textBuf.push((p as { text: string }).text ?? "");
+      // Bridge authoritative re-emit (the envelope result diverged from the
+      // advisory deltas): the marked block REPLACES every text item streamed
+      // so far instead of appending — bridge turns have a single answer
+      // block, so dropping the advisory text is exactly "the result wins".
+      if (p.providerMetadata?.["previously-bridge"]?.authoritative === true) {
+        textBuf = [];
+        for (let i = items.length - 1; i >= 0; i--) {
+          if (items[i].kind === "text") items.splice(i, 1);
+        }
+      }
+      textBuf.push(p.text ?? "");
     } else if (p.type === "data-phase") {
       flushText();
       const d = p.data as
@@ -251,10 +335,41 @@ export function buildStream(
             mode?: string;
             summaries?: string[];
             compact?: boolean;
+            tools?: BridgeToolRow[];
+            live?: string;
+            steps?: HousekeepingStep[];
+            warning?: string;
           }
         | undefined;
       if (d?.phase) {
-        if (d.compact) {
+        if (Array.isArray(d.tools)) {
+          // Bridge activity (client+bridge mode) — the generic tool-event
+          // indicator. Frames are cumulative (each carries the full tools
+          // list + the current narration line); merge by phase name, last
+          // chunk wins. Chat and housekeeping use distinct phase names, so
+          // they never merge.
+          const existing = items.find(
+            (it): it is Extract<StreamItem, { kind: "bridge-tools" }> =>
+              it.kind === "bridge-tools" && it.phase === d.phase,
+          );
+          if (existing) {
+            existing.running = d.running ?? false;
+            existing.tools = d.tools;
+            existing.live = d.live;
+            if (d.steps !== undefined) existing.steps = d.steps;
+            if (d.warning !== undefined) existing.warning = d.warning;
+          } else {
+            items.push({
+              kind: "bridge-tools",
+              phase: d.phase,
+              running: d.running ?? false,
+              tools: d.tools,
+              ...(d.live !== undefined ? { live: d.live } : {}),
+              ...(d.steps !== undefined ? { steps: d.steps } : {}),
+              ...(d.warning !== undefined ? { warning: d.warning } : {}),
+            });
+          }
+        } else if (d.compact) {
           // Housekeeping sub-step — merge into the single grouped card.
           upsertHousekeepingStep(d.phase, d.running ?? false, d.summaries);
         } else {

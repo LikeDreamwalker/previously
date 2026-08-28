@@ -2,7 +2,8 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useTranslations } from "next-intl";
-import { Check } from "lucide-react";
+import { Link } from "@/i18n/navigation";
+import { Check, Info } from "lucide-react";
 import {
   Popover,
   PopoverContent,
@@ -13,24 +14,25 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { Switch } from "@/components/ui/switch";
 import { ProviderIcon, stripProviderPrefix } from "./provider-icon";
 import { useAvailableModels, type AvailableModel } from "@/hooks/use-available-models";
 
-type EffortLevel = "low" | "medium" | "high";
+/** Display names of the subscription CLIs (brand names — locale-neutral). */
+const BRIDGE_AGENT_LABELS: Record<string, string> = {
+  claude: "Claude Code",
+  codex: "Codex",
+  kimi: "Kimi",
+};
 
-export interface ModelDefaults {
-  thinking: boolean;
-  effort: EffortLevel;
+/** The agent CLI a bridge model id drives (`bridge/codex` → "codex"). */
+function bridgeAgentOf(id: string): string {
+  return id.startsWith("bridge/") ? id.slice("bridge/".length) : "";
 }
 
 interface ModelSelectorProps {
   /** Currently selected model id (from ChatPage state). */
   currentModelId: string;
-  /** Thinking on/off — owned by ChatPage, toggled here. */
-  thinking: boolean;
-  onModelChange: (modelId: string, defaults: ModelDefaults) => void;
-  onThinkingChange: (thinking: boolean) => void;
+  onModelChange: (modelId: string) => void;
 }
 
 /** Group a model list by provider, preserving order. */
@@ -46,23 +48,25 @@ function groupByProvider(models: AvailableModel[]): Map<string, AvailableModel[]
 
 /**
  * Model selector for the chat toolbar. Fetches the server-side model catalog
- * (/api/models — env-gated) and shows a grouped picker plus a thinking toggle.
+ * (/api/models — env-gated) and shows a grouped picker.
  * Hides entirely when there are 0 or 1 models to choose from.
  *
  * The selection persists to memory/user/config.json (ChatPage owns the model
- * state). v0.9: the "Advanced" worker-pin sheet was removed — every sub-agent
- * now runs on the main model via the unified sub-agent runner, so the worker
- * pin had no production consumer (see src/lib/models/worker.ts).
+ * state). There is no thinking/effort UI: thinking is always ON at low effort
+ * (pinned server-side in start-turn.ts); deep thinking is thinkDeep's job.
+ * v0.9: the "Advanced" worker-pin sheet was removed — every sub-agent runs on
+ * the main model via the unified sub-agent runner (see src/lib/models/resolve.ts).
  */
 export function ModelSelector({
   currentModelId,
-  thinking,
   onModelChange,
-  onThinkingChange,
 }: ModelSelectorProps) {
   const t = useTranslations("chat.input");
   const models = useAvailableModels();
   const [mounted, setMounted] = useState(false);
+  // Controlled popover so handleSelect can close it after a pick — the
+  // ui/popover.tsx wrapper doesn't export Popover.Close.
+  const [open, setOpen] = useState(false);
 
   useEffect(() => {
     setMounted(true);
@@ -79,10 +83,8 @@ export function ModelSelector({
 
   const handleSelect = useCallback(
     (m: AvailableModel) => {
-      onModelChange(m.id, {
-        thinking: m.defaultThinking,
-        effort: m.defaultEffort,
-      });
+      onModelChange(m.id);
+      setOpen(false);
     },
     [onModelChange],
   );
@@ -93,7 +95,7 @@ export function ModelSelector({
 
   return (
     <>
-      <Popover>
+      <Popover open={open} onOpenChange={setOpen}>
         <Tooltip>
           <TooltipTrigger
             render={
@@ -105,6 +107,7 @@ export function ModelSelector({
                   >
                     <ProviderIcon
                       provider={current?.provider ?? ""}
+                      id={current?.id}
                       className="h-3 w-3 shrink-0"
                     />
                     <span className="text-[10px] font-medium leading-none max-w-[72px] truncate">
@@ -128,40 +131,92 @@ export function ModelSelector({
               <div className="px-2 py-1 text-[10px] uppercase tracking-wide text-muted-foreground/60">
                 {providerModels[0]?.providerName ?? t(`modelGroup.${provider}`)}
               </div>
-              {providerModels.map((m) => (
-                <button
-                  key={m.id}
-                  type="button"
-                  onClick={() => handleSelect(m)}
-                  className={`w-full text-left px-2 py-1.5 rounded text-xs flex items-center justify-between gap-2 ${
-                    m.id === currentModelId
-                      ? "bg-primary/10 text-primary"
-                      : "hover:bg-muted"
-                  }`}
-                >
-                  <span className="flex min-w-0 items-center gap-1.5">
-                    <ProviderIcon
-                      provider={m.provider}
-                      className="h-3.5 w-3.5 shrink-0"
-                    />
-                    <span className="truncate">{m.name}</span>
-                  </span>
-                  {m.id === currentModelId && <Check className="h-3 w-3 shrink-0" />}
-                </button>
-              ))}
+              {providerModels.map((m) => {
+                const isBridge = m.provider === "bridge";
+                const isByok = m.provider === "byok";
+                const unavailable = isBridge && m.available === false;
+                return (
+                  <div key={m.id} className="flex items-center gap-0.5">
+                    <button
+                      type="button"
+                      disabled={unavailable}
+                      onClick={() => handleSelect(m)}
+                      className={`min-w-0 flex-1 text-left px-2 py-1.5 rounded text-xs flex items-center justify-between gap-2 ${
+                        m.id === currentModelId
+                          ? "bg-primary/10 text-primary"
+                          : "hover:bg-muted"
+                      } disabled:opacity-50 disabled:hover:bg-transparent`}
+                    >
+                      <span className="flex min-w-0 items-center gap-1.5">
+                        <ProviderIcon
+                          provider={m.provider}
+                          id={m.id}
+                          className="h-3.5 w-3.5 shrink-0"
+                        />
+                        <span className="truncate">
+                          {m.name}
+                          {unavailable && (
+                            <span className="text-muted-foreground">
+                              {" "}
+                              · {t("bridgeNotInstalled")}
+                            </span>
+                          )}
+                        </span>
+                      </span>
+                      {m.id === currentModelId && (
+                        <Check className="h-3 w-3 shrink-0" />
+                      )}
+                    </button>
+                    {unavailable && (
+                      <Link
+                        href="/settings"
+                        className="shrink-0 rounded px-1 text-[10px] text-muted-foreground/70 underline-offset-2 hover:text-foreground hover:underline"
+                      >
+                        {t("bridgeConfigure")}
+                      </Link>
+                    )}
+                    {isBridge && (
+                      <Tooltip>
+                        <TooltipTrigger
+                          render={
+                            <span
+                              tabIndex={0}
+                              className="shrink-0 rounded p-1 text-muted-foreground/70 hover:text-foreground"
+                            >
+                              <Info className="h-3 w-3" />
+                            </span>
+                          }
+                        />
+                        <TooltipContent side="top" className="max-w-56">
+                          {t("bridgeHint", {
+                            agent:
+                              BRIDGE_AGENT_LABELS[bridgeAgentOf(m.id)] ?? m.name,
+                          })}
+                        </TooltipContent>
+                      </Tooltip>
+                    )}
+                    {isByok && (
+                      <Tooltip>
+                        <TooltipTrigger
+                          render={
+                            <span
+                              tabIndex={0}
+                              className="shrink-0 rounded p-1 text-muted-foreground/70 hover:text-foreground"
+                            >
+                              <Info className="h-3 w-3" />
+                            </span>
+                          }
+                        />
+                        <TooltipContent side="top" className="max-w-56">
+                          {t("byokHint")}
+                        </TooltipContent>
+                      </Tooltip>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           ))}
-
-          <div className="mt-1 flex items-center justify-between gap-2 border-t px-2 pt-2">
-            <span className="text-xs text-muted-foreground">
-              {t("thinkingLabel")}
-            </span>
-            <Switch
-              size="sm"
-              checked={thinking}
-              onCheckedChange={onThinkingChange}
-            />
-          </div>
         </PopoverContent>
       </Popover>
     </>

@@ -1,12 +1,13 @@
 /**
  * Local filesystem tools — mock GitHub for development without real API calls.
  * Same whitelist constraints, same error handling, just reads from disk.
+ *
+ * Files resolve under the repo root by default; `memory/` paths re-root at
+ * MEMORY_ROOT when that env var is set (see @/lib/whitelist).
  */
-import { isPathAllowed } from "@/lib/whitelist";
+import { isPathAllowed, resolveLocalDataPath } from "@/lib/whitelist";
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync } from "fs";
 import { join, dirname } from "path";
-
-const DATA_ROOT = join(process.cwd());
 
 const MAX_FILE_SIZE_BYTES = 1_000_000;
 
@@ -15,7 +16,7 @@ export async function readFileLocal(path: string): Promise<string> {
     throw new Error(`Access denied: path "${path}" is outside allowed directories`);
   }
 
-  const fullPath = join(DATA_ROOT, path);
+  const fullPath = resolveLocalDataPath(path);
   if (!existsSync(fullPath)) {
     throw new Error(`File not found: "${path}"`);
   }
@@ -43,7 +44,7 @@ export async function writeFileLocal(
     throw new Error(`Content too large. Maximum is ${MAX_FILE_SIZE_BYTES} bytes.`);
   }
 
-  const fullPath = join(DATA_ROOT, path);
+  const fullPath = resolveLocalDataPath(path);
   const dir = dirname(fullPath);
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
@@ -62,7 +63,7 @@ export async function listFilesLocal(
     throw new Error(`Access denied: path "${path}" is outside allowed directories`);
   }
 
-  const fullPath = join(DATA_ROOT, path);
+  const fullPath = resolveLocalDataPath(path);
   if (!existsSync(fullPath)) {
     throw new Error(`Directory not found: "${path}"`);
   }

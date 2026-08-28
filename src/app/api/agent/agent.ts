@@ -22,7 +22,7 @@ import { createModel } from "@/lib/models/provider";
 import type { ModelConfig } from "@/lib/models/registry";
 import { normalizeReasoningEffort } from "@/lib/models/effort-injector";
 import {
-  chatTools,
+  getChatTools,
   type buildChatToolsContext,
 } from "./tools";
 
@@ -34,7 +34,7 @@ import {
 // provider-specific translation. `ProviderOptions` is exported there too
 // (isomorphic to @ai-sdk/provider's JSONObject shape).
 
-export type ChatToolSet = typeof chatTools;
+export type ChatToolSet = ReturnType<typeof getChatTools>;
 export type ChatAgent = WorkflowAgent<ChatToolSet>;
 
 // ─── Anthropic explicit cache breakpoints (best-effort) ──────────────────
@@ -115,6 +115,16 @@ export function createChatAgent(opts: {
 }): ChatAgent {
   const model = createModel(opts.model);
 
+  // The bridge main model (client mode, PREVIOUSLY_BRAIN=bridge) shells out
+  // to a subscription CLI that returns plain text — it CANNOT emit structured
+  // tool calls, so the kernel tools (recall/readSlice/delegateTask/…) are not
+  // mounted for it. The system prompt says this explicitly (see the bridge
+  // notice in turn-workflow.ts). Memory reads still work on the bridge side:
+  // the client spawns the CLI in a per-call skills workspace whose instruction
+  // files (CLAUDE.md / AGENTS.md) explain how to read Previously's read-only
+  // markdown memory (client repo's setup, not kernel tools).
+  const isBridge = opts.model.sdk === "bridge";
+
   // NOTE: no `maxOutputTokens` — a project-wide prohibition. The step is bounded
   // only by the platform's 300s wall; on a kill the turn workflow continues the
   // agent with a nudge (see turn-workflow.ts) instead of truncating the model.
@@ -122,7 +132,7 @@ export function createChatAgent(opts: {
     model,
     instructions:
       "You are the user's personal agent with layered episodic memory. Answer from the provided context; use the memory tools to recall details when needed.",
-    tools: chatTools,
+    ...(isBridge ? {} : { tools: getChatTools() }),
     toolsContext: opts.toolsContext,
     providerOptions: normalizeReasoningEffort(
       opts.model.sdk,

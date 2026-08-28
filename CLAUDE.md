@@ -98,7 +98,7 @@ Streamed message-part rendering. See `src/components/chat/CLAUDE.md` for full de
 | Path Whitelist | `src/lib/whitelist/` | Security boundary: memory/tasks/sessions only |
 | Origin Guard | `src/lib/security/origin-guard.ts` | Same-origin guard on POST mutation endpoints (`/api/chat`, `/api/episodic/flush`); optional `ACCESS_SECRET` key check for non-browser callers |
 | Session Manager | `src/lib/session/` | In-memory session state with sliding window (legacy) |
-| Model Registry | `src/lib/models/` | models.dev-driven catalog, provider dispatch, worker-tier resolution (escape hatch only — no production caller since v0.9) |
+| Model Registry | `src/lib/models/` | models.dev-driven catalog, provider dispatch, main-model resolution (`resolve.ts`) — single model: everything runs on the selected model |
 | Time Rendering | `src/lib/time/relative.ts` + `src/lib/episodic/time-localize.ts` | Locale-aware relative-time annotations on slices/timeline/card reads, computed against the user's timezone |
 | Turn Priming | `src/lib/turn-priming.ts` | v0.9: only the slice-stable pieces survive — the continuity line and the date-anchor table, frozen into the system prompt's L3 block at slice start. The per-turn `Sent:` timestamp / intent / emotional read were evicted from the system prompt (cache stability); the model reads precise time via the `currentTime` tool |
 | Turn Analyzer | `src/lib/episodic/flash/turn-analyzer.ts` | The one housekeeping sub-agent call (main model via the unified runner, thinking ON at low effort): message tags + semantic hint + intent + `memory_worthy` / `memory_update` + (on close) slice marking and the `evolve_card.worth` gate |
@@ -108,7 +108,7 @@ Streamed message-part rendering. See `src/components/chat/CLAUDE.md` for full de
 The episodic memory subsystem (`src/lib/episodic/`, see `src/lib/episodic/CLAUDE.md`) is the memory layer:
 
 - **Structure**: `memory/episodic/slices/YYYY/MM/DD/HHMM/timeline/core.md` — one directory per time slice (`timeline/core.md` + `agent.md` + a `previously.md` card snapshot), YAML frontmatter + conversation turns
-- **Sub-agents on the main model** (v0.9): all internal calls (recall scanning, the unified turn analyze — message tags + semantic hint + intent + slice marking — card evolution, strand consolidation, mark backfill) run on the MAIN model through the unified sub-agent runner (`src/lib/agents/sub-agent-runner.ts`, thinking ON at low effort, shared `SHARED_SUBAGENT_BASE` prompt prefix). The old worker tier (`src/lib/models/worker.ts`) has no production caller; `resolveWorkerModel` survives as a config-level escape hatch (manual pin via hand-editing config.json). The main model handles the user-facing reply.
+- **Sub-agents on the main model** (v0.9): all internal calls (recall scanning, the unified turn analyze — message tags + semantic hint + intent + slice marking — card evolution, strand consolidation, mark backfill) run on the MAIN model through the unified sub-agent runner (`src/lib/agents/sub-agent-runner.ts`, thinking ON at low effort, shared `SHARED_SUBAGENT_BASE` prompt prefix). The old worker tier is gone entirely — single model: everything runs on the selected model. The main model handles the user-facing reply.
 - **Close-time marking**: when a slice closes, the housekeeping analyze call produces its `focus` / `summary` / refined `tags` / `emotional_tone`, written into the frontmatter before the slice persists — so the global timeline and recall see real descriptions, not "(none)".
 - **Slicing** (v0.9, pure time-driven): the slice age cap (`maxSliceMinutes`, default 30 min from slice START) closes the current slice, plus context-loss detection (`context_lost`) and a 50-turn capacity cap that is a pure safety valve.
 - **Slice-frozen system prompt** (v0.9): the system prompt is layered L0–L5 and anchored to the slice start, byte-stable within a slice to maximize provider prefix caching (DeepSeek automatic prefix cache; explicit ephemeral `cacheControl` breakpoints on the Anthropic path in `src/app/api/agent/agent.ts`). The history window is slice-aligned — the server trims client history to the current slice's turn count (mismatch → `context_lost` → new slice).
@@ -116,14 +116,13 @@ The episodic memory subsystem (`src/lib/episodic/`, see `src/lib/episodic/CLAUDE
 - **Timeline**: per-slice `timeline/core.md` + `agent.md` are woven into the global timeline (`timeline/weave.ts`, `timeline/store.ts`, `timeline/render.ts`); `flash/global-timeline.ts` aggregates slice summaries and `flash/backfill-marks.ts` backfills close-time markings on historical slices.
 - **Card evolution**: at a slice boundary the Previously Agent edits the card through validated mutation tools (`card-session.ts`); there is no mechanical card pass — expiry/caps/overdue handling are the agent's decisions, enforced inside the tools.
 - **Strands** (semantic layer): a slice carries `tags` (keywords); a **strand** is a keyword woven through all the slices that carry it. `memory/episodic/strands.json` maps each strand → its slice paths ("the whole history of that thing" across time) — the thin, lossless semantic-memory index over the episodic slices. Built at slice-close via `updateStrands`; `flash/strand-consolidator.ts` merges near-duplicate strands; a richer first-class strand (rolling summary + recall integration) is a future milestone.
-- **Demo data source**: `STORAGE=demo` (or auto-detected when no `GITHUB_TOKEN` and not dev) makes memory reads read-only against remote benchmark data. There is no `DEMO_MODE` env var — data-source resolution lives in `src/lib/data-source/resolve.ts`.
+- **Demo data source**: `STORAGE=demo` (or auto-detected when no `GITHUB_TOKEN` and not dev) makes memory reads read-only against the `previously-lab/you` dataset repo (remote via `BENCHMARK_BASE_URL`, or a local sibling `../you` clone in dev). There is no `DEMO_MODE` env var — data-source resolution lives in `src/lib/data-source/resolve.ts`.
 
 ### Model Layer (multi-provider)
 
 - **Catalog**: models.dev (`https://models.dev/api.json`) is the primary model catalog (`src/lib/models/catalog.ts`), gated by configured API-key env vars and reverse-filtered against each provider's live `/models` endpoint. Falls back to a curated list in `src/lib/models/registry.ts`.
 - **Dispatch**: `src/lib/models/provider.ts` routes by SDK — dedicated `@ai-sdk/anthropic`, OpenAI-compatible for everything else: DeepSeek via `@ai-sdk/openai-compatible` (the dedicated `@ai-sdk/deepseek` dropped image parts), `@ai-sdk/openai` catch-all for the rest (Kimi, Qwen, ...).
-- **Main model** — user-selected in the chat toolbar; persists to `memory/user/config.json` (cross-device, no localStorage). v0.9: every sub-agent also runs on the main model (unified runner, thinking ON at low effort).
-- **Worker tier (vestigial)** — `resolveWorkerModel()` (`src/lib/models/worker.ts`: manual pin → same-provider lightweight → the main model) has NO production caller since v0.9; it is retained as a config-level escape hatch. The settings-UI worker pin ("Advanced" sheet) was removed as a dead setting — a pin can still be set by hand-editing `memory/user/config.json`.
+- **Main model** — user-selected in the chat toolbar; persists to `memory/user/config.json` (cross-device, no localStorage). v0.9: every sub-agent also runs on the main model (unified runner, thinking ON at low effort). Thinking is always ON at low effort for the chat main model (pinned server-side in `src/app/api/chat/start-turn.ts`); deep thinking is thinkDeep's job. Single model: everything runs on the selected model — the worker tier (`worker.ts`, manual pin) was removed.
 - **Workflow model deserialization**: `register-model-classes.ts` registers anthropic, openai, and openai-compatible (DeepSeek) model hosts so models crossing the workflow→step boundary rebuild correctly.
 
 ### Chat Rendering
@@ -188,7 +187,7 @@ Tool calls use friendly outer labels with real tool names in expanded view.
 STORAGE set?                          (auto-detect when unset)
 ├─ local   → Local filesystem: full read/write (dev default)
 ├─ github  → GitHub API: full read/write (needs GITHUB_TOKEN)
-└─ demo    → Remote benchmark data: read-only, CANNOT write
+└─ demo    → previously-lab/you dataset: read-only, CANNOT write
 AI calls require at least one configured provider key (see getConfiguredProviders()).
 ```
 

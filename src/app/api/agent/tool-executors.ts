@@ -27,14 +27,20 @@ import {
   listFilesDemo,
 } from "@/lib/demo/demo-fs";
 
-import { searchViaFlash, type WebSearchResult } from "@/lib/search/flash-search";
+import { searchViaFlash, SEARCH_TIMEOUT_MS, type WebSearchResult } from "@/lib/search/flash-search";
 import { isPrivateHost, extractText, fetchWithGuard } from "@/lib/search/fetch-utils";
 import { isAIConfigured } from "@/lib/capabilities";
 import {
   runRecallSearch,
-  type RecallHit,
-  type RecommendedRead,
+  RECALL_TIMEOUT_MS,
+  type RecallReference,
 } from "@/lib/episodic/flash/recall";
+import { readPlaybook, capPlaybook } from "@/lib/evolution/store";
+import {
+  recordRecallOutcome,
+  checkReadSlice,
+  logReworkSignal,
+} from "@/lib/episodic/rework-signal";
 import { readStrands, CURRENT_PREVIOUSLY_PATH } from "@/lib/episodic";
 import { migrateToV3, isCardFormat } from "@/lib/episodic/previously-format";
 import {
@@ -54,7 +60,15 @@ import {
   textLines,
   searchResultToString,
 } from "@/lib/retrieval/doc-segments";
-import { resolveMainModelFromConfig } from "@/lib/models/worker";
+import {
+  getBridgeCommand,
+  getBridgeTimeoutMs,
+  runBridge,
+  splitBridgeCommand,
+  BRIDGE_PROTOCOL_VERSION,
+  type BridgeRunResult,
+} from "@/lib/bridge";
+import { resolveMainModelFromConfig } from "@/lib/models/resolve";
 import { resolveSubAgentModel } from "@/lib/agents/sub-agent-runner";
 import { createModel } from "@/lib/models/provider";
 import { normalizeReasoningEffort } from "@/lib/models/effort-injector";
@@ -245,9 +259,20 @@ export async function readSliceExecute(
     }
 
     // Pre-render the user's local time so the agent never converts UTC itself.
-    return ctx.timezone
+    const result = ctx.timezone
       ? annotateSliceWithLocalTime(content, ctx.timezone, sliceId)
       : content;
+
+    // Rework-signal instrumentation (design v1.0 §2.6): classify this read
+    // against the conversation's last recall outcome — verify (within recall's
+    // references/searched) or rework (the main agent doing recall's job).
+    // Best-effort: logging failures are swallowed inside, never failing the read.
+    const reworkKind = checkReadSlice(ctx.sliceId, sliceId);
+    if (reworkKind) {
+      await logReworkSignal(ctx.sliceId, sliceId, reworkKind);
+    }
+
+    return result;
   } catch (e) {
     const msg = domainError(e);
     if (msg === null) throw e;
@@ -546,14 +571,18 @@ export async function webSearchExecute(
     };
   }
 
-  // Soft 60s safety net — backstop on top of the runner's own 60s budget
-  // inside searchViaFlash. searchViaFlash errors (transient search failures)
+  // Soft safety net — backstop on top of the runner's own budget inside
+  // searchViaFlash. searchViaFlash errors (transient search failures)
   // still throw and get step retries — only a timeout returns an error result.
+  //
+  // The evolved researcher playbook (design v1.0 §2.4) rides into the user
+  // prompt — never the static system prompt (prefix cache). Missing → omitted.
+  const playbook = await readPlaybook("search");
   let timed: Awaited<ReturnType<typeof withStepTimeout<WebSearchResult>>>;
   try {
     timed = await withStepTimeout(
-      () => searchViaFlash(query, { toolCallId, toolName: "webSearch" }),
-      60_000,
+      () => searchViaFlash(query, { toolCallId, toolName: "webSearch" }, playbook ?? undefined),
+      SEARCH_TIMEOUT_MS,
     );
   } catch (err) {
     // Triage: deterministic failures (schema validation, config, domain) become
@@ -680,6 +709,56 @@ export async function webFetchExecute(
   }
 }
 
+// ── delegateTask — subscription bridge dispatch (client mode only) ───────
+//
+// The bridge env contract, command splitter, and spawn helper live in
+// src/lib/bridge.ts (shared with the bridge main model, see
+// src/lib/models/bridge-model.ts).
+
+export type DelegateTaskResult = BridgeRunResult;
+
+/**
+ * delegateTask — hand a self-contained task to the local subscription bridge
+ * (client mode only; the tool itself is registered conditionally in
+ * ./tools.ts). The kernel owns only the dispatch half: the bridge command
+ * (PREVIOUSLY_BRIDGE_CMD, default `previously bridge-exec`) is
+ * operator-controlled env — never tool input — and receives `{ task, context }`
+ * as JSON on stdin; its stdout is the result. The bridge adapters live in the
+ * client repo (doc/design/v0.9-client.md).
+ */
+export async function delegateTaskExecute(
+  { task, context }: { task: string; context?: string },
+  { toolCallId }: ExecuteOpts<ToolContext>,
+): Promise<DelegateTaskResult> {
+  "use step";
+  await emitToolProgress(toolCallId, "delegateTask", "Delegating to the local bridge…", "running");
+
+  const cmd = getBridgeCommand();
+  const result = await runBridge(
+    splitBridgeCommand(cmd),
+    JSON.stringify({
+      task,
+      context: context ?? null,
+      protocol: BRIDGE_PROTOCOL_VERSION,
+    }),
+    getBridgeTimeoutMs(),
+  );
+
+  await emitToolProgress(
+    toolCallId,
+    "delegateTask",
+    result.status === "ok" ? "Bridge returned a result" : `Bridge failed: ${result.reason}`,
+    "done",
+  );
+  // Protocol-2 activity events are display data for the kernel UI — strip
+  // them so they don't bloat the model-facing tool result.
+  if (result.status === "ok" && result.events) {
+    const { events: _events, ...rest } = result;
+    return rest;
+  }
+  return result;
+}
+
 // ── currentTime — the "watch check" for a precise now ────────────────────
 
 /**
@@ -756,112 +835,129 @@ export async function currentTimeExecute(
 // ── recall �?semantic search across past conversation slices ─────────
 
 /**
- * Recall search tool — the recall sub-agent acts as a summary-level search
- * engine over the episodic memory. It reads the global timeline summaries,
- * traces strands, and returns pointers (which slices, which turns, why
- * relevant) PLUS a recommendation list of slices worth opening. It never reads
- * slice bodies and never produces content summaries. Pro decides which (if
- * any) slices to open with readSlice — the summaries may already be enough.
+ * Recall tool — the recall sub-agent is a colleague who REMEMBERS past
+ * conversations (v1.0; supersedes the v0.9 pointer-only search engine). It
+ * receives a natural-language question, reads the actual slices itself
+ * (timeline → strands → summaries → quota-bounded full reads), and returns a
+ * natural-language answer whose situational assertions are anchored to
+ * verbatim quotes in `references` — the auditable attachment the main agent
+ * can verify by opening the slice itself.
  *
  * Runs on the unified sub-agent runner (v0.9): the turn's MAIN model with
- * thinking ON at effort "low", streamed progress, and a 120s budget. */
+ * thinking ON at effort "low", streamed progress, and a 240s budget. */
 export async function recallExecute(
-  { query }: { query: string },
+  { question }: { question: string },
   { context: ctx, toolCallId }: ExecuteOpts<ToolContext>,
 ): Promise<{
-  hits: RecallHit[];
+  answer: string;
+  references: RecallReference[];
+  searched: string[];
   confidence: number;
-  reasoning: string;
-  recommendedReads: RecommendedRead[];
-  /** Set when no matches were found — a definitive signal that recall is exhausted for this query. */
+  /** Set when recall found nothing — a definitive signal that recall is exhausted for this question. */
   note?: string;
 }> {
   "use step";
-  await emitToolProgress(toolCallId, "recall", "Scanning memory slices…", "running");
+  await emitToolProgress(toolCallId, "recall", "Recalling past conversations…", "running");
 
   try {
     const strands = await readStrands();
 
-    // Soft 120s safety net — a backstop on top of the runner's own 120s
-    // budget inside runRecallSearch (SDK timeout hook + its own
-    // withStepTimeout). Recall is best-effort: a timeout returns an empty
-    // search rather than failing the step, so the main agent knows nothing
-    // was found instead of a hard error. Transient failures inside
-    // runRecallSearch re-throw and reach the triage catch below for the
-    // step's auto-retry.
+    // The evolved recall playbook (design v1.0 §2.4) rides into the user
+    // prompt — never the static system prompt (prefix cache). Missing → omitted.
+    const playbook = await readPlaybook("recall");
+
+    // Soft safety net — a backstop on top of the runner's own budget inside
+    // runRecallSearch (SDK timeout hook + its own withStepTimeout). Recall is
+    // best-effort: a timeout returns a partial/empty answer rather than
+    // failing the step, so the main agent gets an honest "couldn't recall"
+    // instead of a hard error. Transient failures inside runRecallSearch
+    // re-throw and reach the triage catch below for the step's auto-retry.
     const mainModel = await resolveSubAgentModel(ctx);
     const timed = await withStepTimeout(
       () =>
         runRecallSearch({
-          query,
+          question,
           currentSliceId: ctx.sliceId,
           owner: ctx.owner,
           repo: ctx.repo,
           strandsContext: strands,
+          playbook: playbook ?? undefined,
           useGithub: ctx.useGithub,
           useDemo: ctx.useDemo,
           model: mainModel,
           // The runner streams each sub-agent tool step ("Reading global
-          // timeline…", "Tracing strand: X…") onto the data-tool-progress
+          // timeline…", "Reading slice X…") onto the data-tool-progress
           // channel as it happens.
           progress: { toolCallId, toolName: "recall" },
         }),
-      120_000,
+      RECALL_TIMEOUT_MS,
     );
 
     if (!timed.ok || timed.result === undefined) {
       return {
-        hits: [],
+        answer: "",
+        references: [],
+        searched: [],
         confidence: 0,
-        reasoning: timed.ok
-          ? "Recall search returned no result"
-          : `Recall search timed out after ${timed.elapsedMs}ms`,
-        recommendedReads: [],
+        note: timed.ok
+          ? "Recall returned no result — treat this topic as having no recoverable past context and do NOT call recall again for it."
+          : `Recall timed out after ${Math.round(timed.elapsedMs / 1000)}s before producing anything. Do NOT call recall again for this question; answer from the conversation and your knowledge.`,
       };
     }
 
     // Settle the subtitle on the outcome before the tool result lands.
     const result = timed.result;
+
+    // Record the outcome for rework-signal detection (design v1.0 §2.6): if
+    // the main agent later readSlice's OUTSIDE these references/searched, it
+    // is doing recall's job itself — the strongest implicit fitness signal.
+    recordRecallOutcome(ctx.sliceId, {
+      referenceIds: result.references.map((r) => r.slice_id),
+      searchedIds: result.searched,
+      confidence: result.confidence,
+    });
+
     await emitToolProgress(
       toolCallId,
       "recall",
-      `Found ${result.hits.length} match${result.hits.length === 1 ? "" : "es"}`,
+      result.references.length > 0
+        ? `Answered with ${result.references.length} reference${result.references.length === 1 ? "" : "s"}`
+        : "Recall answered",
       "done",
     );
 
-    // The recall sub-agent returns pointers + recommendations only — it never
-    // reads slice bodies. Pro should call readSlice (optionally with range) to
-    // fetch content from slices it actually wants to use, keeping context
-    // usage minimal.
+    // A confident "no such memory" (or an empty, unconfident one) is a
+    // DEFINITIVE result — recall already read the slices, so re-asking the
+    // same topic in different words will not find more.
     const emptyNote =
-      result.hits.length === 0
-        ? "No relevant past conversations were found for this query. This is a definitive result — do NOT call recall again for this topic; answer from the conversation and your knowledge."
+      result.references.length === 0 && result.confidence === 0
+        ? "Recall found no past memory for this question. This is a definitive result — do NOT call recall again for this topic; answer from the conversation and your knowledge."
         : undefined;
 
-    // Pre-render each hit's local clock + relative days (from its UTC-derived
-    // slice id) so the agent knows WHEN a past conversation happened without
-    // converting UTC or doing date arithmetic itself.
-    const annotateReason = (reason: string, sliceId: string) => {
-      if (!ctx.timezone) return reason;
+    // Pre-render each reference's local clock + relative days (from its
+    // UTC-derived slice id) so the agent knows WHEN a past conversation
+    // happened without converting UTC or doing date arithmetic itself.
+    const annotateNote = (note: string, sliceId: string) => {
+      if (!ctx.timezone) return note;
       const clock = sliceIdLocalClock(sliceId, ctx.timezone);
-      if (!clock) return reason;
+      if (!clock) return note;
       const rel = sliceIdRelPhrase(sliceId, ctx.timezone, {
         nowIso: ctx.startedAtIso,
         locale: ctx.locale ?? "en",
       });
       const inner = rel ? `${clock} · ${rel}` : clock;
       return normalizeLocale(ctx.locale) === "zh"
-        ? `${reason}（本地 ${inner}）`
-        : `${reason} (local ${inner})`;
+        ? `${note}（本地 ${inner}）`
+        : `${note} (local ${inner})`;
     };
     return {
-      hits: result.hits.map((h) => ({ ...h, reason: annotateReason(h.reason, h.slice_id) })),
-      confidence: result.confidence,
-      reasoning: result.reasoning,
-      recommendedReads: result.recommendedReads.map((r) => ({
+      answer: result.answer,
+      references: result.references.map((r) => ({
         ...r,
-        reason: annotateReason(r.reason, r.slice_id),
+        note: annotateNote(r.note, r.slice_id),
       })),
+      searched: result.searched,
+      confidence: result.confidence,
       ...(emptyNote ? { note: emptyNote } : {}),
     };
   } catch (err) {
@@ -873,10 +969,11 @@ export async function recallExecute(
       err instanceof Error ? err.message : err,
     );
     return {
-      hits: [],
+      answer: "",
+      references: [],
+      searched: [],
       confidence: 0,
-      reasoning: triageErrorMessage(err, "recall"),
-      recommendedReads: [],
+      note: triageErrorMessage(err, "recall"),
     };
   }
 }
@@ -1049,6 +1146,11 @@ export async function thinkDeepExecute(
   // the step returns around STEP_TOTAL_MS no matter how long setup took.
   const stepStartMs = Date.now();
 
+  // The evolved thinkDeep playbook (design v1.0 §2.4) — appended to the
+  // fragment's user payload as a short Working-notes suffix after the
+  // question, never the system prompt (prefix cache). Missing → omitted.
+  const playbook = await readPlaybook("thinkdeep");
+
   // Single fragment (index 0 of 1) → streams WITHOUT the [i/N] prefix.
   return runThinkDeepFragment(
     { question, effort },
@@ -1059,6 +1161,7 @@ export async function thinkDeepExecute(
       baseSystemPrompt: ctx.baseSystemPrompt,
       toolCallId,
       stepStartMs,
+      playbook: playbook ?? undefined,
     },
   );
 }
@@ -1078,10 +1181,13 @@ async function runThinkDeepFragment(
     baseSystemPrompt?: string;
     toolCallId: string;
     stepStartMs: number;
+    /** Evolved working notes (memory/agent-playbooks/thinkdeep.md) — appended
+     *  to the user payload after the question. Absent → no block. */
+    playbook?: string;
   },
 ): Promise<ThinkDeepFragmentResult> {
   const { question, effort = "low" } = fragment;
-  const { modelConfig, baseSystemPrompt, toolCallId, stepStartMs } = opts;
+  const { modelConfig, baseSystemPrompt, toolCallId, stepStartMs, playbook } = opts;
 
   const prefix = total > 1 ? `[${index + 1}/${total}] ` : "";
 
@@ -1106,6 +1212,15 @@ async function runThinkDeepFragment(
     "you emit is preserved and returned to the caller.",
     "",
     `Sub-question: ${question.trim()}`,
+    // Evolved working notes (design v1.0 §2.4) — a short suffix after the
+    // question, capped so a bloated playbook cannot flood the prompt.
+    ...(playbook?.trim()
+      ? [
+          "",
+          "Working notes (your evolved playbook — follow these unless they conflict with the question):",
+          capPlaybook(playbook.trim()),
+        ]
+      : []),
     "",
     "You have no tools and no search. Reason with what is given; state plainly",
     "anything you lack.",

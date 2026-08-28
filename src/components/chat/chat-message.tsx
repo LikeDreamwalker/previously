@@ -9,6 +9,8 @@ import { ThinkingSteps } from "./thinking";
 import { PhaseIndicator } from "./phase-indicator";
 import { HousekeepingCard } from "./housekeeping-card";
 import { EvolutionCard } from "./evolution-card";
+import { BridgeToolCard } from "./bridge-tools-card";
+import { BridgeHousekeepingCard } from "./bridge-housekeeping-card";
 import { MessageActions } from "./message-actions";
 import { ToolRenderer } from "./tool-renderer";
 import { Message, MessageContent, MessageFooter } from "@/components/ui/message";
@@ -19,7 +21,6 @@ import {
   Paperclip,
   XCircle,
 } from "lucide-react";
-import { LoadingTip } from "./loading-tip";
 import type { ToolRenderState } from "@/lib/chat/tool-state";
 import {
   buildStream,
@@ -125,6 +126,8 @@ function itemKey(item: StreamItem, index: number): string {
       return `housekeeping-${index}`;
     case "evolution":
       return `evolution-${index}`;
+    case "bridge-tools":
+      return `bridge-tools-${item.phase}-${index}`;
     case "phase":
       return `phase-${item.phase}-${index}`;
   }
@@ -291,6 +294,33 @@ export const ChatMessage = memo(function ChatMessage({
                       />
                     );
                   }
+                  if (item.kind === "bridge-tools") {
+                    // The local CLI's live tool activity (bridge mode).
+                    // Housekeeping gets its own card (client mode: the whole
+                    // phase is one agent call + deterministic wrap-up rows);
+                    // the chat answer keeps the plain tool indicator.
+                    if (item.phase === "bridgeHousekeeping") {
+                      return (
+                        <BridgeHousekeepingCard
+                          key={key}
+                          running={item.running}
+                          tools={item.tools}
+                          live={item.live}
+                          steps={item.steps}
+                          warning={item.warning}
+                        />
+                      );
+                    }
+                    return (
+                      <BridgeToolCard
+                        key={key}
+                        phase={item.phase}
+                        running={item.running}
+                        tools={item.tools}
+                        live={item.live}
+                      />
+                    );
+                  }
                   if (item.kind === "phase") {
                     // Terminal interrupted/error — prominent static card.
                     if (item.mode === "terminal") {
@@ -382,12 +412,8 @@ export const ChatMessage = memo(function ChatMessage({
             </div>
           )}
 
-          {/* Loading indicator — persists for the full bubble lifetime */}
-          {isStreaming && isAssistant && (
-            <div className="pt-1.5">
-              <LoadingTip />
-            </div>
-          )}
+          {/* Loading tips are retired for now (content refresh pending) — the
+              streaming bubble shows no bottom indicator. */}
 
           {/* Silence heartbeat — only when the stream has gone quiet mid-turn */}
           {isStreaming && silent && (

@@ -3,6 +3,25 @@ import createNextIntlPlugin from "next-intl/plugin";
 import { withWorkflow } from "workflow/next";
 
 const nextConfig: NextConfig = {
+  // Produce .next/standalone ONLY for the client kernel packaging build
+  // (NEXT_PUBLIC_PREVIOUSLY_TARGET=client, set by scripts/build-standalone.mjs —
+  // see doc/design/v0.9-client.md §6). It MUST stay off cloud deploys: Next
+  // 16.3 + standalone breaks Vercel's onBuildComplete (the adapter build skips
+  // the whole-server trace file, then packaging reads it — ENOENT
+  // .next/next-server.js.nft.json, vercel/next.js#96646).
+  output:
+    process.env.NEXT_PUBLIC_PREVIOUSLY_TARGET === "client"
+      ? "standalone"
+      : undefined,
+  // Keep runtime data directories out of the standalone trace. `memory/` is
+  // traced only because getMemoryRoot()/demo-fs resolve paths dynamically via
+  // `join(process.cwd(), ...)` — at runtime client mode re-roots memory at
+  // MEMORY_ROOT and demo-fs reads `<cwd>/../you`, so neither reads
+  // the copies Next would ship inside .next/standalone. Shipping them bloats
+  // the @previously-lab/kernel artifact with local dev data.
+  outputFileTracingExcludes: {
+    "*": ["./memory/**/*", "./you/**/*"],
+  },
   turbopack: {
     root: process.cwd(),
   },

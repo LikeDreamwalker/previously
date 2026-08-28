@@ -79,22 +79,25 @@ describe("POST /api/chat durable turn", () => {
     expect(mockStartTurn).toHaveBeenCalledTimes(1);
   });
 
-  it("forwards model, thinking, and timezone to startTurn", async () => {
+  it("forwards model and timezone to startTurn (thinking/effort are pinned server-side)", async () => {
     await POST(
       createRequest({
         messages: [{ role: "user", content: "hi" }],
         model: "deepseek-v4-pro",
+        // thinking/effort in the body are deliberately ignored — startTurn
+        // pins thinking ON at low effort regardless of the client.
         thinking: false,
+        effort: "high",
         timezone: "Asia/Shanghai",
       })
     );
-    expect(mockStartTurn).toHaveBeenCalledWith(
-      expect.objectContaining({
-        model: "deepseek-v4-pro",
-        thinking: false,
-        timezone: "Asia/Shanghai",
-      })
-    );
+    const call = mockStartTurn.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(call).toMatchObject({
+      model: "deepseek-v4-pro",
+      timezone: "Asia/Shanghai",
+    });
+    expect(call.thinking).toBeUndefined();
+    expect(call.effort).toBeUndefined();
   });
 
   it("omits optional overrides when not provided (config defaults apply downstream)", async () => {
@@ -104,7 +107,6 @@ describe("POST /api/chat durable turn", () => {
     expect(mockStartTurn).toHaveBeenCalledWith(
       expect.objectContaining({
         model: undefined,
-        thinking: undefined,
         timezone: undefined,
       })
     );

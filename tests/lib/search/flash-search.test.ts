@@ -31,16 +31,16 @@ describe("searchViaFlash", () => {
     expect(opts.languageModel).toBeDefined();
     expect(opts.model).toBeUndefined();
     expect(opts.effortSdk).toBe("anthropic");
-    expect(opts.maxSteps).toBe(6);
-    expect(opts.timeoutMs).toBe(60_000);
+    expect(opts.maxSteps).toBe(10);
+    expect(opts.timeoutMs).toBe(150_000);
     expect(opts.reportToolName).toBe("searchReport");
     // Static role in system; the date anchor and query moved to the user prompt.
     expect(opts.system).toContain("sub-agent of the Previously memory system");
-    expect(opts.system).toContain("video assistant (VAR)");
+    expect(opts.system).toContain("independent researcher");
     expect(opts.system).not.toContain("Today is");
     expect(opts.prompt).toMatch(/^Today is \d{4}-\d{2}-\d{2}\./);
     expect(opts.prompt).toContain("Query: latest Next.js version");
-    expect(Object.keys(opts.tools).sort()).toEqual(["searchReport", "web_search"]);
+    expect(Object.keys(opts.tools).sort()).toEqual(["searchReport", "webFetch", "web_search"]);
   });
 
   it("maps the searchReport into the neutral contract with url sources", async () => {
@@ -100,10 +100,31 @@ describe("searchViaFlash", () => {
       ok: false,
       timedOut: true,
       text: "",
-      error: "Sub-agent did not finish within 60s.",
+      error: "Sub-agent did not finish within 150s.",
     });
     await expect(searchViaFlash("q")).rejects.toThrow(
-      "Sub-agent did not finish within 60s.",
+      "Sub-agent did not finish within 150s.",
     );
+  });
+
+  it("caps the researcher's own page reads at the per-run quota", async () => {
+    runner.runSubAgent.mockResolvedValue({
+      ok: true,
+      report: { answer: "a", recommendation: "r", suggested_reads: [] },
+      text: "",
+    });
+    await searchViaFlash("q");
+    const opts = runner.runSubAgent.mock.calls[0]![0];
+    const webFetch = opts.tools.webFetch as {
+      execute: (input: { url: string }) => Promise<string>;
+    };
+    // Invalid URLs error before any network I/O — but still consume a slot.
+    for (let i = 0; i < 3; i++) {
+      const out = await webFetch.execute({ url: "not a url" });
+      expect(out).toContain("ERROR: Invalid URL");
+    }
+    // Slot 4: quota exhausted — a note, no fetch attempted.
+    const out = await webFetch.execute({ url: "https://example.com" });
+    expect(out).toContain("Page-read quota exhausted");
   });
 });

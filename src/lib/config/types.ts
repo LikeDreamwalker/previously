@@ -20,23 +20,9 @@ export interface ModelConfig {
   reasoningEffort: "low" | "medium" | "high";
 }
 
-/**
- * The auxiliary "worker" model — used for cheap internal calls (tag extraction,
- * slice marking, recall search, belief evolution). Distinct from
- * the main chat model so the user can keep a fast/cheap tier behind the scenes.
- */
-export interface WorkerConfig {
-  /** "auto" = derive from the main model (same-provider lightweight → main);
-   *  "manual" = use `provider` verbatim. */
-  mode: "auto" | "manual";
-  /** Pinned worker model id, used when mode = "manual". */
-  provider: string;
-}
-
 export interface UserConfig {
   slicing: SlicingConfig;
   model: ModelConfig;
-  worker: WorkerConfig;
   /** Has the user completed the onboarding welcome flow? */
   onboarded?: boolean;
   /** User's preferred data source: "demo" (benchmark personas) or "own" (GitHub repo). Only persisted when writes are available. */
@@ -48,8 +34,7 @@ export interface UserConfig {
  * callers can touch just `model.provider` without respecifying the rest.
  */
 export type UserConfigOverrides = Partial<
-  Omit<UserConfig, "model" | "worker">
+  Omit<UserConfig, "model">
 > & {
   model?: Partial<ModelConfig>;
-  worker?: Partial<WorkerConfig>;
 };

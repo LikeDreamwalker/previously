@@ -4,8 +4,12 @@
  * The PRIMARY catalog is models.dev (see ./catalog): it lists every provider's
  * models with reasoning/context metadata, and each provider carries its own
  * env var name and baseURL. This file holds the FALLBACK list used when
- * models.dev is unreachable, plus curated overrides (defaultThinking /
- * defaultEffort) applied on top of models.dev entries for known model ids.
+ * models.dev is unreachable.
+ *
+ * Thinking/effort defaults: every user-selectable model defaults to thinking
+ * ON (where the capability exists) at LOW effort — fast responses are the
+ * product rule; deep thinking is thinkDeep's job. startTurn pins these values
+ * server-side regardless of the request body or stored config.
  *
  * The Anthropic IDs below mirror the `AnthropicModelId` union shipped inside
  * `@ai-sdk/anthropic` (Anthropic has no list-models API endpoint; the SDK is
@@ -13,6 +17,197 @@
  */
 
 import type { ProviderSdk } from "./providers";
+import type { ClientBrain, ClientByok } from "../client-config";
+// Runtime byok read comes from byok-sync (getBuiltinModule — NO static
+// node:* imports): this module is reachable from the "use workflow" bundle
+// (turn-workflow → agent → provider → bridge-model → registry), where static
+// node builtins fail the build. client-config.ts itself stays off-limits.
+import { readClientByokSync } from "../byok-sync";
+import { isClientMode } from "../mode";
+
+// ─── Local agent engine (pure subscription mode) ──────────────────────────
+//
+// The main model can run through the local subscription bridge (Claude/Codex/
+// Kimi CLI via PREVIOUSLY_BRIDGE_CMD — the spawn contract lives in
+// src/lib/bridge.ts). One `bridge/<agent>` entry per known agent is registered
+// when the engine is active, gated on client mode; cloud mode never sees them.
+//
+// The engine is active when EITHER the client CLI injected
+// PREVIOUSLY_BRAIN=bridge at spawn time OR config.json says
+// brain.type === "bridge" (the settings UI's engine switch — hot, no
+// restart). The config brain wins over the env for the DEFAULT agent ordering
+// (it's the fresher, user-editable source), but the model id
+// (`bridge/<agent>`) decides which CLI a given call spawns (see
+// src/lib/models/bridge-model.ts), so switching agents needs no restart.
+//
+// fs-freedom contract: these helpers are PURE — the caller reads config.json
+// (catalog.ts, async server path) and passes the brain in. Sync callers that
+// omit it keep env-only behavior.
+
+/** Subscription CLI agents the bridge can drive. */
+export const BRIDGE_AGENTS = ["claude", "codex", "kimi"] as const;
+export type BridgeAgent = (typeof BRIDGE_AGENTS)[number];
+export const BRIDGE_DEFAULT_AGENT: BridgeAgent = "claude";
+
+/** Display names of the subscription CLIs, for hints and tooltips. */
+export const BRIDGE_AGENT_LABELS: Record<BridgeAgent, string> = {
+  claude: "Claude Code",
+  codex: "Codex",
+  kimi: "Kimi",
+};
+
+/**
+ * The default bridge agent. The config brain (`brain.agent` from
+ * config.json) wins over PREVIOUSLY_BRAIN_AGENT when present; unknown env
+ * values fall back to the default rather than failing — the env is injected
+ * by the client CLI, and a typo shouldn't take the whole kernel down.
+ */
+export function getBridgeAgent(brain?: ClientBrain | null): BridgeAgent {
+  if (brain?.type === "bridge") return brain.agent;
+  const raw = process.env.PREVIOUSLY_BRAIN_AGENT?.trim();
+  return (BRIDGE_AGENTS as readonly string[]).includes(raw ?? "")
+    ? (raw as BridgeAgent)
+    : BRIDGE_DEFAULT_AGENT;
+}
+
+/**
+ * Is the local agent engine (pure subscription) active? Client mode AND
+ * either PREVIOUSLY_BRAIN=bridge (injected by the client CLI) or
+ * brain.type === "bridge" in config.json (the settings-UI engine switch) —
+ * either source suffices, so saving the engine in settings takes effect
+ * without a restart. Callers without the config at hand (sync paths) omit
+ * `brain` and keep env-only behavior; cloud mode is byte-for-byte
+ * unaffected, and a client with real API keys keeps the normal AI SDK path.
+ */
+export function isBridgeBrainActive(brain?: ClientBrain | null): boolean {
+  return (
+    isClientMode() &&
+    (process.env.PREVIOUSLY_BRAIN === "bridge" || brain?.type === "bridge")
+  );
+}
+
+/**
+ * The bridge agent for a model id: `bridge/<agent>` selects that agent;
+ * anything else (bare `bridge`, unknown agent, non-bridge id) falls back to
+ * the env-selected agent rather than failing — a stale or hand-edited stored
+ * preference shouldn't take the kernel down.
+ */
+export function bridgeAgentFromModelId(id: string): BridgeAgent {
+  const agent = id.startsWith("bridge/") ? id.slice("bridge/".length) : "";
+  return (BRIDGE_AGENTS as readonly string[]).includes(agent)
+    ? (agent as BridgeAgent)
+    : getBridgeAgent();
+}
+
+/** One registry entry per subscription agent CLI. */
+function bridgeModelConfig(agent: BridgeAgent): ModelConfig {
+  return {
+    id: `bridge/${agent}`,
+    name: `${agent.charAt(0).toUpperCase() + agent.slice(1)} (subscription bridge)`,
+    provider: "bridge",
+    providerName: "Subscription Bridge",
+    sdk: "bridge",
+    envKey: "PREVIOUSLY_BRAIN",
+    capabilities: {
+      // The bridge CLI returns plain text — no structured thinking stream,
+      // no vision. maxTokens is a nominal display value; the true output cap
+      // is the bridge's 30KB stdout limit (src/lib/bridge.ts).
+      thinking: false,
+      vision: false,
+      maxTokens: 200_000,
+    },
+    defaultThinking: false,
+    defaultEffort: "low",
+  };
+}
+
+/**
+ * The local-agent engine entries (`bridge/<agent>` for every known agent), or
+ * [] when the engine is not active. The default agent (config brain first,
+ * then env) comes first so getAvailableModels()[0] / getDefaultModelId()
+ * resolve to it. envKey is informational — availability is gated by
+ * isBridgeBrainActive(), not by an API key.
+ */
+export function getBridgeModels(brain?: ClientBrain | null): ModelConfig[] {
+  if (!isBridgeBrainActive(brain)) return [];
+  const first = getBridgeAgent(brain);
+  const rest = BRIDGE_AGENTS.filter((a) => a !== first);
+  return [first, ...rest].map(bridgeModelConfig);
+}
+
+/**
+ * Compat wrapper for the pre-multi-agent shape: the env-selected agent's
+ * entry (= getBridgeModels()[0]), or undefined when inactive.
+ */
+export function getBridgeModel(): ModelConfig | undefined {
+  return getBridgeModels()[0];
+}
+
+// ─── BYOK (bring-your-own-key, client mode) ───────────────────────────────
+//
+// Client mode's second engine next to local agent outsourcing (the bridge):
+// the user's own provider API key, stored in PREVIOUSLY_HOME/config.json (the
+// `byok` section — see src/lib/client-config.ts). One entry, `byok/<model>`,
+// listed after the bridge entries (agent outsourcing is the default; BYOK is
+// the recommended full-capability path). Cloud mode never sees it.
+//
+// sdk is ALWAYS "openai" (OpenAI-compatible — DeepSeek included): the
+// workflow step runtime round-trips the model through class serialization,
+// and only the openai path's deserializer can restore the apiKey — the
+// deepseek/anthropic hosts re-read the key from env and would lose it.
+// createOpenAI itself hides apiKey/baseURL inside closures, so provider.ts
+// re-attaches them as JSON-safe config fields for the step side's
+// rebuildOpenAIModel (src/app/api/agent/register-model-classes.ts). The
+// tradeoff: BYOK v1 forgoes the deepseek path's prefix-caching provider
+// options.
+
+/**
+ * BYOK provider presets — mirror the openaiBaseURL table in ./catalog.ts
+ * (SOURCES), kept here so BYOK resolution stays free of the catalog's fetch
+ * machinery. "custom" takes the user-supplied baseUrl instead.
+ */
+export const BYOK_PROVIDERS = [
+  { key: "deepseek", providerName: "DeepSeek", baseURL: "https://api.deepseek.com" },
+  { key: "openai", providerName: "OpenAI", baseURL: "https://api.openai.com/v1" },
+  { key: "moonshotai", providerName: "Moonshot AI", baseURL: "https://api.moonshot.cn/v1" },
+  { key: "alibaba", providerName: "Alibaba", baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1" },
+  { key: "google", providerName: "Google", baseURL: "https://generativelanguage.googleapis.com/v1beta/openai" },
+  { key: "mistral", providerName: "Mistral", baseURL: "https://api.mistral.ai/v1" },
+  { key: "xai", providerName: "xAI", baseURL: "https://api.x.ai/v1" },
+  { key: "groq", providerName: "Groq", baseURL: "https://api.groq.com/openai/v1" },
+] as const;
+
+/**
+ * The BYOK model entry (`byok/<model>`) for the given `byok` config section,
+ * or undefined in cloud mode / without one. Pure — the caller reads
+ * config.json (catalog.ts, async); the sync resolution paths (getModel /
+ * getDefaultModelId below) read it themselves via readClientByokSync.
+ * Capabilities stay conservative: BYOK providers' features are unknown to the
+ * kernel.
+ */
+export function getByokModel(
+  byok: ClientByok | null | undefined,
+): ModelConfig | undefined {
+  if (!isClientMode() || !byok) return undefined;
+  const preset = BYOK_PROVIDERS.find((p) => p.key === byok.provider);
+  return {
+    id: `byok/${byok.model}`,
+    name: `${byok.model} (BYOK)`,
+    provider: "byok",
+    providerName: "Your API key",
+    sdk: "openai",
+    // No env var backs this model — the key comes from config.json (apiKey).
+    envKey: "",
+    baseURL:
+      byok.provider === "custom"
+        ? byok.baseUrl
+        : (preset?.baseURL ?? byok.baseUrl),
+    apiKey: byok.apiKey,
+    capabilities: { thinking: false, vision: false, maxTokens: 200_000 },
+    defaultThinking: false,
+    defaultEffort: "low",
+  };
+}
 
 export interface ModelCapabilities {
   thinking: boolean;
@@ -33,6 +228,11 @@ export interface ModelConfig {
   envKey: string;
   /** Base URL for OpenAI-compatible providers (DeepSeek included). */
   baseURL?: string;
+  /**
+   * Explicit API key (BYOK only) — takes precedence over process.env[envKey]
+   * in createModel. Never logged.
+   */
+  apiKey?: string;
   capabilities: ModelCapabilities;
   /** Default thinking state when the user selects this model. */
   defaultThinking: boolean;
@@ -82,10 +282,7 @@ export const ALL_MODELS: ModelConfig[] = [
     baseURL: "https://api.deepseek.com",
     capabilities: { thinking: true, vision: false, maxTokens: 393216 },
     defaultThinking: true,
-    // DeepSeek exposes only low/high as meaningful tiers (V4 Pro promotes
-    // low/medium to high server-side) — the UI cycles between these two, so
-    // the stored default must live inside that set.
-    defaultEffort: "high",
+    defaultEffort: "low",
   },
   // ── Anthropic (curated from @ai-sdk/anthropic's AnthropicModelId union) ─
   {
@@ -108,7 +305,7 @@ export const ALL_MODELS: ModelConfig[] = [
     envKey: "ANTHROPIC_API_KEY",
     capabilities: { thinking: true, vision: true, maxTokens: 200000 },
     defaultThinking: true,
-    defaultEffort: "medium",
+    defaultEffort: "low",
   },
   {
     id: "claude-opus-4-8",
@@ -119,40 +316,27 @@ export const ALL_MODELS: ModelConfig[] = [
     envKey: "ANTHROPIC_API_KEY",
     capabilities: { thinking: true, vision: true, maxTokens: 200000 },
     defaultThinking: true,
-    defaultEffort: "high",
+    defaultEffort: "low",
   },
 ];
 
-/**
- * Curated metadata overrides keyed by model id, applied on top of models.dev
- * entries. Thinking is NOT overridden here — it derives from the model's
- * capability (models.dev `reasoning`), so every thinking-capable model defaults
- * to thinking ON. These only pin the effort level where we want a specific
- * value rather than the `reasoning ? "medium" : "low"` heuristic.
- */
-const MODEL_OVERRIDES: Record<
-  string,
-  Partial<Pick<ModelConfig, "defaultThinking" | "defaultEffort">>
-> = {
-  "deepseek-v4-flash": { defaultEffort: "low" },
-  // Pro's medium is promoted to high server-side, so pin it inside the
-  // low/high UI set rather than an unreachable middle tier.
-  "deepseek-v4-pro": { defaultEffort: "high" },
-};
-
-/** Curated override for a known model id, if any. */
-export function getModelOverrides(
-  id: string,
-): Partial<Pick<ModelConfig, "defaultThinking" | "defaultEffort">> | undefined {
-  return MODEL_OVERRIDES[id];
-}
-
-/** Server-side: curated models whose API key env var is set. */
+/** Server-side: curated models whose API key env var is set, plus the bridge
+ *  brain entries when pure subscription mode is active. */
 export function getAvailableModels(): ModelConfig[] {
-  return ALL_MODELS.filter((m) => !!process.env[m.envKey]);
+  const keyed = ALL_MODELS.filter((m) => !!process.env[m.envKey]);
+  return [...keyed, ...getBridgeModels()];
 }
 
 export function getModel(id: string): ModelConfig | undefined {
+  const bridge = getBridgeModels().find((m) => m.id === id);
+  if (bridge) return bridge;
+  // BYOK entries live in config.json, not the curated list — resolve them so
+  // a byok/<model> default (getDefaultModelId) survives the id→config lookup
+  // in start-turn / resolve. The prefix guard keeps non-byok ids fs-free.
+  if (id.startsWith("byok/")) {
+    const byok = getByokModel(readClientByokSync());
+    if (byok?.id === id) return byok;
+  }
   return ALL_MODELS.find((m) => m.id === id);
 }
 
@@ -169,7 +353,18 @@ export function resolveModelId(id: string): string {
   return MODEL_ALIASES[id] ?? id;
 }
 
-/** First available model (server-side), for deployments with no stored pref. */
+/**
+ * First available model (server-side), for deployments with no stored pref.
+ * A BYOK-only deployment has no env-key model, so when getAvailableModels()
+ * is empty the byok entry from PREVIOUSLY_HOME/config.json wins before the
+ * curated ALL_MODELS[0] last resort (a model the user never configured a key
+ * for). The sync config read never throws — missing/corrupt config degrades
+ * to the curated fallback.
+ */
 export function getDefaultModelId(): string {
-  return getAvailableModels()[0]?.id ?? ALL_MODELS[0].id;
+  const first = getAvailableModels()[0];
+  if (first) return first.id;
+  const byok = getByokModel(readClientByokSync());
+  if (byok) return byok.id;
+  return ALL_MODELS[0].id;
 }
