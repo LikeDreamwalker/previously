@@ -308,6 +308,12 @@ export interface HousekeepingBridgeInput {
    * the SAME call (direction in the report). null/absent = not set yet.
    */
   directionContent?: string | null;
+  /** The card's Self-model lines verbatim — the promotion candidates
+   *  ("rules on probation") for the direction verdict (job 7). */
+  selfModelContent?: string | null;
+  /** "bootstrap" = direction.md has never been written (lowered evidence bar,
+   *  ≥1 slice pointer); "steady" = the normal high bar (≥2 distinct). */
+  directionMode?: "bootstrap" | "steady";
   /** The user's local calendar date (YYYY-MM-DD) — Now/Horizon judgments. */
   todayLocal?: string;
   /** UI locale ("zh" | "en"). */
@@ -330,7 +336,7 @@ One pass, these jobs:
 4. Dry-slice backfill — ONLY when the context carries a "Dry slices needing marks" section: one backfill_marks entry per listed slice ({slice_id copied verbatim, focus one sentence, summary ≤100 chars}); [] when the section is absent.
 5. Strand merge — ONLY when the context carries a "Strand merge candidates" section: propose from→to merges for NEAR-DUPLICATE strands (typos / same concept under two names / same entity written differently). Every "to" MUST be a name from the offered list; no chains (A→B and B→C in one pass); do NOT merge distinct concepts that merely share a word; when in doubt, do NOT merge — a wrong merge destroys thread history. [] when the section is absent or the index is already clean.
 6. Fitness scoring — score ONLY what THIS slice's user messages explicitly signal: -2 explicit complaint/correction, -1 signs of dissatisfaction, +1 explicit approval, attributed to a bucket (card | recall | search | thinkdeep | interaction). Every non-zero delta MUST quote the user's exact words in evidence — no quote, NO entry. Nothing signaled → omit fitness entirely (an absent/empty array, never 0-delta filler). When the context lists a recall_rework / recall_repeat mechanical signal, treat it as a -1 CANDIDATE for the recall bucket (its detail line may serve as the evidence); recall_verify is neutral — no entry.
-7. Direction verdict — the context carries the current evolution direction (direction.md: what "better for the user" means across slices; the card is only its product). Judge whether the DIRECTION itself should move. "no_change" is the common case — one slice's events are card/playbook material, never direction material by themselves. Propose ONLY on cross-slice evidence: the full new document with the four fixed sections (# Direction / # Anti-goals / # Evidence / # Log), every conclusion abstract (still true in a month) and the Evidence section carrying slice pointers (YYYY-MM-DD-HHMM). A proposal violating this discipline is rejected by the kernel.
+7. Direction verdict — the context carries the current evolution direction (direction.md: the loop's LEARNED REWARD MODEL — its current theory of what the user rewards; the card and playbooks are only its products) plus the card's Self-model lines (rules on probation — your promotion candidates). Judge whether the THEORY itself should move. "no_change" is the common case — one slice's events are card/playbook material, never direction material by themselves; a single explicit directive belongs to Self-model (the fast lane), promote it only when it recurs across slices or keeps being corroborated by later reactions. Write CONDITIONAL MAPPINGS ("when the user is in state-type X, prefer Y"), never the state itself — states belong to the card's Now section. Propose with the full new document: the four fixed sections (# Direction / # Anti-goals / # Evidence / # Log), the Evidence section carrying slice pointers (YYYY-MM-DD-HHMM — ≥2 DISTINCT slices steady-state; ≥1 suffices only when the mode says BOOTSTRAP, the first-ever direction). A proposal violating this discipline is rejected by the kernel.
 
 Mutation vocabulary (the evolution.mutations array):
 - {"op":"setIdentity","content":"Name: Alan"} — one Identity head line (Name / Address them as / Pronouns / Alias).
@@ -405,9 +411,18 @@ export function buildHousekeepingPayload(input: HousekeepingBridgeInput): {
   ];
   if (input.directionContent !== undefined) {
     sections.push(
-      `## Current evolution direction (direction.md — evaluate it per job 7)\n\n${
+      `## Current evolution direction (direction.md — evaluate it per job 7; mode: ${
+        input.directionMode === "bootstrap"
+          ? "BOOTSTRAP — never written; seed the minimal baseline, a single slice pointer suffices"
+          : "steady — the normal bar, Evidence needs ≥2 distinct slice pointers"
+      })\n\n${
         input.directionContent?.trim() ||
-        "(not set yet — this would be the FIRST direction; the bar is the same: abstract, cross-slice, evidence-anchored)"
+        "(not set yet — this would be the FIRST direction)"
+      }`,
+    );
+    sections.push(
+      `## Card Self-model section (promotion candidates for job 7 — rules on probation)\n\n${
+        input.selfModelContent?.trim() || "(empty — no probation rules on the card yet)"
       }`,
     );
   }

@@ -7,7 +7,6 @@ import type { UIMessage } from "ai";
 import { ChatInput } from "./chat-input";
 import { useAvailableModels } from "@/hooks/use-available-models";
 import { ChatSection } from "./chat-section";
-import { buildMockSteps } from "@/lib/chat/mock-stream";
 import { HistoricalChatView } from "./historical-chat-view";
 import { RelativeTimeReadout } from "./relative-time";
 import { EmptyBriefing } from "./empty-briefing";
@@ -338,52 +337,6 @@ function Inner({
     [persona, selectedSliceId, loadedSliceStart],
   );
 
-  // ── Mock demo state ─────────────────────────────────────────────────
-  const [demoMessages, setDemoMessages] = useState<UIMessage[]>([]);
-  const [demoStreaming, setDemoStreaming] = useState(false);
-  const demoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const runDemo = useCallback(() => {
-    if (demoTimerRef.current) return;
-
-    setDemoMessages([]);
-    setDemoStreaming(true);
-    setLastUserMessageAt(new Date().toISOString());
-
-    const steps = buildMockSteps();
-    let current: UIMessage = {
-      id: `demo-msg-${Date.now()}`,
-      role: "assistant",
-      parts: [],
-      createdAt: new Date(),
-    } as UIMessage;
-
-    let cursor = 0;
-    const advance = () => {
-      if (cursor >= steps.length) {
-        setDemoStreaming(false);
-        demoTimerRef.current = null;
-        return;
-      }
-      const step = steps[cursor];
-      demoTimerRef.current = setTimeout(() => {
-        current = step.apply(current);
-        setDemoMessages([current]);
-        cursor++;
-        advance();
-      }, step.delay);
-    };
-    advance();
-  }, []);
-
-  const stopDemo = useCallback(() => {
-    if (demoTimerRef.current) {
-      clearTimeout(demoTimerRef.current);
-      demoTimerRef.current = null;
-    }
-    setDemoStreaming(false);
-  }, []);
-
   // Refresh-resume goes through the SDK's own path: `resume: true` calls
   // resumeStream() on mount, and prepareReconnectToStreamRequest redirects it
   // to the durable run (`/api/chat/<runId>/stream?startIndex=0`), which rebuilds
@@ -481,22 +434,20 @@ function Inner({
   });
 
   // ── Persist the conversation (debounced) so a refresh restores it via
-  // `initialMessages`. Don't let the demo stream (demoMessages) wipe a real
-  // persisted conversation.
+  // `initialMessages`.
   const firstRenderRef = useRef(true);
   useEffect(() => {
     if (firstRenderRef.current) {
       firstRenderRef.current = false;
       return;
     }
-    if (demoMessages.length > 0) return;
     const id = setTimeout(() => {
       writeStoredMessages(messages.slice(-PERSIST_MESSAGE_CAP));
     }, 100);
     return () => clearTimeout(id);
-  }, [messages, demoMessages.length]);
+  }, [messages]);
 
-  const isStreaming = status === "streaming" || demoStreaming;
+  const isStreaming = status === "streaming";
   const isLoading = status === "submitted" || isStreaming;
 
   // Publish the in-flight state so the header can disable the settings entry
@@ -505,11 +456,6 @@ function Inner({
     setTurnBusy(isLoading);
     return () => setTurnBusy(false);
   }, [isLoading]);
-
-  const allMessages = useMemo(() => {
-    if (demoMessages.length > 0) return demoMessages;
-    return messages;
-  }, [messages, demoMessages]);
 
   // ── Background-completion toast ──────────────────────────────────────────
   // A turn that finishes while the tab is backgrounded is exactly the
@@ -526,7 +472,7 @@ function Inner({
   }, [status]);
 
   useEffect(() => {
-    const last = allMessages[allMessages.length - 1];
+    const last = messages[messages.length - 1];
     if (!last || last.role !== "assistant") return;
     const parts = (last.parts ?? []) as Array<{
       type?: string;
@@ -544,7 +490,7 @@ function Inner({
         toast.success(t("turnStatus.backgroundDone"));
       }
     }
-  }, [allMessages, t]);
+  }, [messages, t]);
 
   const handleSubmit = async (message: string, images: File[]) => {
     if (selectedSliceId !== "now" || transition) {
@@ -663,7 +609,7 @@ function Inner({
               transition={{ duration: 0.3 }}
               className="h-full"
             >
-              {(!hydrated || (allMessages.length === 0 && !isLoading)) ? (
+              {(!hydrated || (messages.length === 0 && !isLoading)) ? (
                 <EmptyBriefing
                   persona={persona}
                   active={activeSlice}
@@ -675,7 +621,7 @@ function Inner({
                   {/* No left padding — the timeline itself is the separator.
                       pb-36 = safe area clearing the fixed bottom input bar. */}
                   <ChatSection
-                    messages={allMessages}
+                    messages={messages}
                     isStreaming={isStreaming}
                     isLoading={isLoading}
                     error={error}
@@ -714,9 +660,8 @@ function Inner({
             <ChatInput
               onSubmit={handleSubmit}
               isLoading={isLoading}
-              onStop={demoStreaming ? stopDemo : stop}
-              onDemo={runDemo}
-              demoRunning={demoStreaming}
+              onStop={stop}
+              persona={persona}
               visionEnabled={visionSupported}
               currentModelId={selectedModel}
               onModelChange={handleModelChange}

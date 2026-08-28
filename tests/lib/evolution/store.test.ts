@@ -97,6 +97,22 @@ describe("missing-file tolerance", () => {
   });
 });
 
+// ── Bootstrap gate helper ────────────────────────────────────────────────
+
+describe("isDirectionTemplate", () => {
+  it("is true for null (missing file) and the untouched template, false once written", async () => {
+    const store = await importFresh();
+    expect(store.isDirectionTemplate(null)).toBe(true);
+
+    await store.ensureEvolutionFiles();
+    expect(store.isDirectionTemplate(await store.readDirection())).toBe(true);
+
+    expect(
+      store.isDirectionTemplate("# Direction\n\nCustom evolved content."),
+    ).toBe(false);
+  });
+});
+
 // ── Evidence-anchoring invariant ─────────────────────────────────────────
 
 describe("appendFitnessEvents evidence invariant", () => {

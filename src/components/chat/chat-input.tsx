@@ -2,17 +2,18 @@
 
 import { useState, useRef, type FormEvent, type ChangeEvent } from "react";
 import { useTranslations } from "next-intl";
-import { ArrowUp, Square, Paperclip, X, FlaskConical } from "lucide-react";
+import { ArrowUp, Square, Paperclip, X } from "lucide-react";
 import { useImageAttachments } from "@/hooks/use-image-attachments";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ModelSelector } from "./model-selector";
+import { MemoryDocs } from "./memory-docs";
 
 interface ChatInputProps {
   onSubmit: (message: string, images: File[]) => void;
   isLoading: boolean;
   onStop?: () => void;
-  onDemo?: () => void;
-  demoRunning?: boolean;
+  /** Demo-mode persona — forwarded to the MemoryDocs server action. */
+  persona?: string;
   /** Whether the selected model accepts image inputs (from /api/models). */
   visionEnabled?: boolean;
   // Model selection — owned by ChatPage so the request body and the toolbar
@@ -27,8 +28,7 @@ export function ChatInput({
   onSubmit,
   isLoading,
   onStop,
-  onDemo,
-  demoRunning = false,
+  persona,
   visionEnabled = false,
   currentModelId,
   onModelChange,
@@ -141,7 +141,7 @@ export function ChatInput({
           onChange={handleChange}
           onKeyDown={handleKeyDown}
           placeholder={t("placeholder")}
-          disabled={isLoading || demoRunning}
+          disabled={isLoading}
           rows={1}
           className="w-full resize-none overflow-y-auto bg-transparent text-foreground placeholder:text-muted-foreground focus:outline-none text-sm"
           style={{ minHeight: "24px", maxHeight: "72px" }}
@@ -179,30 +179,8 @@ export function ChatInput({
             accept="image/*"
           />
 
-          {/* Mock demo — visual showcase of all render capabilities */}
-          {onDemo && (
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <button
-                    type="button"
-                    onClick={onDemo}
-                    disabled={demoRunning || isLoading}
-                    className={`h-7 w-7 rounded-full transition-colors flex items-center justify-center ${
-                      demoRunning
-                        ? "bg-primary/10 text-primary"
-                        : "text-muted-foreground hover:text-amber-500 hover:bg-amber-500/10"
-                    } disabled:opacity-30`}
-                  >
-                    <FlaskConical className="h-3.5 w-3.5" />
-                  </button>
-                }
-              />
-              <TooltipContent side="top">
-                {demoRunning ? "Demo running…" : "Render demo"}
-              </TooltipContent>
-            </Tooltip>
-          )}
+          {/* Memory docs — previously / direction / mutations viewer */}
+          <MemoryDocs persona={persona} />
 
           {/* Model selector — NEW */}
           <ModelSelector

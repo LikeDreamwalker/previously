@@ -128,6 +128,10 @@ const evolutionLoop = vi.hoisted(() => ({
       (_store: unknown, _bucket: string, _window?: number) => -4,
     ),
     ensureEvolutionFiles: vi.fn(async () => {}),
+    /* Pure predicate — mirror the real implementation so bootstrap gating
+       tracks whatever readDirection is mocked to return. */
+    isDirectionTemplate: (content: string | null): boolean =>
+      content === null || content.includes("(Not set yet"),
     readDirection: vi.fn(async (): Promise<string | null> => null),
     readFitness: vi.fn(async () => ({ events: [], signals: [] })),
     readRecentSignals: vi.fn(async () => []),

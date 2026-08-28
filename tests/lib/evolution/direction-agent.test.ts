@@ -3,9 +3,10 @@
  * two-phase evolution loop (v1.0 design §2.3). The contract that matters:
  *   - "no change" is the common case and writes NOTHING (the module holds no
  *     write tools at all — the caller applies an accepted proposal);
- *   - a proposal is validated structurally (fixed four-section skeleton, a
- *     slice pointer as the cross-slice evidence bar, the size cap) — an
- *     invalid proposal degrades to no_change with the rejection logged;
+ *   - a proposal is validated structurally (fixed four-section skeleton, the
+ *     evidence bar — ≥2 distinct slice pointers steady-state, ≥1 on the
+ *     bootstrap write — the size cap) — an invalid proposal degrades to
+ *     no_change with the rejection logged;
  *   - runner failures degrade to { outcome: "failed" }, never throw.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -77,6 +78,8 @@ function baseInput(overrides: Record<string, unknown> = {}) {
   return {
     model,
     current: null,
+    mode: "steady",
+    cardSelfModel: null,
     recentEvents: [],
     analysis: ANALYSIS,
     sliceId: "2026-08-27-1000",
@@ -115,6 +118,28 @@ describe("validateDirectionProposal", () => {
   it("rejects an over-cap proposal", () => {
     const fat = VALID_PROPOSAL + "x".repeat(DIRECTION_MAX_CHARS);
     expect(validateDirectionProposal(fat, null).ok).toBe(false);
+  });
+
+  it("steady state needs ≥2 DISTINCT slice pointers (cross-slice bar)", () => {
+    // One pointer only → rejected; the SAME pointer twice still counts once.
+    const onePointer = VALID_PROPOSAL.replace(
+      "- 2026-08-22-1015 — user praised a concrete one",
+      "- 2026-08-20-1430 — same slice, restated",
+    );
+    const res = validateDirectionProposal(onePointer, null);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reason).toContain("≥2");
+  });
+
+  it("bootstrap (the first-ever direction) clears with a single slice pointer", () => {
+    const onePointer = VALID_PROPOSAL.replace(
+      "- 2026-08-22-1015 — user praised a concrete one",
+      "- no second slice",
+    );
+    expect(
+      validateDirectionProposal(onePointer, null, { bootstrap: true }),
+    ).toEqual({ ok: true });
+    expect(validateDirectionProposal(onePointer, null).ok).toBe(false);
   });
 });
 
@@ -221,5 +246,41 @@ describe("runDirectionAgent", () => {
     expect(arg.prompt).toContain("Current direction text");
     expect(arg.prompt).toContain("not what we discussed");
     expect(arg.prompt).toContain("2026-08-27-1000");
+  });
+
+  it("the mode and the Self-model promotion candidates ride the user prompt", async () => {
+    ai.streamText.mockResolvedValue(
+      makeToolCall({ outcome: "no_change", reason: "nothing" }),
+    );
+    await runDirectionAgent(
+      baseInput({
+        mode: "bootstrap",
+        cardSelfModel: "- Don't decompose emotional venting with thinkDeep",
+      }),
+    );
+    const arg = ai.streamText.mock.calls.at(-1)?.[0] as { prompt: string };
+    expect(arg.prompt).toContain("BOOTSTRAP");
+    expect(arg.prompt).toContain("Don't decompose emotional venting");
+  });
+
+  it("bootstrap mode accepts a first direction anchored to a single slice", async () => {
+    const onePointer = VALID_PROPOSAL.replace(
+      "- 2026-08-22-1015 — user praised a concrete one",
+      "- no second slice",
+    );
+    ai.streamText.mockResolvedValue(
+      makeToolCall({
+        outcome: "propose",
+        reason: "seeding the baseline",
+        proposed: {
+          content: onePointer,
+          summary: "First direction",
+          evidence: ["2026-08-20-1430"],
+          expectedBenefit: "A baseline to evolve from",
+        },
+      }),
+    );
+    const res = await runDirectionAgent(baseInput({ mode: "bootstrap" }));
+    expect(res.outcome).toBe("proposed");
   });
 });

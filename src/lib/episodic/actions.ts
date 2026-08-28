@@ -5,6 +5,7 @@ import { resolveDataSource } from "@/lib/data-source/resolve";
 import { getUserName } from "@/lib/identity";
 import { formatErrorDetail } from "@/lib/chat/workflow-errors";
 import { readSliceIndex, readSliceBody, parseSlice, sliceIdToFilePath, readPreviously, readAgentTimeline } from "./manager";
+import { readDirection, readMutations } from "@/lib/evolution/store";
 import { readTimelineIndex } from "./timeline/store";
 import type { TimelineSliceEntry } from "./timeline/types";
 import type { Turn } from "./types";
@@ -307,4 +308,44 @@ export async function getTurnCognition(
   } catch {
     return null;
   }
+}
+
+// ─── Memory docs viewer (previously / direction / mutations) ─────────────
+
+export interface MemoryDocs {
+  /** The slice the previously.md snapshot belongs to (null when no slices exist). */
+  sliceId: string | null;
+  /** previously.md of the current slice — the latest slice when none is active. */
+  previously: string | null;
+  /** memory/evolution/direction.md */
+  direction: string | null;
+  /** memory/evolution/mutations.md */
+  mutations: string | null;
+}
+
+/**
+ * Read the three user-facing memory documents in one round-trip. The "current"
+ * slice is simply the NEWEST slice — an active slice is always the newest (a
+ * new slice only starts after the previous one closes), so this covers both
+ * "the current slice" and "the latest slice when none is active".
+ */
+export async function getMemoryDocs(persona?: string): Promise<MemoryDocs> {
+  if (persona) setDemoPersona(persona);
+
+  const now = new Date();
+  const { entries } = await scanMonthsBack(
+    now.getUTCFullYear(),
+    now.getUTCMonth() + 1,
+    120,
+    1,
+  );
+  const latest = entries.sort((a, b) => b.start.localeCompare(a.start))[0] ?? null;
+
+  const [previously, direction, mutations] = await Promise.all([
+    latest ? readPreviously(latest.id).catch(() => null) : Promise.resolve(null),
+    readDirection(),
+    readMutations(),
+  ]);
+
+  return { sliceId: latest?.id ?? null, previously, direction, mutations };
 }

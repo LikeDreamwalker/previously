@@ -66,6 +66,18 @@ export async function readDirection(): Promise<string | null> {
   }
 }
 
+/**
+ * True when the direction doc has never actually been written — missing file,
+ * or still the untouched bootstrap template (the "(Not set yet" placeholders
+ * are the tell; writeDirection replaces the whole doc, so any real write
+ * clears them). Used to gate the bootstrap path: the FIRST direction gets a
+ * lowered evidence bar (see direction-agent.ts).
+ */
+export function isDirectionTemplate(content: string | null): boolean {
+  if (content === null) return true;
+  return content.includes("(Not set yet");
+}
+
 /** Overwrite the direction document. The EVOLUTION AGENT is the only writer
  *  (design §3 — single-writer discipline); this helper does not judge content. */
 export async function writeDirection(
@@ -73,6 +85,19 @@ export async function writeDirection(
   batch?: WriteBatch,
 ): Promise<void> {
   await fsWriteFile(DIRECTION_PATH, content, batch);
+}
+
+/**
+ * Read the append-only mutation archive (design §2.7). Returns null when it
+ * does not exist yet (no accepted mutations is a normal state, not an error).
+ */
+export async function readMutations(): Promise<string | null> {
+  try {
+    const content = await fsReadFile(MUTATIONS_PATH);
+    return content.trim() ? content : null;
+  } catch {
+    return null;
+  }
 }
 
 /**

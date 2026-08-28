@@ -2,23 +2,32 @@
  * Direction Agent — Phase 1 of the two-phase evolution loop (v1.0 design
  * §2.2–§2.3): evaluate whether `memory/evolution/direction.md` should move.
  *
- * The direction doc is the SELECTION CRITERIA of the evolution loop (what
- * "better for the user" means across slices); the card and playbooks are only
- * its products (Phase 2). This agent runs at slice boundaries when any bucket
- * triggered, reads the current direction + the recent fitness events + this
- * slice's analyzer output, and answers the narrow question: does the direction
- * itself need to change? Low frequency, high bar by design — "no change" is
- * the common and correct output; a proposal must clear the writing discipline
- * BOTH in the prompt and in code (validateDirectionProposal):
+ * The direction doc is the loop's LEARNED REWARD MODEL — its current best
+ * theory of what the environment (the user) rewards. The card and playbooks
+ * are PRODUCTS evolved under this theory (Phase 2). What it holds are
+ * CONDITIONAL MAPPINGS ("when the user is in state-type X, prefer Y"), never
+ * states themselves — a mapping stays true in a month, a state goes stale
+ * (states belong to the card's Now section). This agent runs at slice
+ * boundaries when any bucket triggered (or for the BOOTSTRAP — the first-ever
+ * direction, which gets a lowered evidence bar), reads the current direction +
+ * the card's Self-model section (promotion candidates: rules on probation) +
+ * recent fitness events + this slice's analysis, and answers the narrow
+ * question: does the theory itself need to move? Low frequency, high bar by
+ * design — "no change" is the common and correct output; a proposal must
+ * clear the writing discipline BOTH in the prompt and in code
+ * (validateDirectionProposal):
  *
- *   - ABSTRACT — still true in a month; episodic facts ("the user hiked
- *     yesterday") are card material and never direction material;
- *   - CROSS-SLICE — every conclusion is backed by evidence from multiple
- *     slices, and the Evidence section must carry slice pointers (validated
- *     structurally: no slice id → rejected);
+ *   - MAPPINGS, NOT STATES — conditional rules only; episodic facts ("the
+ *     user hiked yesterday") are card material and never direction material;
+ *   - EVIDENCE-ANCHORED — the Evidence section carries slice pointers
+ *     (validated structurally: ≥2 distinct slices steady-state, ≥1 on the
+ *     bootstrap write);
  *   - STRUCTURE-OPEN — new dimensions may grow; the four-section skeleton
  *     (Direction / Anti-goals / Evidence / Log) is fixed (validated
- *     structurally).
+ *     structurally);
+ *   - REVERSIBLE — there is no "progress" axis, only fit to the current
+ *     environment; an old mapping SHOULD retire when the environment turns.
+ *     Only the Log section is append-only.
  *
  * The agent only PROPOSES — it holds no write tools. The caller (housekeeping)
  * applies an accepted proposal through writeDirection + the mutations archive,
@@ -53,7 +62,7 @@ export const DIRECTION_SECTIONS = [
 export const DIRECTION_MAX_CHARS = 8000;
 
 /** A slice id (YYYY-MM-DD-HHMM) — the Evidence section's pointer format. */
-const SLICE_ID_RE = /\b\d{4}-\d{2}-\d{2}-\d{4}\b/;
+const SLICE_ID_RE = /\b\d{4}-\d{2}-\d{2}-\d{4}\b/g;
 
 export type DirectionValidation =
   | { ok: true }
@@ -62,13 +71,15 @@ export type DirectionValidation =
 /**
  * Validate a proposed direction document. Structural checks only — abstract-
  * ness itself is the agent's discipline (enforced by the role prompt); code
- * enforces what code can: the fixed skeleton, the cross-slice evidence bar
- * (≥1 slice pointer), the size cap, and that the proposal actually changes
- * something.
+ * enforces what code can: the fixed skeleton, the evidence bar (steady-state
+ * needs ≥2 DISTINCT slice pointers — the cross-slice requirement; the
+ * bootstrap write, the first-ever direction, clears with ≥1), the size cap,
+ * and that the proposal actually changes something.
  */
 export function validateDirectionProposal(
   proposed: string,
   current: string | null,
+  opts?: { bootstrap?: boolean },
 ): DirectionValidation {
   const text = proposed.trim();
   if (!text) return { ok: false, reason: "proposal is empty" };
@@ -83,10 +94,14 @@ export function validateDirectionProposal(
       return { ok: false, reason: `missing the fixed "${section}" section` };
     }
   }
-  if (!SLICE_ID_RE.test(text)) {
+  const pointers = new Set(text.match(SLICE_ID_RE) ?? []);
+  const minPointers = opts?.bootstrap ? 1 : 2;
+  if (pointers.size < minPointers) {
     return {
       ok: false,
-      reason: "no slice pointer (YYYY-MM-DD-HHMM) — direction conclusions must be cross-slice, evidence-anchored",
+      reason: opts?.bootstrap
+        ? "no slice pointer (YYYY-MM-DD-HHMM) — even the first direction must be evidence-anchored"
+        : `direction conclusions must be cross-slice: found ${pointers.size} distinct slice pointer(s), need ≥2`,
     };
   }
   if (current !== null && current.trim() === text) {
@@ -102,6 +117,15 @@ export interface DirectionAgentInput {
   model: ModelConfig;
   /** Current direction.md content — null when never set (fresh deployment). */
   current: string | null;
+  /**
+   * "bootstrap" = the first-ever direction (template/unset): a lowered
+   * evidence bar applies (≥1 slice pointer) and the prompt asks for a minimal
+   * baseline. "steady" = the normal high bar (≥2 distinct slice pointers).
+   */
+  mode: "bootstrap" | "steady";
+  /** The card's Self-model section verbatim — the promotion candidates
+   *  ("rules on probation"). Null when the card has none. */
+  cardSelfModel: string | null;
   /** Recent fitness events, all buckets, newest first or last — rendered
    *  verbatim into the prompt; the caller bounds the count (~30). */
   recentEvents: FitnessEvent[];
@@ -141,8 +165,10 @@ const directionReportSchema = z.object({
         .string()
         .describe(
           "The FULL new direction.md — the four fixed sections (# Direction / # Anti-goals / " +
-            "# Evidence / # Log), every conclusion abstract and cross-slice, the Evidence " +
-            "section carrying slice pointers (YYYY-MM-DD-HHMM).",
+            "# Evidence / # Log), every entry a CONDITIONAL MAPPING (\"when state-type X, " +
+            "prefer Y\"), never a state; the Evidence section carrying slice pointers " +
+            "(YYYY-MM-DD-HHMM — ≥2 distinct slices steady-state, ≥1 for the first-ever " +
+            "direction).",
         ),
       summary: z
         .string()
@@ -165,22 +191,37 @@ type DirectionReport = z.infer<typeof directionReportSchema>;
  * between calls; all per-call content (current direction, fitness events, the
  * slice's analysis) goes in the user prompt.
  */
-const DIRECTION_ROLE = `You are the Direction Agent — Phase 1 of the evolution loop. You guard direction.md, the cross-slice statement of what "better for the user" means. The user card and the sub-agent playbooks are PRODUCTS evolved under this direction (Phase 2, a different agent); you only judge whether the CRITERIA themselves should move.
+const DIRECTION_ROLE = `You are the Direction Agent — Phase 1 of the evolution loop. You guard direction.md, the loop's LEARNED REWARD MODEL: its current best theory of what the environment (the user) rewards. The user card and the sub-agent playbooks are PRODUCTS evolved under this theory (Phase 2, a different agent); you only judge whether the THEORY itself should move.
+
+## What direction.md holds — conditional mappings, never states
+
+Write CONDITIONAL MAPPINGS ("when the user is in state-type X, prefer Y"), never the state itself. A mapping stays true in a month (the condition simply doesn't fire when absent); a state ("the user is job-hunting right now") goes stale — states belong to the card's Now section, never here. Episodic facts are card material, NEVER direction material.
+
+## The promotion ladder
+
+A single explicit user directive belongs to the card's Self-model — the fast lane: it takes effect immediately and can be revoked by one new utterance. It is NOT direction material by itself. You promote a pattern into direction only when it RECURS across slices or keeps being corroborated by later reactions. The card's current Self-model lines (provided below) are your promotion candidates — read them as "rules on probation".
 
 ## The bar — low frequency, high threshold
 
-"no_change" is the common and correct outcome. Evaluate every time; write almost never. One slice's events, however loud, are Phase-2 material (the card, a playbook) — the direction moves only when evidence ACROSS slices says the current direction is wrong, drifted, or missing a dimension. When in doubt: no_change.
+"no_change" is the common and correct outcome. The inertia is a noise filter, not loyalty to the past: one loud slice, however loud, is Phase-2 material (the card, a playbook). The theory moves when evidence says the current theory is wrong, drifted, or missing a dimension. When in doubt: no_change.
+
+## Reversal is legal
+
+There is no "progress" axis, only fit to the current environment — when the environment turns, an old mapping SHOULD be retired (a species that loses its exoskeleton hasn't gone backwards). Never let the Log bind the present: the Log is append-only (add a line, never rewrite old lines), everything else may move.
+
+## Bootstrap mode (the FIRST direction)
+
+When the mode below says BOOTSTRAP: the doc has never been written. Seed a minimal, honest, abstract baseline from the card's Self-model and the fitness events at hand. For this first version only, a single slice pointer suffices; steady-state writes need ≥2 distinct slice pointers in Evidence.
 
 ## Writing discipline (validated in code — a proposal that violates it is rejected)
 
-1. ABSTRACT — a direction entry must still be true in a month. Episodic facts ("the user hiked yesterday", "prepping Friday's interview") are card material and NEVER direction material.
-2. CROSS-SLICE — every conclusion is backed by evidence from MULTIPLE slices; the Evidence section must carry slice pointers (YYYY-MM-DD-HHMM). A single slice's signal goes to the card/playbooks, not here.
-3. STRUCTURE-OPEN — you may grow new dimensions as the evidence demands; the four-section skeleton (# Direction / # Anti-goals / # Evidence / # Log) is fixed. Keep the Log append-only: add a new line for this change, never rewrite old lines.
-4. Anti-goals are the drift guardrails — what we must NOT evolve into. Strengthen them when you see drift; never silently drop one.
+1. MAPPINGS, NOT STATES — conditional rules only; no episodic facts, no current-state descriptions.
+2. EVIDENCE-ANCHORED — the Evidence section carries slice pointers (YYYY-MM-DD-HHMM): ≥2 distinct slices steady-state, ≥1 on the bootstrap write.
+3. STRUCTURE-OPEN — you may grow new dimensions WITHIN the fixed skeleton (# Direction / # Anti-goals / # Evidence / # Log). Anti-goals are the drift guardrails: strengthen them when you see drift; never silently drop one.
 
 ## What you get
 
-The current direction.md (possibly unset), the newest fitness events across all buckets (score: -2 explicit complaint / -1 dissatisfaction / +1 approval, each with the user's verbatim evidence), and this slice's analysis. That is all — you have no read tools; judge from this evidence.
+The current direction.md (or the untouched template in bootstrap mode), the card's Self-model section (promotion candidates), the newest fitness events across all buckets (score: -2 explicit complaint / -1 dissatisfaction / +1 approval, each with the user's verbatim evidence), and this slice's analysis (including its emotional signal). That is all — you have no read tools; judge from this evidence.
 
 Report through directionReport: outcome "no_change" + reason, or outcome "propose" with the full new document.`;
 
@@ -218,7 +259,8 @@ function renderAnalysis(analysis: TurnAnalysis): string {
   return lines.join("\n");
 }
 
-/** The dynamic user prompt: current direction + fitness events + analysis. */
+/** The dynamic user prompt: mode + current direction + Self-model + fitness
+ *  events + analysis. */
 function buildDirectionPrompt(input: DirectionAgentInput): string {
   const events =
     input.recentEvents.length > 0
@@ -229,9 +271,15 @@ function buildDirectionPrompt(input: DirectionAgentInput): string {
           )
           .join("\n")
       : "(no fitness events recorded yet)";
-  return `## Current direction.md
+  return `## Mode: ${input.mode === "bootstrap" ? "BOOTSTRAP — the direction has never been written; seed the minimal baseline (a single slice pointer suffices)" : "steady — the normal high bar (Evidence needs ≥2 distinct slice pointers)"}
 
-${input.current?.trim() || "(not set yet — this would be the FIRST direction; the bar is the same: abstract, cross-slice, evidence-anchored)"}
+## Current direction.md
+
+${input.current?.trim() || "(not set yet — this would be the FIRST direction)"}
+
+## The card's Self-model section (promotion candidates — rules on probation)
+
+${input.cardSelfModel?.trim() || "(empty — no probation rules on the card yet)"}
 
 ## Recent fitness events (all buckets, newest ${input.recentEvents.length})
 
@@ -241,7 +289,7 @@ ${events}
 
 ${renderAnalysis(input.analysis)}
 
-Evaluate: does the DIRECTION itself need to change? "no_change" is the common case — say so plainly. Propose only on cross-slice evidence.`;
+Evaluate: does the THEORY itself need to move? "no_change" is the common case — say so plainly. Promote only what the evidence corroborates.`;
 }
 
 const MAX_STEPS = 1;
@@ -295,6 +343,7 @@ export async function runDirectionAgent(
   const validation = validateDirectionProposal(
     report.proposed.content,
     input.current,
+    { bootstrap: input.mode === "bootstrap" },
   );
   if (!validation.ok) {
     // A rejected proposal is NOT a failure of the phase — it is the writing
