@@ -18,7 +18,7 @@ const nextConfig: NextConfig = {
   // `join(process.cwd(), ...)` — at runtime client mode re-roots memory at
   // MEMORY_ROOT and demo-fs reads `<cwd>/../benchmark-data`, so neither reads
   // the copies Next would ship inside .next/standalone. Shipping them bloats
-  // the previously-kernel artifact with local dev data.
+  // the @previously-lab/kernel artifact with local dev data.
   outputFileTracingExcludes: {
     "*": ["./memory/**/*", "./benchmark-data/**/*"],
   },

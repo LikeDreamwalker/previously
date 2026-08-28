@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * pack-kernel.mjs — assemble the publishable `previously-kernel` npm package.
+ * pack-kernel.mjs — assemble the publishable `@previously-lab/kernel` npm package.
  *
  * Copies `.next/standalone` (already dereferenced by pack-standalone.mjs, so
  * a pure file tree) into `dist-kernel/standalone` and writes the package
@@ -56,7 +56,7 @@ writeFileSync(
   join(distDir, "package.json"),
   JSON.stringify(
     {
-      name: "previously-kernel",
+      name: "@previously-lab/kernel",
       version,
       description:
         "Standalone kernel build of previously (Next.js output:standalone). " +
@@ -71,7 +71,7 @@ writeFileSync(
 
 writeFileSync(
   join(distDir, "README.md"),
-  `# previously-kernel
+  `# @previously-lab/kernel
 
 Packaged standalone kernel of [previously](https://github.com/previously-lab/agent)
 (Next.js \`output: "standalone"\` build, symlinks dereferenced).
@@ -83,4 +83,4 @@ appropriate environment (\`PREVIOUSLY_HOME\`, \`PREVIOUSLY_MODE=client\`,
 `
 );
 
-console.log(`pack-kernel: assembled previously-kernel@${version} in ${distDir.slice(repoRoot.length + 1)}/`);
+console.log(`pack-kernel: assembled @previously-lab/kernel@${version} in ${distDir.slice(repoRoot.length + 1)}/`);

@@ -158,7 +158,7 @@ The docs site ships an **interactive playground** at **[previously.ldwid.com/pla
 **The easy way — local client (recommended).** One npm package installs the kernel on your machine; your memory is a local git repo, and the brain can be your existing Claude/Codex/Kimi subscription (zero API keys) or your own key:
 
 ```bash
-npm i -g previously-client
+npm i -g @previously-lab/client
 previously     # guided setup on first run
 ```
 
@@ -177,7 +177,7 @@ See [previously-lab/client](https://github.com/previously-lab/client) and the [d
    | `GITHUB_REPO_NAME` | Your private repo's name |
    | `DEEPSEEK_API_KEY` | A DeepSeek API key (any AI SDK provider works too) |
 
-3. **Or run locally** — `git clone` your repo, `pnpm install`, `pnpm dev`. With `PREVIOUSLY_MODE=client` the app runs as a fully local kernel (filesystem storage, no GitHub repo needed) — this is the mode `previously-client` packages.
+3. **Or run locally** — `git clone` your repo, `pnpm install`, `pnpm dev`. With `PREVIOUSLY_MODE=client` the app runs as a fully local kernel (filesystem storage, no GitHub repo needed) — this is the mode `@previously-lab/client` packages.
 
 Storage has three modes, controlled by `STORAGE`:
 

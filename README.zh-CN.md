@@ -157,7 +157,7 @@ Previously 用**时间切片**取代聊天线程：一种按人类记忆真实�
 **简单方式——本地客户端（推荐）。** 一个 npm 包把内核装到你本机；记忆是本地 git 仓库，大脑可以用你已有的 Claude/Codex/Kimi 订阅（零 API key），也可以自带 key：
 
 ```bash
-npm i -g previously-client
+npm i -g @previously-lab/client
 previously     # 首次运行进入引导式初始化
 ```
 
@@ -176,7 +176,7 @@ previously     # 首次运行进入引导式初始化
    | `GITHUB_REPO_NAME` | 你的私有仓库名 |
    | `DEEPSEEK_API_KEY` | DeepSeek API key（任何 AI SDK 支持的供应商均可） |
 
-3. **或者本地运行** — `git clone` 你的仓库，`pnpm install`，`pnpm dev`。加 `PREVIOUSLY_MODE=client` 即为完全本地内核（文件系统存储，无需 GitHub 仓库）——`previously-client` 打包的正是这个模式。
+3. **或者本地运行** — `git clone` 你的仓库，`pnpm install`，`pnpm dev`。加 `PREVIOUSLY_MODE=client` 即为完全本地内核（文件系统存储，无需 GitHub 仓库）——`@previously-lab/client` 打包的正是这个模式。
 
 存储有三种模式，由 `STORAGE` 控制：
 

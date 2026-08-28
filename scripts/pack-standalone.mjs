@@ -17,7 +17,7 @@
  * additionally embeds a copy of its original node_modules context into
  * `<dest>/node_modules` (recursively), so every package stays self-contained.
  *
- * CI MUST run this before packaging the `previously-kernel` artifact
+ * CI MUST run this before packaging the `@previously-lab/kernel` artifact
  * (`pnpm build:standalone` runs `pnpm build` then this script).
  *
  * Detection uses lstat + readlink (never statSync) so broken Windows links

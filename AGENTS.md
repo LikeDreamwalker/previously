@@ -46,7 +46,7 @@ Three-layer separation:
 
 ## Packaging (supply chain)
 
-The client deployment ships `.next/standalone`, but Next mirrors the pnpm layout with symlinks — on Windows these come out broken (file-type links to dir targets, absolute links back into the build repo), so the artifact is not relocatable as-built. `scripts/pack-standalone.mjs` replaces every symlink in the standalone tree with the real content of its resolved target, producing a pure file tree (zero symlinks). CI must run `pnpm build:standalone` (build + pack) before packaging the `previously-kernel` artifact.
+The client deployment ships `.next/standalone`, but Next mirrors the pnpm layout with symlinks — on Windows these come out broken (file-type links to dir targets, absolute links back into the build repo), so the artifact is not relocatable as-built. `scripts/pack-standalone.mjs` replaces every symlink in the standalone tree with the real content of its resolved target, producing a pure file tree (zero symlinks). CI must run `pnpm build:standalone` (build + pack) before packaging the `@previously-lab/kernel` artifact.
 
 `pnpm build:standalone` runs `scripts/build-standalone.mjs`, a cross-platform wrapper (inline env vars in package.json scripts break on Windows cmd) that sets `NEXT_PUBLIC_PREVIOUSLY_TARGET=client`, then spawns `pnpm build` and the pack step.
 

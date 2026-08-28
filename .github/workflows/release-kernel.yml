@@ -1,6 +1,6 @@
 name: Release kernel package
 
-# Publishes the standalone kernel build as the `previously-kernel` npm package
+# Publishes the standalone kernel build as the `@previously-lab/kernel` npm package
 # whenever a version tag (v*) is pushed. The client CLI installs this package
 # as a dependency so end-user machines never run a Next build.
 #
@@ -12,7 +12,7 @@ name: Release kernel package
 # it is passed to pack-kernel.mjs as PREVIOUSLY_KERNEL_VERSION.
 #
 # REQUIRED SECRET: configure `NPM_TOKEN` (an npm automation token with publish
-# rights on the previously-kernel package) in the repository settings.
+# rights on the @previously-lab/kernel package) in the repository settings.
 
 on:
   push:
@@ -72,7 +72,7 @@ jobs:
           echo "response: $RESP"
           echo "$RESP" | grep -q '"mode":"client"' || { echo "smoke test failed"; exit 1; }
 
-      - name: Assemble previously-kernel package
+      - name: Assemble @previously-lab/kernel package
         run: pnpm pack:kernel
 
       - name: Pack tarball
@@ -81,11 +81,11 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: previously-kernel-tarball
-          path: dist-kernel/previously-kernel-*.tgz
+          name: previously-lab-kernel-tarball
+          path: dist-kernel/previously-lab-kernel-*.tgz
           retention-days: 30
 
-      - name: Publish previously-kernel to npm
+      - name: Publish @previously-lab/kernel to npm
         run: npm publish ./dist-kernel --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
