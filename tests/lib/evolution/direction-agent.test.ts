@@ -263,6 +263,32 @@ describe("runDirectionAgent", () => {
     expect(arg.prompt).toContain("Don't decompose emotional venting");
   });
 
+  it("the recent closed-slice markings ride the user prompt (with an honest empty state)", async () => {
+    ai.streamText.mockResolvedValue(
+      makeToolCall({ outcome: "no_change", reason: "nothing" }),
+    );
+    await runDirectionAgent(
+      baseInput({
+        recentMarkings: [
+          {
+            id: "2026-08-27-0915",
+            focus: "Shipped the release",
+            summary: "Cut v1.0 and tagged it.",
+            tone: "focused",
+          },
+        ],
+      }),
+    );
+    let arg = ai.streamText.mock.calls.at(-1)?.[0] as { prompt: string };
+    expect(arg.prompt).toContain("Recent closed-slice markings");
+    expect(arg.prompt).toContain("2026-08-27-0915 · Shipped the release");
+    expect(arg.prompt).toContain("tone focused");
+
+    await runDirectionAgent(baseInput({ recentMarkings: [] }));
+    arg = ai.streamText.mock.calls.at(-1)?.[0] as { prompt: string };
+    expect(arg.prompt).toContain("(no marked slices yet)");
+  });
+
   it("runs uncapped in steps with a 240s wall-clock budget (the old 1-step/60s cap caused silent failures)", async () => {
     ai.streamText.mockResolvedValue(
       makeToolCall({ outcome: "no_change", reason: "nothing" }),

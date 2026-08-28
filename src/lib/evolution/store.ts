@@ -198,7 +198,7 @@ export interface FitnessEvent {
 export interface FitnessSignal {
   ts: string;
   sliceId: string;
-  type: "recall_verify" | "recall_rework" | "recall_repeat";
+  type: "recall_verify" | "recall_rework" | "recall_repeat" | "interaction_regenerate" | "interaction_interrupt";
   detail: string;
 }
 

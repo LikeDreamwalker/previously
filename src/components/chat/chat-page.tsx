@@ -351,6 +351,7 @@ function Inner({
     sendMessage,
     status,
     stop,
+    regenerate,
     error,
   } = useChat({
     // v5 SDK: initial conversation state is passed as `messages` (ChatInit).
@@ -400,6 +401,12 @@ function Inner({
             // UI locale — the turn's relative-time annotations follow it.
             locale,
             loadedSliceIds: timelineSlices.map((s) => s.slice_id),
+            // The regenerate action re-runs the previous user message — the
+            // server must NOT re-append it to the slice (and records an
+            // interaction_regenerate fitness signal). See TurnInput.regenerate.
+            ...(config.trigger === "regenerate-message"
+              ? { regenerate: true }
+              : {}),
           },
         };
       },
@@ -523,6 +530,37 @@ function Inner({
     // client needs no evolution-specific state at all.
   };
 
+  // ── Regenerate: re-answer the last user message. The SDK truncates the
+  // rejected assistant message locally and re-requests with trigger
+  // "regenerate-message" (which prepareSendMessagesRequest turns into the
+  // body's regenerate flag). Only the LAST assistant message gets the button
+  // (ChatSection gates), and never mid-turn.
+  const handleRegenerate = useCallback(
+    (messageId: string) => {
+      if (status !== "ready") return;
+      void regenerate({ messageId });
+    },
+    [regenerate, status],
+  );
+
+  // ── Stop: abort the local stream AND drop the stored run id, so a reload
+  // never resurrects a turn the user deliberately cut off (onChatEnd only
+  // fires on a finish chunk, which an abort never receives). The durable run
+  // itself keeps writing memory server-side — the interruption is reported as
+  // a fitness signal, best-effort.
+  const handleStop = useCallback(() => {
+    void stop();
+    clearStoredRunId();
+    fetch("/api/episodic/signal", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "interaction_interrupt" }),
+      keepalive: true,
+    }).catch(() => {
+      /* instrumentation — never surface */
+    });
+  }, [stop]);
+
   // Hydration guard: the persisted conversation only exists client-side, so the
   // server renders the empty state. Keep the FIRST client render matching the
   // server HTML (empty), then reveal the restored messages after hydration —
@@ -626,6 +664,7 @@ function Inner({
                     isLoading={isLoading}
                     error={error}
                     lastUserMessageAt={lastUserMessageAt}
+                    onRegenerate={handleRegenerate}
                   />
                 </div>
               )}
@@ -660,7 +699,7 @@ function Inner({
             <ChatInput
               onSubmit={handleSubmit}
               isLoading={isLoading}
-              onStop={stop}
+              onStop={handleStop}
               persona={persona}
               visionEnabled={visionSupported}
               currentModelId={selectedModel}

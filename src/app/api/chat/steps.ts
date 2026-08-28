@@ -86,6 +86,7 @@ import {
   readRecentSignals,
   writeDirection,
 } from "@/lib/evolution/store";
+import { logInteractionSignal } from "@/lib/episodic/rework-signal";
 import {
   computeEvolutionTriggers,
   EVOLVE_WINDOW_SLICES,
@@ -93,6 +94,7 @@ import {
 import { appendMutationWithEvaluation } from "@/lib/evolution/acceptance";
 import {
   DIRECTION_RECENT_EVENTS,
+  DIRECTION_RECENT_MARKINGS,
   runDirectionAgent,
   validateDirectionProposal,
 } from "@/lib/evolution/direction-agent";
@@ -562,7 +564,11 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
       closeSignal = "time_cap";
     } else if (diskSlice.turns.length >= config.slicing.maxTurnsPerSlice) {
       closeSignal = "capacity";
-    } else if (checkContextLost(modelMessages, diskSlice)) {
+    // A regenerate turn legitimately carries NO assistant message in its
+    // client history (the SDK truncated the rejected reply) — the counting
+    // heuristic would misread a first-turn regenerate as context loss, so it
+    // is skipped for this turn shape.
+    } else if (!input.regenerate && checkContextLost(modelMessages, diskSlice)) {
       closeSignal = "context_lost";
     }
   }
@@ -954,18 +960,32 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   // persisted and skips the append. Legacy turns parsed from old files carry
   // no turnId, so the content check below stays as the fallback (mirrors the
   // turnKey fallback in lib/episodic/turn-merge.ts).
+  // A regenerate turn never appends: the question is already the slice's last
+  // user turn — the rejected reply stays, the new answer joins as a second
+  // agent turn under the fresh turnId.
   const isNewSlice =
     slice.turns.length === 1 && slice.turns[0].content === lastUserMessage;
   const userTurnRecorded =
     !!input.turnId &&
     slice.turns.some((t) => t.role === "user" && t.turnId === input.turnId);
-  if (!isNewSlice && !userTurnRecorded) {
+  if (!isNewSlice && !userTurnRecorded && !input.regenerate) {
     appendTurn(slice, {
       timestamp: new Date().toISOString(),
       role: "user",
       content: lastUserMessage,
       turnId: input.turnId,
     });
+  }
+  // The regenerate signal is a fact about the user's reaction, recorded in
+  // the slice that will hold the re-answer (the next turn's analyzer picks it
+  // up as an interaction-bucket candidate — design §2.6).
+  if (input.regenerate) {
+    await logInteractionSignal(
+      "interaction_regenerate",
+      slice.slice_id,
+      "user regenerated the previous reply — the answer was rejected",
+      batch,
+    );
   }
   await emitStep("slice", false, [slice.slice_id]);
 
@@ -1217,12 +1237,30 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
           evolutionStep = "direction";
           emitEvolutionProgress(stream, "direction");
           try {
+            // The episodic trail the mappings calibrate against — the catalog
+            // already carries focus/summary/tone, one read for the window.
+            // The just-closed slice is excluded: its marking already rides
+            // `analysis.closedMarking`.
+            const markingIndex = await readTimelineIndex().catch(() => null);
+            const recentMarkings = (markingIndex?.slices ?? [])
+              .filter(
+                (s) => s.status === "closed" && s.id !== diskSlice.slice_id,
+              )
+              .slice(-DIRECTION_RECENT_MARKINGS)
+              .reverse()
+              .map((s) => ({
+                id: s.id,
+                focus: s.focus,
+                summary: s.summary,
+                tone: s.tone,
+              }));
             const dirResult = await runDirectionAgent({
               model: input.modelConfig,
               current: currentDirection,
               mode: directionIsTemplate ? "bootstrap" : "steady",
               cardSelfModel,
               recentEvents: fitnessStore.events.slice(-DIRECTION_RECENT_EVENTS),
+              recentMarkings,
               analysis,
               sliceId: diskSlice.slice_id,
               onLine: onEvolutionLine,

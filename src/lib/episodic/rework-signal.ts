@@ -30,6 +30,7 @@
  */
 
 import { appendSignal } from "@/lib/evolution/store";
+import type { WriteBatch } from "@/lib/episodic/io-helpers";
 import { writeAgentTimeline } from "./manager";
 
 /** What recall found, kept per conversation slice for later readSlice checks. */
@@ -129,6 +130,47 @@ export async function logReworkSignal(
   } catch (e) {
     console.warn(
       "[ReworkSignal] agent.md append failed:",
+      e instanceof Error ? e.message : e,
+    );
+  }
+}
+
+/** Interaction-signal types — the user's own hands on the UI (design §2.6
+ *  extended): regenerate = the previous reply was rejected; interrupt = the
+ *  reply was cut off mid-stream. Both are dissatisfaction candidates for the
+ *  interaction bucket; the analyzer decides, these only record the fact. */
+export type InteractionSignalType =
+  | "interaction_regenerate"
+  | "interaction_interrupt";
+
+/**
+ * Emit an interaction signal (regenerate / interrupt): the machine-readable
+ * fitness store entry plus one compact audit line in the slice's agent.md.
+ * Same double-write, never-throws discipline as logReworkSignal.
+ */
+export async function logInteractionSignal(
+  type: InteractionSignalType,
+  sliceId: string,
+  detail: string,
+  batch?: WriteBatch,
+): Promise<void> {
+  if (!sliceId) return;
+  const ts = new Date().toISOString();
+
+  try {
+    await appendSignal({ ts, sliceId, type, detail }, batch);
+  } catch (e) {
+    console.warn(
+      "[InteractionSignal] fitness-store write failed:",
+      e instanceof Error ? e.message : e,
+    );
+  }
+
+  try {
+    await writeAgentTimeline(sliceId, `- **${type}** ${ts} — ${detail}.`);
+  } catch (e) {
+    console.warn(
+      "[InteractionSignal] agent.md append failed:",
       e instanceof Error ? e.message : e,
     );
   }

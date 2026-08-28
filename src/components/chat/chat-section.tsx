@@ -15,6 +15,8 @@ interface ChatSectionProps {
   isLoading: boolean;
   error: Error | undefined;
   lastUserMessageAt: string | null;
+  /** Regenerate handler — threaded to the LAST assistant message only. */
+  onRegenerate?: (messageId: string) => void;
 }
 
 export const ChatSection = memo(function ChatSection({
@@ -23,10 +25,14 @@ export const ChatSection = memo(function ChatSection({
   isLoading,
   error,
   lastUserMessageAt,
+  onRegenerate,
 }: ChatSectionProps) {
   const lastMessage = messages[messages.length - 1];
   const hasAssistant = messages.some((m) => m.role === "assistant");
   const showPlaceholder = isLoading && !hasAssistant;
+  // Regenerate re-answers the last user message — only meaningful on the
+  // LATEST assistant reply (and never mid-stream; ChatMessage also gates).
+  const lastAssistantId = [...messages].reverse().find((m) => m.role === "assistant")?.id;
 
   return (
     <>
@@ -44,6 +50,11 @@ export const ChatSection = memo(function ChatSection({
           startedAt={
             message.id === lastMessage?.id
               ? (lastUserMessageAt ?? undefined)
+              : undefined
+          }
+          onRegenerate={
+            onRegenerate && message.id === lastAssistantId
+              ? () => onRegenerate(message.id)
               : undefined
           }
         />

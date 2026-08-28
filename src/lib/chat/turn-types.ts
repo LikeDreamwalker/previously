@@ -73,6 +73,15 @@ export interface TurnInput {
    * start-turn.ts. Cross-references core.md and agent.md.
    */
   turnId: string;
+  /**
+   * True when this turn RE-RUNS the previous user message (the client
+   * regenerate action — SDK trigger "regenerate-message"). Housekeeping then
+   * skips the user-turn append (the question is already in the slice) and the
+   * context_lost heuristic (a legitimately assistant-less history), and emits
+   * an interaction_regenerate fitness signal. The new agent turn is recorded
+   * normally — the rejected reply stays in the slice as what happened.
+   */
+  regenerate?: boolean;
 }
 
 /** Summary of a synchronous card evolution run (v0.7b — inline in housekeeping). */

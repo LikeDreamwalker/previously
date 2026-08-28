@@ -112,6 +112,16 @@ export function validateDirectionProposal(
 
 // ─── The sub-agent ──────────────────────────────────────────────────────────
 
+/** A closed slice's close-marking — one row of the recent episodic trail the
+ *  direction's mappings must stay consistent with (from the timeline catalog). */
+export interface DirectionMarking {
+  /** Slice id (YYYY-MM-DD-HHMM). */
+  id: string;
+  focus: string;
+  summary: string;
+  tone?: string;
+}
+
 export interface DirectionAgentInput {
   /** The turn's MAIN model (shared runner, thinking ON at low effort). */
   model: ModelConfig;
@@ -131,6 +141,11 @@ export interface DirectionAgentInput {
   recentEvents: FitnessEvent[];
   /** This slice's analyzer output — the freshest evidence. */
   analysis: TurnAnalysis;
+  /** Recent closed slices' markings, newest first — the episodic trail the
+   *  mappings are calibrated against (this slice's own marking already rides
+   *  `analysis.closedMarking`, so the caller excludes it). Optional: omitted
+   *  when the catalog is unreadable. */
+  recentMarkings?: DirectionMarking[];
   /** The slice whose boundary triggered this evaluation. */
   sliceId: string;
   /** Live-line callback — the caller (housekeeping) wires this onto the
@@ -225,7 +240,7 @@ When the mode below says BOOTSTRAP: the doc has never been written. Seed a minim
 
 ## What you get
 
-The current direction.md (or the untouched template in bootstrap mode), the card's Self-model section (promotion candidates), the newest fitness events across all buckets (score: -2 explicit complaint / -1 dissatisfaction / +1 approval, each with the user's verbatim evidence), and this slice's analysis (including its emotional signal). That is all — you have no read tools; judge from this evidence.
+The current direction.md (or the untouched template in bootstrap mode), the card's Self-model section (promotion candidates), the newest fitness events across all buckets (score: -2 explicit complaint / -1 dissatisfaction / +1 approval, each with the user's verbatim evidence), this slice's analysis (including its emotional signal), and the recent closed slices' markings — the episodic trail your mappings must stay consistent with. That is all — you have no read tools; judge from this evidence.
 
 Report through directionReport: outcome "no_change" + reason, or outcome "propose" with the full new document.`;
 
@@ -233,6 +248,9 @@ const DIRECTION_SYSTEM = buildSubAgentSystem(DIRECTION_ROLE);
 
 /** How many recent fitness events the prompt carries (all buckets). */
 export const DIRECTION_RECENT_EVENTS = 30;
+
+/** How many recent closed-slice markings the prompt carries. */
+export const DIRECTION_RECENT_MARKINGS = 10;
 
 /** Compact render of this slice's analyzer output — the freshest evidence. */
 function renderAnalysis(analysis: TurnAnalysis): string {
@@ -264,7 +282,7 @@ function renderAnalysis(analysis: TurnAnalysis): string {
 }
 
 /** The dynamic user prompt: mode + current direction + Self-model + fitness
- *  events + analysis. */
+ *  events + analysis + the recent marking trail. */
 function buildDirectionPrompt(input: DirectionAgentInput): string {
   const events =
     input.recentEvents.length > 0
@@ -275,6 +293,15 @@ function buildDirectionPrompt(input: DirectionAgentInput): string {
           )
           .join("\n")
       : "(no fitness events recorded yet)";
+  const markings =
+    input.recentMarkings && input.recentMarkings.length > 0
+      ? input.recentMarkings
+          .map(
+            (m) =>
+              `- ${m.id} · ${m.focus} — ${m.summary} (tone ${m.tone ?? "?"})`,
+          )
+          .join("\n")
+      : "(no marked slices yet)";
   return `## Mode: ${input.mode === "bootstrap" ? "BOOTSTRAP — the direction has never been written; seed the minimal baseline (a single slice pointer suffices)" : "steady — the normal high bar (Evidence needs ≥2 distinct slice pointers)"}
 
 ## Current direction.md
@@ -288,6 +315,12 @@ ${input.cardSelfModel?.trim() || "(empty — no probation rules on the card yet)
 ## Recent fitness events (all buckets, newest ${input.recentEvents.length})
 
 ${events}
+
+## Recent closed-slice markings (newest ${input.recentMarkings?.length ?? 0})
+
+${markings}
+
+These are what the recent slices were ABOUT — ground your mappings in this trail (a mapping cites slice pointers from here), but never copy a slice's state into the direction.
 
 ## This slice's analysis (slice ${input.sliceId})
 

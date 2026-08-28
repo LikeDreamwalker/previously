@@ -377,7 +377,7 @@ Score the user's EXPLICIT satisfaction/dissatisfaction signals in THIS slice, at
 - delta: -2 = explicit complaint or correction ("that's wrong", "stop doing X"); -1 = signs of dissatisfaction (frustration, asking again, disappointment); +1 = explicit approval ("exactly what I needed", "记住了真好"). 0 = no signal — but prefer emitting NO entry at all.
 - EVIDENCE RULE (hard): every non-zero delta MUST quote the user's exact words in evidence. No quote → do not emit the entry. A delta without evidence is force-zeroed downstream anyway — don't waste it.
 - Score ONLY what this slice's user messages say. Never infer satisfaction from your own performance guesses; never score on the agent's behalf.
-- Mechanical signals: when the input lists a recall_rework / recall_repeat signal, treat it as a -1 CANDIDATE for the recall bucket (the main agent re-did recall's job — implicit distrust). The signal's detail line may serve as the evidence. recall_verify is neutral — no entry.
+- Mechanical signals: when the input lists a recall_rework / recall_repeat signal, treat it as a -1 CANDIDATE for the recall bucket (the main agent re-did recall's job — implicit distrust). When it lists an interaction_regenerate / interaction_interrupt signal, treat it as a -1 CANDIDATE for the interaction bucket (the user rejected the previous reply or cut it off mid-stream). The signal's detail line may serve as the evidence. recall_verify is neutral — no entry.
 - Max 5 entries. Nothing signaled → omit the fitness field entirely.`);
 
 /** The dynamic user prompt: current message, existing topics, closing slice. */
@@ -411,7 +411,7 @@ Return closed_marking AND evolve_card per your Task 6 instructions.`
 Instrumentation recorded these this slice (design: recall verify/rework tracking):
 ${input.signals.map((s) => `- ${s.type} — ${s.detail}`).join("\n")}
 
-Each recall_rework / recall_repeat is a -1 CANDIDATE for the recall bucket (its detail may serve as evidence). recall_verify is neutral — no entry.`
+Each recall_rework / recall_repeat is a -1 CANDIDATE for the recall bucket; each interaction_regenerate / interaction_interrupt is a -1 CANDIDATE for the interaction bucket (its detail may serve as evidence). recall_verify is neutral — no entry.`
       : "";
 
   return `Message: "${input.userMessage.slice(0, 1000)}"

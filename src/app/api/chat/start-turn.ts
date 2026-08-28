@@ -41,6 +41,9 @@ export interface StartTurnArgs {
   timezone?: string;
   /** UI locale ("zh" | "en") — relative-time annotations follow it. */
   locale?: string;
+  /** True on the client regenerate action (SDK trigger "regenerate-message") —
+   *  the turn re-runs the previous user message; see TurnInput.regenerate. */
+  regenerate?: boolean;
 }
 
 /** Extract the latest user message text from raw UI messages. */
@@ -203,6 +206,7 @@ export async function startTurn(
     useDemo: dataSource === "demo",
     startedAtIso: new Date().toISOString(),
     turnId,
+    ...(args.regenerate === true ? { regenerate: true } : {}),
   };
 
   const run = await start(turnWorkflow, [input]);

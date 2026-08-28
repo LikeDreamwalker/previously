@@ -92,7 +92,13 @@ vi.mock("@/lib/episodic", () => episodic);
 vi.mock("@/lib/episodic/flash/backfill-marks", () => ({
   backfillDrySliceMarks: vi.fn(async () => 0),
 }));
-vi.mock("@/lib/episodic/slicer", () => ({
+
+// The interaction-signal writer is mocked at its module boundary — the real
+// one double-writes the fitness store + the slice's agent.md.
+const interactionSignal = vi.hoisted(() => ({
+  logInteractionSignal: vi.fn(async () => {}),
+}));
+vi.mock("@/lib/episodic/rework-signal", () => interactionSignal);vi.mock("@/lib/episodic/slicer", () => ({
   checkSliceAge: () => sliceAged,
 }));
 
@@ -124,6 +130,7 @@ const evolutionLoop = vi.hoisted(() => ({
     appendFitnessEvents: vi.fn(
       async (_events: unknown[], _batch?: unknown) => {},
     ),
+    appendSignal: vi.fn(async (_signal: unknown, _batch?: unknown) => {}),
     bucketNetScore: vi.fn(
       (_store: unknown, _bucket: string, _window?: number) => -4,
     ),
@@ -144,6 +151,7 @@ vi.mock("@/lib/evolution/triggers", () => ({
 }));
 vi.mock("@/lib/evolution/direction-agent", () => ({
   DIRECTION_RECENT_EVENTS: 30,
+  DIRECTION_RECENT_MARKINGS: 10,
   runDirectionAgent: evolutionLoop.runDirectionAgent,
   validateDirectionProposal: evolutionLoop.validateDirectionProposal,
 }));
@@ -372,6 +380,42 @@ describe("housekeeping step", () => {
 
     expect(episodic.closeSlice).toHaveBeenCalledWith(disk, "context_lost", expect.anything());
     expect(slice.slice_id).toBe("2026-07-14-1200");
+  });
+
+  it("regenerate: no duplicate user turn, no context_lost, and an interaction signal", async () => {
+    const disk = makeSlice({
+      turns: [
+        { timestamp: "t0", role: "user", content: "same question" },
+        { timestamp: "t1", role: "agent", content: "rejected reply" },
+      ],
+    });
+    episodic.tryLoadTodaySlice.mockResolvedValue(disk);
+
+    // The SDK truncated the rejected assistant message locally, so the
+    // history legitimately carries NO assistant message — normally the
+    // context_lost heuristic would fire (0 assistant vs ≥1 agent turns).
+    const { slice } = await housekeeping(
+      makeInput("same question", { regenerate: true }),
+    );
+
+    // The slice survives and the question is NOT re-appended.
+    expect(episodic.closeSlice).not.toHaveBeenCalled();
+    expect(slice.slice_id).toBe(disk.slice_id);
+    expect(slice.turns).toHaveLength(2);
+    expect(episodic.appendTurn).not.toHaveBeenCalled();
+    // …and the rejection is recorded as a mechanical fitness signal.
+    expect(interactionSignal.logInteractionSignal).toHaveBeenCalledWith(
+      "interaction_regenerate",
+      disk.slice_id,
+      expect.stringContaining("regenerated"),
+      expect.anything(),
+    );
+  });
+
+  it("no interaction signal on an ordinary turn", async () => {
+    episodic.tryLoadTodaySlice.mockResolvedValue(null);
+    await housekeeping(makeInput("hello world"));
+    expect(interactionSignal.logInteractionSignal).not.toHaveBeenCalled();
   });
 
   it("returns previouslyContent and strandsMenu along with slice", async () => {

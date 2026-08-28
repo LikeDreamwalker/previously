@@ -24,6 +24,7 @@ export async function POST(request: Request): Promise<Response> {
       model?: unknown;
       timezone?: unknown;
       locale?: unknown;
+      regenerate?: unknown;
     };
 
     const { messages } = body;
@@ -45,6 +46,7 @@ export async function POST(request: Request): Promise<Response> {
         ["en", "zh"].includes(body.locale)
           ? body.locale
           : undefined,
+      regenerate: body.regenerate === true,
     });
 
     return createUIMessageStreamResponse({

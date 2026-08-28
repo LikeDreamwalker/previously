@@ -54,7 +54,7 @@ ChatPage (chat-page.tsx)  ← "use client", top-level useChat container
    - `text` → buffered and flushed into `MarkdownRenderer` blocks
 3. Items render in natural stream order inside `AnimatePresence` for enter/exit animations.
 4. A `LoadingTip` pulses at the bottom while streaming.
-5. `MessageActions` (copy/regenerate) render in `MessageFooter` — gated on `onRegenerate` prop.
+5. `MessageActions` (copy/regenerate) render in `MessageFooter` — `ChatSection` threads `onRegenerate` to the LAST assistant message only; the SDK's `regenerate({messageId})` truncates the rejected reply locally and re-requests with trigger `regenerate-message`, which the transport turns into the body's `regenerate` flag (the server then skips the duplicate user-turn append and records an `interaction_regenerate` fitness signal). The input bar's stop button calls `handleStop`, which aborts the stream, clears the stored run id (so a reload never resurrects a deliberately-stopped turn), and reports an `interaction_interrupt` signal to `POST /api/episodic/signal` (fire-and-forget).
 
 ## File Map
 
