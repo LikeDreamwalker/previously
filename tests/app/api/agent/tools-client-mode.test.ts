@@ -46,3 +46,19 @@ describe("client-mode tool gating", () => {
     expect(contexts.delegateTask).toBe(ctx);
   });
 });
+
+describe("toolContextSchema — step-boundary round-trip", () => {
+  it("keeps timezone / startedAtIso / locale through the schema re-parse (zod strips undeclared keys)", async () => {
+    const { toolContextSchema } = await import("@/app/api/agent/tools");
+    const full: ToolContext = {
+      ...ctx,
+      timezone: "Asia/Shanghai",
+      startedAtIso: "2026-08-28T07:39:01.339Z",
+      locale: "zh",
+    };
+    const parsed = toolContextSchema.parse(full);
+    expect(parsed.timezone).toBe("Asia/Shanghai");
+    expect(parsed.startedAtIso).toBe("2026-08-28T07:39:01.339Z");
+    expect(parsed.locale).toBe("zh");
+  });
+});

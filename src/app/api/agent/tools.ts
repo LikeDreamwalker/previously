@@ -56,7 +56,15 @@ const modelConfigSchema = z.object({
   defaultEffort: z.enum(["low", "medium", "high"]),
 });
 
-const toolContextSchema = z.object({
+/**
+ * The serializable per-turn tool context. EVERY ToolContext field must be
+ * declared here: the workflow step boundary re-parses each tool's context
+ * entry through this schema and zod strips undeclared keys — an undeclared
+ * field silently never reaches the executor (timezone once fell off this
+ * way, and every read tool rendered UTC).
+ * Exported for the round-trip regression test.
+ */
+export const toolContextSchema = z.object({
   repo: z.string(),
   owner: z.string(),
   useGithub: z.boolean(),
@@ -74,6 +82,16 @@ const toolContextSchema = z.object({
   // use it directly (the same one injected for the main agent) instead of
   // re-resolving config from GitHub on every fragment step.
   mainModel: modelConfigSchema.optional(),
+  // User-local time rendering (time-localize.ts / the currentTime executor).
+  // These MUST be declared here: the workflow step boundary re-parses the
+  // context through this schema and zod strips undeclared keys — without
+  // them the executors see `timezone: undefined` and fall back to UTC.
+  /** The user's IANA timezone (e.g. "Asia/Shanghai"). */
+  timezone: z.string().optional(),
+  /** The turn's start instant (UTC ISO) — anchors local-time rendering. */
+  startedAtIso: z.string().optional(),
+  /** UI locale ("zh" | "en") — relative-time annotations follow it. */
+  locale: z.string().optional(),
 });
 
 // ─── Concept tools ───────────────────────────────────────────────────────
