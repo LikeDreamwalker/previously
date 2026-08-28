@@ -2,6 +2,7 @@
   "name": "previously",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "pnpm@11.10.0",
   "scripts": {
     "generate:identity": "node scripts/generate-identity.mjs",
     "predev": "node scripts/generate-identity.mjs",
