@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import type { ModelMessage } from "ai";
-import { sliceAlignedWindow } from "@/app/api/chat/turn-workflow";
+import { sliceAlignedWindow, withCheckpointPrefix } from "@/app/api/chat/turn-workflow";
 
 const u = (s: string): ModelMessage => ({ role: "user", content: s });
 const a = (s: string): ModelMessage => ({ role: "assistant", content: s });
@@ -55,5 +55,39 @@ describe("sliceAlignedWindow (v0.9 — history window aligned to the time slice)
   it("treats userTurnsInSlice <= 0 as 1 (defensive)", () => {
     const history = [u("old"), a("reply"), u("current")];
     expect(sliceAlignedWindow(history, 0, 100)).toEqual([u("current")]);
+  });
+});
+
+describe("withCheckpointPrefix (carry-over across a time_cap/capacity checkpoint)", () => {
+  it("prepends the previous slice's carried tail before the slice-aligned window", () => {
+    const history = [u("p1"), a("p1 reply"), u("s1"), a("r1"), u("s2")];
+    const windowed = sliceAlignedWindow(history, 2, 100); // [u(s1), a(r1), u(s2)]
+    const prefix: ModelMessage[] = [u("p1"), a("p1 reply")];
+    expect(withCheckpointPrefix(windowed, prefix)).toEqual([
+      u("p1"),
+      a("p1 reply"),
+      u("s1"),
+      a("r1"),
+      u("s2"),
+    ]);
+  });
+
+  it("is append-only across the slice's turns: same prefix, own turns append after it", () => {
+    const prefix: ModelMessage[] = [u("p1"), a("p1 reply")];
+    // Turn 1 of the new slice — only the current user message follows the tail.
+    const turn1 = withCheckpointPrefix(sliceAlignedWindow([u("s1")], 1, 100), prefix);
+    // Turn 2 — the slice's own first exchange appends after the same tail.
+    const turn2 = withCheckpointPrefix(
+      sliceAlignedWindow([u("s1"), a("r1"), u("s2")], 2, 100),
+      prefix,
+    );
+    expect(turn1).toEqual([u("p1"), a("p1 reply"), u("s1")]);
+    expect(turn2.slice(0, turn1.length)).toEqual(turn1);
+  });
+
+  it("returns the window unchanged without a prefix (idle_gap / context_lost / plain slice)", () => {
+    const windowed = [u("current")];
+    expect(withCheckpointPrefix(windowed, undefined)).toEqual(windowed);
+    expect(withCheckpointPrefix(windowed, [])).toEqual(windowed);
   });
 });

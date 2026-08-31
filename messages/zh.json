@@ -299,6 +299,7 @@
       "desc": "调整 Agent 的切片、回忆和上下文管理方式。保存到你的记忆仓库中，无需重新部署。",
       "maxSliceMinutes": "切片时长（分钟）",
       "maxTurnsPerSlice": "片内容量上限（安全阀）",
+      "idleGapMinutes": "空闲超时开启新切片（分钟）",
       "saved": "已保存 ✓",
       "saveFailed": "保存失败，请重试。",
       "restoreDefaults": "恢复默认设置"

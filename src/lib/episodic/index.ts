@@ -15,6 +15,7 @@ export {
   readSliceIndex,
   readStrands,
   readSliceBody,
+  loadSlice,
   toIndexEntry,
   updateMonthlyIndex,
   updateStrands,

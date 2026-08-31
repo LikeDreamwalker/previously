@@ -69,6 +69,19 @@ describe("classifyContinuity", () => {
     expect(c.tier).toBe("none");
   });
 
+  it("a checkpoint-continued slice (continuesFrom) wins over the gap-based tiers", () => {
+    // Even a tiny gap (time_cap checkpoint) must NOT read as a recent return.
+    const c = classifyContinuity(NOW, prev(), false, "2026-08-02-0530");
+    expect(c.tier).toBe("checkpoint");
+    expect(c.prevSlice?.id).toBe("2026-08-02-0530");
+  });
+
+  it("checkpoint without a resolvable prevSlice falls back to a stub carrying the id", () => {
+    const c = classifyContinuity(NOW, null, false, "2026-08-02-0530");
+    expect(c.tier).toBe("checkpoint");
+    expect(c.prevSlice).toEqual({ id: "2026-08-02-0530", focus: "", start: "" });
+  });
+
   it("falls back to `start` when the previous slice has no end", () => {
     const c = classifyContinuity(NOW, prev({ end: undefined }), false);
     expect(c.gapMs).toBe(5_520_000); // start 05:00 → now 06:32
@@ -111,6 +124,19 @@ describe("continuityLine", () => {
 
   it("frames first contact", () => {
     expect(continuityLine({ tier: "none" })).toBe("No past conversation yet.");
+  });
+
+  it("frames a checkpoint as the SAME ongoing conversation — no recall needed", () => {
+    const line = continuityLine({
+      tier: "checkpoint",
+      prevSlice: prev(),
+    });
+    expect(line).toContain("2026-08-02-0530");
+    expect(line).toContain('"Rust loop tests"');
+    expect(line).toContain("automatic checkpoint of the SAME ongoing conversation");
+    expect(line).toContain("no recall needed");
+    // A checkpoint must NOT carry the recent_return recall-first instruction.
+    expect(line).not.toContain("Recall that slice FIRST");
   });
 });
 

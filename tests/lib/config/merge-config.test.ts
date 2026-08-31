@@ -3,7 +3,7 @@ import { mergeConfigOverrides } from "@/lib/config/defaults";
 import type { UserConfig } from "@/lib/config/types";
 
 const current: UserConfig = {
-  slicing: { maxSliceMinutes: 30, maxTurnsPerSlice: 50 },
+  slicing: { maxSliceMinutes: 30, maxTurnsPerSlice: 50, idleGapMinutes: 15 },
   model: {
     provider: "deepseek-v4-flash",
     thinking: true,

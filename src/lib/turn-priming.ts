@@ -54,7 +54,7 @@ export interface PrevSliceRef {
   end?: string;
 }
 
-export type ContinuityTier = "continuing" | "recent_return" | "cold" | "none";
+export type ContinuityTier = "continuing" | "checkpoint" | "recent_return" | "cold" | "none";
 
 export interface ContinuityInfo {
   tier: ContinuityTier;
@@ -125,13 +125,24 @@ export function formatLocalTime(nowIso: string, timezone: string): LocalTimeInfo
  * resulting line is frozen for the slice's whole life. `isSameSlice`
  * ("continuing") is retained for API compatibility but no longer produced by
  * the prompt path.
+ *
+ * `continuesFrom` (the slice's checkpoint continuation link) wins over the
+ * gap-based tiers: a time_cap/capacity close is an automatic checkpoint of
+ * the SAME conversation, not a return after an absence.
  */
 export function classifyContinuity(
   nowIso: string,
   prevSlice: PrevSliceRef | null,
   isSameSlice: boolean,
+  continuesFrom?: string,
 ): ContinuityInfo {
   if (isSameSlice) return { tier: "continuing" };
+  if (continuesFrom) {
+    return {
+      tier: "checkpoint",
+      prevSlice: prevSlice ?? { id: continuesFrom, focus: "", start: "" },
+    };
+  }
   if (!prevSlice) return { tier: "none" };
   const refTime = prevSlice.end ?? prevSlice.start;
   const gapMs = Date.parse(nowIso) - Date.parse(refTime);
@@ -160,6 +171,10 @@ export function formatGap(gapMs: number): string {
 export function continuityLine(c: ContinuityInfo): string {
   if (c.tier === "continuing") {
     return "The user is mid-conversation — the recent turns above are the immediate context; continue naturally, no recall needed.";
+  }
+  if (c.tier === "checkpoint" && c.prevSlice) {
+    const focus = c.prevSlice.focus ? `, "${c.prevSlice.focus}"` : "";
+    return `The previous slice (${c.prevSlice.id}${focus}) is an automatic checkpoint of the SAME ongoing conversation, not a new topic — the recent turns above are its live continuation; continue naturally, no recall needed for them.`;
   }
   if (c.tier === "recent_return" && c.prevSlice) {
     const gap = c.gapMs !== undefined ? formatGap(c.gapMs) : "recently";

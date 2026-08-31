@@ -211,13 +211,20 @@ export function buildTimelineBrief(
       ? newest.map((s) => sliceLineWithTime(s, opts))
       : ["- (empty — no slices yet)"]),
   ];
+  const zh = normalizeLocale(opts.locale) === "zh";
   if (totalCount > recent) {
     lines.push(
-      `- 往前共 ${totalCount} 片，需要时向 recall 提问回溯`,
+      zh
+        ? `- 往前共 ${totalCount} 片，需要时向 recall 提问回溯`
+        : `- ${totalCount} slices in total — ask recall to reach further back when needed`,
     );
   }
   if (needsMarking > 0) {
-    lines.push(`- ${needsMarking} 片尚未生成摘要（needs_marking）`);
+    lines.push(
+      zh
+        ? `- ${needsMarking} 片尚未生成摘要（needs_marking）`
+        : `- ${needsMarking} slice(s) not yet summarized (needs_marking)`,
+    );
   }
   return lines.join("\n");
 }

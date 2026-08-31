@@ -5,10 +5,17 @@
  */
 
 export interface SlicingConfig {
-  /** Force-close the active slice this many minutes after it starts. */
+  /** Force-close the active slice this many minutes after it starts (a
+   *  periodic autosave checkpoint — the follow-up slice continues the same
+   *  conversation via `continuesFrom`). */
   maxSliceMinutes: number;
-  /** Force-close the active slice after this many turns (safety net). */
+  /** Force-close the active slice after this many turns (safety net — also a
+   *  checkpoint close, continued via `continuesFrom`). */
   maxTurnsPerSlice: number;
+  /** Close the active slice when this many minutes have passed since its last
+   *  turn — a long silence means the user left and came back, so the next
+   *  message opens a genuinely new conversation (`"idle_gap"`, no carry-over). */
+  idleGapMinutes: number;
 }
 
 export interface ModelConfig {

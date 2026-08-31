@@ -90,7 +90,7 @@ describe("buildTimelineBrief", () => {
         entry({ id: "2026-08-10-1839", date: "2026-08-10", focus: "地址研究" }),
         entry({ id: "2026-08-11-1115", date: "2026-08-11", focus: "滴滴反思" }),
       ]),
-      { recent: 1 },
+      { recent: 1, locale: "zh" },
     );
     expect(brief).toContain("## Timeline (recent)");
     expect(brief).toContain("滴滴反思");
@@ -98,11 +98,24 @@ describe("buildTimelineBrief", () => {
     expect(brief).toContain("往前共 2 片");
   });
 
+  it("renders the totals lines in English for en locale", () => {
+    const brief = buildTimelineBrief(
+      index([
+        entry({ id: "2026-08-10-1839", date: "2026-08-10", focus: "地址研究" }),
+        entry({ id: "2026-08-11-1115", date: "2026-08-11", focus: "滴滴反思", needs_marking: true }),
+      ]),
+      { recent: 1, locale: "en" },
+    );
+    expect(brief).toContain("2 slices in total");
+    expect(brief).toContain("1 slice(s) not yet summarized");
+  });
+
   it("notes slices still needing marking", () => {
     const brief = buildTimelineBrief(
       index([
         entry({ id: "2026-08-11-1025", date: "2026-08-11", focus: "", summary: "", needs_marking: true }),
       ]),
+      { locale: "zh" },
     );
     expect(brief).toContain("1 片尚未生成摘要");
   });
