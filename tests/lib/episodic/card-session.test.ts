@@ -18,8 +18,6 @@ import {
   sessionPromoteNowToPast,
   sessionAddHorizon,
   sessionResolveHorizon,
-  sessionAddSelfModel,
-  sessionRemoveSelfModel,
 } from "@/lib/episodic/card-session";
 import {
   newCardTemplate,
@@ -28,7 +26,6 @@ import {
   CARD_NOW_MAX,
   PAST_ANCHORS_MAX,
   HORIZON_MAX,
-  CARD_SELF_MODEL_MAX,
 } from "@/lib/episodic/previously-format";
 
 const SLICE = "2026-08-17-0515";
@@ -213,39 +210,6 @@ describe("Horizon", () => {
   });
 });
 
-describe("Self-model", () => {
-  it("rejects a line contradicting a standing rule", () => {
-    const s = session();
-    const res = sessionAddSelfModel(s, "Never use the recall tool, it wastes steps");
-    expect(res).toContain("REJECTED");
-    expect(res).toContain("overrides:");
-  });
-
-  it("accepts the same line with an explicit user override marker", () => {
-    const s = session();
-    const res = sessionAddSelfModel(
-      s,
-      "Don't use recall for casual chat — overrides: recall is the memory-search tool (user: '别动不动就回忆')",
-    );
-    expect(res).toMatch(/^OK/);
-  });
-
-  it("caps the section and rejects duplicates", () => {
-    const s = session();
-    sessionAddSelfModel(s, "keep answers short");
-    expect(sessionAddSelfModel(s, "Keep answers short")).toContain("already on the card");
-    for (let i = 0; i < CARD_SELF_MODEL_MAX - 1; i++) sessionAddSelfModel(s, `lesson ${i}`);
-    expect(sessionAddSelfModel(s, "one lesson too many")).toContain("REJECTED");
-  });
-
-  it("removeSelfModel drops the matched line", () => {
-    const s = session();
-    sessionAddSelfModel(s, "verify before claiming done");
-    expect(sessionRemoveSelfModel(s, "verify before")).toMatch(/^OK/);
-    expect(s.doc.selfModel).toEqual([]);
-  });
-});
-
 describe("serialization + substance comparison", () => {
   it("round-trips through serializeCard/parseCard", () => {
     const s = session();
@@ -284,10 +248,31 @@ describe("serialization + substance comparison", () => {
       past: { profile: "profile text", anchors: [{ text: "anchor", refs: REFS }] },
       now: [{ text: "hook", refs: REFS, since: "2026-08-15" }],
       horizon: [{ text: "loop", by: "2026-08-20", refs: REFS }],
-      selfModel: ["lesson"],
+      selfModel: [],
     });
     const s = session(base);
     expect(sameCardSubstance(parseCard(base), parseCard(serializeSession(s)))).toBe(true);
+  });
+
+  it("a legacy Self-model section still PARSES (read tolerance) but never re-serializes", () => {
+    // The card format dropped Self-model; old cards on disk still carry it.
+    // parseCard keeps filling doc.selfModel (so the direction migration can
+    // read the legacy lines), but the writer never emits the section again —
+    // so the strip registers as a substance change.
+    const legacy = `${serializeCard({
+      sliceId: "2026-08-16-0900",
+      updated: "2026-08-16T09:00:00.000Z",
+      identity: ["Name: Alan"],
+      past: { profile: "profile text", anchors: [] },
+      now: [],
+      horizon: [],
+      selfModel: [],
+    })}\n## Self-model\n\n- Don't decompose emotional venting\n`;
+    const parsed = parseCard(legacy);
+    expect(parsed?.selfModel).toEqual(["Don't decompose emotional venting"]);
+    const s = session(legacy);
+    expect(serializeSession(s)).not.toContain("## Self-model");
+    expect(sameCardSubstance(parsed, parseCard(serializeSession(s)))).toBe(false);
   });
 });
 

@@ -2,7 +2,9 @@
  * computeEvolutionTriggers (src/lib/evolution/triggers.ts) — the deterministic
  * trigger half of fitness scoring (v1.0 design §2.5):
  *   - a bucket's windowed net score at/below EVOLVE_TRIGGER_THRESHOLD fires it;
- *   - a single evidence-anchored -2 THIS slice fires its bucket immediately;
+ *   - ANY evidence-anchored negative delta (≤ -1) THIS slice fires its bucket
+ *     immediately — a -2 (explicit complaint/correction) or a -1
+ *     (dissatisfaction signal / portrait-rubric pattern match) alike;
  *   - no trigger → empty list → housekeeping runs NO evolution sub-agent.
  * Pure function — no I/O, no mocks.
  */
@@ -80,7 +82,26 @@ describe("computeEvolutionTriggers", () => {
     ]);
     expect(triggers).toHaveLength(1);
     expect(triggers[0].bucket).toBe("card");
+    expect(triggers[0].reason).toContain("explicit complaint/correction");
     expect(triggers[0].reason).toContain("你写错了");
+  });
+
+  it("a single evidence-anchored -1 THIS slice triggers its bucket immediately (inclusive trigger)", () => {
+    const triggers = computeEvolutionTriggers(store([]), [
+      { bucket: "interaction", delta: -1, evidence: "你又没回答我的问题" },
+    ]);
+    expect(triggers).toHaveLength(1);
+    expect(triggers[0].bucket).toBe("interaction");
+    expect(triggers[0].reason).toContain("dissatisfaction signal");
+    expect(triggers[0].reason).toContain("你又没回答我的问题");
+  });
+
+  it("an evidence-less -1 can never trigger (mirrors the store's force-zero)", () => {
+    expect(
+      computeEvolutionTriggers(store([]), [
+        { bucket: "card", delta: -1, evidence: "" },
+      ]),
+    ).toEqual([]);
   });
 
   it("an evidence-less -2 can never trigger (mirrors the store's force-zero)", () => {
@@ -98,12 +119,21 @@ describe("computeEvolutionTriggers", () => {
     ).toEqual([]);
   });
 
-  it("the immediate -2 wins over the window reason for the same bucket", () => {
+  it("the immediate negative wins over the window reason for the same bucket", () => {
     const s = store([ev("A", "recall", -1), ev("B", "recall", -1), ev("C", "recall", -1)]);
     const triggers = computeEvolutionTriggers(s, [
       { bucket: "recall", delta: -2, evidence: "wrong again" },
     ]);
     expect(triggers).toHaveLength(1);
     expect(triggers[0].reason).toContain("wrong again");
+  });
+
+  it("the -2 reason wins when both -2 and -1 fired for the same bucket this slice", () => {
+    const triggers = computeEvolutionTriggers(store([]), [
+      { bucket: "recall", delta: -1, evidence: "not quite it" },
+      { bucket: "recall", delta: -2, evidence: "totally wrong" },
+    ]);
+    expect(triggers).toHaveLength(1);
+    expect(triggers[0].reason).toContain("totally wrong");
   });
 });

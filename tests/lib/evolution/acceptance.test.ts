@@ -1,9 +1,11 @@
 /**
  * Acceptance rule (src/lib/evolution/acceptance.ts, v1.0 design §2.7):
  * archiving a NEW mutation evaluates the PREVIOUS one on the same target —
- * when the target's bucket kept scoring negative since that previous
- * mutation, an append-only `**Evaluation: ineffective**` line is added;
- * history is never rewritten.
+ * the target's bucket net score since that previous mutation decides the
+ * append-only verdict line: negative → `**Evaluation: ineffective**`,
+ * positive → `**Evaluation: effective**`, zero → no line (inconclusive);
+ * history is never rewritten. mutationTrackRecord tallies the archive as the
+ * loop's honesty feedback.
  *
  * Same harness as tests/lib/evolution/store.test.ts: a temp cwd +
  * STORAGE=local so all I/O lands on the local filesystem backend.
@@ -137,8 +139,8 @@ describe("appendMutationWithEvaluation", () => {
     expect(content).toContain(`## ${TS_NEW} — card`);
   });
 
-  it("does NOT mark when the bucket's net score recovered to ≥ 0", async () => {
-    const { appendMutationWithEvaluation, INEFFECTIVE_MARK } = await import(
+  it("does NOT mark when the bucket's net score is exactly 0 (inconclusive — no line either way)", async () => {
+    const { appendMutationWithEvaluation, INEFFECTIVE_MARK, EFFECTIVE_MARK } = await import(
       "@/lib/evolution/acceptance"
     );
     const store = await import("@/lib/evolution/store");
@@ -150,13 +152,39 @@ describe("appendMutationWithEvaluation", () => {
     );
     expect(outcome.evaluatedPreviousTs).toBe(TS_OLD);
     expect(outcome.markedIneffective).toBe(false);
-    expect(readOnDisk("memory/evolution/mutations.md")).not.toContain(
-      INEFFECTIVE_MARK,
+    expect(outcome.markedEffective).toBe(false);
+    const content = readOnDisk("memory/evolution/mutations.md")!;
+    expect(content).not.toContain(INEFFECTIVE_MARK);
+    expect(content).not.toContain(EFFECTIVE_MARK);
+  });
+
+  it("marks the previous mutation EFFECTIVE when its bucket's net score turned positive", async () => {
+    const { appendMutationWithEvaluation, INEFFECTIVE_MARK, EFFECTIVE_MARK } = await import(
+      "@/lib/evolution/acceptance"
+    );
+    const store = await import("@/lib/evolution/store");
+    await store.appendMutation(mutation(TS_OLD, "card"));
+
+    const outcome = await appendMutationWithEvaluation(
+      mutation(TS_NEW, "card"),
+      storeWith([{ bucket: "card", delta: 1 }, { bucket: "card", delta: 1 }]),
+    );
+    expect(outcome.evaluatedPreviousTs).toBe(TS_OLD);
+    expect(outcome.markedEffective).toBe(true);
+    expect(outcome.markedIneffective).toBe(false);
+
+    const content = readOnDisk("memory/evolution/mutations.md")!;
+    expect(content).toContain(EFFECTIVE_MARK);
+    expect(content).not.toContain(INEFFECTIVE_MARK);
+    expect(content).toContain(`${TS_OLD} card`);
+    // Append-only: the evaluation line lands before the new record.
+    expect(content.indexOf(EFFECTIVE_MARK)).toBeLessThan(
+      content.indexOf(`## ${TS_NEW} — card`),
     );
   });
 
   it("does NOT mark when the bucket saw NO events since (no evidence either way)", async () => {
-    const { appendMutationWithEvaluation, INEFFECTIVE_MARK } = await import(
+    const { appendMutationWithEvaluation, INEFFECTIVE_MARK, EFFECTIVE_MARK } = await import(
       "@/lib/evolution/acceptance"
     );
     const store = await import("@/lib/evolution/store");
@@ -167,9 +195,10 @@ describe("appendMutationWithEvaluation", () => {
       storeWith([{ bucket: "recall", delta: -2 }]), // a different bucket
     );
     expect(outcome.markedIneffective).toBe(false);
-    expect(readOnDisk("memory/evolution/mutations.md")).not.toContain(
-      INEFFECTIVE_MARK,
-    );
+    expect(outcome.markedEffective).toBe(false);
+    const content = readOnDisk("memory/evolution/mutations.md")!;
+    expect(content).not.toContain(INEFFECTIVE_MARK);
+    expect(content).not.toContain(EFFECTIVE_MARK);
   });
 
   it("a first-ever mutation for a target has nothing to evaluate", async () => {
@@ -205,5 +234,51 @@ describe("appendMutationWithEvaluation", () => {
       "the recall bucket kept scoring negative",
     );
     expect(readOnDisk("memory/evolution/mutations.md")).toContain(INEFFECTIVE_MARK);
+  });
+});
+
+// ── The honesty feedback tally ───────────────────────────────────────────
+
+describe("mutationTrackRecord", () => {
+  it("counts effective / ineffective / unevaluated records (playbook targets included)", async () => {
+    const { mutationTrackRecord } = await import("@/lib/evolution/acceptance");
+    const content = [
+      "# Mutations Archive",
+      "",
+      `## ${TS_OLD} — card`,
+      "",
+      "- **Summary:** first",
+      "",
+      "## 2026-08-21T10:00:00.000Z — playbook:recall",
+      "",
+      "- **Summary:** second",
+      "",
+      `- **Evaluation: ineffective** — ${TS_OLD} card: the card bucket kept scoring negative after this mutation (net -2 since).`,
+      "",
+      `## ${TS_NEW} — card`,
+      "",
+      "- **Summary:** third",
+      "",
+      "- **Evaluation: effective** — 2026-08-21T10:00:00.000Z playbook:recall: the recall bucket stopped losing points after this mutation (net +1 since).",
+      "",
+      "## 2026-08-28T10:00:00.000Z — direction",
+      "",
+      "- **Summary:** fourth",
+    ].join("\n");
+    expect(mutationTrackRecord(content)).toEqual({
+      effective: 1,
+      ineffective: 1,
+      // The newest card record + the direction record await their evaluation.
+      unevaluated: 2,
+    });
+  });
+
+  it("an empty archive is all zeros", async () => {
+    const { mutationTrackRecord } = await import("@/lib/evolution/acceptance");
+    expect(mutationTrackRecord("")).toEqual({
+      effective: 0,
+      ineffective: 0,
+      unevaluated: 0,
+    });
   });
 });

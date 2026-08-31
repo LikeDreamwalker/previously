@@ -146,6 +146,15 @@ export interface HousekeepingResult {
    */
   identityPrompt: string;
   /**
+   * The direction layer (v1.1): the evolved user portrait + hypothesis pool
+   * (direction.md), injected between the card (L1) and the static rules (L2).
+   * Read per turn in housekeeping — an evolution run mid-slice intentionally
+   * makes the next turn see the fresh direction (prefix-cache drift on those
+   * turns is accepted). Absent when direction.md is missing / still the
+   * template / still the legacy skeleton awaiting migration.
+   */
+  directionBlock?: string;
+  /**
    * v0.8 — compact timeline brief (recent slice pointer lines + catalog
    * totals), assembled from the woven index. Injected into the system prompt
    * so the agent can perceive the recent past without reading slices. Since
@@ -154,6 +163,17 @@ export interface HousekeepingResult {
    * when the timeline isn't available yet.
    */
   timelineBrief?: string;
+  /**
+   * Checkpoint carry-over: when the slice was born from a time_cap/capacity
+   * close (`slice.continuesFrom`), the previous slice's trailing turns read
+   * server-side from the CLOSED slice file. The workflow prepends them to the
+   * slice-aligned history window so the same conversation continues
+   * seamlessly; the prefix is frozen for the slice's whole life (append-only
+   * window, prefix-cache friendly). Absent for genuine conversation
+   * boundaries (idle_gap/context_lost) and when the predecessor is
+   * unreadable (best-effort).
+   */
+  contextPrefix?: ModelMessage[];
 }
 
 /**

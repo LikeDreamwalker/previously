@@ -6,9 +6,19 @@
  * proposal must carry its expected benefit and evidence pointers (enforced by
  * the MutationRecord shape), and every NEW mutation for a target first
  * EVALUATES the previous one on that target — did the corresponding fitness
- * bucket stop losing points after it landed? When the bucket's net score over
- * the events strictly since the previous mutation is still negative, the
- * previous mutation is marked `**Evaluation: ineffective**` in the archive.
+ * bucket stop losing points after it landed? The bucket's net score over the
+ * events strictly since the previous mutation decides the append-only verdict
+ * line in mutations.md:
+ *
+ *   - net < 0 → `**Evaluation: ineffective**` (the deductions the mutation
+ *     meant to stop kept coming);
+ *   - net > 0 → `**Evaluation: effective**` (the signal the mutation meant
+ *     to stop did stop — the POSITIVE confirmation, symmetric to the mark);
+ *   - net = 0 → no line (inconclusive — no evidence either way).
+ *
+ * The archive's running tally (mutationTrackRecord) feeds back into the
+ * evolution agent's prompt — the loop's honesty feedback: an agent that
+ * keeps writing ineffective mutations should feel it.
  *
  * Append-only discipline: the evaluation is a NEW line appended to
  * mutations.md — history is never rewritten or deleted, and an ineffective
@@ -50,6 +60,9 @@ export const TARGET_TO_BUCKET: Record<MutationTarget, FitnessBucket> = {
 /** The marker line appended when a previous mutation proved ineffective. */
 export const INEFFECTIVE_MARK = "**Evaluation: ineffective**";
 
+/** The marker line appended when a previous mutation proved effective. */
+export const EFFECTIVE_MARK = "**Evaluation: effective**";
+
 /**
  * Find the most recent archived mutation for a target. The archive format
  * (`## {ts} — {target}`, see renderMutationRecord) is parsed line-wise; the
@@ -80,11 +93,71 @@ export function renderIneffectiveEvaluation(
   );
 }
 
+/** Render the append-only evaluation line for an effective mutation — the
+ *  positive confirmation: the signal the mutation meant to stop did stop. */
+export function renderEffectiveEvaluation(
+  prevTs: string,
+  target: MutationTarget,
+  bucket: FitnessBucket,
+  net: number,
+): string {
+  return (
+    `- ${EFFECTIVE_MARK} — ${prevTs} ${target}: the ${bucket} bucket stopped ` +
+    `losing points after this mutation (net +${net} since).`
+  );
+}
+
+/**
+ * The loop's honesty feedback: the archive's running tally. A mutation record
+ * (`## {ts} — {target}`) is UNEVALUATED until the next mutation on the same
+ * target lands and judges it; the evaluation lines
+ * (`- **Evaluation: effective|ineffective** — {ts} {target}: …`) mark their
+ * subject record. Pure.
+ */
+export function mutationTrackRecord(archiveContent: string): {
+  effective: number;
+  ineffective: number;
+  unevaluated: number;
+} {
+  // Longest-first so "playbook:recall" is tried before a bare prefix could
+  // match — targets are a fixed, known set (TARGET_TO_BUCKET's keys).
+  const targets = Object.keys(TARGET_TO_BUCKET).sort(
+    (a, b) => b.length - a.length,
+  ) as MutationTarget[];
+  const records: string[] = [];
+  const evaluated = new Set<string>();
+  let effective = 0;
+  let ineffective = 0;
+  for (const line of archiveContent.split("\n")) {
+    const heading = line.match(/^## (.+) — (.+)$/);
+    if (heading) {
+      records.push(`${heading[1].trim()} ${heading[2].trim()}`);
+      continue;
+    }
+    const evaluation = line.match(
+      /^- \*\*Evaluation: (effective|ineffective)\*\* — (\S+) (.*)$/,
+    );
+    if (!evaluation) continue;
+    if (evaluation[1] === "effective") effective++;
+    else ineffective++;
+    const rest = evaluation[3];
+    const target = targets.find((t) => rest.startsWith(`${t}:`));
+    if (target) evaluated.add(`${evaluation[2]} ${target}`);
+  }
+  return {
+    effective,
+    ineffective,
+    unevaluated: records.filter((r) => !evaluated.has(r)).length,
+  };
+}
+
 export interface MutationArchiveOutcome {
   /** Ts of the previous mutation on this target that was evaluated, if any. */
   evaluatedPreviousTs: string | null;
   /** True when the previous mutation was marked ineffective. */
   markedIneffective: boolean;
+  /** True when the previous mutation was marked effective. */
+  markedEffective: boolean;
 }
 
 /**
@@ -93,8 +166,10 @@ export interface MutationArchiveOutcome {
  *
  *   1. find the previous record for `record.target` in the archive;
  *   2. net-score its bucket over the fitness events strictly SINCE that
- *      record — still negative → append an `**Evaluation: ineffective**`
- *      line (the deductions the mutation meant to stop kept coming);
+ *      record — negative → append an `**Evaluation: ineffective**` line (the
+ *      deductions the mutation meant to stop kept coming); positive → append
+ *      an `**Evaluation: effective**` line (they stopped); zero → no line
+ *      (inconclusive);
  *   3. append the new record (via the store's appendMutation).
  *
  * `store` is passed in (not read) so the caller controls freshness — read it
@@ -115,22 +190,29 @@ export async function appendMutationWithEvaluation(
 
   const prev = existing ? findLastMutationForTarget(existing, record.target) : null;
   let markedIneffective = false;
+  let markedEffective = false;
   if (prev) {
     const bucket = TARGET_TO_BUCKET[record.target];
     const net = bucketNetScoreSince(store, bucket, prev.ts);
-    if (net < 0) {
-      const line = renderIneffectiveEvaluation(prev.ts, record.target, bucket, net);
+    const line =
+      net < 0
+        ? renderIneffectiveEvaluation(prev.ts, record.target, bucket, net)
+        : net > 0
+          ? renderEffectiveEvaluation(prev.ts, record.target, bucket, net)
+          : null; // inconclusive — no line
+    if (line) {
       await fsWriteFile(
         MUTATIONS_PATH,
         `${existing.trimEnd()}\n\n${line}\n`,
         batch,
       );
-      markedIneffective = true;
+      markedIneffective = net < 0;
+      markedEffective = net > 0;
     }
   }
 
   // appendMutation re-reads the archive (batch read-your-writes), so the
   // evaluation line above lands BEFORE the new record in the same commit.
   await appendMutation(record, batch);
-  return { evaluatedPreviousTs: prev?.ts ?? null, markedIneffective };
+  return { evaluatedPreviousTs: prev?.ts ?? null, markedIneffective, markedEffective };
 }

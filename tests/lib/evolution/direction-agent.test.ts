@@ -1,12 +1,16 @@
 /**
- * Direction Agent (src/lib/evolution/direction-agent.ts) — Phase 1 of the
- * two-phase evolution loop (v1.0 design §2.3). The contract that matters:
- *   - "no change" is the common case and writes NOTHING (the module holds no
- *     write tools at all — the caller applies an accepted proposal);
- *   - a proposal is validated structurally (fixed four-section skeleton, the
- *     evidence bar — ≥2 distinct slice pointers steady-state, ≥1 on the
- *     bootstrap write — the size cap) — an invalid proposal degrades to
- *     no_change with the rejection logged;
+ * Direction (src/lib/evolution/direction-agent.ts) — the evolution loop's
+ * USER PORTRAIT + HYPOTHESIS POOL (v1.0 redesign). The contract that matters:
+ *   - the doc has a fixed four-section skeleton (# Portrait / # Hypotheses /
+ *     # Evidence / # Log), descriptive-never-imperative by discipline;
+ *   - a proposal is validated structurally: the skeleton, the bounded
+ *     hypothesis pool (≤10, each line carrying proposed/checked metadata and a
+ *     falsify-if condition), the evidence bar (≥2 distinct slice pointers
+ *     steady-state, ≥1 on bootstrap AND migrate), the size cap;
+ *   - the mode is detected from the current doc: template → bootstrap,
+ *     old # Direction / # Anti-goals skeleton → migrate, else steady;
+ *   - buildDirectionBlock renders the L1b system-prompt layer (portrait +
+ *     hypotheses-as-unverified-guesses) and is EMPTY for template/legacy docs;
  *   - runner failures degrade to { outcome: "failed" }, never throw.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -23,7 +27,10 @@ vi.mock("@/lib/models/provider", () => ({
 import {
   runDirectionAgent,
   validateDirectionProposal,
+  detectDirectionMode,
+  buildDirectionBlock,
   DIRECTION_MAX_CHARS,
+  DIRECTION_HYPOTHESES_MAX,
 } from "@/lib/evolution/direction-agent";
 import type { TurnAnalysis } from "@/lib/episodic/flash/turn-analyzer";
 import type { ModelConfig } from "@/lib/models/registry";
@@ -47,13 +54,13 @@ const ANALYSIS: TurnAnalysis = {
   emotionalSignal: { intensity: "none", register: "neutral", note: "" },
 };
 
-const VALID_PROPOSAL = `# Direction
+const VALID_PROPOSAL = `# Portrait
 
-Prefer concrete, evidence-anchored answers over generic advice.
+The user prefers concrete, evidence-anchored answers over generic advice.
 
-# Anti-goals
+# Hypotheses
 
-Never drift into a life-coach persona.
+- [proposed 2026-08-20-1430 · checked 2026-08-22-1015] The user may dislike long preambles — falsify if: they ask for more context
 
 # Evidence
 
@@ -63,6 +70,16 @@ Never drift into a life-coach persona.
 # Log
 
 - 2026-08-27: first direction, from repeated concreteness feedback.`;
+
+/** A valid hypothesis line with the structured metadata. */
+function hypLine(
+  proposed: string,
+  checked: string,
+  guess: string,
+  falsify = "the user asks for the opposite",
+): string {
+  return `- [proposed ${proposed} · checked ${checked}] ${guess} — falsify if: ${falsify}`;
+}
 
 function makeToolCall(input: unknown) {
   return {
@@ -103,9 +120,14 @@ describe("validateDirectionProposal", () => {
     if (!res.ok) expect(res.reason).toContain("# Log");
   });
 
-  it("rejects a proposal with no slice pointer (cross-slice evidence bar)", () => {
-    const noPointer = VALID_PROPOSAL.replaceAll(/2026-08-\d{2}-\d{4}/g, "a slice");
-    const res = validateDirectionProposal(noPointer, null);
+  it("rejects a proposal with no slice pointer outside the hypothesis metadata", () => {
+    // Keep the hypothesis line (its metadata format is valid) but strip every
+    // Evidence pointer — the Evidence section must anchor the portrait.
+    const noPointer = VALID_PROPOSAL.replace(
+      /# Evidence\n\n- 2026-08-20-1430 — user corrected a vague answer\n- 2026-08-22-1015 — user praised a concrete one/,
+      "# Evidence\n\n- a slice — user corrected a vague answer",
+    );
+    const res = validateDirectionProposal(noPointer, null, { mode: "steady" });
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.reason).toContain("slice pointer");
   });
@@ -118,6 +140,29 @@ describe("validateDirectionProposal", () => {
   it("rejects an over-cap proposal", () => {
     const fat = VALID_PROPOSAL + "x".repeat(DIRECTION_MAX_CHARS);
     expect(validateDirectionProposal(fat, null).ok).toBe(false);
+  });
+
+  it("rejects a hypothesis pool beyond the bound", () => {
+    const lines = Array.from({ length: DIRECTION_HYPOTHESES_MAX + 1 }, (_, i) =>
+      hypLine("2026-08-20-1430", "2026-08-22-1015", `Guess number ${i + 1}`),
+    ).join("\n");
+    const doc = VALID_PROPOSAL.replace(
+      /# Hypotheses\n\n[\s\S]*?\n\n# Evidence/,
+      `# Hypotheses\n\n${lines}\n\n# Evidence`,
+    );
+    const res = validateDirectionProposal(doc, null);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reason).toContain("too many hypotheses");
+  });
+
+  it("rejects a hypothesis line without the structured metadata", () => {
+    const doc = VALID_PROPOSAL.replace(
+      /^- \[proposed.*$/m,
+      "- The user might prefer short answers",
+    );
+    const res = validateDirectionProposal(doc, null);
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.reason).toContain("malformed hypothesis line");
   });
 
   it("steady state needs ≥2 DISTINCT slice pointers (cross-slice bar)", () => {
@@ -137,9 +182,83 @@ describe("validateDirectionProposal", () => {
       "- no second slice",
     );
     expect(
-      validateDirectionProposal(onePointer, null, { bootstrap: true }),
+      validateDirectionProposal(onePointer, null, { mode: "bootstrap" }),
     ).toEqual({ ok: true });
     expect(validateDirectionProposal(onePointer, null).ok).toBe(false);
+  });
+
+  it("migrate (re-shaping the old skeleton) also clears with a single slice pointer", () => {
+    const onePointer = VALID_PROPOSAL.replace(
+      "- 2026-08-22-1015 — user praised a concrete one",
+      "- no second slice",
+    );
+    expect(
+      validateDirectionProposal(onePointer, null, { mode: "migrate" }),
+    ).toEqual({ ok: true });
+  });
+});
+
+describe("detectDirectionMode", () => {
+  it("treats a missing doc and the untouched template as bootstrap", () => {
+    expect(detectDirectionMode(null)).toBe("bootstrap");
+    expect(
+      detectDirectionMode(
+        "# Portrait\n\n_(Not set yet — placeholder.)_\n\n# Hypotheses\n\n# Evidence\n\n# Log",
+      ),
+    ).toBe("bootstrap");
+  });
+
+  it("treats the old # Direction / # Anti-goals skeleton as migrate", () => {
+    expect(
+      detectDirectionMode(
+        "# Direction\n\nPrefer concrete answers.\n\n# Anti-goals\n\nNo coaching.\n\n# Evidence\n\n- 2026-08-20-1430 — x\n- 2026-08-22-1015 — y\n\n# Log\n\n- entry",
+      ),
+    ).toBe("migrate");
+  });
+
+  it("treats a written new-skeleton doc as steady", () => {
+    expect(detectDirectionMode(VALID_PROPOSAL)).toBe("steady");
+  });
+});
+
+describe("buildDirectionBlock", () => {
+  it("is empty for a missing doc and for the untouched template", () => {
+    expect(buildDirectionBlock(null)).toBe("");
+    expect(
+      buildDirectionBlock(
+        "# Portrait\n\n_(Not set yet — placeholder.)_\n\n# Hypotheses\n\n# Evidence\n\n# Log",
+      ),
+    ).toBe("");
+  });
+
+  it("is empty for a legacy-skeleton doc (no Portrait/Hypotheses content yet)", () => {
+    expect(
+      buildDirectionBlock(
+        "# Direction\n\nPrefer concrete answers.\n\n# Anti-goals\n\nNo coaching.\n\n# Evidence\n\n- 2026-08-20-1430 — x\n\n# Log\n\n- entry",
+      ),
+    ).toBe("");
+  });
+
+  it("renders the portrait as the user model", () => {
+    const block = buildDirectionBlock(VALID_PROPOSAL);
+    expect(block).toContain("## Direction — who the user is (evolved portrait)");
+    expect(block).toContain(
+      "The user prefers concrete, evidence-anchored answers over generic advice.",
+    );
+  });
+
+  it("renders hypotheses explicitly as UNVERIFIED GUESSES (probe, never assert)", () => {
+    const block = buildDirectionBlock(VALID_PROPOSAL);
+    expect(block).toContain("UNVERIFIED GUESSES");
+    expect(block).toContain("never asserted as fact");
+    expect(block).toContain("The user may dislike long preambles");
+  });
+
+  it("omits the hypotheses subsection when the pool is empty", () => {
+    const doc = VALID_PROPOSAL.replace(/# Hypotheses\n\n[\s\S]*?\n\n# Evidence/, "# Evidence");
+    const block = buildDirectionBlock(doc);
+    expect(block).toContain("The user prefers concrete");
+    expect(block).not.toContain("UNVERIFIED GUESSES");
   });
 });
 
@@ -174,7 +293,7 @@ describe("runDirectionAgent", () => {
     const res = await runDirectionAgent(baseInput());
     expect(res.outcome).toBe("proposed");
     if (res.outcome === "proposed") {
-      expect(res.direction).toContain("# Direction");
+      expect(res.direction).toContain("# Portrait");
       expect(res.summary).toBe("First direction: concreteness");
       expect(res.evidence).toEqual(["2026-08-20-1430", "2026-08-22-1015"]);
       expect(res.expectedBenefit).toBe("Fewer vague answers");
@@ -188,7 +307,7 @@ describe("runDirectionAgent", () => {
         outcome: "propose",
         reason: "episodic fact as direction",
         proposed: {
-          content: "# Direction\n\nUser hiked yesterday.", // missing sections + pointer
+          content: "# Portrait\n\nUser hiked yesterday.", // missing sections + pointer
           summary: "bad",
           evidence: [],
           expectedBenefit: "none",
@@ -225,7 +344,7 @@ describe("runDirectionAgent", () => {
     );
     await runDirectionAgent(
       baseInput({
-        current: "# Direction\n\nCurrent direction text.",
+        current: "# Portrait\n\nCurrent portrait text.",
         recentEvents: [
           {
             ts: "2026-08-26T10:00:00Z",
@@ -242,25 +361,34 @@ describe("runDirectionAgent", () => {
       prompt: string;
     };
     expect(arg.system).toContain("Direction Agent");
-    expect(arg.system).not.toContain("Current direction text");
-    expect(arg.prompt).toContain("Current direction text");
+    expect(arg.system).not.toContain("Current portrait text");
+    expect(arg.prompt).toContain("Current portrait text");
     expect(arg.prompt).toContain("not what we discussed");
     expect(arg.prompt).toContain("2026-08-27-1000");
   });
 
-  it("the mode and the Self-model promotion candidates ride the user prompt", async () => {
+  it("the mode and the legacy Self-model migration source ride the user prompt", async () => {
     ai.streamText.mockResolvedValue(
       makeToolCall({ outcome: "no_change", reason: "nothing" }),
     );
     await runDirectionAgent(
       baseInput({
         mode: "bootstrap",
-        cardSelfModel: "- Don't decompose emotional venting with thinkDeep",
+        cardSelfModel: "- The user vents emotions; decomposing that with thinkDeep felt cold",
       }),
     );
     const arg = ai.streamText.mock.calls.at(-1)?.[0] as { prompt: string };
     expect(arg.prompt).toContain("BOOTSTRAP");
-    expect(arg.prompt).toContain("Don't decompose emotional venting");
+    expect(arg.prompt).toContain("The user vents emotions");
+  });
+
+  it("migrate mode is named on the prompt with the lowered bar", async () => {
+    ai.streamText.mockResolvedValue(
+      makeToolCall({ outcome: "no_change", reason: "nothing" }),
+    );
+    await runDirectionAgent(baseInput({ mode: "migrate" }));
+    const arg = ai.streamText.mock.calls.at(-1)?.[0] as { prompt: string };
+    expect(arg.prompt).toContain("MIGRATE");
   });
 
   it("the recent closed-slice markings ride the user prompt (with an honest empty state)", async () => {

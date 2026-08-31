@@ -84,7 +84,7 @@ describe("missing-file tolerance", () => {
     await store.ensureEvolutionFiles();
     const created = readOnDisk("memory/evolution/direction.md");
     expect(created).not.toBeNull();
-    for (const section of ["# Direction", "# Anti-goals", "# Evidence", "# Log"]) {
+    for (const section of ["# Portrait", "# Hypotheses", "# Evidence", "# Log"]) {
       expect(created).toContain(section);
     }
 

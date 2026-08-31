@@ -33,24 +33,24 @@ import {
 
 // ─── Direction document (design §2.2) ────────────────────────────────────
 
-/** The minimal direction.md template — the four fixed sections from design
- *  §2.2. The taxonomy is deliberately open (the agent may grow new
- *  dimensions); only the writing discipline is fixed. */
-const DIRECTION_TEMPLATE = `# Direction
+/** The minimal direction.md template — the four fixed sections of the USER
+ *  PORTRAIT + HYPOTHESIS POOL (see direction-agent.ts). Only the skeleton and
+ *  the writing discipline are fixed; the content is the evolution agent's. */
+const DIRECTION_TEMPLATE = `# Portrait
 
-_(Not set yet — what "better for the user" means across slices gets written here.)_
+_(Not set yet — confirmed, evidence-anchored understanding of the user: descriptive, concept-level, never imperatives.)_
 
-# Anti-goals
+# Hypotheses
 
-_(Not set yet — the drift guardrails: what we must NOT evolve into.)_
+_(Not set yet — bounded pool of guesses (≤10), each "- [proposed YYYY-MM-DD-HHMM · checked YYYY-MM-DD-HHMM] <guess> — falsify if: <condition>".)_
 
 # Evidence
 
-_(Each direction conclusion links its supporting slice pointers here.)_
+_(Each Portrait entry links its supporting slice pointers here.)_
 
 # Log
 
-_(Append-only: when the direction changed, and on what evidence.)_
+_(Append-only: direction changes and hypothesis promotions/refutations/retirements, and on what evidence.)_
 `;
 
 /**

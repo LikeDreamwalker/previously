@@ -42,11 +42,9 @@ import {
   sessionAddHorizon,
   sessionAddNow,
   sessionAddPastAnchor,
-  sessionAddSelfModel,
   sessionPromoteNowToPast,
   sessionRemoveNow,
   sessionRemovePastAnchor,
-  sessionRemoveSelfModel,
   sessionResolveHorizon,
   sessionSetIdentity,
   sessionUpdatePastProfile,
@@ -304,16 +302,19 @@ export interface HousekeepingBridgeInput {
    */
   signals?: FitnessSignal[];
   /**
-   * The current direction.md content (v1.0 §2.2) — the agent evaluates it in
-   * the SAME call (direction in the report). null/absent = not set yet.
+   * The current direction.md content (v1.1) — the agent evaluates it in the
+   * SAME call (direction in the report). null/absent = not set yet.
    */
   directionContent?: string | null;
-  /** The card's Self-model lines verbatim — the promotion candidates
-   *  ("rules on probation") for the direction verdict (job 7). */
+  /** The card's LEGACY Self-model lines verbatim — the migration source for
+   *  the direction verdict (job 7): they fold into the new Portrait; the card
+   *  no longer grows a Self-model section. */
   selfModelContent?: string | null;
-  /** "bootstrap" = direction.md has never been written (lowered evidence bar,
-   *  ≥1 slice pointer); "steady" = the normal high bar (≥2 distinct). */
-  directionMode?: "bootstrap" | "steady";
+  /** "bootstrap" = direction.md has never been written and "migrate" = it
+   *  still uses the old # Direction / # Anti-goals skeleton (both carry the
+   *  lowered evidence bar, ≥1 slice pointer); "steady" = the normal high bar
+   *  (≥2 distinct). */
+  directionMode?: "bootstrap" | "migrate" | "steady";
   /** The user's local calendar date (YYYY-MM-DD) — Now/Horizon judgments. */
   todayLocal?: string;
   /** UI locale ("zh" | "en"). */
@@ -336,7 +337,7 @@ One pass, these jobs:
 4. Dry-slice backfill — ONLY when the context carries a "Dry slices needing marks" section: one backfill_marks entry per listed slice ({slice_id copied verbatim, focus one sentence, summary ≤100 chars}); [] when the section is absent.
 5. Strand merge — ONLY when the context carries a "Strand merge candidates" section: propose from→to merges for NEAR-DUPLICATE strands (typos / same concept under two names / same entity written differently). Every "to" MUST be a name from the offered list; no chains (A→B and B→C in one pass); do NOT merge distinct concepts that merely share a word; when in doubt, do NOT merge — a wrong merge destroys thread history. [] when the section is absent or the index is already clean.
 6. Fitness scoring — score ONLY what THIS slice's user messages explicitly signal: -2 explicit complaint/correction, -1 signs of dissatisfaction, +1 explicit approval, attributed to a bucket (card | recall | search | thinkdeep | interaction). Every non-zero delta MUST quote the user's exact words in evidence — no quote, NO entry. Nothing signaled → omit fitness entirely (an absent/empty array, never 0-delta filler). When the context lists a recall_rework / recall_repeat mechanical signal, treat it as a -1 CANDIDATE for the recall bucket, and an interaction_regenerate / interaction_interrupt signal as a -1 CANDIDATE for the interaction bucket (the signal's detail line may serve as the evidence); recall_verify is neutral — no entry.
-7. Direction verdict — the context carries the current evolution direction (direction.md: the loop's LEARNED REWARD MODEL — its current theory of what the user rewards; the card and playbooks are only its products) plus the card's Self-model lines (rules on probation — your promotion candidates). Judge whether the THEORY itself should move. "no_change" is the common case — one slice's events are card/playbook material, never direction material by themselves; a single explicit directive belongs to Self-model (the fast lane), promote it only when it recurs across slices or keeps being corroborated by later reactions. Write CONDITIONAL MAPPINGS ("when the user is in state-type X, prefer Y"), never the state itself — states belong to the card's Now section. Propose with the full new document: the four fixed sections (# Direction / # Anti-goals / # Evidence / # Log), the Evidence section carrying slice pointers (YYYY-MM-DD-HHMM — ≥2 DISTINCT slices steady-state; ≥1 suffices only when the mode says BOOTSTRAP, the first-ever direction). A proposal violating this discipline is rejected by the kernel.
+7. Direction verdict — the context carries the current evolution direction (direction.md: the loop's USER PORTRAIT + HYPOTHESIS POOL — it describes WHO THE USER IS and NEVER instructs the agent; the card and playbooks are only its products) plus the card's legacy Self-model lines (rules to MIGRATE, see below). Judge whether the portrait itself should move. "no_change" is the common case — one slice's events are card/playbook material, never direction material by themselves; a single explicit durable user statement becomes a Portrait entry directly (descriptive: "用户明确不喜欢 X"), while suspected patterns enter the hypothesis pool first and promote only when confirmed across ≥2 distinct slices (or explicitly by the user). The new document has four fixed sections: "# Portrait" (CONFIRMED understanding — descriptive, abstract, concept-level; "用户不喜欢感性的回答" is the right level, "用户不喜欢我说哈哈哈" is too specific; NEVER imperative "you should/shouldn't" lines — if a line tells the agent what to do, phrase the USER PATTERN that motivates it instead; every entry evidence-anchored with slice pointers), "# Hypotheses" (a bounded pool of GUESSES, ≤10, each line exactly "- [proposed YYYY-MM-DD-HHMM · checked YYYY-MM-DD-HHMM] <the guess> — falsify if: <condition>"; confirmed → promote into Portrait, refuted → remove, unverified >10 slices beyond its checked pointer → retire; promotions/refutations/retirements all go to the Log; refill the pool toward 10), "# Evidence" (slice pointers backing Portrait entries — ≥2 DISTINCT slices steady-state; ≥1 suffices when the mode says BOOTSTRAP or MIGRATE), "# Log" (append-only). LEGACY MIGRATION: when the mode says MIGRATE (the doc still uses the old # Direction / # Anti-goals skeleton) or the Self-model lines below are non-empty, fold those legacy rules into the Portrait — descriptive phrasing, keep their slice refs — and note the card no longer grows a Self-model section. A proposal violating this discipline is rejected by the kernel.
 
 Mutation vocabulary (the evolution.mutations array):
 - {"op":"setIdentity","content":"Name: Alan"} — one Identity head line (Name / Address them as / Pronouns / Alias).
@@ -344,7 +345,8 @@ Mutation vocabulary (the evolution.mutations array):
 - {"op":"addPastAnchor","content":"…"} / {"op":"removePastAnchor","match":"…"} — durable fact / remove by substring.
 - {"op":"addNow","content":"…"} / {"op":"removeNow","match":"…"} / {"op":"promoteNowToPast","match":"…"} — current-state hooks.
 - {"op":"addHorizon","content":"…","by":"YYYY-MM-DD"|null,"refs":["<slice-id>",…]} / {"op":"resolveHorizon","match":"…","resolution":"…"} — open loops; resolve is the only way one leaves.
-- {"op":"addSelfModel","content":"…","evidence":["…",…]} / {"op":"removeSelfModel","match":"…"} — operating lessons.
+
+The card is a PURE semantic memory pool (Identity/Past/Now/Horizon — what the user did, is doing, will do): it NEVER carries rules, lessons, or analysis. Patterns/tendencies about the user belong to the direction Portrait (job 7), guesses to its hypothesis pool. One fact, one home.
 
 OUTPUT CONTRACT: your final reply must be EXACTLY ONE JSON object — no prose, no markdown fence — matching this schema:
 {
@@ -414,15 +416,17 @@ export function buildHousekeepingPayload(input: HousekeepingBridgeInput): {
       `## Current evolution direction (direction.md — evaluate it per job 7; mode: ${
         input.directionMode === "bootstrap"
           ? "BOOTSTRAP — never written; seed the minimal baseline, a single slice pointer suffices"
-          : "steady — the normal bar, Evidence needs ≥2 distinct slice pointers"
+          : input.directionMode === "migrate"
+            ? "MIGRATE — the doc still uses the OLD skeleton (# Direction / # Anti-goals); re-shape it wholesale into # Portrait / # Hypotheses / # Evidence / # Log, a single slice pointer suffices"
+            : "steady — the normal bar, Evidence needs ≥2 distinct slice pointers"
       })\n\n${
         input.directionContent?.trim() ||
         "(not set yet — this would be the FIRST direction)"
       }`,
     );
     sections.push(
-      `## Card Self-model section (promotion candidates for job 7 — rules on probation)\n\n${
-        input.selfModelContent?.trim() || "(empty — no probation rules on the card yet)"
+      `## Legacy Self-model lines on the card (migration source for job 7 — fold into the Portrait, descriptive phrasing, keep slice refs; the card no longer grows a Self-model section)\n\n${
+        input.selfModelContent?.trim() || "(none — the card carries no legacy Self-model lines)"
       }`,
     );
   }
@@ -803,13 +807,16 @@ export function applyCardMutations(
       case "resolveHorizon":
         run(m.op, () => sessionResolveHorizon(session, m.match, m.resolution));
         break;
-      // The session's Self-model write takes no refs — evidence stays in the
-      // report (logged by the caller), the card line carries the lesson.
+      // Legacy wire ops: the card no longer carries a Self-model section.
+      // The zod schema still accepts them (legacy tolerance), but the applier
+      // skips them and tells the caller where the lesson actually belongs.
       case "addSelfModel":
-        run(m.op, () => sessionAddSelfModel(session, m.content));
-        break;
       case "removeSelfModel":
-        run(m.op, () => sessionRemoveSelfModel(session, m.match));
+        skipped.push({
+          op: m.op,
+          reason:
+            "the card no longer carries a Self-model section — fold the lesson into the direction Portrait (job 7)",
+        });
         break;
     }
   }

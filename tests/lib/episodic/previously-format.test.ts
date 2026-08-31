@@ -260,7 +260,9 @@ describe("user card format (v5)", () => {
       horizon: [
         { text: "Send the contractor invoice", by: "2026-08-20", refs: ["2026/08/07/0709"] },
       ],
-      selfModel: ["Prefer explicit low effort for simple checks."],
+      // Self-model is gone from the card — the field stays on the document
+      // only as parse-side legacy tolerance (serializeCard never emits it).
+      selfModel: [],
       ...overrides,
     };
   }
@@ -323,11 +325,14 @@ Alex is an AI engineer who prefers concise answers.
     ]);
     expect(parsed.horizon).toEqual([]);
     expect(parsed.selfModel).toEqual(["Prefer explicit low effort for simple checks."]);
-    // And a re-serialization comes out in the v5 layout.
+    // And a re-serialization comes out in the v5 layout — WITHOUT the legacy
+    // Self-model section (the writer never emits it; the parsed lines survive
+    // only in doc.selfModel for the direction migration to read).
     const reserialized = serializeCard(parsed);
     expect(reserialized).toContain("Format: user card v2");
     expect(reserialized).toContain("## Past");
     expect(reserialized).toContain("## Now");
+    expect(reserialized).not.toContain("## Self-model");
   });
 
   it("is distinct from v3 — migrateToV3 never downgrades a card", () => {

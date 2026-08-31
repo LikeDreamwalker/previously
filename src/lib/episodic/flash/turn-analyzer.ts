@@ -18,6 +18,9 @@
  *      deterministic trigger math lives in src/lib/evolution/triggers.ts).
  *      This slice's mechanical signals (recall verify/rework, §2.6) are an
  *      input, each recall_rework/recall_repeat a -1 candidate for recall.
+ *      The scoring RUBRIC is the direction doc's Portrait section (the loop's
+ *      learned criteria) when one exists — a turn matching a known failure
+ *      pattern scores -1 with evidence even without an explicit complaint.
  *
  * The model is passed in — since v0.9 it is the turn's MAIN model, run through
  * the shared sub-agent runner (src/lib/agents/sub-agent-runner.ts): thinking
@@ -65,7 +68,7 @@ export interface NewTagProposal {
 }
 
 /** Best-fit card section for an explicit memory update (v5 card sections). */
-export const CARD_SECTIONS = ["identity", "past", "now", "horizon", "self_model"] as const;
+export const CARD_SECTIONS = ["identity", "past", "now", "horizon"] as const;
 export type CardSection = (typeof CARD_SECTIONS)[number];
 
 /**
@@ -146,6 +149,14 @@ export interface AnalyzeTurnInput {
    * the evidence.
    */
   signals?: FitnessSignal[];
+  /**
+   * The direction doc's PORTRAIT section (capped by the caller) — Task 7's
+   * scoring rubric: the loop's learned criteria. A turn matching a known
+   * failure pattern in the portrait earns -1 WITH evidence even when the
+   * user didn't explicitly complain. Rendered into the USER prompt only
+   * (never the static system prompt). Absent when no portrait exists yet.
+   */
+  portrait?: string;
 }
 
 const analyzeSchema = z.object({
@@ -205,7 +216,7 @@ const analyzeSchema = z.object({
         .enum(CARD_SECTIONS)
         .optional()
         .describe(
-          "Best-fit card section: identity | past | now | horizon | self_model. Omit when unsure.",
+          "Best-fit card section: identity | past | now | horizon. Omit when unsure.",
         ),
     })
     .optional()
@@ -281,8 +292,9 @@ const analyzeSchema = z.object({
         delta: z
           .union([z.literal(-2), z.literal(-1), z.literal(0), z.literal(1)])
           .describe(
-            "-2 = explicit complaint/correction; -1 = signs of dissatisfaction; " +
-            "+1 = explicit approval. 0 only when you must record a signal-free observation.",
+            "-2 = explicit complaint/correction; -1 = signs of dissatisfaction, or the turn " +
+            "matching a known failure pattern from the portrait rubric; +1 = explicit approval. " +
+            "0 only when you must record a signal-free observation.",
           ),
         evidence: z
           .string()
@@ -298,8 +310,9 @@ const analyzeSchema = z.object({
     .transform((a) => a.slice(0, 5))
     .optional()
     .describe(
-      "Fitness scoring (Task 7): ONLY what THIS slice's user messages explicitly signal. " +
-      "Nothing signaled → emit NO entry (an absent fitness field, not a 0-delta list).",
+      "Fitness scoring (Task 7): what THIS slice's user messages signal — explicitly, or " +
+      "(for -1) by matching a known failure pattern in the portrait rubric. Nothing signaled " +
+      "→ emit NO entry (an absent fitness field, not a 0-delta list).",
     ),
 });
 
@@ -369,14 +382,14 @@ ALSO return evolve_card — your judgment on whether anything in this closing sl
 - reason: one line on what deserves sedimentation, or why nothing does
 When in doubt, worth: true — a wasted review is cheap, a missed evolution is permanent memory loss.
 
-## Task 7 — Score fitness signals (ONLY what this slice explicitly signals)
+## Task 7 — Score fitness signals (the portrait is your rubric)
 
-Score the user's EXPLICIT satisfaction/dissatisfaction signals in THIS slice, attributed to a bucket. This is the evolution loop's selection pressure — another agent aggregates your deltas; you only report single, evidence-anchored observations.
+Score the user's satisfaction/dissatisfaction signals in THIS slice, attributed to a bucket. This is the evolution loop's selection pressure — another agent aggregates your deltas; you only report single, evidence-anchored observations.
 
 - Buckets: card (the user card's content), recall (the recall colleague's answers), search (the research colleague), thinkdeep (the thinking pod), interaction (the main agent's general conduct).
-- delta: -2 = explicit complaint or correction ("that's wrong", "stop doing X"); -1 = signs of dissatisfaction (frustration, asking again, disappointment); +1 = explicit approval ("exactly what I needed", "记住了真好"). 0 = no signal — but prefer emitting NO entry at all.
-- EVIDENCE RULE (hard): every non-zero delta MUST quote the user's exact words in evidence. No quote → do not emit the entry. A delta without evidence is force-zeroed downstream anyway — don't waste it.
-- Score ONLY what this slice's user messages say. Never infer satisfaction from your own performance guesses; never score on the agent's behalf.
+- delta: -2 = explicit complaint or correction ("that's wrong", "stop doing X"); -1 = signs of dissatisfaction (frustration, asking again, disappointment) OR — when the input carries the evolved USER PORTRAIT — a turn matching a KNOWN FAILURE PATTERN in it (the portrait is the loop's learned rubric, so a recurrence scores even when the user didn't complain this time); +1 = explicit approval ("exactly what I needed", "记住了真好"). 0 = no signal — but prefer emitting NO entry at all.
+- EVIDENCE RULE (hard): every non-zero delta MUST quote the user's exact words in evidence — for a portrait-pattern -1, quote the words in THIS slice that show the pattern recurring. No quote → do not emit the entry. A delta without evidence is force-zeroed downstream anyway — don't waste it.
+- Never infer satisfaction from your own performance guesses; never score on the agent's behalf. The portrait rubric is the ONE sanctioned exception to "explicit signals only" — and only for -1, never -2.
 - Mechanical signals: when the input lists a recall_rework / recall_repeat signal, treat it as a -1 CANDIDATE for the recall bucket (the main agent re-did recall's job — implicit distrust). When it lists an interaction_regenerate / interaction_interrupt signal, treat it as a -1 CANDIDATE for the interaction bucket (the user rejected the previous reply or cut it off mid-stream). The signal's detail line may serve as the evidence. recall_verify is neutral — no entry.
 - Max 5 entries. Nothing signaled → omit the fitness field entirely.`);
 
@@ -414,9 +427,19 @@ ${input.signals.map((s) => `- ${s.type} — ${s.detail}`).join("\n")}
 Each recall_rework / recall_repeat is a -1 CANDIDATE for the recall bucket; each interaction_regenerate / interaction_interrupt is a -1 CANDIDATE for the interaction bucket (its detail may serve as evidence). recall_verify is neutral — no entry.`
       : "";
 
+  const portraitSection = input.portrait?.trim()
+    ? `
+
+## Scoring rubric — the evolved user portrait (Task 7 input)
+
+${input.portrait!.trim()}
+
+This is the loop's learned rubric: a turn matching a known failure pattern here earns -1 WITH the user's verbatim words from THIS slice as evidence, even without an explicit complaint. -2 still requires an explicit complaint/correction.`
+    : "";
+
   return `Message: "${input.userMessage.slice(0, 1000)}"
 
-Existing topics (pick from these FIRST — they are the durable memory index): ${existing}${closingSection}${signalsSection}`;
+Existing topics (pick from these FIRST — they are the durable memory index): ${existing}${closingSection}${signalsSection}${portraitSection}`;
 }
 
 /**
@@ -468,7 +491,9 @@ export async function analyzeTurn(input: AnalyzeTurnInput): Promise<TurnAnalysis
     toolChoice: "required",
     reportToolName: "analyzeOutput",
     reportSchema: analyzeSchema,
-    maxSteps: 1,
+    // Step caps are anti-loop fuses, not budgets — the wall clock (timeoutMs)
+    // is the real bound, so the cap is generous.
+    maxSteps: 50,
     timeoutMs: 30_000,
     progress: { toolName: "turn-analyzer" },
   });

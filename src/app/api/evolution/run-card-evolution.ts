@@ -15,19 +15,30 @@
  * agent's own decision. Engineering owns the trigger and the write-back;
  * the model owns the content.
  *
- * v1.0 (design §2.3/§2.7): the run also carries the two-phase evolution
- * context (direction.md orientation + the triggered fitness buckets, which
- * gate the agent's writePlaybook), and this function is the SINGLE-WRITER
- * boundary — accepted card/playbook mutations are archived to
+ * v1.0 (design §2.3/§2.7): the run also carries the evolution context
+ * (direction.md orientation + the triggered fitness buckets, which gate the
+ * agent's writePlaybook), and this function is the SINGLE-WRITER boundary —
+ * accepted card/playbook mutations are archived to
  * memory/evolution/mutations.md here, each archival first evaluating the
- * previous mutation on the same target (the effectiveness window).
+ * previous mutation on the same target (the effectiveness window). The
+ * archive's running tally (effective / ineffective / unevaluated) feeds back
+ * into the agent's prompt — the loop's honesty feedback.
+ *
+ * v1.1 (merged run): at a slice boundary the ONE agent run also evaluates
+ * direction.md FIRST (input.directionEval) and may return a
+ * `directionProposal` on its finish report. This function validates it
+ * (validateDirectionProposal, mode-aware) and applies it through
+ * writeDirection + appendMutationWithEvaluation (target "direction") — exactly
+ * the old Phase-1 write paths. A rejected proposal is logged and skipped,
+ * never fatal; the verdict rides the result's `direction` field for the
+ * terminal data-evolution frame.
  *
  * Streaming is surfaced via the optional `onProgress` callback (phase steps)
  * and `onEvolutionLine` (the Previously Agent's live thinking/writing lines)
  * so the caller (housekeeping) can push data-evolution chunks to the client —
  * no idle wait.
  */
-import { runPreviouslyAgent, type PreviouslySignal } from "@/lib/episodic/flash/previously-agent";
+import { runPreviouslyAgent, type DirectionEvalInput, type PreviouslySignal } from "@/lib/episodic/flash/previously-agent";
 import { parseCard } from "@/lib/episodic/previously-format";
 import { sameCardSubstance } from "@/lib/episodic/card-session";
 import { diffCardLines, summarizeCardChanges, type CardChangeSummary, type CardMutation } from "@/lib/episodic/card-diff";
@@ -36,13 +47,19 @@ import type { WriteBatch } from "@/lib/episodic/io-helpers";
 import type { ModelConfig } from "@/lib/models/registry";
 import {
   readFitness,
+  readMutations,
+  writeDirection,
   writePlaybook,
   type FitnessBucket,
   type FitnessEvent,
   type FitnessSignal,
 } from "@/lib/evolution/store";
 import type { PlaybookAgent } from "@/lib/evolution/paths";
-import { appendMutationWithEvaluation } from "@/lib/evolution/acceptance";
+import {
+  appendMutationWithEvaluation,
+  mutationTrackRecord,
+} from "@/lib/evolution/acceptance";
+import { validateDirectionProposal } from "@/lib/evolution/direction-agent";
 
 export interface CardEvolutionReaders {
   readSlice: (sliceId: string, range?: {
@@ -86,10 +103,14 @@ export interface RunCardEvolutionInput {
    *  and the default `since` all run on the user's clock, not UTC. */
   todayDate?: string;
 
-  // ── Two-phase evolution inputs (v1.0 §2.3, Phase 2 = product) ──────────
+  // ── Evolution inputs (v1.0 §2.3 / v1.1 merged run) ─────────────────────
 
-  /** The current evolution direction (direction.md) — orientation for the
-   *  agent: the CRITERIA the card evolves under. Pass-through to the agent. */
+  /** The direction half of the merged run (slice boundaries): the agent
+   *  evaluates direction.md FIRST and may return a directionProposal, which
+   *  THIS function validates and applies. */
+  directionEval?: DirectionEvalInput;
+  /** Orientation-only direction content (explicit-request path — no direction
+   *  evaluation runs there). Ignored when directionEval is set. */
   direction?: string | null;
   /** The fitness buckets that triggered this run — gates writePlaybook. */
   triggeredBuckets?: FitnessBucket[];
@@ -121,6 +142,14 @@ export interface RunCardEvolutionResult {
    *  the one-line summary from its mutation-archive record (the expected
    *  benefit). Surfaced on the terminal data-evolution frame. */
   playbooks?: Array<{ agent: PlaybookAgent; summary: string }>;
+  /** v1.1: the direction half's verdict (merged run only — absent when no
+   *  directionEval was carried). "failed" covers a write error; a REJECTED
+   *  proposal degrades to "no_change" (logged), mirroring the old Phase-1
+   *  discipline. */
+  direction?: {
+    outcome: "no_change" | "updated" | "failed";
+    summary?: string;
+  };
 }
 
 const VALID_SIGNALS: PreviouslySignal[] = [
@@ -151,6 +180,24 @@ export async function runCardEvolution(
   // BEFORE it starts (it used to fire after, a ~ms flash before the terminal
   // chunk that left the whole run showing "reading").
   input.onProgress?.("reviewing");
+  // The loop's honesty feedback (design §2.7): the agent sees its own
+  // mutation track record — an archive full of ineffective mutations should
+  // discipline the next proposal. Best-effort; omitted until the first
+  // archived mutation.
+  let trackRecordLine: string | undefined;
+  try {
+    const archive = await readMutations();
+    if (archive) {
+      const rec = mutationTrackRecord(archive);
+      if (rec.effective + rec.ineffective + rec.unevaluated > 0) {
+        trackRecordLine =
+          `Your mutation track record: ${rec.effective} effective / ` +
+          `${rec.ineffective} ineffective / ${rec.unevaluated} unevaluated`;
+      }
+    }
+  } catch {
+    // The archive is advisory — never block the run on it.
+  }
   const result = await runPreviouslyAgent({
     signal,
     note,
@@ -162,9 +209,11 @@ export async function runCardEvolution(
     currentSliceTags: input.currentSliceTags,
     todayLocal: input.todayDate,
     direction: input.direction,
+    directionEval: input.directionEval,
     triggeredBuckets: input.triggeredBuckets,
     fitnessEvents: input.fitnessEvents,
     fitnessSignals: input.fitnessSignals,
+    mutationTrackRecord: trackRecordLine,
     readSliceFn: input.readers.readSlice,
     readAgentTimelineFn: input.readers.readAgentTimeline,
     readPreviouslyFn: input.readers.readPreviously,
@@ -175,6 +224,59 @@ export async function runCardEvolution(
   // "checked, no updates" — surface the failure as an error.
   if (result.failed) {
     return { ran: true, changed: false, droppedRecent: 0, note: result.reasoning, error: result.reasoning };
+  }
+
+  // ── v1.1 direction half — the merged run's directionProposal is validated
+  // mode-aware and applied through the SAME write paths the old Phase-1 agent
+  // used (writeDirection + the mutations archive, target "direction"). A
+  // rejected proposal is logged and SKIPPED (never fatal); a write failure is
+  // surfaced as outcome "failed", never masquerading as "no_change". ──────
+  let directionOutcome: RunCardEvolutionResult["direction"];
+  if (input.directionEval) {
+    const proposal = result.directionProposal;
+    if (!proposal) {
+      directionOutcome = { outcome: "no_change" };
+    } else {
+      const validation = validateDirectionProposal(
+        proposal.content,
+        input.directionEval.current,
+        { mode: input.directionEval.mode },
+      );
+      if (!validation.ok) {
+        console.warn(`[Evolution] direction proposal rejected: ${validation.reason}`);
+        directionOutcome = { outcome: "no_change" };
+      } else {
+        const summary =
+          proposal.summary.trim() || "Direction updated (merged evolution run)";
+        try {
+          const fitnessStore = await readFitness(input.batch);
+          await writeDirection(proposal.content.trim(), input.batch);
+          const archived = await appendMutationWithEvaluation(
+            {
+              ts: new Date().toISOString(),
+              target: "direction",
+              summary,
+              evidence: proposal.evidence,
+              expectedBenefit:
+                proposal.expectedBenefit.trim() || "(none given)",
+            },
+            fitnessStore,
+            input.batch,
+          );
+          directionOutcome = { outcome: "updated", summary };
+          console.log(
+            `[Evolution] direction updated: ${summary}` +
+              (archived.markedIneffective
+                ? ` (previous direction mutation ${archived.evaluatedPreviousTs} marked ineffective)`
+                : ""),
+          );
+        } catch (e) {
+          const reason = e instanceof Error ? e.message : String(e);
+          console.warn("[Evolution] direction write failed:", reason);
+          directionOutcome = { outcome: "failed", summary: reason };
+        }
+      }
+    }
   }
 
   // A PARTIAL pass (step limit reached without a finish call) is NOT a
@@ -190,6 +292,7 @@ export async function runCardEvolution(
       droppedRecent: 0,
       note: resultNote,
       ...(result.partial ? { partial: true } : {}),
+      ...(directionOutcome ? { direction: directionOutcome } : {}),
     };
   }
 
@@ -290,5 +393,6 @@ export async function runCardEvolution(
       ? summarizeCardChanges(baseCard, result.updatedCard, 0)
       : undefined,
     ...(appliedPlaybooks.length > 0 ? { playbooks: appliedPlaybooks } : {}),
+    ...(directionOutcome ? { direction: directionOutcome } : {}),
   };
 }

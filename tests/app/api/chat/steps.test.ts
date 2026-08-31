@@ -11,10 +11,14 @@ const episodic = vi.hoisted(() => ({
     (sliceId: string) => `memory/episodic/slices/${sliceId}/timeline/core.md`
   ),
   tryLoadTodaySlice: vi.fn(),
-  createSlice: vi.fn((msg: string, tz: string) =>
-    makeSlice({ turns: [{ timestamp: "t", role: "user", content: msg }] })
+  createSlice: vi.fn((msg: string, tz: string, turnId?: string, continuesFrom?: string) =>
+    makeSlice({
+      turns: [{ timestamp: "t", role: "user", content: msg }],
+      ...(continuesFrom ? { continuesFrom } : {}),
+    })
   ),
   closeSlice: vi.fn(),
+  loadSlice: vi.fn(async (): Promise<TimeSlice | null> => null),
   appendTurn: vi.fn((slice: TimeSlice, turn: unknown) => {
     slice.turns.push(turn as TimeSlice["turns"][number]);
   }),
@@ -41,12 +45,20 @@ const episodic = vi.hoisted(() => ({
   deterministicSliceMark: vi.fn(() => ({ focus: "fallback focus", summary: "fallback summary" })),
   readStrands: vi.fn(async () => ({})),
   analyzeTurn: vi.fn(
-    async (): Promise<{
+    async (_input: {
+      model: unknown;
+      userMessage: string;
+      existingStrandNames: string[];
+      closingSlice?: unknown;
+      signals?: unknown[];
+      portrait?: string;
+    }): Promise<{
       messageTags: { reuse: string[]; create: Array<{ tag: string; reason: string }> };
       semanticHint: { strands: string[]; reason: string };
       memoryWorthy: boolean;
       emotionalSignal: { intensity: string; register: string; note: string };
       evolveCard?: { worth: boolean; reason: string };
+      memoryUpdate?: { content: string; section?: string };
       fitness?: Array<{ bucket: string; delta: -2 | -1 | 0 | 1; evidence: string }>;
     }> => ({
       messageTags: { reuse: [], create: [] },
@@ -65,10 +77,21 @@ const episodic = vi.hoisted(() => ({
 const evolution = vi.hoisted(() => ({
   runCardEvolution: vi.fn(
     async (_input: {
+      sliceId?: string;
+      signal?: string;
+      closedSliceId?: string;
+      focus?: string;
       onProgress?: (step: "reading" | "reviewing" | "applied") => void;
       onEvolutionLine?: (line: string, stage: "thinking" | "writing") => void;
-      // v1.0 two-phase pass-through fields (asserted by the boundary tests).
+      // v1.1 merged-run pass-through fields (asserted by the boundary tests).
       direction?: string | null;
+      directionEval?: {
+        current: string | null;
+        mode: "bootstrap" | "migrate" | "steady";
+        cardSelfModel: string | null;
+        recentEvents: unknown[];
+        analysis: unknown;
+      };
       triggeredBuckets?: string[];
       fitnessEvents?: unknown[];
       fitnessSignals?: unknown[];
@@ -81,12 +104,14 @@ const evolution = vi.hoisted(() => ({
       partial?: boolean;
       error?: string;
       playbooks?: Array<{ agent: string; summary: string }>;
+      direction?: { outcome: string; summary?: string };
     }> => ({ ran: true, changed: false, droppedRecent: 0, note: "reviewed" }),
   ),
 }));
 vi.mock("@/app/api/evolution/run-card-evolution", () => evolution);
 
 let sliceAged = false;
+let idleGapHit = false;
 
 vi.mock("@/lib/episodic", () => episodic);
 vi.mock("@/lib/episodic/flash/backfill-marks", () => ({
@@ -100,27 +125,15 @@ const interactionSignal = vi.hoisted(() => ({
 }));
 vi.mock("@/lib/episodic/rework-signal", () => interactionSignal);vi.mock("@/lib/episodic/slicer", () => ({
   checkSliceAge: () => sliceAged,
+  checkIdleGap: () => idleGapHit,
 }));
 
-// The v1.0 evolution loop (fitness store / triggers / direction agent /
+// The v1.0 evolution loop (fitness store / triggers / direction validation /
 // acceptance archive) is mocked at its module boundaries so the step tests
 // stay hermetic — the real modules would read/write memory/evolution/ on the
 // local fs.
 const evolutionLoop = vi.hoisted(() => ({
   computeEvolutionTriggers: vi.fn((): Array<{ bucket: string; reason: string }> => []),
-  runDirectionAgent: vi.fn(
-    async (): Promise<{
-      outcome: "no_change" | "proposed" | "failed";
-      direction?: string;
-      reason: string;
-      summary?: string;
-      evidence?: string[];
-      expectedBenefit?: string;
-    }> => ({
-      outcome: "no_change",
-      reason: "nothing cross-slice",
-    }),
-  ),
   validateDirectionProposal: vi.fn(() => ({ ok: true as const })),
   appendMutationWithEvaluation: vi.fn(async () => ({
     evaluatedPreviousTs: null,
@@ -134,15 +147,53 @@ const evolutionLoop = vi.hoisted(() => ({
     bucketNetScore: vi.fn(
       (_store: unknown, _bucket: string, _window?: number) => -4,
     ),
+    emptyFitnessStore: () => ({ events: [], signals: [] }),
     ensureEvolutionFiles: vi.fn(async () => {}),
-    /* Pure predicate — mirror the real implementation so bootstrap gating
+    /* Pure predicates — mirror the real implementations so the direction gate
        tracks whatever readDirection is mocked to return. */
     isDirectionTemplate: (content: string | null): boolean =>
       content === null || content.includes("(Not set yet"),
     readDirection: vi.fn(async (): Promise<string | null> => null),
-    readFitness: vi.fn(async () => ({ events: [], signals: [] })),
+    readFitness: vi.fn(
+      async (): Promise<{
+        events: Array<Record<string, unknown>>;
+        signals: Array<Record<string, unknown>>;
+      }> => ({ events: [], signals: [] }),
+    ),
     readRecentSignals: vi.fn(async () => []),
     writeDirection: vi.fn(async () => {}),
+  },
+  /* Pure mirrors of the direction-agent helpers (template → bootstrap; the old
+     # Direction / # Anti-goals skeleton → migrate; else steady). */
+  detectDirectionMode: (
+    content: string | null,
+  ): "bootstrap" | "migrate" | "steady" =>
+    content === null || content.includes("(Not set yet")
+      ? "bootstrap"
+      : /^# (Direction|Anti-goals)\s*$/m.test(content)
+        ? "migrate"
+        : "steady",
+  buildDirectionBlock: (direction: string | null): string => {
+    if (
+      direction === null ||
+      direction.includes("(Not set yet") ||
+      !direction.includes("# Portrait")
+    ) {
+      return "";
+    }
+    return `## Direction — who the user is (evolved portrait)\n\n${direction}`;
+  },
+  /* Pure mirror of the direction-agent section extractor. */
+  extractDirectionSection: (doc: string, heading: string): string | null => {
+    const lines = doc.split("\n");
+    const start = lines.findIndex((l) => l.trim() === heading);
+    if (start === -1) return null;
+    const body: string[] = [];
+    for (let i = start + 1; i < lines.length; i++) {
+      if (lines[i].trim().startsWith("# ")) break;
+      body.push(lines[i]);
+    }
+    return body.join("\n").trim();
   },
 }));
 vi.mock("@/lib/evolution/triggers", () => ({
@@ -152,7 +203,9 @@ vi.mock("@/lib/evolution/triggers", () => ({
 vi.mock("@/lib/evolution/direction-agent", () => ({
   DIRECTION_RECENT_EVENTS: 30,
   DIRECTION_RECENT_MARKINGS: 10,
-  runDirectionAgent: evolutionLoop.runDirectionAgent,
+  buildDirectionBlock: evolutionLoop.buildDirectionBlock,
+  detectDirectionMode: evolutionLoop.detectDirectionMode,
+  extractDirectionSection: evolutionLoop.extractDirectionSection,
   validateDirectionProposal: evolutionLoop.validateDirectionProposal,
 }));
 vi.mock("@/lib/evolution/acceptance", () => ({
@@ -246,7 +299,7 @@ function makeInput(lastUserMessage: string, overrides: Partial<TurnInput> = {}):
     clientTimezone: "UTC",
     locale: "en",
     config: {
-      slicing: { maxSliceMinutes: 30, maxTurnsPerSlice: 40 },
+      slicing: { maxSliceMinutes: 30, maxTurnsPerSlice: 40, idleGapMinutes: 15 },
       model: { provider: "deepseek-v4-flash", thinking: true, reasoningEffort: "medium" as const },
     },
     owner: "local",
@@ -263,6 +316,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   workflowMock.written.length = 0;
   sliceAged = false;
+  idleGapHit = false;
 });
 
 describe("housekeeping step", () => {
@@ -430,6 +484,222 @@ describe("housekeeping step", () => {
   });
 });
 
+describe("slicing policy: idle_gap close + checkpoint continuation", () => {
+  /** createSlice impl that honors the production 4th arg (continuesFrom). */
+  function mockCreateSlice(newSliceId: string) {
+    episodic.createSlice.mockImplementation(
+      (msg: string, _tz: string, _turnId?: string, continuesFrom?: string) =>
+        makeSlice({
+          slice_id: newSliceId,
+          turns: [{ timestamp: "t", role: "user", content: msg }],
+          ...(continuesFrom ? { continuesFrom } : {}),
+        }),
+    );
+  }
+
+  it("closes on idle_gap when the last turn is older than the idle gap — a genuine new conversation", async () => {
+    idleGapHit = true;
+    const disk = makeSlice({
+      turns: [{ timestamp: "t0", role: "user", content: "old topic" }],
+    });
+    episodic.tryLoadTodaySlice.mockResolvedValue(disk);
+    mockCreateSlice("2026-07-14-1000");
+
+    const { slice, contextPrefix } = await housekeeping(makeInput("back after lunch"));
+
+    expect(episodic.closeSlice).toHaveBeenCalledWith(disk, "idle_gap", expect.anything());
+    // No continuation link, no carry-over — the user left and came back.
+    expect(slice.continuesFrom).toBeUndefined();
+    expect(contextPrefix).toBeUndefined();
+    expect(episodic.loadSlice).not.toHaveBeenCalled();
+  });
+
+  it("idle gap wins over time_cap when both thresholds are exceeded", async () => {
+    idleGapHit = true;
+    sliceAged = true;
+    const disk = makeSlice({
+      turns: [{ timestamp: "t0", role: "user", content: "old topic" }],
+    });
+    episodic.tryLoadTodaySlice.mockResolvedValue(disk);
+    mockCreateSlice("2026-07-14-1000");
+
+    await housekeeping(makeInput("much later"));
+
+    expect(episodic.closeSlice).toHaveBeenCalledWith(disk, "idle_gap", expect.anything());
+  });
+
+  it("does NOT idle-close when the gap is below the threshold", async () => {
+    const disk = makeSlice({
+      turns: [
+        { timestamp: "t0", role: "user", content: "earlier" },
+        { timestamp: "t1", role: "agent", content: "reply" },
+      ],
+    });
+    episodic.tryLoadTodaySlice.mockResolvedValue(disk);
+
+    const input = makeInput("follow up", {
+      modelMessages: [
+        { role: "assistant", content: "reply" },
+      ] as unknown as TurnInput["modelMessages"],
+    });
+    const { slice } = await housekeeping(input);
+
+    expect(episodic.closeSlice).not.toHaveBeenCalled();
+    expect(slice.slice_id).toBe(disk.slice_id);
+  });
+
+  it("time_cap close links the new slice via continuesFrom and carries the closed slice's tail", async () => {
+    sliceAged = true;
+    const disk = makeSlice({
+      turns: [
+        { timestamp: "t0", role: "user", content: "q1" },
+        { timestamp: "t1", role: "agent", content: "a1" },
+      ],
+    });
+    episodic.tryLoadTodaySlice.mockResolvedValue(disk);
+    mockCreateSlice("2026-07-14-1000");
+
+    const { slice, contextPrefix } = await housekeeping(makeInput("next question"));
+
+    expect(episodic.closeSlice).toHaveBeenCalledWith(disk, "time_cap", expect.anything());
+    expect(slice.continuesFrom).toBe("2026-07-14-0900");
+    // The just-closed slice is already in memory — no re-read needed.
+    expect(episodic.loadSlice).not.toHaveBeenCalled();
+    expect(contextPrefix).toEqual([
+      { role: "user", content: "q1" },
+      { role: "assistant", content: "a1" },
+    ]);
+  });
+
+  it("capacity close also links via continuesFrom", async () => {
+    const disk = makeSlice({
+      turns: Array.from({ length: 40 }, (_, i) => ({
+        timestamp: `t${i}`,
+        role: "user" as const,
+        content: `m${i}`,
+      })),
+    });
+    episodic.tryLoadTodaySlice.mockResolvedValue(disk);
+    mockCreateSlice("2026-07-14-1100");
+
+    const { slice, contextPrefix } = await housekeeping(makeInput("keep going"));
+
+    expect(episodic.closeSlice).toHaveBeenCalledWith(disk, "capacity", expect.anything());
+    expect(slice.continuesFrom).toBe("2026-07-14-0900");
+    // Only the last 10 turns are carried.
+    expect(contextPrefix).toHaveLength(10);
+    expect(contextPrefix?.[0]).toEqual({ role: "user", content: "m30" });
+  });
+
+  it("context_lost close gets NO continuation link and no carry-over", async () => {
+    const disk = makeSlice({
+      turns: [
+        { timestamp: "t0", role: "user", content: "earlier" },
+        { timestamp: "t1", role: "agent", content: "reply" },
+        { timestamp: "t2", role: "user", content: "another" },
+        { timestamp: "t3", role: "agent", content: "reply2" },
+      ],
+    });
+    episodic.tryLoadTodaySlice.mockResolvedValue(disk);
+    mockCreateSlice("2026-07-14-1200");
+
+    const { slice, contextPrefix } = await housekeeping(makeInput("new from different device"));
+
+    expect(episodic.closeSlice).toHaveBeenCalledWith(disk, "context_lost", expect.anything());
+    expect(slice.continuesFrom).toBeUndefined();
+    expect(contextPrefix).toBeUndefined();
+  });
+
+  it("later turns of a checkpointed slice re-read the frozen predecessor via loadSlice", async () => {
+    const disk = makeSlice({
+      slice_id: "2026-07-14-1000",
+      continuesFrom: "2026-07-14-0900",
+      turns: [
+        { timestamp: "t0", role: "user", content: "q1" },
+        { timestamp: "t1", role: "agent", content: "a1" },
+        { timestamp: "t2", role: "user", content: "q2" },
+      ],
+    });
+    episodic.tryLoadTodaySlice.mockResolvedValue(disk);
+    episodic.loadSlice.mockResolvedValue(
+      makeSlice({
+        slice_id: "2026-07-14-0900",
+        status: "closed",
+        turns: Array.from({ length: 12 }, (_, i) => ({
+          timestamp: `p${i}`,
+          role: i % 2 === 0 ? ("user" as const) : ("agent" as const),
+          content: `p${i}`,
+        })),
+      }),
+    );
+    try {
+      const input = makeInput("q2", {
+        modelMessages: [
+          { role: "assistant", content: "a1" },
+        ] as unknown as TurnInput["modelMessages"],
+      });
+      const { contextPrefix } = await housekeeping(input);
+
+      expect(episodic.loadSlice).toHaveBeenCalledWith("2026-07-14-0900", expect.anything());
+      // The tail is capped at the last 10 turns, roles mapped to the wire shape.
+      expect(contextPrefix).toHaveLength(10);
+      expect(contextPrefix?.[0]).toEqual({ role: "user", content: "p2" });
+      expect(contextPrefix?.[9]).toEqual({ role: "assistant", content: "p11" });
+    } finally {
+      episodic.loadSlice.mockResolvedValue(null);
+    }
+  });
+
+  it("unreadable predecessor degrades to no carry-over (best-effort)", async () => {
+    const disk = makeSlice({
+      slice_id: "2026-07-14-1000",
+      continuesFrom: "2026-07-14-0900",
+      turns: [
+        { timestamp: "t0", role: "user", content: "q1" },
+        { timestamp: "t1", role: "agent", content: "a1" },
+      ],
+    });
+    episodic.tryLoadTodaySlice.mockResolvedValue(disk);
+    episodic.loadSlice.mockResolvedValue(null);
+
+    const input = makeInput("q1", {
+      modelMessages: [
+        { role: "assistant", content: "a1" },
+      ] as unknown as TurnInput["modelMessages"],
+    });
+    const { slice, contextPrefix } = await housekeeping(input);
+
+    // The turn proceeds normally — just without the carried tail.
+    expect(slice.slice_id).toBe("2026-07-14-1000");
+    expect(contextPrefix).toBeUndefined();
+  });
+
+  it("emits the checkpoint continuity tier for a continued slice", async () => {
+    sliceAged = true;
+    const disk = makeSlice({
+      focus: "rust loops",
+      turns: [
+        { timestamp: "t0", role: "user", content: "q1" },
+        { timestamp: "t1", role: "agent", content: "a1" },
+      ],
+    });
+    episodic.tryLoadTodaySlice.mockResolvedValue(disk);
+    mockCreateSlice("2026-07-14-1000");
+
+    await housekeeping(makeInput("next question"));
+
+    const chunk = workflowMock.written.find(
+      (c) =>
+        c.type === "data-phase" &&
+        (c.data as { phase: string; running: boolean }).phase === "context" &&
+        (c.data as { running: boolean }).running === false,
+    );
+    const summaries =
+      ((chunk?.data as { summaries?: string[] } | undefined)?.summaries ?? []) as string[];
+    expect(summaries.join(" ")).toContain("continuity: checkpoint");
+  });
+});
+
 describe("housekeeping boundary evolution gating", () => {
   function setupClosingSlice() {
     sliceAged = true;
@@ -520,30 +790,35 @@ describe("housekeeping boundary evolution gating", () => {
     }
   });
 
-  // ── v1.0 two-phase orchestration (design §2.3/§2.5) ─────────────────────
+  // ── v1.1 merged-run orchestration (direction evaluated INSIDE the one
+  //    runCardEvolution call — the old two-phase split is gone) ────────────
 
-  it("two-phase on a triggered boundary: Phase 1 (direction) runs BEFORE Phase 2, which receives direction + triggers", async () => {
+  it("a triggered boundary runs the ONE merged evolution: directionEval (current doc + mode) + triggers ride the input", async () => {
     setupClosingSlice();
     mockAnalysis({ worth: true, reason: "durable" });
-    evolutionLoop.store.readDirection.mockResolvedValue("# Direction\n\nBe concrete.");
+    evolutionLoop.store.readDirection.mockResolvedValue(
+      "# Portrait\n\nThe user prefers concrete answers.\n\n# Hypotheses\n\n# Evidence\n\n# Log",
+    );
     evolutionLoop.computeEvolutionTriggers.mockReturnValue([
       { bucket: "recall", reason: "net -3" },
     ]);
-    const order: string[] = [];
-    evolutionLoop.runDirectionAgent.mockImplementationOnce(async () => {
-      order.push("direction");
-      return { outcome: "no_change" as const, reason: "bar not met" };
-    });
     evolution.runCardEvolution.mockImplementationOnce(async (input) => {
-      order.push("product");
-      expect(input.direction).toBe("# Direction\n\nBe concrete.");
+      expect(input.directionEval?.current).toContain("# Portrait");
+      expect(input.directionEval?.mode).toBe("steady");
       expect(input.triggeredBuckets).toEqual(["recall"]);
-      return { ran: true, changed: false, droppedRecent: 0, note: "reviewed" };
+      return {
+        ran: true,
+        changed: false,
+        droppedRecent: 0,
+        note: "reviewed",
+        direction: { outcome: "no_change" },
+      };
     });
     try {
       await housekeeping(makeInput("wrapping up"));
-      expect(order).toEqual(["direction", "product"]);
-      // no_change writes nothing.
+      expect(evolution.runCardEvolution).toHaveBeenCalledOnce();
+      // The direction write-back lives INSIDE runCardEvolution now — the step
+      // never touches writeDirection / the archive itself on this path.
       expect(evolutionLoop.store.writeDirection).not.toHaveBeenCalled();
       expect(evolutionLoop.appendMutationWithEvaluation).not.toHaveBeenCalled();
     } finally {
@@ -552,7 +827,7 @@ describe("housekeeping boundary evolution gating", () => {
     }
   });
 
-  it("a non-card bucket trigger runs Phase 2 even when worth=false and the card is v5", async () => {
+  it("a non-card bucket trigger runs the merged evolution even when worth=false and the card is v5", async () => {
     setupClosingSlice();
     mockAnalysis({ worth: false, reason: "pure logistics" });
     episodic.readCurrentPreviously.mockResolvedValue(
@@ -563,15 +838,17 @@ describe("housekeeping boundary evolution gating", () => {
     ]);
     try {
       await housekeeping(makeInput("wrapping up"));
-      expect(evolutionLoop.runDirectionAgent).toHaveBeenCalledOnce();
       expect(evolution.runCardEvolution).toHaveBeenCalledOnce();
+      expect(
+        evolution.runCardEvolution.mock.calls[0][0].triggeredBuckets,
+      ).toEqual(["thinkdeep"]);
     } finally {
       episodic.readCurrentPreviously.mockResolvedValue("");
       evolutionLoop.computeEvolutionTriggers.mockReturnValue([]);
     }
   });
 
-  it("no trigger and no card gate → NEITHER evolution sub-agent runs", async () => {
+  it("no trigger and no card gate → the merged evolution never runs", async () => {
     setupClosingSlice();
     mockAnalysis({ worth: false, reason: "pure logistics" });
     episodic.readCurrentPreviously.mockResolvedValue(
@@ -579,38 +856,86 @@ describe("housekeeping boundary evolution gating", () => {
     );
     try {
       await housekeeping(makeInput("wrapping up"));
-      expect(evolutionLoop.runDirectionAgent).not.toHaveBeenCalled();
       expect(evolution.runCardEvolution).not.toHaveBeenCalled();
     } finally {
       episodic.readCurrentPreviously.mockResolvedValue("");
     }
   });
 
-  it("applies an accepted direction proposal: writeDirection + archive, then Phase 2 sees the NEW direction", async () => {
+  it("the direction gate alone fires the merged run: a MIGRATE-mode doc (old skeleton) is always due", async () => {
+    setupClosingSlice();
+    mockAnalysis({ worth: false, reason: "pure logistics" });
+    episodic.readCurrentPreviously.mockResolvedValue(
+      "# Previously On\n\n_Active slice: 2026-07-14-0900 | Format: user card v2 | Updated: 2026-07-14T09:30:00.000Z_\n",
+    );
+    evolutionLoop.store.readDirection.mockResolvedValue(
+      "# Direction\n\nBe concrete.\n\n# Anti-goals\n\nNo coaching.\n\n# Evidence\n\n- 2026-07-14-0900 — x\n\n# Log\n\n- entry",
+    );
+    try {
+      await housekeeping(makeInput("wrapping up"));
+      expect(evolution.runCardEvolution).toHaveBeenCalledOnce();
+      expect(evolution.runCardEvolution.mock.calls[0][0].directionEval?.mode).toBe(
+        "migrate",
+      );
+    } finally {
+      episodic.readCurrentPreviously.mockResolvedValue("");
+      evolutionLoop.store.readDirection.mockResolvedValue(null);
+    }
+  });
+
+  it("BOOTSTRAP is due only with material at hand: fitness events fire the run, an empty store does not", async () => {
+    setupClosingSlice();
+    mockAnalysis({ worth: false, reason: "pure logistics" });
+    episodic.readCurrentPreviously.mockResolvedValue(
+      "# Previously On\n\n_Active slice: 2026-07-14-0900 | Format: user card v2 | Updated: 2026-07-14T09:30:00.000Z_\n",
+    );
+    // readDirection stays null → bootstrap mode.
+    try {
+      // No material: no events, no legacy Self-model lines → no run.
+      await housekeeping(makeInput("wrapping up"));
+      expect(evolution.runCardEvolution).not.toHaveBeenCalled();
+
+      // Material: one fitness event → the FIRST direction is due.
+      evolutionLoop.store.readFitness.mockResolvedValue({
+        events: [
+          {
+            ts: "2026-07-14T09:00:00Z",
+            sliceId: "2026-07-14-0900",
+            bucket: "recall" as const,
+            delta: -1 as const,
+            evidence: "not what we discussed",
+          },
+        ],
+        signals: [],
+      });
+      setupClosingSlice();
+      mockAnalysis({ worth: false, reason: "pure logistics" });
+      await housekeeping(makeInput("wrapping up again"));
+      expect(evolution.runCardEvolution).toHaveBeenCalledOnce();
+      expect(evolution.runCardEvolution.mock.calls[0][0].directionEval?.mode).toBe(
+        "bootstrap",
+      );
+    } finally {
+      episodic.readCurrentPreviously.mockResolvedValue("");
+      evolutionLoop.store.readFitness.mockResolvedValue({ events: [], signals: [] });
+    }
+  });
+
+  it("the merged run's directionEval carries the card's legacy Self-model lines as the migration source", async () => {
     setupClosingSlice();
     mockAnalysis({ worth: true, reason: "durable" });
-    evolutionLoop.runDirectionAgent.mockResolvedValueOnce({
-      outcome: "proposed",
-      direction: "# Direction\n\nNew direction.",
-      reason: "cross-slice evidence",
-      summary: "direction v1",
-      evidence: ["2026-07-14-0900"],
-      expectedBenefit: "sharper evolution",
-    });
-    evolution.runCardEvolution.mockImplementationOnce(async (input) => {
-      expect(input.direction).toBe("# Direction\n\nNew direction.");
-      return { ran: true, changed: false, droppedRecent: 0, note: "reviewed" };
-    });
-    await housekeeping(makeInput("wrapping up"));
-    expect(evolutionLoop.store.writeDirection).toHaveBeenCalledWith(
-      "# Direction\n\nNew direction.",
-      expect.anything(),
+    episodic.readCurrentPreviously.mockResolvedValue(
+      "# Previously On\n\n_Active slice: 2026-07-14-0900 | Format: user card v2 | Updated: 2026-07-14T09:30:00.000Z_\n\n## Identity\n\n- Name: Alan\n\n## Self-model\n\n- Don't decompose emotional venting\n",
     );
-    expect(evolutionLoop.appendMutationWithEvaluation).toHaveBeenCalledWith(
-      expect.objectContaining({ target: "direction", summary: "direction v1" }),
-      expect.anything(),
-      expect.anything(),
-    );
+    try {
+      await housekeeping(makeInput("wrapping up"));
+      expect(evolution.runCardEvolution).toHaveBeenCalledOnce();
+      expect(
+        evolution.runCardEvolution.mock.calls[0][0].directionEval?.cardSelfModel,
+      ).toContain("Don't decompose emotional venting");
+    } finally {
+      episodic.readCurrentPreviously.mockResolvedValue("");
+    }
   });
 
   it("persists the analyzer's fitness deltas via appendFitnessEvents, attributed to the closed slice", async () => {
@@ -720,9 +1045,13 @@ describe("housekeeping boundary evolution gating", () => {
     evolutionLoop.computeEvolutionTriggers.mockReturnValue([
       { bucket: "recall", reason: "net -4" },
     ]);
-    evolutionLoop.runDirectionAgent.mockResolvedValueOnce({
-      outcome: "no_change",
-      reason: "bar not met",
+    // The direction verdict rides the merged run's result now (v1.1).
+    evolution.runCardEvolution.mockResolvedValueOnce({
+      ran: true,
+      changed: false,
+      droppedRecent: 0,
+      note: "reviewed",
+      direction: { outcome: "no_change" },
     });
     try {
       await housekeeping(makeInput("wrapping up"));
@@ -741,16 +1070,15 @@ describe("housekeeping boundary evolution gating", () => {
     }
   });
 
-  it("surfaces an accepted direction proposal as direction.updated with its summary", async () => {
+  it("surfaces an applied direction proposal as direction.updated with its summary", async () => {
     setupClosingSlice();
     mockAnalysis({ worth: true, reason: "durable" });
-    evolutionLoop.runDirectionAgent.mockResolvedValueOnce({
-      outcome: "proposed",
-      direction: "# Direction\n\nNew direction.",
-      reason: "cross-slice evidence",
-      summary: "direction v1",
-      evidence: ["2026-07-14-0900"],
-      expectedBenefit: "sharper evolution",
+    evolution.runCardEvolution.mockResolvedValueOnce({
+      ran: true,
+      changed: false,
+      droppedRecent: 0,
+      note: "reviewed",
+      direction: { outcome: "updated", summary: "direction v1" },
     });
     await housekeeping(makeInput("wrapping up"));
     const terminal = workflowMock.written
@@ -765,12 +1093,15 @@ describe("housekeeping boundary evolution gating", () => {
     ).toBeUndefined();
   });
 
-  it("surfaces a failed Phase-1 check as direction.failed with the reason — a failure is not a silent no_change", async () => {
+  it("surfaces a failed direction write as direction.failed with the reason — a failure is not a silent no_change", async () => {
     setupClosingSlice();
     mockAnalysis({ worth: true, reason: "durable" });
-    evolutionLoop.runDirectionAgent.mockResolvedValueOnce({
-      outcome: "failed",
-      reason: "worker timeout",
+    evolution.runCardEvolution.mockResolvedValueOnce({
+      ran: true,
+      changed: false,
+      droppedRecent: 0,
+      note: "reviewed",
+      direction: { outcome: "failed", summary: "worker timeout" },
     });
     await housekeeping(makeInput("wrapping up"));
     const terminal = workflowMock.written
@@ -801,6 +1132,169 @@ describe("housekeeping boundary evolution gating", () => {
       status: "done",
       playbooks: [{ agent: "recall", summary: "fewer unverified recall answers" }],
     });
+  });
+});
+
+describe("mid-turn evolution check (every turn, pre-reply)", () => {
+  function setupActiveSlice() {
+    const disk = makeSlice({
+      turns: [
+        { timestamp: "t0", role: "user", content: "old" },
+        { timestamp: "t1", role: "agent", content: "reply" },
+      ],
+    });
+    episodic.tryLoadTodaySlice.mockResolvedValue(disk);
+    return disk;
+  }
+
+  /** A genuine MID-TURN input: the client history remembers the slice's
+   *  agent reply, so the context_lost close heuristic stays off. */
+  function midTurnInput(msg: string, overrides: Partial<TurnInput> = {}) {
+    return makeInput(msg, {
+      modelMessages: [
+        { role: "user", content: "old" },
+        { role: "assistant", content: "reply" },
+      ] as TurnInput["modelMessages"],
+      ...overrides,
+    });
+  }
+
+  it("a mid-turn fitness trigger runs the merged evolution BEFORE the reply (no boundary)", async () => {
+    setupActiveSlice();
+    evolutionLoop.computeEvolutionTriggers.mockReturnValue([
+      { bucket: "interaction", reason: 'dissatisfaction signal this slice: "你又没回答我的问题"' },
+    ]);
+    try {
+      await housekeeping(midTurnInput("again?"));
+      expect(evolution.runCardEvolution).toHaveBeenCalledOnce();
+      const arg = evolution.runCardEvolution.mock.calls[0][0];
+      expect(arg.signal).toBe("new_observation");
+      expect(arg.triggeredBuckets).toEqual(["interaction"]);
+      // The merged run evaluates the direction FIRST, even mid-turn…
+      expect(arg.directionEval).toBeDefined();
+      // …but the deep whole-slice review stays boundary-scoped.
+      expect(arg.closedSliceId).toBeUndefined();
+      expect(arg.sliceId).toBe("2026-07-14-0900"); // the ACTIVE slice
+      // A visible terminal frame settles the evolution card.
+      const terminal = workflowMock.written
+        .filter((c) => c.type === "data-evolution")
+        .at(-1);
+      expect(terminal?.data).toMatchObject({ status: "done" });
+    } finally {
+      evolutionLoop.computeEvolutionTriggers.mockReturnValue([]);
+    }
+  });
+
+  it("a boundary turn with triggers runs the evolution exactly ONCE (no mid-turn double-run)", async () => {
+    sliceAged = true;
+    const disk = makeSlice({
+      turns: [
+        { timestamp: "t0", role: "user", content: "old" },
+        { timestamp: "t1", role: "agent", content: "reply" },
+      ],
+    });
+    episodic.tryLoadTodaySlice.mockResolvedValue(disk);
+    episodic.analyzeTurn.mockResolvedValue({
+      messageTags: { reuse: [], create: [] },
+      semanticHint: { strands: [], reason: "" },
+      memoryWorthy: true,
+      emotionalSignal: { intensity: "none", register: "neutral", note: "" },
+      evolveCard: { worth: false, reason: "pure logistics" },
+      fitness: [{ bucket: "interaction", delta: -1, evidence: "你又没回答我的问题" }],
+    });
+    episodic.readCurrentPreviously.mockResolvedValue(
+      "# Previously On\n\n_Active slice: 2026-07-14-0900 | Format: user card v2 | Updated: 2026-07-14T09:30:00.000Z_\n",
+    );
+    evolutionLoop.computeEvolutionTriggers.mockReturnValue([
+      { bucket: "interaction", reason: 'dissatisfaction signal: "你又没回答我的问题"' },
+    ]);
+    try {
+      await housekeeping(makeInput("wrapping up"));
+      expect(evolution.runCardEvolution).toHaveBeenCalledOnce();
+    } finally {
+      episodic.readCurrentPreviously.mockResolvedValue("");
+      evolutionLoop.computeEvolutionTriggers.mockReturnValue([]);
+    }
+  });
+
+  it("no trigger and no gate mid-turn → no evolution run, no evolution chunks", async () => {
+    setupActiveSlice();
+    await housekeeping(midTurnInput("just chatting"));
+    expect(evolution.runCardEvolution).not.toHaveBeenCalled();
+    expect(
+      workflowMock.written.filter((c) => c.type === "data-evolution"),
+    ).toHaveLength(0);
+  });
+
+  it("demo mode never runs evolution — explicit update + fired trigger notwithstanding", async () => {
+    setupActiveSlice();
+    episodic.analyzeTurn.mockResolvedValue({
+      messageTags: { reuse: [], create: [] },
+      semanticHint: { strands: [], reason: "" },
+      memoryWorthy: true,
+      emotionalSignal: { intensity: "none", register: "neutral", note: "" },
+      memoryUpdate: { content: "Always answer in Chinese" },
+    });
+    evolutionLoop.computeEvolutionTriggers.mockReturnValue([
+      { bucket: "interaction", reason: "fired" },
+    ]);
+    try {
+      await housekeeping(midTurnInput("记住：以后都用中文", { useDemo: true }));
+      expect(evolution.runCardEvolution).not.toHaveBeenCalled();
+      // Demo skips the trigger math itself too.
+      expect(evolutionLoop.computeEvolutionTriggers).not.toHaveBeenCalled();
+    } finally {
+      evolutionLoop.computeEvolutionTriggers.mockReturnValue([]);
+    }
+  });
+
+  it("feeds the direction Portrait section (capped) into the turn-analyzer as Task 7's rubric", async () => {
+    setupActiveSlice();
+    const portrait = "用户不喜欢感性的回答";
+    evolutionLoop.store.readDirection.mockResolvedValue(
+      `# Portrait\n\n${portrait}\n\n# Hypotheses\n\n- [proposed 2026-07-14-0900 · checked 2026-07-14-0900] guess — falsify if: x\n\n# Evidence\n\n# Log`,
+    );
+    try {
+      await housekeeping(midTurnInput("hello"));
+      const arg = episodic.analyzeTurn.mock.calls.at(-1)?.[0] as {
+        portrait?: string;
+      };
+      // The Portrait body only — the hypotheses pool stays out of the rubric.
+      expect(arg.portrait).toBe(portrait);
+    } finally {
+      evolutionLoop.store.readDirection.mockResolvedValue(null);
+    }
+  });
+
+  it("caps the rubric at 4000 chars and omits it when the doc is missing/template", async () => {
+    setupActiveSlice();
+    evolutionLoop.store.readDirection.mockResolvedValue(
+      `# Portrait\n\n${"p".repeat(5000)}\n\n# Hypotheses\n\n# Evidence\n\n# Log`,
+    );
+    try {
+      await housekeeping(midTurnInput("hello"));
+      let arg = episodic.analyzeTurn.mock.calls.at(-1)?.[0] as {
+        portrait?: string;
+      };
+      expect(arg.portrait).toHaveLength(4000);
+    } finally {
+      evolutionLoop.store.readDirection.mockResolvedValue(null);
+    }
+
+    setupActiveSlice();
+    // Template placeholder body ("_(Not set yet…") → no rubric.
+    evolutionLoop.store.readDirection.mockResolvedValue(
+      "# Portrait\n\n_(Not set yet — placeholder.)_\n\n# Hypotheses\n\n# Evidence\n\n# Log",
+    );
+    try {
+      await housekeeping(midTurnInput("hello again"));
+      const arg = episodic.analyzeTurn.mock.calls.at(-1)?.[0] as {
+        portrait?: string;
+      };
+      expect(arg.portrait).toBeUndefined();
+    } finally {
+      evolutionLoop.store.readDirection.mockResolvedValue(null);
+    }
   });
 });
 
