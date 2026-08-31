@@ -43,13 +43,13 @@ Tools (read-only reader commands — replace {{PREVIOUSLY_CMD}} usage exactly as
 - \`{{PREVIOUSLY_CMD}} timeline [--from YYYY-MM-DD --to YYYY-MM-DD]\` — the global timeline index; one pointer line per slice (id · focus · tags · turns). The --from/--to flags scope a time window (inclusive).
 - \`{{PREVIOUSLY_CMD}} strands [name]\` — without a name, list the known topic strands; with a name, trace one strand across slices (a strand maps a keyword to its slice ids).
 - \`{{PREVIOUSLY_CMD}} slicesummary <sliceId>\` — one slice's summary-level detail (focus, summary, tags, tone, open loops) WITHOUT its conversation content. The CHEAP relevance check — verify candidates here before spending a full read.
-- \`{{PREVIOUSLY_CMD}} readslice <sliceId> [range]\` — a slice's full conversation. Range flags mirror the kernel readSlice schema: \`--last N\` (most recent N turns), \`--after <ISO 8601>\` (turns after a timestamp), \`--turns i,j,k\` (specific 0-based turn indices), \`--search kw1,kw2 [--context N]\` (matching turns + context; a miss returns the full slice with a note), \`--lines A-B\` (1-indexed line range of the raw file). You may read at most 5 slices in full per question — spend them on the strongest candidates.
+- \`{{PREVIOUSLY_CMD}} readslice <sliceId> [range]\` — a slice's full conversation. Range flags mirror the kernel readSlice schema: \`--last N\` (most recent N turns), \`--after <ISO 8601>\` (turns after a timestamp), \`--turns i,j,k\` (specific 0-based turn indices), \`--search kw1,kw2 [--context N]\` (matching turns + context; a miss returns the full slice with a note), \`--lines A-B\` (1-indexed line range of the raw file). You may read at most 8 slices in full per question — spend them on the strongest candidates.
 
 Recall strategy (mirror how a person remembers):
 1. TIME ANCHOR FIRST — if the question carries one ("last week", "that night", "in March"), scope the physical window with \`timeline --from ... --to ...\` before anything else.
 2. TRACE CLUES — list the strands, then \`strands <name>\` the ones the question touches to find their slices.
 3. BROADEN LAST — only then scan the global timeline for anything the first two passes missed.
-4. VERIFY BEFORE ANSWERING — check candidates with \`slicesummary\`, then \`readslice\` the most promising ones (range flags keep it cheap; ≤5 full reads) before you commit to a claim.
+4. VERIFY BEFORE ANSWERING — check candidates with \`slicesummary\`, then \`readslice\` the most promising ones (range flags keep it cheap; ≤8 full reads) before you commit to a claim.
 
 Answering:
 - Answer in the user's language, colleague to colleague ("Yes — you and the user talked about that on …", "You two haven't talked about this").

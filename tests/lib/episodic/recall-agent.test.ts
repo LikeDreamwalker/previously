@@ -372,6 +372,36 @@ describe("runRecallSearch", () => {
     expect(out).toContain("quota exhausted");
   });
 
+  it("caps timeline windows at the page size and reports the truncation", async () => {
+    runner.runSubAgent.mockResolvedValue({
+      ok: true,
+      report: { answer: "a", references: [], searched: [], confidence: 0.5 },
+      text: "",
+    });
+    // 150 slices in one day — over the 100-line window page size.
+    const slices = Array.from({ length: 150 }, (_, i) =>
+      entry(`2026-08-01-${String(1000 + i)}`),
+    );
+    const io = await import("@/lib/episodic/io-helpers");
+    const mockedRead = vi.mocked(io.fsReadFile);
+    mockedRead.mockResolvedValue(JSON.stringify({ slices }));
+    try {
+      await runRecallSearch(recallInput());
+      const opts = runner.runSubAgent.mock.calls[0]![0];
+      const readTimelineWindow = opts.tools.readTimelineWindow as {
+        execute: (input: { from?: string; to?: string }) => Promise<string>;
+      };
+      const out = await readTimelineWindow.execute({});
+      const pointerLines = out.split("\n").filter((l) => l.startsWith("- **"));
+      expect(pointerLines).toHaveLength(100);
+      expect(out).toContain(
+        "showing first 100 of 150 slices in this window",
+      );
+    } finally {
+      mockedRead.mockRejectedValue(new Error("no catalog in tests"));
+    }
+  });
+
   it("re-throws non-timeout failures so the executor can triage transient errors for step retry", async () => {
     // Transient (429) — must propagate: a catch-all here would swallow an
     // error the workflow step's auto-retry could fix.

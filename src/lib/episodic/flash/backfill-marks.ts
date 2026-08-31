@@ -84,7 +84,7 @@ async function markOneSlice(
     toolChoice: "required",
     reportToolName: "markOutput",
     reportSchema: markSchema,
-    maxSteps: 1,
+    maxSteps: 50,
     timeoutMs: 30_000,
     progress: { toolName: "backfill-marks" },
   });

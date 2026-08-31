@@ -42,7 +42,7 @@
  * affected. The call itself runs on the unified sub-agent runner
  * (src/lib/agents/sub-agent-runner.ts): thinking ON at effort "low" (via the
  * Anthropic-shaped effort mapping — this adapter speaks the Anthropic
- * protocol), a 10-step cap, and a 150s wall-clock budget. The provider path
+ * protocol), a 50-step cap, and a 150s wall-clock budget. The provider path
  * is unchanged: the runner receives a PRE-BUILT model instance so the custom
  * endpoint + normalizing fetch stay exactly as they were.
  */
@@ -86,7 +86,7 @@ const MAX_SEARCHES_PER_QUERY = 3;
  *  expensive leg (fetch + context); a model that keeps "just one more page"
  *  would burn the whole step budget on reading. After the quota, webFetch
  *  returns a note and the researcher synthesizes from what it has. */
-export const MAX_PAGE_READS = 3;
+export const MAX_PAGE_READS = 6;
 
 const WEB_FETCH_TIMEOUT_MS = 30_000;
 const WEB_FETCH_MAX_CHARS = 15_000;
@@ -250,7 +250,7 @@ const searchReportSchema = tool({
 
 /** Total model steps for the research loop: search rounds + page reads + the
  *  final report. */
-const MAX_SEARCH_STEPS = 10;
+const MAX_SEARCH_STEPS = 50;
 
 /**
  * The research sub-agent's static role block — the system prompt is
@@ -260,11 +260,11 @@ const MAX_SEARCH_STEPS = 10;
  */
 const SEARCH_ROLE = `You are an independent researcher: the main agent hands you a topic, and you come back with a real answer.
 
-You both search AND read. web_search (provider-executed) finds the material; webFetch reads the most promising pages yourself — the search digest alone is often too thin to answer well. You may read at most ${MAX_PAGE_READS} pages per run — spend them on the strongest sources.
+You both search AND read. web_search (provider-executed) finds the material; webFetch reads the most promising pages yourself — the search digest alone is often too thin to answer well. Pages come back as Markdown (headings, lists, links and tables preserved). You may read at most ${MAX_PAGE_READS} pages per run — spend them on the strongest sources.
 
 Process:
 1. Use web_search to find information relevant to the query in the user message (up to ${MAX_SEARCHES_PER_QUERY} rounds).
-2. Read the 1-3 most promising pages with webFetch (use its range filters to keep reads focused).
+2. Read the most promising pages with webFetch (use its range filters to keep reads focused).
 3. When you have enough, call searchReport with:
    - answer: a real answer to the query (2-5 paragraphs), synthesizing what you found with your own knowledge. Every claim that comes from the web must mention its source. Answer in the query's language — it reaches the user, so it overrides the shared base's English default.
    - recommendation: your researcher's assessment — how confident you are, what is solid, what is uncertain or conflicting between sources.
@@ -338,8 +338,9 @@ export async function searchViaFlash(
       }),
       webFetch: tool({
         description:
-          "Fetch and read a specific page's text (scripts/styles stripped, " +
-          `up to ~15K characters). Costs one of your ${MAX_PAGE_READS} ` +
+          "Fetch and read a specific page as Markdown (headings/lists/links/" +
+          "tables preserved, boilerplate stripped, up to ~15K characters). " +
+          `Costs one of your ${MAX_PAGE_READS} ` +
           "page-read slots — spend them on the strongest sources only. " +
           "Optional `range`: `search` matches keywords across the page " +
           "(misses return the full text with a note); `lines` reads a " +

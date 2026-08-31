@@ -365,18 +365,24 @@ export const chatTools = {
       "Dispatch a question to a clean-room thinking pod — a think-only copy " +
       "of yourself reasoning in complete isolation from your current context " +
       "(no search, no memory tools — embed every fact it needs in the " +
-      "question). Call it when you need rigorous, objective reasoning that " +
-      "your live context would contaminate: your context is polluted or too " +
-      "loaded to think straight, you want an unbiased second pass over a " +
-      "conclusion you already lean towards, or a question deserves fresh, " +
-      "uncontaminated thought. It is NOT a default step of every turn — most " +
-      "turns you simply answer. Returns the conclusion plus its thinking " +
-      "trail; a pod may come back partial (`status: timeout`) — its `answer` " +
-      "and `reasoning` hold what it already produced; work with them, or " +
-      "gather the missing facts yourself and dispatch a finer question. " +
-      "Tag each question with the right effort: low for simple logical " +
-      "verification, medium for a comparison, high for deep structural " +
-      "analysis. Synthesize what comes back into your answer in your own voice.",
+      "question). Its primary use is DECOMPOSITION: when the user raises " +
+      "several parallel questions, observations, or angles in one turn, " +
+      "break it into one self-contained question per direction and dispatch " +
+      "all of them in the SAME step — tool calls within one step run " +
+      "concurrently, so every direction gets full-depth thinking in " +
+      "parallel, then you synthesize. Also reach for it when a single " +
+      "question deserves sustained reasoning your live context would water " +
+      "down: a trade-off or risk assessment, an unbiased second pass over a " +
+      "conclusion you lean towards, or context too polluted to think " +
+      "straight. Simple turns you simply answer — but do not skimp on " +
+      "questions worth thinking about. Returns the conclusion plus its " +
+      "thinking trail; a pod may come back partial (`status: timeout`) — " +
+      "its `answer` and `reasoning` hold what it already produced; work " +
+      "with them, or gather the missing facts yourself and dispatch a finer " +
+      "question. Tag each question with the right effort: low for simple " +
+      "logical verification, medium for a comparison, high for deep " +
+      "structural analysis. Synthesize what comes back into your answer in " +
+      "your own voice.",
     inputSchema: z.object({
       question: z
         .string()

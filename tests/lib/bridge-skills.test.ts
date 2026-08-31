@@ -30,7 +30,7 @@ describe("RECALL_SKILL_DOC", () => {
     // readslice is now a FIRST-CLASS reader command of the sub-agent…
     expect(RECALL_SKILL_DOC).toContain("{{PREVIOUSLY_CMD}} readslice <sliceId> [range]");
     // …with the full-read budget from the kernel contract.
-    expect(RECALL_SKILL_DOC).toContain("at most 5 slices in full");
+    expect(RECALL_SKILL_DOC).toContain("at most 8 slices in full");
     // The old pointer-only prohibition is gone.
     expect(RECALL_SKILL_DOC).not.toContain("POINTERS ONLY");
     expect(RECALL_SKILL_DOC).not.toContain("NO readslice permission");

@@ -3,6 +3,7 @@
  * Kept out of tool-executors.ts so tests can import them without pulling the
  * workflow step runtime.
  */
+import { convertHtmlToMarkdown } from "markitdown-html";
 
 /** Reject hostnames that resolve to local/private network space (SSRF guard). */
 export function isPrivateHost(hostname: string): boolean {
@@ -105,12 +106,43 @@ export async function fetchWithGuard(
 }
 
 /**
+ * HTML → Markdown text extraction. markitdown-html (a TypeScript port of
+ * Microsoft MarkItDown's HTML converter — pure JS on htmlparser2, no DOM or
+ * native binaries) does the conversion, preserving headings, lists, links and
+ * table structure. Boilerplate containers (nav/header/footer/aside/form) are
+ * pre-stripped so menus and footers don't leak into the text; the converter
+ * itself drops script/style contents. Non-breaking spaces are normalized to
+ * plain spaces — the converter keeps the decoded U+00A0, which reads and
+ * searches worse than a regular space.
+ *
+ * When conversion throws or yields empty output, the old regex stripper below
+ * runs as a loss-tolerant fallback — the main agent wants readable prose, not
+ * exact fidelity.
+ */
+export function extractText(html: string): string {
+  try {
+    const withoutBoilerplate = html.replace(
+      /<(script|style|noscript|nav|header|footer|aside|form|iframe)\b[^>]*>[\s\S]*?<\/\1>/gi,
+      " ",
+    );
+    const markdown = convertHtmlToMarkdown(withoutBoilerplate).replace(
+      /\u00a0/g,
+      " ",
+    );
+    if (markdown.trim().length > 0) return markdown;
+  } catch {
+    // Fall through to the regex fallback.
+  }
+  return extractTextFallback(html);
+}
+
+/**
  * Crude HTML → plain-text extraction. Strips script/style contents, replaces
  * block breaks with newlines, removes remaining tags, decodes a few common
  * entities, and collapses whitespace. Deliberately dependency-free and
- * loss-tolerant — the main agent wants readable prose, not exact fidelity.
+ * loss-tolerant — kept as the internal fallback for extractText.
  */
-export function extractText(html: string): string {
+function extractTextFallback(html: string): string {
   const withoutScripts = html.replace(
     /<script\b[^>]*>[\s\S]*?<\/script>/gi,
     " ",

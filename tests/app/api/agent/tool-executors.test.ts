@@ -36,7 +36,7 @@ vi.mock("@/lib/demo/demo-fs", () => ({
 }));
 vi.mock("@/lib/config/loader", () => ({
   loadUserConfig: vi.fn(async () => ({
-    slicing: { maxSliceMinutes: 30, maxTurnsPerSlice: 50 },
+    slicing: { maxSliceMinutes: 30, maxTurnsPerSlice: 50, idleGapMinutes: 15 },
   })),
 }));
 

@@ -31,7 +31,7 @@ describe("searchViaFlash", () => {
     expect(opts.languageModel).toBeDefined();
     expect(opts.model).toBeUndefined();
     expect(opts.effortSdk).toBe("anthropic");
-    expect(opts.maxSteps).toBe(10);
+    expect(opts.maxSteps).toBe(50);
     expect(opts.timeoutMs).toBe(150_000);
     expect(opts.reportToolName).toBe("searchReport");
     // Static role in system; the date anchor and query moved to the user prompt.
@@ -119,11 +119,11 @@ describe("searchViaFlash", () => {
       execute: (input: { url: string }) => Promise<string>;
     };
     // Invalid URLs error before any network I/O — but still consume a slot.
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 6; i++) {
       const out = await webFetch.execute({ url: "not a url" });
       expect(out).toContain("ERROR: Invalid URL");
     }
-    // Slot 4: quota exhausted — a note, no fetch attempted.
+    // Slot 7: quota exhausted — a note, no fetch attempted.
     const out = await webFetch.execute({ url: "https://example.com" });
     expect(out).toContain("Page-read quota exhausted");
   });

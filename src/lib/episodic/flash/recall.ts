@@ -6,7 +6,7 @@
  * This is NOT a workflow step. It runs inside a single WorkflowAgent tool call
  * (recallExecute in tool-executors.ts) on the unified sub-agent runner
  * (src/lib/agents/sub-agent-runner.ts): the turn's MAIN model with thinking ON
- * (effort "low"), a 20-step cap, and a 240s wall-clock budget.
+ * (effort "low"), a 50-step cap, and a 240s wall-clock budget.
  *
  * The main agent asks a natural-language question ("did we ever talk about
  * apples?"); recall explores the memory like a colleague who was there —
@@ -237,7 +237,7 @@ async function readStrandImpl(strand: string): Promise<string> {
     if (!paths || paths.length === 0) {
       return `Strand "${strand}" not found. No slices carry this tag.`;
     }
-    return `Strand "${strand}" appears in: ${paths.slice(0, 20).join(", ")}`;
+    return `Strand "${strand}" appears in: ${paths.slice(0, 40).join(", ")}`;
   } catch {
     return `Could not read strands index.`;
   }
@@ -256,6 +256,11 @@ async function listStrandsImpl(): Promise<string> {
 
 // ─── Sub-agent tool: readTimelineWindow ────────────────────────────────
 
+/** How many pointer lines readTimelineWindow returns. A wide window can match
+ *  far more slices than fit one tool result — truncation is reported to the
+ *  model so it knows to narrow the range instead of missing slices silently. */
+const TIMELINE_WINDOW_PAGE_SIZE = 100;
+
 /** Timeline catalog over a date window (inclusive YYYY-MM-DD) — compact
  *  pointer lines. Lets recall navigate by TIME ("what happened in 2025-03 to
  *  2025-10") in addition to tracing strands by topic. */
@@ -263,19 +268,23 @@ async function readTimelineWindowImpl(from?: string, to?: string): Promise<strin
   try {
     const raw = await fsReadFile(TIMELINE_INDEX_PATH);
     const idx = JSON.parse(raw) as { slices?: TimelineSliceEntry[] };
-    const slices = (idx.slices ?? [])
+    const inWindow = (idx.slices ?? [])
       .filter((s) => {
         const date = s.id.slice(0, 10); // "YYYY-MM-DD"
         if (from && date < from) return false;
         if (to && date > to) return false;
         return true;
       })
-      .sort((a, b) => b.id.localeCompare(a.id))
-      .slice(0, 40);
+      .sort((a, b) => b.id.localeCompare(a.id));
+    const slices = inWindow.slice(0, TIMELINE_WINDOW_PAGE_SIZE);
     if (slices.length === 0) {
       return `(no slices in window ${from ?? "start"} → ${to ?? "now"})`;
     }
-    return `Timeline ${from ?? "start"} → ${to ?? "now"} (${slices.length} slices):\n${slices.map(sliceLine).join("\n")}`;
+    const truncation =
+      inWindow.length > slices.length
+        ? `\n(showing first ${TIMELINE_WINDOW_PAGE_SIZE} of ${inWindow.length} slices in this window — narrow the date range to see the rest)`
+        : "";
+    return `Timeline ${from ?? "start"} → ${to ?? "now"} (${slices.length} slices):\n${slices.map(sliceLine).join("\n")}${truncation}`;
   } catch {
     return "(timeline index not available yet — the weave hasn't run)";
   }
@@ -392,7 +401,7 @@ async function readSliceImpl(
  * readSlice returns a note instead of content and the sub-agent answers from
  * what it has already read.
  */
-export const MAX_SLICE_READS = 5;
+export const MAX_SLICE_READS = 8;
 
 export interface SliceReadQuota {
   /** Consume one read slot. Returns false (and consumes nothing) when exhausted. */
@@ -514,7 +523,7 @@ Writing discipline (critical): a hard deadline may cut you off mid-exploration, 
  * (quota-bounded) each cost a step pair — a wandering model gets room to
  * explore, and prepareRecallStep guarantees the last step is the report.
  */
-export const MAX_STEPS = 20;
+export const MAX_STEPS = 50;
 
 /**
  * prepareStep for the recall sub-agent: when the step budget is nearly
@@ -635,7 +644,7 @@ IMPORTANT: After checking any time anchor, trace the strands that match the ques
 
 Current slice: ${currentSliceId} — this is the ONGOING conversation, NOT a past memory. EXCLUDE it from your references; you recall the PAST only.${strandsHint}${playbookBlock}
 
-Follow your recall strategy: time anchor first (readTimelineWindow), then clue strands (readStrand), broaden only after that; verify candidates with readSliceSummary and read the strongest slices in full (readSlice, at most ${MAX_SLICE_READS}) before answering.
+Follow your recall strategy: time anchor first (readTimelineWindow), then clue strands (readStrand), broaden only after that; verify candidates with readSliceSummary and read the strongest slices in full (readSlice, at most ${MAX_SLICE_READS}) before answering. For questions spanning a longer period, triage with readSliceSummary first and spend full reads only on the strongest candidates; answers resting on summaries should be hedged as uncertain — don't force a verbatim quote for every slice.
 
 IMPORTANT: You MUST end by calling recallReport. Even when the honest answer is "we haven't talked about this", call it — with empty references and your searched trail.`;
 

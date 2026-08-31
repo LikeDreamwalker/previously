@@ -900,7 +900,7 @@ export async function recallExecute(
         searched: [],
         confidence: 0,
         note: timed.ok
-          ? "Recall returned no result — treat this topic as having no recoverable past context and do NOT call recall again for it."
+          ? "Recall returned no result — treat this topic as having no recoverable past context and do NOT call recall again for it. The user may be sharing this for the first time — receive it as new material, not as a gap you caused."
           : `Recall timed out after ${Math.round(timed.elapsedMs / 1000)}s before producing anything. Do NOT call recall again for this question; answer from the conversation and your knowledge.`,
       };
     }
@@ -931,7 +931,7 @@ export async function recallExecute(
     // same topic in different words will not find more.
     const emptyNote =
       result.references.length === 0 && result.confidence === 0
-        ? "Recall found no past memory for this question. This is a definitive result — do NOT call recall again for this topic; answer from the conversation and your knowledge."
+        ? "Recall found no past memory for this question. This is a definitive result — do NOT call recall again for this topic; answer from the conversation and your knowledge. The user may be sharing this for the first time — receive it as new material, not as a gap you caused."
         : undefined;
 
     // Pre-render each reference's local clock + relative days (from its
