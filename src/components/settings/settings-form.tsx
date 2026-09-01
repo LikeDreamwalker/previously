@@ -35,6 +35,7 @@ export function SettingsForm({
   // ── Config (server-backed: memory/user/config.json) ──
   const [maxTurnsPerSlice, setMaxTurnsPerSlice] = useState(initialConfig.slicing.maxTurnsPerSlice);
   const [maxSliceMinutes, setMaxSliceMinutes] = useState(initialConfig.slicing.maxSliceMinutes);
+  const [idleGapMinutes, setIdleGapMinutes] = useState(initialConfig.slicing.idleGapMinutes);
 
   // Toast messages are read through refs so the timer closure never goes
   // stale and nothing here needs an effect dependency on `t`.
@@ -70,6 +71,7 @@ export function SettingsForm({
   const handleRestoreDefaults = () => {
     setMaxSliceMinutes(defaults.maxSliceMinutes);
     setMaxTurnsPerSlice(defaults.maxTurnsPerSlice);
+    setIdleGapMinutes(defaults.idleGapMinutes);
     if (!canWrite) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
     void save({ ...defaults });
@@ -111,7 +113,7 @@ export function SettingsForm({
               onChange={(e) => {
                 const v = Number(e.target.value);
                 setMaxSliceMinutes(v);
-                scheduleSave({ maxSliceMinutes: v, maxTurnsPerSlice });
+                scheduleSave({ maxSliceMinutes: v, maxTurnsPerSlice, idleGapMinutes });
               }}
               disabled={!canWrite}
               className="w-24"
@@ -127,7 +129,23 @@ export function SettingsForm({
               onChange={(e) => {
                 const v = Number(e.target.value);
                 setMaxTurnsPerSlice(v);
-                scheduleSave({ maxSliceMinutes, maxTurnsPerSlice: v });
+                scheduleSave({ maxSliceMinutes, maxTurnsPerSlice: v, idleGapMinutes });
+              }}
+              disabled={!canWrite}
+              className="w-24"
+            />
+          </Label>
+          <Label className="block space-y-1">
+            <span className="text-xs font-normal text-muted-foreground">{t("config.idleGapMinutes")}</span>
+            <Input
+              type="number"
+              min={1}
+              max={120}
+              value={idleGapMinutes}
+              onChange={(e) => {
+                const v = Number(e.target.value);
+                setIdleGapMinutes(v);
+                scheduleSave({ maxSliceMinutes, maxTurnsPerSlice, idleGapMinutes: v });
               }}
               disabled={!canWrite}
               className="w-24"

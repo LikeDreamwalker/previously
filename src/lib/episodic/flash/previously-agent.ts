@@ -1,7 +1,18 @@
 /**
- * Previously Agent — the "brain" that maintains previously.md (v5 user card).
+ * Previously Agent — the merged SELF-EVOLUTION agent (v1.1): ONE run covers
+ * both evolution domains, in a fixed order:
  *
- * The document is a compact USER CARD with the user's time axis explicit:
+ *   (a) DIRECTION FIRST — evaluate direction.md, the loop's USER PORTRAIT +
+ *       HYPOTHESIS POOL (see src/lib/evolution/direction-agent.ts), including
+ *       any legacy Self-model migration from the card. The agent only
+ *       PROPOSES (the optional `directionProposal` on `finish`); the caller
+ *       validates structurally (validateDirectionProposal) and applies through
+ *       writeDirection + the mutations archive.
+ *   (b) CARD + PLAYBOOKS under the (possibly new) direction — evolve
+ *       previously.md (the v5 user card) and the triggered-bucket playbooks.
+ *
+ * The card is a PURE dynamic semantic memory pool with the user's time axis
+ * explicit — what the user did, is doing, will do:
  *   1. Identity head — structured, machine-parsed (Name / Address them as / Pronouns / Alias).
  *   2. Past          — ONE rolling third-person profile paragraph (updated IN
  *      PLACE) + durable "anchor facts" (still true in 3 years).
@@ -11,7 +22,13 @@
  *   4. Horizon       — future-facing open loops (commitments / deadlines /
  *      awaited replies), each with an explicit `by` date. Resolved only by
  *      being fulfilled — never age-expired, overdue items are kept.
- *   5. Self-model    — compact operating lessons, DELTA from DIRECTIVES only.
+ *
+ * The card carries NO rules and NO analysis — ONE FACT, ONE HOME: facts and
+ * states go to the card; patterns/tendencies about the user go to the
+ * direction Portrait; guesses go to the Hypotheses pool. The card's old
+ * Self-model section is gone: when the card the agent reads still contains
+ * one, the run folds those lines into the Portrait (descriptive phrasing,
+ * keeping their slice refs) and the serializer drops the section.
  *
  * WRITING IS MUTATION-BASED: the agent never outputs the whole card. It edits
  * an in-memory copy through per-entry write tools (addNow / updatePastProfile /
@@ -20,21 +37,19 @@
  * re-submission failure mode: the 2nd identical rejection escalates with the
  * exact arithmetic, the 3rd force-lands length violations (truncated) or skips
  * the write with a finish-now instruction. Untouched entries are preserved by
- * construction.
+ * construction. The direction side's frequency protection is likewise in code:
+ * the proposal is validated before being applied, the card mutations keep the
+ * CardSession caps, and writePlaybook stays hard-gated on triggered buckets.
  *
  * Each evolution pass is INCREMENTAL: it evaluates only the new evidence (the
- * recent exchange, or the just-closed slice) against the current card. Past
- * slices are immutable evidence; their reading may be revised by NEW evidence,
- * never re-derived from re-reading the same history.
- *
- * Self-model lessons need BOTH process and outcome evidence: the agent.md
- * timeline shows HOW it thought/acted (error→retry sequences, discarded
- * options), core.md shows what the user actually said and how tools replied.
- * Reasoning proposes, outcomes dispose.
+ * recent exchange, or the just-closed slice) against the current card and
+ * direction. Past slices are immutable evidence; their reading may be revised
+ * by NEW evidence, never re-derived from re-reading the same history.
  *
  * Runs on the turn's MAIN model through the shared sub-agent runner
- * (src/lib/agents/sub-agent-runner.ts): thinking ON at low effort, a 90s
- * budget, a 30-step cap, and the `finish` tool as the report channel. When
+ * (src/lib/agents/sub-agent-runner.ts): thinking ON at low effort, a 240s
+ * budget, a 50-step anti-loop fuse (the wall clock is the real budget — the
+ * run does both domains), and the `finish` tool as the report channel. When
  * the pass exhausts its steps without calling finish, the mutations that
  * already landed are returned as a PARTIAL result instead of failing.
  * The runner streams the model's thinking/writing live; since this agent does
@@ -50,16 +65,23 @@ import { buildSubAgentSystem } from "@/lib/agents/prompts";
 import { capPlaybook, type FitnessBucket, type FitnessEvent, type FitnessSignal } from "@/lib/evolution/store";
 import type { PlaybookAgent } from "@/lib/evolution/paths";
 import {
+  renderDirectionAnalysis,
+  renderDirectionEvents,
+  renderDirectionMarkings,
+  type DirectionMarking,
+  type DirectionMode,
+  type DirectionProposal,
+} from "@/lib/evolution/direction-agent";
+import type { TurnAnalysis } from "@/lib/episodic/flash/turn-analyzer";
+import {
   parseCard,
   findOverdueHorizonItems,
   CARD_NOW_EXPIRY_DAYS,
   CARD_PROFILE_MAX_CHARS,
   NOW_ITEM_MAX_CHARS,
   HORIZON_ITEM_MAX_CHARS,
-  SELF_MODEL_LINE_MAX_CHARS,
   PAST_ANCHOR_MAX_CHARS,
   CARD_NOW_MAX,
-  CARD_SELF_MODEL_MAX,
   PAST_ANCHORS_MAX,
   HORIZON_MAX,
 } from "../previously-format";
@@ -75,8 +97,6 @@ import {
   sessionPromoteNowToPast,
   sessionAddHorizon,
   sessionResolveHorizon,
-  sessionAddSelfModel,
-  sessionRemoveSelfModel,
   type CardSession,
 } from "../card-session";
 
@@ -101,6 +121,28 @@ export interface PlaybookWrite {
   expectedBenefit: string;
 }
 
+/**
+ * The direction half of the merged run (v1.1): when present, the agent FIRST
+ * evaluates direction.md (portrait + hypothesis pool + legacy Self-model
+ * migration) and reports an optional `directionProposal` on `finish`. Absent
+ * on explicit-request runs — the direction stays boundary-scoped.
+ */
+export interface DirectionEvalInput {
+  /** Current direction.md content — null when never set. */
+  current: string | null;
+  /** bootstrap / migrate / steady — the evidence bar (≥1 / ≥1 / ≥2 pointers). */
+  mode: DirectionMode;
+  /** The card's legacy Self-model lines verbatim — to be folded into the
+   *  Portrait (descriptive phrasing, keep slice refs). Null when none. */
+  cardSelfModel: string | null;
+  /** Recent fitness events across ALL buckets — the direction's evidence. */
+  recentEvents: FitnessEvent[];
+  /** Recent closed slices' markings, newest first. */
+  recentMarkings?: DirectionMarking[];
+  /** This slice's analyzer output — the freshest evidence. */
+  analysis: TurnAnalysis;
+}
+
 export interface PreviouslyAgentInput {
   signal: PreviouslySignal;
   note: string;
@@ -120,12 +162,18 @@ export interface PreviouslyAgentInput {
    *  compare against the user's clock, and it is the default `since`. */
   todayLocal?: string;
 
-  // ── Two-phase evolution inputs (v1.0 design §2.3, Phase 2 = product) ──
+  // ── Evolution context (v1.0/v1.1) ────────────────────────────────────────
 
   /**
-   * The current evolution direction (memory/evolution/direction.md) — the
-   * CRITERIA the card and playbooks evolve under; the card is the RESULT.
-   * Orientation only: null/absent means no direction has been set yet.
+   * The direction half of the merged run — see DirectionEvalInput. When
+   * present, the run evaluates direction.md FIRST and may propose a new one
+   * on `finish`; the card phase then works under the (possibly new) portrait.
+   */
+  directionEval?: DirectionEvalInput;
+  /**
+   * Orientation-only direction content (the explicit-request path, where no
+   * direction evaluation runs): the CRITERIA the card evolves under.
+   * Ignored when `directionEval` is set (its `current` is used instead).
    */
   direction?: string | null;
   /**
@@ -140,6 +188,13 @@ export interface PreviouslyAgentInput {
   /** This slice's mechanical signals (recall verify/rework) — context for
    *  recall-bucket triggers. */
   fitnessSignals?: FitnessSignal[];
+  /**
+   * The loop's honesty feedback (design §2.7): the rendered mutation track
+   * record line ("Your mutation track record: N effective / M ineffective /
+   * K unevaluated"), built by the caller from the mutations archive. Absent
+   * when no mutation has ever been archived.
+   */
+  mutationTrackRecord?: string;
 
   // ── Tool implementations (callbacks provided by the executor) ──────
 
@@ -191,43 +246,59 @@ export interface PreviouslyAgentOutput {
   /** The agent's one-line expected benefit for this pass's changes (design
    *  §2.7 — archived with the mutation record). */
   expectedBenefit?: string;
+  /**
+   * The direction half's proposal (v1.1 merged run) — present only when
+   * `directionEval` was set AND the agent proposed a move. NOT validated yet:
+   * the caller runs validateDirectionProposal (mode-aware) and applies through
+   * writeDirection + the mutations archive; a rejection is logged and skipped,
+   * never fatal.
+   */
+  directionProposal?: DirectionProposal;
 }
-
-// ─── Standing rules (distilled from DIRECTIVES) ──────────────────────────
-
-/**
- * The operating invariants the card's Self-model must never contradict without
- * an explicit user override. Distilled from identity/agent/DIRECTIVES.md so the
- * Previously Agent judges against the same rules the core agent follows.
- */
-const STANDING_RULES = [
-  "recall (the episodic-recall colleague) and readSlice (verification only) are the memory tools — always available, never refused",
-  "replies use the user's LOCAL time (given each turn), not UTC",
-  "thinkDeep is a clean-room thinking pod for isolated, unbiased reasoning — not a default step of every turn",
-  "the card and its entries are written in English",
-  "every claim in the card carries refs to its evidence slice",
-];
 
 // ─── Prompt ────────────────────────────────────────────────────────────
 // v0.9 unified sub-agent architecture: the SYSTEM prompt is fully static
 // (SHARED_SUBAGENT_BASE + the role block below) so every call shares one
 // prefix cache entry; ALL per-call content (time context, signal, the current
-// card, the recent conversation) goes in the USER prompt.
+// card, the direction evidence, the recent conversation) goes in the USER
+// prompt.
 
-const PREVIOUSLY_ROLE = `You are the Previously Agent — the "brain" that maintains previously.md, a compact USER CARD. You do NOT talk to users. You work autonomously.
+const PREVIOUSLY_ROLE = `You are the Previously Agent — the merged SELF-EVOLUTION agent. You do NOT talk to users. You work autonomously. ONE run, two domains, IN THIS ORDER:
+
+1. **Direction first** (when the task carries a "Direction evaluation" section): evaluate direction.md — the loop's USER PORTRAIT + HYPOTHESIS POOL — and, if it should move, carry your proposal on the \`directionProposal\` field of your final \`finish\` call.
+2. **Then the card** (+ triggered-bucket playbooks) — evolved UNDER the direction as it stands AFTER your proposal (your own accepted changes apply).
 
 ## What the card is
 
-A compact, bounded snapshot of the user across their time axis (and how you should operate), NOT an event log and NOT an additive archive:
+A compact, bounded snapshot of the user across their time axis — what they did, are doing, will do. NOT an event log, NOT an additive archive, and NOT a rulebook:
 1. **Identity** — structured head: name, how to address them, pronouns, aliases.
-2. **Past** — ONE rolling third-person paragraph describing the user (who they are, how they work, what they prefer), updated IN PLACE — plus durable anchor facts.
+2. **Past** — ONE rolling third-person paragraph describing the user, updated IN PLACE — plus durable anchor facts.
 3. **Now** — current-state semantic compression: short hooks into what is happening right now, each carrying \`since\`. Expiry is YOURS: items past ${CARD_NOW_EXPIRY_DAYS} days are listed in the task — promote durable substance to Past or drop the hook.
 4. **Horizon** — future-facing open loops: commitments, deadlines, awaited replies. Each carries an explicit \`by: YYYY-MM-DD\`. Horizon items NEVER age-expire; overdue ones are KEPT until fulfilled.
-5. **Self-model** — compact operating lessons about how you handle things.
 
 The raw evidence lives in the time slices; the card only summarizes and points at them via refs.
 
-## How you write — MUTATIONS, never the whole file
+## One fact, one home
+
+- **Facts and states** (what the user did / is doing / will do) → the CARD.
+- **Patterns and tendencies** (what kind of person the user is, what works/fails with them) → the direction **Portrait**.
+- **Guesses** → the direction **Hypotheses** pool.
+
+The card must NEVER carry rules, lessons, or analysis. If the card you are reading still has a \`## Self-model\` section (legacy), you MUST migrate it this run: fold each line into the Portrait — DESCRIPTIVE phrasing about the user, keeping its slice refs — and do not re-create the section (the writer drops it).
+
+## The direction discipline (portrait + hypothesis pool)
+
+direction.md has a fixed skeleton: \`# Portrait\` / \`# Hypotheses\` / \`# Evidence\` / \`# Log\`.
+
+- **Portrait** — CONFIRMED understanding of the user: descriptive, abstract, concept-level ("用户不喜欢感性的回答" is the right level; "用户不喜欢我说哈哈哈" is too specific). NEVER imperative — if a line tells you (the agent) what to do, it is misspelled: phrase the USER PATTERN that motivates it instead. Every entry is evidence-anchored with slice pointers.
+- **Hypotheses** — a bounded pool of GUESSES (≤10), each line exactly: \`- [proposed YYYY-MM-DD-HHMM · checked YYYY-MM-DD-HHMM] <the guess> — falsify if: <condition>\`. Lifecycle: confirmed (evidence from ≥2 distinct slices, or explicit user confirmation) → PROMOTE into the Portrait (log it); refuted → REMOVE (log it); unverified for >10 slices beyond its \`checked\` pointer → RETIRE (log it; re-proposable later). Refill the pool toward 10 each run with honest, falsifiable guesses from the evidence at hand.
+- **Evidence** — the slice pointers backing Portrait entries.
+- **Log** — append-only: every direction change AND every hypothesis promotion/refutation/retirement.
+- A single explicit, DURABLE user statement ("用户明确不喜欢 X") becomes a Portrait entry directly (descriptive). Single-slice impressions stay hypotheses.
+- "No change" is the common and correct outcome for the direction — one loud slice is card/playbook material. A proposal that violates the writing discipline is rejected by code, so stay within it.
+- Mode BOOTSTRAP (never written) or MIGRATE (old # Direction / # Anti-goals skeleton): seed/re-shape the doc wholesale; a single slice pointer suffices. Steady mode: Evidence needs ≥2 distinct slice pointers.
+
+## How you write the card — MUTATIONS, never the whole file
 
 You edit an in-memory copy of the card through write tools. Each write is validated: over-limit or malformed writes come back REJECTED with instructions — compress and retry; YOU decide what survives a cap (nothing is ever truncated silently — unless the loop brake force-applies a write you kept resubmitting identically, truncated to the cap). Entries you never touch stay exactly as they are. Removal tools take a \`match\` substring of the entry you mean.
 
@@ -238,12 +309,11 @@ You edit an in-memory copy of the card through write tools. Each write is valida
 | \`addPastAnchor(text, refs)\` / \`removePastAnchor(match)\` | Durable fact ("still true in 3 years"), ≤ ${PAST_ANCHOR_MAX_CHARS} chars, refs required, ≤ ${PAST_ANCHORS_MAX} total. |
 | \`addNow(text, refs, since?)\` / \`removeNow(match)\` / \`promoteNowToPast(match)\` | Current-state hook, ≤ ${NOW_ITEM_MAX_CHARS} chars, refs required, ≤ ${CARD_NOW_MAX} total. \`since\` defaults to today. Promote moves the hook to Past anchors (keeps refs). |
 | \`addHorizon(text, by, refs)\` / \`resolveHorizon(match, note?)\` | Open loop, ≤ ${HORIZON_ITEM_MAX_CHARS} chars, \`by: YYYY-MM-DD\` + refs required, ≤ ${HORIZON_MAX} total. Resolve removes it — the ONLY way a Horizon item leaves. |
-| \`addSelfModel(text)\` / \`removeSelfModel(match)\` | Operating lesson, ≤ ${SELF_MODEL_LINE_MAX_CHARS} chars, ≤ ${CARD_SELF_MODEL_MAX} total. |
 | \`writePlaybook(agent, content, evidence, expectedBenefit)\` | Rewrite a sub-agent colleague's working notes (agent ∈ recall / search / thinkdeep). GATED: accepted ONLY when that colleague's bucket triggered this run (the task lists the triggered buckets) — otherwise REJECTED. |
 | \`readSlice(sliceId, range?)\` | Read conversation from any slice. Verify what the user actually said. |
-| \`readAgentTimeline(sliceId)\` | Read agent.md — the reasoning + tool calls. Mine it for self-model lessons. |
+| \`readAgentTimeline(sliceId)\` | Read agent.md — the reasoning + tool calls. Process context for judging how interactions went. |
 | \`readPreviously(sliceId)\` | Read a past slice's card snapshot. Check how long a fact has been held. |
-| \`finish(reasoning, summary)\` | REQUIRED, LAST call — ends the pass. \`summary\` is ONE sentence IN THE USER'S LANGUAGE describing what changed (shown to the user + the core agent); empty when nothing changed. Call it even when nothing changed. |
+| \`finish(reasoning, summary, expectedBenefit?, directionProposal?)\` | REQUIRED, LAST call — ends the pass. \`summary\` is ONE sentence IN THE USER'S LANGUAGE describing what changed (shown to the user + the core agent); empty when nothing changed. \`directionProposal\` carries the full new direction.md ({content, summary, evidence, expectedBenefit}) when — and only when — the direction half proposes a move. Call finish even when nothing changed. |
 
 ## What to do — fold in the NEW evidence only
 
@@ -254,13 +324,11 @@ Compare the conversation in the task against the current card. Incorporate anyth
 - Current situation that will fade → a Now hook (ONE event per line; the details stay in the slices).
 - A commitment, deadline, or awaited reply → a Horizon line with \`by\` + refs.
 - **Horizon resolution rule**: when the user reports the outcome of an open loop, RESOLVE it — and record the outcome via addNow (or the Past profile if durable). Overdue items are KEPT, never silently dropped.
-- A user correction / explicit preference → update the Past paragraph and/or Self-model to reflect it.
+- A user correction / explicit preference → update the Past paragraph AND consider the direction side (a durable stated preference is a Portrait entry; a suspected one is a hypothesis).
 - Fragmented or non-English card content → rewrite those entries cleanly (ONE flowing English Past paragraph, every entry in English) while preserving substance.
 - Nothing new AND the card is already clean → make no writes; just \`finish\` with a short reasoning.
 
-## Evolution direction and playbooks
-
-You are Phase 2 (product) of a two-phase evolution loop. Phase 1 (a colleague) owns direction.md — the cross-slice statement of what "better for the user" means. When the task includes the current direction, treat it as the CRITERIA you evolve under: the card is the RESULT, the direction is the standard it is judged against. You never edit the direction itself.
+## Playbooks
 
 You also maintain your colleagues' PLAYBOOKS — short working notes injected into the recall / search / thinkdeep sub-agents' prompts (e.g. "on emotional topics, read the full slice before concluding"). A playbook write is a MUTATION with a hard gate: \`writePlaybook\` is accepted ONLY for a colleague whose bucket the task says triggered this run, and every write must carry its evidence (slice pointers / user quotes) and its expected benefit. A playbook is short guidance, not an archive — rewrite it in place, cap applies.
 
@@ -273,37 +341,20 @@ The Identity head is machine-parsed, so keep it minimal and STABLE:
 - **Spelling and casing variants are NOT alternate names.** Never add "(also written …)" / "又称 …" annotations inside any Identity field — those corrupt the machine-parsed value.
 - A genuine alias/nickname (a name the user actually goes by, distinct from their name) goes in \`setIdentity("alias", …)\`.
 
-## Self-model — DELTA from the standing rules, backed by BOTH timelines
-
-You operate under these standing rules:
-
-${STANDING_RULES.map((r) => `- ${r}`).join("\n")}
-
-Self-model entries must be a **delta** from them — either:
-1. A NEW heuristic the rules do not cover (tool usage, answer form, error patterns), or
-2. An explicit USER override of a rule — then mark \`overrides: <rule>\` and cite the user's own words.
-
-Evidence bar — reasoning proposes, outcomes dispose:
-- **User corrections** (in the conversation) are the strongest source — record them.
-- **Error→fix sequences** in the agent timeline (a tool call failed, a retry with a different approach worked) are lessons when the fix GENERALIZES. One-off glitches are not lessons.
-- Check your existing Self-model lines BEFORE adding: a lesson already on the card means the pattern RECURRED — prefer sharpening the existing line over adding a near-duplicate. Never restate a standing rule.
-
-When the signal is slice_closed, read the closed slice's agent timeline (\`readAgentTimeline\`) — how the agent thought and called tools there is your raw material for these lessons. User FACTS always come from the conversation (core), never from the agent's narration of it.
-
 ## Ref entry format
 
 Every claim carries refs to its evidence slice — cite the slice id exactly as shown: \`["2026-08-07-0709"]\` (slice) or \`["2026-08-07-0709-abc123"]\` (slice-turn). Never invent refs — no evidence, no write.
 
 ## Reformat (legacy only)
 
-FIRST check the current card's structure in the task. If it is NOT the v5 card (old stamps, \`## Profile\` / \`## Recent\` / \`## User profile\` / \`### Identity & background\` headers), your working copy starts EMPTY or partially mapped — REBUILD the card through mutations: setIdentity / updatePastProfile / addNow / … carrying over everything still accurate. This wholesale migration is the one case where you re-write existing content.
+FIRST check the current card's structure in the task. If it is NOT the v5 card (old stamps, \`## Profile\` / \`## Recent\` / \`## User profile\` / \`### Identity & background\` headers), your working copy starts EMPTY or partially mapped — REBUILD the card through mutations: setIdentity / updatePastProfile / addNow / … carrying over everything still accurate. This wholesale migration is the one case where you re-write existing content. (A legacy \`## Self-model\` section is NOT rebuilt onto the card — migrate it into the direction Portrait instead, see above.)
 
 ## Your Process
 
-1. Read the time context + compare the conversation against the card. New durable info? Stale lines? A self-model lesson (user correction / error→fix pattern)?
-2. slice_closed and you suspect process lessons → \`readAgentTimeline\` on the closed slice. Verify quotes with \`readSlice\` when unsure.
-3. Apply mutations — one tool call per entry change.
-4. \`finish\` LAST — 1-3 sentences of reasoning (developer log) + a one-sentence user-language summary of what changed (shown in the UI; empty when nothing changed). Never write after finish.
+1. Read the time context + compare the conversation against the card and the direction. New durable info? Stale lines? Evidence for/against a hypothesis?
+2. Direction first (when the task carries the evaluation section): decide no_change or prepare the full proposal. Verify quotes with \`readSlice\` when unsure.
+3. Apply card mutations — one tool call per entry change — under the direction as it stands after your proposal.
+4. \`finish\` LAST — 1-3 sentences of reasoning (developer log) + a one-sentence user-language summary of what changed (shown in the UI; empty when nothing changed) + the optional \`directionProposal\`. Never write after finish.
 
 **Semantic merging:** the same concept across languages (e.g. "self-evolution" and "自我进化") is ONE fact — merge, never duplicate.`;
 
@@ -345,6 +396,43 @@ function daysBetween(since: string, today: string): number {
   return Math.floor((b - a) / 86_400_000);
 }
 
+/** The direction-evaluation section of the user prompt (merged run only). */
+function buildDirectionEvalSection(evalInput: DirectionEvalInput): string {
+  const modeLine =
+    evalInput.mode === "bootstrap"
+      ? "BOOTSTRAP — the direction has never been written; seed the minimal baseline (a single slice pointer suffices)"
+      : evalInput.mode === "migrate"
+        ? "MIGRATE — the doc still uses the OLD skeleton (# Direction / # Anti-goals); re-shape it wholesale into # Portrait / # Hypotheses / # Evidence / # Log (a single slice pointer suffices)"
+        : "steady — the normal high bar (Evidence needs ≥2 distinct slice pointers)";
+  return `
+
+## Direction evaluation (FIRST — before any card mutation)
+
+Mode: ${modeLine}
+
+### Current direction.md
+
+${evalInput.current?.trim() || "(not set yet — this would be the FIRST direction)"}
+
+### Legacy Self-model lines on the card (MIGRATE them into the Portrait — descriptive phrasing, keep their slice refs; the card drops the section)
+
+${evalInput.cardSelfModel?.trim() || "(none — the card carries no legacy Self-model lines)"}
+
+### Recent fitness events (all buckets, newest ${evalInput.recentEvents.length})
+
+${renderDirectionEvents(evalInput.recentEvents)}
+
+### Recent closed-slice markings (newest ${evalInput.recentMarkings?.length ?? 0})
+
+${renderDirectionMarkings(evalInput.recentMarkings)}
+
+### This slice's analysis
+
+${renderDirectionAnalysis(evalInput.analysis)}
+
+Evaluate the PORTRAIT + HYPOTHESIS POOL against this evidence. "No change" is the common case. When the direction should move, put the FULL new document on finish's \`directionProposal\` — then evolve the card under the NEW direction.`;
+}
+
 /** The dynamic USER prompt: time context, signal, current card, conversation. */
 function buildUserPrompt(input: PreviouslyAgentInput): string {
   const {
@@ -359,23 +447,32 @@ function buildUserPrompt(input: PreviouslyAgentInput): string {
   };
 
   const deepNote = closedSliceId
-    ? `\n**DEEP MODE**: slice \`${closedSliceId}\` just closed. Its full conversation is below; its agent timeline (readAgentTimeline) is your source for self-model lessons.`
+    ? `\n**DEEP MODE**: slice \`${closedSliceId}\` just closed. Its full conversation is below; its agent timeline (readAgentTimeline) is your process context.`
     : "";
 
   const tagsNote = currentSliceTags && currentSliceTags.length > 0
     ? `\n**Current slice tags**: ${currentSliceTags.join(", ")}`
     : "";
 
-  // Two-phase evolution (v1.0 §2.3): the direction is the CRITERIA this pass
-  // evolves under; the fitness section is present only when specific buckets
-  // triggered (and gates writePlaybook — an untriggered write is rejected).
-  const directionSection = input.direction?.trim()
-    ? `
+  // The loop's honesty feedback: the agent sees its own mutation track record
+  // — an "ineffective" mark means the mutation did NOT stop the signal it
+  // meant to stop. Absent until the first archived mutation.
+  const trackRecordNote = input.mutationTrackRecord
+    ? `\n**${input.mutationTrackRecord}** (an ineffective mark means that mutation did not stop the signal it meant to stop)`
+    : "";
+
+  // The direction rides the prompt two ways: the merged run's EVALUATION
+  // section (the agent judges + may propose), or — on the explicit-request
+  // path — the orientation-only CRITERIA block.
+  const directionSection = input.directionEval
+    ? buildDirectionEvalSection(input.directionEval)
+    : input.direction?.trim()
+      ? `
 
 ## Evolution direction (the criteria — the card is the result)
 
 ${input.direction.trim()}`
-    : "";
+      : "";
 
   const triggered = input.triggeredBuckets ?? [];
   const fitnessSection =
@@ -413,7 +510,7 @@ ${buildTimeContext(input)}
 
 ${signalLabels[signal]}
 Note: "${note}"${tagsNote}
-Current slice: \`${currentSliceId}\`${deepNote}${directionSection}${fitnessSection}
+Current slice: \`${currentSliceId}\`${deepNote}${trackRecordNote}${directionSection}${fitnessSection}
 
 ## Current card (your working copy starts from this)
 
@@ -513,19 +610,6 @@ function buildTools(
       }),
       execute: async ({ match, note }) => sessionResolveHorizon(session, match, note),
     }),
-    addSelfModel: tool({
-      description:
-        `Add a Self-model operating lesson (≤ ${SELF_MODEL_LINE_MAX_CHARS} chars, ≤ ${CARD_SELF_MODEL_MAX} total). ` +
-        "Must be a DELTA from the standing rules, with process + outcome evidence. " +
-        "Check the existing lines first — a recurring lesson sharpens the old line, never duplicates.",
-      inputSchema: z.object({ text: z.string() }),
-      execute: async ({ text }) => sessionAddSelfModel(session, text),
-    }),
-    removeSelfModel: tool({
-      description: "Remove a Self-model line by a substring of its text.",
-      inputSchema: z.object({ match: z.string() }),
-      execute: async ({ match }) => sessionRemoveSelfModel(session, match),
-    }),
     // ── Playbook mutation (v1.0 §2.4 — the evolution agent is the single
     // writer of card / direction / playbooks; the write lands on an in-memory
     // list here and is persisted by the caller with its archive record) ──
@@ -606,7 +690,7 @@ function buildTools(
     readAgentTimeline: tool({
       description:
         "Read agent.md for a specific slice — the agent's reasoning and tool calls. " +
-        "Mine it for self-model lessons: error→fix sequences, discarded options, strategy choices. " +
+        "Process context for judging how interactions went. " +
         "Never take user FACTS from here — facts come from the conversation.",
       inputSchema: z.object({
         sliceId: z.string().describe("Slice ID in YYYY-MM-DD-HHMM format."),
@@ -635,7 +719,9 @@ function buildTools(
         "developer log. `summary`: ONE short sentence IN THE USER'S LANGUAGE describing " +
         "what this evolution changed (shown to the user and the core agent) — empty string " +
         "when nothing changed. `expectedBenefit`: one line on what improves for the user — " +
-        "archived with the mutation record. Call finish even when nothing changed.",
+        "archived with the mutation record. `directionProposal`: ONLY when the direction " +
+        "evaluation (the first half of this run) proposes a move — the FULL new direction.md. " +
+        "Call finish even when nothing changed.",
       inputSchema: z.object({
         reasoning: z.string().describe("1-3 sentences for the developer log."),
         summary: z
@@ -651,6 +737,28 @@ function buildTools(
             "One line: what improves for the user if this change holds (archived with the " +
             "mutation record, design: every mutation carries its expected benefit).",
           ),
+        directionProposal: z
+          .object({
+            content: z
+              .string()
+              .describe(
+                "The FULL new direction.md — # Portrait (descriptive, concept-level, NEVER " +
+                  "imperatives) / # Hypotheses (≤10 lines, each \"- [proposed YYYY-MM-DD-HHMM · " +
+                  "checked YYYY-MM-DD-HHMM] <guess> — falsify if: <condition>\") / # Evidence " +
+                  "(slice pointers) / # Log (append-only).",
+              ),
+            summary: z.string().describe("One line: what changed in the direction."),
+            evidence: z
+              .array(z.string())
+              .describe("Slice pointers / user quotes backing the change."),
+            expectedBenefit: z
+              .string()
+              .describe("One line: what improves for the user if this portrait holds."),
+          })
+          .optional()
+          .describe(
+            "The direction half's proposal — omit when the direction stays as it is (the common case).",
+          ),
       }),
     }),
   };
@@ -658,20 +766,32 @@ function buildTools(
 
 // ─── Runner call ──────────────────────────────────────────────────────────
 
-const MAX_STEPS = 30;
-/** Wall-clock budget per attempt (unified runner: SDK timeout + backstop). */
-const TIMEOUT_MS = 90_000;
+/** The run does BOTH domains (direction + card/playbooks) — the cap is an
+ *  anti-loop fuse, not the budget (the wall clock is): generous by design. */
+const MAX_STEPS = 50;
+/** Wall-clock budget per attempt (unified runner: SDK timeout + backstop) —
+ *  aligned with the old direction-agent budget. */
+const TIMEOUT_MS = 240_000;
 
 const finishReportSchema = z.object({
   reasoning: z.string(),
   summary: z.string().catch(""),
   expectedBenefit: z.string().catch("").optional(),
+  directionProposal: z
+    .object({
+      content: z.string(),
+      summary: z.string().catch(""),
+      evidence: z.array(z.string()).catch([]),
+      expectedBenefit: z.string().catch(""),
+    })
+    .optional(),
 });
 
 interface AttemptOutcome {
   reasoning: string;
   summary: string;
   expectedBenefit?: string;
+  directionProposal?: DirectionProposal;
   failed?: boolean;
   partial?: boolean;
 }
@@ -682,7 +802,12 @@ async function attemptCall(
   playbookWrites: PlaybookWrite[],
   temperature: number,
 ): Promise<AttemptOutcome> {
-  const res = await runSubAgent<{ reasoning: string; summary: string; expectedBenefit?: string }>({
+  const res = await runSubAgent<{
+    reasoning: string;
+    summary: string;
+    expectedBenefit?: string;
+    directionProposal?: DirectionProposal;
+  }>({
     model: input.model,
     system: PREVIOUSLY_SYSTEM,
     prompt: buildUserPrompt(input),
@@ -697,11 +822,18 @@ async function attemptCall(
   });
 
   if (res.ok && res.report) {
+    const proposal = res.report.directionProposal;
     return {
       reasoning: res.report.reasoning,
       summary: res.report.summary,
       ...(res.report.expectedBenefit?.trim()
         ? { expectedBenefit: res.report.expectedBenefit.trim() }
+        : {}),
+      // Only meaningful when this run carried the direction half — the caller
+      // validates it structurally before applying; a stray proposal on a
+      // card-only run is dropped here.
+      ...(input.directionEval && proposal?.content.trim()
+        ? { directionProposal: proposal }
         : {}),
     };
   }
@@ -744,6 +876,7 @@ async function attempt(
     // partial pass may still have landed a valid playbook mutation.
     ...(playbookWrites.length > 0 && !failed ? { playbookWrites } : {}),
     ...(r.expectedBenefit ? { expectedBenefit: r.expectedBenefit } : {}),
+    ...(r.directionProposal && !failed ? { directionProposal: r.directionProposal } : {}),
   };
 }
 

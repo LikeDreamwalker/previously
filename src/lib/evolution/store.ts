@@ -33,24 +33,24 @@ import {
 
 // ─── Direction document (design §2.2) ────────────────────────────────────
 
-/** The minimal direction.md template — the four fixed sections from design
- *  §2.2. The taxonomy is deliberately open (the agent may grow new
- *  dimensions); only the writing discipline is fixed. */
-const DIRECTION_TEMPLATE = `# Direction
+/** The minimal direction.md template — the four fixed sections of the USER
+ *  PORTRAIT + HYPOTHESIS POOL (see direction-agent.ts). Only the skeleton and
+ *  the writing discipline are fixed; the content is the evolution agent's. */
+const DIRECTION_TEMPLATE = `# Portrait
 
-_(Not set yet — what "better for the user" means across slices gets written here.)_
+_(Not set yet — confirmed, evidence-anchored understanding of the user: descriptive, concept-level, never imperatives.)_
 
-# Anti-goals
+# Hypotheses
 
-_(Not set yet — the drift guardrails: what we must NOT evolve into.)_
+_(Not set yet — bounded pool of guesses (≤10), each "- [proposed YYYY-MM-DD-HHMM · checked YYYY-MM-DD-HHMM] <guess> — falsify if: <condition>".)_
 
 # Evidence
 
-_(Each direction conclusion links its supporting slice pointers here.)_
+_(Each Portrait entry links its supporting slice pointers here.)_
 
 # Log
 
-_(Append-only: when the direction changed, and on what evidence.)_
+_(Append-only: direction changes and hypothesis promotions/refutations/retirements, and on what evidence.)_
 `;
 
 /**
@@ -205,14 +205,27 @@ export interface FitnessSignal {
 export interface FitnessStore {
   events: FitnessEvent[];
   signals: FitnessSignal[];
+  /**
+   * Slice ids whose direction proposal was already REJECTED once (v1.1
+   * per-slice backoff): the doc keeps its old skeleton after a rejection, so
+   * the migrate/bootstrap gate would otherwise re-fire the full merged
+   * evolution run on EVERY remaining turn of that slice. Housekeeping reads
+   * this list and stops gating on the direction for the rest of the slice;
+   * the NEXT slice retries fresh (a new slice, a new chance). Ids are never
+   * reused, so the bound below only ages out long-dead slices.
+   */
+  directionRejections: string[];
 }
 
 /** Retention bounds — the store is read whole, so it must not grow forever. */
 export const MAX_FITNESS_EVENTS = 200;
 export const MAX_FITNESS_SIGNALS = 200;
+/** Rejection ids are one-per-slice at most; only the CURRENT slice's
+ *  membership is ever consulted, so a shallow tail is plenty. */
+export const MAX_DIRECTION_REJECTIONS = 50;
 
 export function emptyFitnessStore(): FitnessStore {
-  return { events: [], signals: [] };
+  return { events: [], signals: [], directionRejections: [] };
 }
 
 /**
@@ -227,6 +240,9 @@ export async function readFitness(batch?: WriteBatch): Promise<FitnessStore> {
     return {
       events: Array.isArray(parsed.events) ? parsed.events : [],
       signals: Array.isArray(parsed.signals) ? parsed.signals : [],
+      directionRejections: Array.isArray(parsed.directionRejections)
+        ? parsed.directionRejections
+        : [],
     };
   } catch {
     return emptyFitnessStore();
@@ -242,6 +258,9 @@ async function writeFitness(
   const bounded: FitnessStore = {
     events: store.events.slice(-MAX_FITNESS_EVENTS),
     signals: store.signals.slice(-MAX_FITNESS_SIGNALS),
+    directionRejections: store.directionRejections.slice(
+      -MAX_DIRECTION_REJECTIONS,
+    ),
   };
   await fsWriteFile(FITNESS_PATH, JSON.stringify(bounded, null, 2), batch);
 }
@@ -272,6 +291,22 @@ export async function appendSignal(
 ): Promise<void> {
   const store = await readFitness(batch);
   store.signals.push(signal);
+  await writeFitness(store, batch);
+}
+
+/**
+ * Record that this slice's direction proposal was REJECTED by validation —
+ * the per-slice backoff for the migrate/bootstrap gate (see the
+ * directionRejections field). Idempotent per slice. Never demo-reachable:
+ * housekeeping's evolution block is skipped entirely in demo mode.
+ */
+export async function recordDirectionRejection(
+  sliceId: string,
+  batch?: WriteBatch,
+): Promise<void> {
+  const store = await readFitness(batch);
+  if (store.directionRejections.includes(sliceId)) return;
+  store.directionRejections.push(sliceId);
   await writeFitness(store, batch);
 }
 
@@ -349,10 +384,39 @@ export interface MutationRecord {
 
 const MUTATIONS_HEADER = `# Mutations Archive
 
-Append-only log of accepted evolution mutations (design v1.0 §2.7). No
-automatic rollback, no cooldown, no mutation budget — a mutation that proves
-ineffective is marked \`ineffective\` here later, never deleted.
+Log of accepted evolution mutations (design v1.0 §2.7). No automatic rollback,
+no cooldown, no mutation budget — a mutation that proves ineffective is marked
+\`ineffective\` here later. Bounded (v0.9.1): the archive keeps the newest
+100 records; older ones are retired on write to keep the file (and every
+full read of it) bounded.
 `;
+
+/**
+ * The archive is bounded (v0.9.1): past this many records the oldest are
+ * retired on write. The agent only ever says WHAT to record; retention
+ * planning lives here, not in the prompt. 100 records ≈ months of evolution
+ * history; the fitness events behind them are independently capped anyway.
+ */
+export const MAX_MUTATION_RECORDS = 100;
+
+/**
+ * Keep the header + the newest MAX_MUTATION_RECORDS record blocks, dropping
+ * the oldest. A record block runs from its `## {ts} — {target}` heading to the
+ * next heading; interstitial evaluation lines travel with the block they
+ * follow, so a trim boundary can drop an evaluation line whose subject block
+ * survives (or vice versa) — the track record tolerates that drift. Pure.
+ */
+export function trimMutationArchive(content: string): string {
+  const lines = content.split("\n");
+  const starts: number[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].startsWith("## ")) starts.push(i);
+  }
+  if (starts.length <= MAX_MUTATION_RECORDS) return content;
+  const keepFrom = starts[starts.length - MAX_MUTATION_RECORDS];
+  const firstRecord = starts[0];
+  return [...lines.slice(0, firstRecord), ...lines.slice(keepFrom)].join("\n");
+}
 
 /** Render one record as a compact, greppable markdown block. */
 export function renderMutationRecord(record: MutationRecord): string {
@@ -370,7 +434,9 @@ export function renderMutationRecord(record: MutationRecord): string {
 }
 
 /** Append a mutation to the archive, creating the file (with its header) when
- *  missing. Append-only: existing content is never rewritten. */
+ *  missing. Bounded: past MAX_MUTATION_RECORDS the oldest records are retired
+ *  on write (trimMutationArchive) — retention is the store's job, the agent
+ *  only declares what to record. */
 export async function appendMutation(
   record: MutationRecord,
   batch?: WriteBatch,
@@ -385,5 +451,5 @@ export async function appendMutation(
   const content = existing.trim()
     ? `${existing.trimEnd()}\n\n${block}\n`
     : `${MUTATIONS_HEADER}\n${block}\n`;
-  await fsWriteFile(MUTATIONS_PATH, content, batch);
+  await fsWriteFile(MUTATIONS_PATH, trimMutationArchive(content), batch);
 }

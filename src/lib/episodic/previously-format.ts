@@ -582,7 +582,14 @@ export function migrateToV3(content: string, currentSliceId?: string): string {
  *      replies, each with a `by:` date. NOT age-expiring — items resolve only
  *      by being fulfilled; overdue items are kept and flagged, never silently
  *      dropped.
- *   5. Self-model — compact operating lessons, DELTA from DIRECTIVES only.
+ *
+ * The card is a PURE dynamic semantic memory pool — what the user did, is
+ * doing, will do. It carries NO rules and NO analysis: patterns/tendencies
+ * about the user live in the evolution direction's Portrait and guesses in its
+ * Hypotheses (memory/evolution/direction.md, see src/lib/evolution/). The old
+ * Self-model section (5.) is GONE from the writer — serializeCard never emits
+ * it — but parseCard still TOLERATES it on read so old snapshots render (and
+ * the evolution agent can migrate the legacy lines into the Portrait).
  *
  * The card is the stable, byte-identical-within-a-slice snapshot that keeps
  * the main agent's prompt prefix cacheable; slices remain the lossless source
@@ -599,12 +606,12 @@ export const LEGACY_CARD_STAMP = "Format: user card";
 export const CARD_NOW_EXPIRY_DAYS = 7;
 /** Hard caps — enforced by the card updater after every rewrite. */
 export const CARD_NOW_MAX = 5;
-export const CARD_SELF_MODEL_MAX = 10;
 /** Hard ceiling for the Past profile paragraph (~600 tokens worst case). */
 export const CARD_PROFILE_MAX_CHARS = 2400;
 /** Per-item text caps (refs/by/since tails never count against them). */
 export const NOW_ITEM_MAX_CHARS = 300;
 export const HORIZON_ITEM_MAX_CHARS = 200;
+/** Single-line cap — also the Identity head's per-field length limit. */
 export const SELF_MODEL_LINE_MAX_CHARS = 300;
 export const PAST_ANCHOR_MAX_CHARS = 300;
 /** Section caps. */
@@ -646,6 +653,10 @@ export interface CardDocument {
   };
   now: CardNowItem[];
   horizon: CardHorizonItem[];
+  /** LEGACY read tolerance: parseCard still fills this from an old card's
+   *  `## Self-model` section so old snapshots render and the evolution agent
+   *  can migrate the lines into the direction Portrait — but serializeCard
+   *  NEVER writes the section back. */
   selfModel: string[];
 }
 
@@ -707,11 +718,8 @@ export function serializeCard(doc: CardDocument): string {
       lines.push(`- ${stripInlineComments(h.text)}${by}${refs}`, "");
     }
   }
-  if (doc.selfModel.length > 0) {
-    lines.push("## Self-model", "");
-    for (const s of doc.selfModel) lines.push(`- ${stripInlineComments(s)}`, "");
-  }
-
+  // The Self-model section is gone from the writer (patterns live in the
+  // direction Portrait now); parseCard still reads it on legacy cards.
   return lines.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd() + "\n";
 }
 
@@ -801,8 +809,10 @@ export function findOverdueHorizonItems(
 /**
  * Best-effort fold of a v3 (or legacy) document into the card format. Identity
  * → head; personality/communication/cognition/knowledge/values/work_style/goals
- * → the Past profile paragraph; current_state/boundaries → Now; all self-model
- * dimensions → the Self-model list. The evolution agent refines on later passes.
+ * → the Past profile paragraph; current_state/boundaries → Now. The v3
+ * self-model dimensions are deliberately DROPPED — operating lessons are
+ * direction-Portrait material now, never card content. The evolution agent
+ * refines on later passes.
  */
 export function migrateV3ToCard(content: string, currentSliceId?: string): string {
   if (isCardFormat(content)) return content;
@@ -826,9 +836,7 @@ export function migrateV3ToCard(content: string, currentSliceId?: string): strin
     card.past.profile = sentences.join(" ");
     for (const b of doc.profile.current_state ?? []) card.now.push({ text: b.text, refs: b.refs, since: b.updated });
     for (const b of doc.profile.boundaries ?? []) card.now.push({ text: b.text, refs: b.refs, since: b.updated });
-    for (const dim of SELF_MODEL_DIMENSIONS) {
-      for (const b of doc.selfModel[dim] ?? []) card.selfModel.push(b.text);
-    }
+    // doc.selfModel is NOT folded — see the doc comment above.
   }
   return serializeCard(card);
 }

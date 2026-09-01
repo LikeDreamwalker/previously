@@ -9,9 +9,11 @@
  *
  *   - a bucket whose net score over the newest EVOLVE_WINDOW_SLICES distinct
  *     slices drops to EVOLVE_TRIGGER_THRESHOLD or below → trigger that bucket;
- *   - any single -2 event THIS slice → trigger its bucket immediately
- *     (a explicit complaint/correction does not wait for the window);
- *   - no trigger → NO evolution sub-agent runs. The per-boundary "mandatory
+ *   - any evidence-anchored NEGATIVE delta in the just-scored slice → trigger
+ *     its bucket immediately: a -2 (an explicit complaint/correction) or a -1
+ *     (a dissatisfaction signal, incl. a portrait-rubric pattern match) both
+ *     fire now instead of waiting for the window to fill;
+ *   - no trigger → NO evolution sub-agent runs. The per-turn "mandatory
  *     evolution check" of design §2.3 IS this scoring — mandatory check ≠
  *     mandatory mutation.
  *
@@ -51,10 +53,12 @@ export interface BucketTrigger {
 }
 
 /**
- * Compute which buckets trigger evolution at this slice boundary.
- * `thisSliceEvents` are THIS slice's freshly scored deltas (pre-store is fine —
- * the evidence rule is re-applied here: an evidence-less delta can never
- * trigger, mirroring appendFitnessEvents' force-zero backstop). Pure.
+ * Compute which buckets trigger evolution on this turn. `thisSliceEvents`
+ * are the freshly scored deltas of the slice THIS TURN'S analysis scored —
+ * the ACTIVE slice mid-turn, but the JUST-CLOSED slice on a boundary turn
+ * (pre-store is fine — the evidence rule is re-applied here: an
+ * evidence-less delta can never trigger, mirroring appendFitnessEvents'
+ * force-zero backstop). Pure.
  */
 export function computeEvolutionTriggers(
   store: FitnessStore,
@@ -64,14 +68,22 @@ export function computeEvolutionTriggers(
 ): BucketTrigger[] {
   const triggers: BucketTrigger[] = [];
   for (const bucket of FITNESS_BUCKETS) {
-    // Immediate trigger: a single evidence-anchored -2 this slice.
-    const complaint = thisSliceEvents.find(
-      (e) => e.bucket === bucket && e.delta === -2 && e.evidence.trim().length > 0,
+    // Immediate trigger: any evidence-anchored negative delta in the scored
+    // slice. The -2 (explicit complaint/correction) is preferred for the
+    // reason string when both fired. Wording stays slice-neutral — on a
+    // boundary turn the scored slice is the one that JUST CLOSED, so "this
+    // slice" would misname it.
+    const fresh = thisSliceEvents.filter(
+      (e) => e.bucket === bucket && e.delta <= -1 && e.evidence.trim().length > 0,
     );
-    if (complaint) {
+    const negative = fresh.find((e) => e.delta === -2) ?? fresh[0];
+    if (negative) {
       triggers.push({
         bucket,
-        reason: `explicit complaint/correction this slice: "${complaint.evidence.trim().slice(0, 120)}"`,
+        reason:
+          negative.delta === -2
+            ? `explicit complaint/correction in the just-scored slice: "${negative.evidence.trim().slice(0, 120)}"`
+            : `dissatisfaction signal in the just-scored slice: "${negative.evidence.trim().slice(0, 120)}"`,
       });
       continue;
     }

@@ -28,7 +28,7 @@ import {
 } from "@/lib/demo/demo-fs";
 
 import { searchViaFlash, SEARCH_TIMEOUT_MS, type WebSearchResult } from "@/lib/search/flash-search";
-import { isPrivateHost, extractText, fetchWithGuard } from "@/lib/search/fetch-utils";
+import { isPrivateHost, extractText, fetchWithGuard, readBodyCapped, FETCH_BODY_MAX_BYTES } from "@/lib/search/fetch-utils";
 import { isAIConfigured } from "@/lib/capabilities";
 import {
   runRecallSearch,
@@ -672,17 +672,25 @@ export async function webFetchExecute(
     if (!res.ok) {
       return `ERROR: HTTP ${res.status} ${res.statusText}`;
     }
-    const text = await res.text();
-    const extracted = extractText(text);
+    const { text, truncated } = await readBodyCapped(res);
+    let extracted = extractText(text);
+    if (truncated) {
+      // The byte cap fired (see readBodyCapped) — tell the model the page
+      // continues past what it can see, in the same note style as the 15K
+      // character fallback below.
+      extracted += `\n\n(Fetched page truncated at ${Math.round(FETCH_BODY_MAX_BYTES / 1024 / 1024)} MB)`;
+    }
 
     // Document Segment Read protocol — applied before truncation so a matched
     // subset or line range is returned in full, not capped by the 15K fallback.
+    // A keyword MISS still caps at the same 15K: a miss on a huge page must
+    // not flood the context with the full text.
     if (range) {
       if (range.type === "search") {
         const keywords = range.keywords ?? [];
         const context = range.context ?? 1;
         const hits = segmentSearch(splitParagraphs(extracted), keywords, context, context);
-        return searchResultToString(parsed.hostname + parsed.pathname, keywords, hits, extracted);
+        return searchResultToString(parsed.hostname + parsed.pathname, keywords, hits, extracted, WEB_FETCH_MAX_CHARS);
       }
       if (range.type === "lines") {
         const { content, clamped } = textLines(extracted, range.start ?? 1, range.end ?? 1);
@@ -900,7 +908,7 @@ export async function recallExecute(
         searched: [],
         confidence: 0,
         note: timed.ok
-          ? "Recall returned no result — treat this topic as having no recoverable past context and do NOT call recall again for it."
+          ? "Recall returned no result — treat this topic as having no recoverable past context and do NOT call recall again for it. The user may be sharing this for the first time — receive it as new material, not as a gap you caused."
           : `Recall timed out after ${Math.round(timed.elapsedMs / 1000)}s before producing anything. Do NOT call recall again for this question; answer from the conversation and your knowledge.`,
       };
     }
@@ -926,13 +934,27 @@ export async function recallExecute(
       "done",
     );
 
-    // A confident "no such memory" (or an empty, unconfident one) is a
-    // DEFINITIVE result — recall already read the slices, so re-asking the
-    // same topic in different words will not find more.
+    // A timed-out run is NOT a definitive result — the search never
+    // finished, so an empty answer here means "ran out of time", not "no
+    // such memory" (a miss is information only when the search actually
+    // happened). A partial answer recovered from the cut-off run stays
+    // marked as interrupted and uncertain.
+    const timeoutNote = result.timedOut
+      ? result.answer.trim()
+        ? "Recall hit its time budget mid-search — this is a PARTIAL answer, not a definitive one; treat it as uncertain. The user can ask again later for a fresh, full search."
+        : "Recall hit its time budget before finishing — the memory was NOT fully searched, so this is NOT a definitive miss. Do NOT call recall again right now; answer from the conversation and your knowledge — the user can ask again later for a fresh search."
+      : undefined;
+
+    // An empty-references answer from a COMPLETED search is a DEFINITIVE
+    // result — recall already read the slices, so re-asking the same topic
+    // in different words will not find more. This is the normal shape of a
+    // confident "no such memory", so it keys on references alone.
     const emptyNote =
-      result.references.length === 0 && result.confidence === 0
-        ? "Recall found no past memory for this question. This is a definitive result — do NOT call recall again for this topic; answer from the conversation and your knowledge."
+      !result.timedOut && result.references.length === 0
+        ? "Recall found no past memory for this question. This is a definitive result — do NOT call recall again for this topic; answer from the conversation and your knowledge. The user may be sharing this for the first time — receive it as new material, not as a gap you caused."
         : undefined;
+
+    const note = timeoutNote ?? emptyNote;
 
     // Pre-render each reference's local clock + relative days (from its
     // UTC-derived slice id) so the agent knows WHEN a past conversation
@@ -958,7 +980,7 @@ export async function recallExecute(
       })),
       searched: result.searched,
       confidence: result.confidence,
-      ...(emptyNote ? { note: emptyNote } : {}),
+      ...(note ? { note } : {}),
     };
   } catch (err) {
     // Triage: a deterministic recall failure returns as data so the model sees

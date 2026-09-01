@@ -165,6 +165,7 @@
       "directionUnchanged": "Direction: unchanged",
       "directionUpdated": "Direction: {summary}",
       "directionFailed": "Direction: evaluation failed ({reason})",
+      "directionRejected": "Direction: proposal rejected ({reason})",
       "playbookUpdated": "{agent} playbook updated: {summary}",
       "buckets": {
         "card": "Card",
@@ -299,6 +300,7 @@
       "desc": "Tune how the agent slices, recalls, and manages context. Saved to your memory repo — no redeploy needed.",
       "maxSliceMinutes": "Slice duration (min)",
       "maxTurnsPerSlice": "Max turns per slice (safety cap)",
+      "idleGapMinutes": "New slice after idle (min)",
       "saved": "Saved ✓",
       "saveFailed": "Couldn't save. Try again.",
       "restoreDefaults": "Restore defaults"

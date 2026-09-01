@@ -115,7 +115,7 @@ async function proposeMerges(
     system: CONSOLIDATOR_SYSTEM,
     prompt: buildPrompt(strands),
     temperature: 0,
-    maxSteps: 4,
+    maxSteps: 50,
     timeoutMs: 30_000,
     tools: {
       consolidateOutput: tool({

@@ -11,7 +11,7 @@ import {
 const IDENTITY = "SOUL + DIRECTIVES";
 const PREVIOUSLY = "# Previously card";
 const STATIC_RULES =
-  "The above is the current profile and operating model — distilled hypotheses";
+  "The recap above holds WHAT the user did, is doing, and plans";
 const SLICE_HEAD =
   "## This slice — snapshot at its start\n- Slice started: 02 Aug 2026, 14:32 (Asia/Shanghai, UTC+8)";
 const TIMELINE = "## Timeline (recent)\n- **2026-08-01-1115** (08-01 Fri) 回顾";
@@ -75,7 +75,7 @@ describe("assembleSystemPrompt (v0.9 slice-level freeze)", () => {
 
   it("renders the card-freshness header with the slice-head date anchor", () => {
     expect(build()).toContain(
-      "## What I know about the user (inference model — 2026-08-09)",
+      "## What I know about the user — the living recap (2026-08-09)",
     );
   });
 
@@ -85,6 +85,16 @@ describe("assembleSystemPrompt (v0.9 slice-level freeze)", () => {
     expect(s).toContain("## Overdue commitments");
     expect(s.indexOf(overdue)).toBeGreaterThan(s.indexOf(STATIC_RULES));
     expect(s.indexOf(overdue)).toBeLessThan(s.indexOf(SLICE_HEAD));
+  });
+
+  it("places the direction block (L1b) right after the card, before the static rules — absent by default", () => {
+    const direction = "## Direction — who the user is (evolved portrait)";
+    const s = build({ directionBlock: direction });
+    expect(s).toContain(direction);
+    expect(s.indexOf(direction)).toBeGreaterThan(s.indexOf(PREVIOUSLY));
+    expect(s.indexOf(direction)).toBeLessThan(s.indexOf(STATIC_RULES));
+    // Default: the layer is omitted entirely (template / legacy direction docs).
+    expect(build()).not.toContain("Direction — who the user is");
   });
 });
 
@@ -201,6 +211,17 @@ describe("buildBridgeTimeLine (bridge-mode fresh clock read)", () => {
       nowIso: "2026-08-26T16:05:00.000Z",
     });
     expect(line).not.toContain("slice closes");
+  });
+
+  it("names the idle-gap close alongside the cap when idleGapMinutes is given (v0.9.1 — the cap alone would promise time the idle gap won't grant)", () => {
+    const line = buildBridgeTimeLine({ ...OPTS, idleGapMinutes: 15 });
+    expect(line).toContain("slice closes in ~18 min at the latest, or after ~15 min of silence");
+  });
+
+  it("keeps the cap-only wording when idleGapMinutes is absent (backwards compatible)", () => {
+    const line = buildBridgeTimeLine(OPTS);
+    expect(line).toContain("slice closes in ~18 min");
+    expect(line).not.toContain("silence");
   });
 });
 

@@ -79,8 +79,8 @@ describe("runner wiring", () => {
 
     const opts = runSubAgentMock.mock.calls[0][0];
     expect(opts.model).toBe(MODEL);
-    expect(opts.maxSteps).toBe(30);
-    expect(opts.timeoutMs).toBe(90_000);
+    expect(opts.maxSteps).toBe(50);
+    expect(opts.timeoutMs).toBe(240_000);
     expect(opts.effort).toBe("low");
     expect(opts.temperature).toBe(0.1);
     expect(opts.reportToolName).toBe("finish");
@@ -288,5 +288,119 @@ describe("writePlaybook — the v1.0 playbook mutation gate", () => {
     expect(opts.prompt).toContain("这根本不是我们聊过的内容");
     expect(opts.system).not.toContain("Triggered buckets");
     expect(opts.system).not.toContain("Keep answers concrete.");
+  });
+
+  it("the mutation track-record line rides the USER prompt when provided — the loop's honesty feedback", async () => {
+    runSubAgentMock.mockResolvedValue({
+      ok: true,
+      report: { reasoning: "nothing", summary: "" },
+      text: "",
+    });
+    await runPreviouslyAgent(
+      baseInput({
+        mutationTrackRecord:
+          "Your mutation track record: 1 effective / 2 ineffective / 3 unevaluated",
+      }),
+    );
+    const opts = runSubAgentMock.mock.calls[0][0];
+    expect(opts.prompt).toContain(
+      "Your mutation track record: 1 effective / 2 ineffective / 3 unevaluated",
+    );
+    expect(opts.system).not.toContain("mutation track record");
+  });
+
+  it("omits the track-record line when no mutation has ever been archived", async () => {
+    runSubAgentMock.mockResolvedValue({
+      ok: true,
+      report: { reasoning: "nothing", summary: "" },
+      text: "",
+    });
+    await runPreviouslyAgent(baseInput());
+    expect(runSubAgentMock.mock.calls[0][0].prompt).not.toContain(
+      "mutation track record",
+    );
+  });
+});
+
+describe("the merged direction half (directionEval)", () => {
+  const DIRECTION_EVAL: PreviouslyAgentInput["directionEval"] = {
+    current: "# Portrait\n\nThe user prefers concrete answers.\n\n# Hypotheses\n\n# Evidence\n\n- 2026-08-20-1430 — x\n\n# Log",
+    mode: "steady",
+    cardSelfModel: "- Don't decompose emotional venting with thinkDeep",
+    recentEvents: [],
+    analysis: {
+      messageTags: { reuse: [], create: [] },
+      semanticHint: { strands: [], reason: "" },
+      memoryWorthy: true,
+      emotionalSignal: { intensity: "none", register: "neutral", note: "" },
+    },
+  };
+
+  it("the direction-evaluation section rides the USER prompt (mode, current doc, legacy Self-model)", async () => {
+    runSubAgentMock.mockResolvedValue({
+      ok: true,
+      report: { reasoning: "nothing", summary: "" },
+      text: "",
+    });
+    await runPreviouslyAgent(baseInput({ directionEval: DIRECTION_EVAL }));
+    const opts = runSubAgentMock.mock.calls[0][0];
+    expect(opts.prompt).toContain("## Direction evaluation (FIRST");
+    expect(opts.prompt).toContain("Mode: steady");
+    expect(opts.prompt).toContain("The user prefers concrete answers.");
+    expect(opts.prompt).toContain("Don't decompose emotional venting");
+    // The eval section REPLACES the orientation-only criteria block.
+    expect(opts.prompt).not.toContain("## Evolution direction (the criteria");
+    // The concrete eval DATA (current doc, mode, legacy lines) never leaks
+    // into the static system prompt.
+    expect(opts.system).not.toContain("The user prefers concrete answers.");
+  });
+
+  it("a directionProposal on finish is surfaced on the output when directionEval is set", async () => {
+    runSubAgentMock.mockResolvedValue({
+      ok: true,
+      report: {
+        reasoning: "portrait moved",
+        summary: "更新了画像",
+        directionProposal: {
+          content: "# Portrait\n\nNew portrait.\n\n# Hypotheses\n\n# Evidence\n\n- 2026-08-20-1430 — x\n- 2026-08-22-1015 — y\n\n# Log",
+          summary: "Direction: new portrait",
+          evidence: ["2026-08-20-1430", "2026-08-22-1015"],
+          expectedBenefit: "Better fit",
+        },
+      },
+      text: "",
+    });
+    const out = await runPreviouslyAgent(baseInput({ directionEval: DIRECTION_EVAL }));
+    expect(out.directionProposal?.summary).toBe("Direction: new portrait");
+    expect(out.directionProposal?.content).toContain("# Portrait");
+  });
+
+  it("a directionProposal is DROPPED when no directionEval was requested (explicit-request path)", async () => {
+    runSubAgentMock.mockResolvedValue({
+      ok: true,
+      report: {
+        reasoning: "unsolicited proposal",
+        summary: "",
+        directionProposal: {
+          content: "# Portrait\n\nx\n\n# Hypotheses\n\n# Evidence\n\n# Log",
+          summary: "unsolicited",
+          evidence: [],
+          expectedBenefit: "none",
+        },
+      },
+      text: "",
+    });
+    const out = await runPreviouslyAgent(baseInput());
+    expect(out.directionProposal).toBeUndefined();
+  });
+
+  it("no proposal on finish → no directionProposal on the output", async () => {
+    runSubAgentMock.mockResolvedValue({
+      ok: true,
+      report: { reasoning: "direction holds", summary: "" },
+      text: "",
+    });
+    const out = await runPreviouslyAgent(baseInput({ directionEval: DIRECTION_EVAL }));
+    expect(out.directionProposal).toBeUndefined();
   });
 });

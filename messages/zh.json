@@ -165,6 +165,7 @@
       "directionUnchanged": "方向：无变化",
       "directionUpdated": "方向：{summary}",
       "directionFailed": "方向：评估失败（{reason}）",
+      "directionRejected": "方向：提案未通过校验（{reason}）",
       "playbookUpdated": "{agent} 工作手册已更新：{summary}",
       "buckets": {
         "card": "卡片",
@@ -299,6 +300,7 @@
       "desc": "调整 Agent 的切片、回忆和上下文管理方式。保存到你的记忆仓库中，无需重新部署。",
       "maxSliceMinutes": "切片时长（分钟）",
       "maxTurnsPerSlice": "片内容量上限（安全阀）",
+      "idleGapMinutes": "空闲超时开启新切片（分钟）",
       "saved": "已保存 ✓",
       "saveFailed": "保存失败，请重试。",
       "restoreDefaults": "恢复默认设置"

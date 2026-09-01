@@ -568,6 +568,30 @@ describe("closedBy round-trip", () => {
     );
     expect(parsed.closedBy).toBeUndefined();
   });
+
+  it("round-trips the idle_gap close signal", () => {
+    const closed = { ...sampleSlice, closedBy: "idle_gap" as const };
+    const md = serializeSlice(closed);
+    expect(md).toContain("closed_by: idle_gap");
+    expect(parseSlice(md).closedBy).toBe("idle_gap");
+  });
+});
+
+// ─── continuesFrom round-trip (checkpoint continuation link) ─────────────
+
+describe("continuesFrom round-trip", () => {
+  it("persists the continuation link in frontmatter and parses it back", () => {
+    const slice = { ...sampleSlice, continuesFrom: "2024-03-15-0930" };
+    const md = serializeSlice(slice);
+    expect(md).toContain("continues_from: 2024-03-15-0930");
+    expect(parseSlice(md).continuesFrom).toBe("2024-03-15-0930");
+  });
+
+  it("omits continues_from when unset", () => {
+    const md = serializeSlice(sampleSlice);
+    expect(md).not.toContain("continues_from");
+    expect(parseSlice(md).continuesFrom).toBeUndefined();
+  });
 });
 
 // ─── evolutionSummary round-trip (v0.9 slice-level prompt freeze) ─────────

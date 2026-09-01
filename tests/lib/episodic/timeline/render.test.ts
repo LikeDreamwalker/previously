@@ -52,6 +52,27 @@ describe("sliceLine", () => {
     const line = sliceLine(entry({ focus: "", summary: "" }));
     expect(line).toContain("*(无摘要)*");
   });
+
+  it("marks a checkpoint continuation (↳cont) and the close reason (v0.9.1)", () => {
+    // Without these, a checkpoint chain A→B→C reads as independent conversations.
+    const line = sliceLine(
+      entry({ continues_from: "2026-08-11-1045", closed_by: "time_cap" }),
+    );
+    expect(line).toContain("**2026-08-11-1115** ↳cont");
+    expect(line).toContain("· closed:time_cap");
+  });
+
+  it("omits the close-reason mark for user_explicit (the legacy no-reason fallback — pure noise)", () => {
+    const line = sliceLine(entry({ closed_by: "user_explicit" }));
+    expect(line).not.toContain("closed:");
+    expect(line).not.toContain("↳cont");
+  });
+
+  it("leaves plain slices unmarked (no continuity metadata)", () => {
+    const line = sliceLine(entry());
+    expect(line).not.toContain("↳cont");
+    expect(line).not.toContain("closed:");
+  });
 });
 
 describe("groupByEraAndDay", () => {
@@ -90,7 +111,7 @@ describe("buildTimelineBrief", () => {
         entry({ id: "2026-08-10-1839", date: "2026-08-10", focus: "地址研究" }),
         entry({ id: "2026-08-11-1115", date: "2026-08-11", focus: "滴滴反思" }),
       ]),
-      { recent: 1 },
+      { recent: 1, locale: "zh" },
     );
     expect(brief).toContain("## Timeline (recent)");
     expect(brief).toContain("滴滴反思");
@@ -98,13 +119,37 @@ describe("buildTimelineBrief", () => {
     expect(brief).toContain("往前共 2 片");
   });
 
+  it("renders the totals lines in English for en locale", () => {
+    const brief = buildTimelineBrief(
+      index([
+        entry({ id: "2026-08-10-1839", date: "2026-08-10", focus: "地址研究" }),
+        entry({ id: "2026-08-11-1115", date: "2026-08-11", focus: "滴滴反思", needs_marking: true }),
+      ]),
+      { recent: 1, locale: "en" },
+    );
+    expect(brief).toContain("2 slices in total");
+    expect(brief).toContain("1 slice(s) not yet summarized");
+  });
+
   it("notes slices still needing marking", () => {
     const brief = buildTimelineBrief(
       index([
         entry({ id: "2026-08-11-1025", date: "2026-08-11", focus: "", summary: "", needs_marking: true }),
       ]),
+      { locale: "zh" },
     );
     expect(brief).toContain("1 片尚未生成摘要");
+  });
+
+  it("carries the continuity marks through the brief (sliceLineWithTime path)", () => {
+    const brief = buildTimelineBrief(
+      index([
+        entry({ continues_from: "2026-08-11-1045", closed_by: "capacity" }),
+      ]),
+      { locale: "en" },
+    );
+    expect(brief).toContain("↳cont");
+    expect(brief).toContain("closed:capacity");
   });
 
   it("annotates pointer lines with local date + relative days when time context is given", () => {

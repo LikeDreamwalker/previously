@@ -54,8 +54,12 @@ export function getActiveSlice(): TimeSlice | null {
  * Create a new time slice and set it as the active one.
  * The slice_id is derived from the current UTC date at time of first message.
  * Does NOT write to disk — that happens when appendTurn or closeSlice is called.
+ *
+ * `continuesFrom` links the slice to the one it continues — set only when the
+ * previous slice closed on a time_cap/capacity CHECKPOINT (the same ongoing
+ * conversation), never on idle_gap/context_lost (a genuine new conversation).
  */
-export function createSlice(userMessage: string, timezone: string, turnId: string): TimeSlice {
+export function createSlice(userMessage: string, timezone: string, turnId: string, continuesFrom?: string): TimeSlice {
   const now = new Date();
   const year = now.getUTCFullYear();
   const month = String(now.getUTCMonth() + 1).padStart(2, "0");
@@ -86,6 +90,7 @@ export function createSlice(userMessage: string, timezone: string, turnId: strin
     loops: [],
     turns: [firstTurn],
     estimatedTokens: Math.ceil(userMessage.length / 4),
+    ...(continuesFrom ? { continuesFrom } : {}),
   };
 
   activeSlice = slice;
@@ -291,6 +296,7 @@ export function serializeSlice(slice: TimeSlice): string {
     emotional_tone: slice.emotional_tone,
     closed_by: slice.closedBy,
     evolution_summary: slice.evolutionSummary,
+    continues_from: slice.continuesFrom,
   };
 
   // Remove undefined fields for clean YAML
@@ -365,6 +371,9 @@ export function parseSlice(raw: string): TimeSlice {
     // v0.9: evolution summary frozen at slice birth, replayed into the L3
     // slice-head block on every turn of this slice (byte-stable prompt).
     evolutionSummary: normalizeString(frontmatter.evolution_summary) || undefined,
+    // The checkpoint continuation link (a slice born from a time_cap/capacity
+    // close of the same conversation) — drives the carry-over history prefix.
+    continuesFrom: normalizeString(frontmatter.continues_from) || undefined,
     turns,
     estimatedTokens,
     // The real close signal round-trips through frontmatter since v0.8;
@@ -386,6 +395,7 @@ const SLICING_SIGNALS: readonly SlicingSignal[] = [
   "user_explicit",
   "capacity",
   "context_lost",
+  "idle_gap",
 ];
 
 function isSlicingSignal(v: unknown): v is SlicingSignal {
@@ -571,6 +581,24 @@ export async function readSliceBody(path: string): Promise<string> {
     return data;
   }
   return fsReadFile(path);
+}
+
+/**
+ * Load any slice (active or closed) by id — best-effort, null when the file
+ * is missing or unreadable. Used for the checkpoint carry-over: a slice born
+ * from a time_cap/capacity close re-reads its `continuesFrom` predecessor so
+ * its tail can be prepended to the history window.
+ */
+export async function loadSlice(
+  sliceId: string,
+  batch?: WriteBatch,
+): Promise<TimeSlice | null> {
+  try {
+    const raw = await fsReadFile(sliceIdToFilePath(sliceId), batch);
+    return parseSlice(raw);
+  } catch {
+    return null;
+  }
 }
 
 // ─── Index maintenance ───────────────────────────────────────────────────

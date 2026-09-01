@@ -117,6 +117,24 @@ export function groupByEraAndDay(
     }));
 }
 
+/**
+ * Continuity annotations for a pointer line (v0.9.1): `↳cont` marks a slice
+ * that continues a time_cap/capacity-checkpointed predecessor, and the close
+ * reason (`closed:time_cap` etc.) marks HOW the slice ended — without them a
+ * checkpoint chain A→B→C reads as several independent conversations in the
+ * timeline/recall views. `user_explicit` (the legacy fallback for slices with
+ * no recorded reason) is omitted — it carries no information, only noise.
+ */
+function continuityMarks(s: TimelineSliceEntry): { cont: string; closed: string } {
+  return {
+    cont: s.continues_from ? " ↳cont" : "",
+    closed:
+      s.closed_by && s.closed_by !== "user_explicit"
+        ? ` · closed:${s.closed_by}`
+        : "",
+  };
+}
+
 /** One compact pointer line for a slice. The id stays full so the reader can
  *  resolve it with a tool (readSliceSummary / readSlice) without re-deriving
  *  the era/day from the surrounding headers. */
@@ -124,8 +142,9 @@ export function sliceLine(s: TimelineSliceEntry): string {
   const turns = s.turn_count ? ` · ${s.turn_count}轮` : "";
   const tone = s.tone ? ` · ${s.tone}` : "";
   const tags = s.tags.length ? ` [${s.tags.join(",")}]` : "";
+  const { cont, closed } = continuityMarks(s);
   const label = s.focus || s.summary || "*(无摘要)*";
-  return `- **${s.id}** ${label}${turns}${tone}${tags}`;
+  return `- **${s.id}**${cont} ${label}${turns}${tone}${tags}${closed}`;
 }
 
 /** sliceLine with a local date tag on the id. Frozen mode (`asOfSliceId` set)
@@ -139,6 +158,7 @@ export function sliceLineWithTime(
   const turns = s.turn_count ? ` · ${s.turn_count}轮` : "";
   const tone = s.tone ? ` · ${s.tone}` : "";
   const tags = s.tags.length ? ` [${s.tags.join(",")}]` : "";
+  const { cont, closed } = continuityMarks(s);
   const label = s.focus || s.summary || "*(无摘要)*";
   const when = time.asOfSliceId
     ? time.timezone
@@ -147,7 +167,7 @@ export function sliceLineWithTime(
     : time.nowIso && time.timezone
       ? sliceIdRelTag(s.id, time.nowIso, time.timezone, time.locale ?? "en")
       : "";
-  return `- **${s.id}**${when} ${label}${turns}${tone}${tags}`;
+  return `- **${s.id}**${when}${cont} ${label}${turns}${tone}${tags}${closed}`;
 }
 
 /** The full projection — every slice, era- and day-grouped, newest first. */
@@ -211,13 +231,20 @@ export function buildTimelineBrief(
       ? newest.map((s) => sliceLineWithTime(s, opts))
       : ["- (empty — no slices yet)"]),
   ];
+  const zh = normalizeLocale(opts.locale) === "zh";
   if (totalCount > recent) {
     lines.push(
-      `- 往前共 ${totalCount} 片，需要时向 recall 提问回溯`,
+      zh
+        ? `- 往前共 ${totalCount} 片，需要时向 recall 提问回溯`
+        : `- ${totalCount} slices in total — ask recall to reach further back when needed`,
     );
   }
   if (needsMarking > 0) {
-    lines.push(`- ${needsMarking} 片尚未生成摘要（needs_marking）`);
+    lines.push(
+      zh
+        ? `- ${needsMarking} 片尚未生成摘要（needs_marking）`
+        : `- ${needsMarking} slice(s) not yet summarized (needs_marking)`,
+    );
   }
   return lines.join("\n");
 }

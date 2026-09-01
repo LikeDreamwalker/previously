@@ -36,6 +36,18 @@ export interface TimelineSliceEntry {
   strands: string[];
   /** True when focus/summary are both empty — needs the semantic fill worker. */
   needs_marking: boolean;
+  /**
+   * Checkpoint continuation link (frontmatter `continues_from`): set when the
+   * slice continues a time_cap/capacity-checkpointed predecessor — the A→B→C
+   * chain marker the pointer lines render as `↳cont`.
+   */
+  continues_from?: string;
+  /**
+   * Close reason (frontmatter `closed_by`): time_cap / capacity / idle_gap /
+   * context_lost / user_explicit / time_silence (legacy). Absent while active
+   * or on legacy entries.
+   */
+  closed_by?: string;
 }
 
 /** The canonical catalog file (`timeline/index.json`). */

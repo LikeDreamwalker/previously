@@ -1,9 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const ai = vi.hoisted(() => ({ streamText: vi.fn() }));
+const ai = vi.hoisted(() => ({
+  streamText: vi.fn(),
+  // Records the runner's step cap (stopWhen: isStepCount(maxSteps)) so the
+  // anti-loop fuse value is assertable.
+  isStepCount: vi.fn((n: number) => ({ __stepCount: n })),
+}));
 vi.mock("ai", async () => {
   const actual = await vi.importActual("ai");
-  return { ...actual, streamText: ai.streamText };
+  return { ...actual, streamText: ai.streamText, isStepCount: ai.isStepCount };
 });
 vi.mock("@/lib/models/provider", () => ({
   createModel: vi.fn((c: unknown) => ({ _mock: c })),
@@ -139,7 +144,7 @@ describe("analyzeTurn", () => {
     });
   });
 
-  it("extracts an explicit behavioral correction as a memory update (self_model)", async () => {
+  it("extracts an explicit behavioral correction as a memory update", async () => {
     ai.streamText.mockResolvedValue(
       makeToolCall({
         message_tags: { reuse: [], create: [] },
@@ -147,14 +152,34 @@ describe("analyzeTurn", () => {
         intent: { type: "chat", reason: "user correcting agent behavior" },
         memory_worthy: true,
         emotional_signal: { intensity: "light", register: "frustrated", note: "mildly annoyed" },
-        memory_update: { content: "Never open with filler preambles", section: "self_model" },
+        memory_update: { content: "Never open with filler preambles", section: "past" },
       }),
     );
     const result = await analyzeTurn({ model, userMessage: "以后别给废话开场白", existingStrandNames: [] });
     expect(result.memoryUpdate).toEqual({
       content: "Never open with filler preambles",
-      section: "self_model",
+      section: "past",
     });
+  });
+
+  it("drops a stale self_model section hint (the v5 card no longer has that section)", async () => {
+    ai.streamText.mockResolvedValue(
+      makeToolCall({
+        message_tags: { reuse: [], create: [] },
+        semantic_hint: { strands: [], reason: "" },
+        intent: { type: "chat", reason: "user correcting agent behavior" },
+        memory_worthy: true,
+        emotional_signal: { intensity: "light", register: "frustrated", note: "mildly annoyed" },
+        // A model emitting the retired enum value fails schema validation of
+        // the section field — the report must survive regardless (zod strips
+        // or the runner's report extraction rejects; either way no crash).
+        memory_update: { content: "Never open with filler preambles", section: "self_model" },
+      }),
+    );
+    const result = await analyzeTurn({ model, userMessage: "以后别给废话开场白", existingStrandNames: [] });
+    // The invalid enum invalidates the whole report → degraded empty analysis.
+    expect(result.memoryUpdate).toBeUndefined();
+    expect(result.memoryWorthy).toBe(true);
   });
 
   it("omits memory_update when the user did not explicitly ask", async () => {
@@ -389,6 +414,61 @@ describe("analyzeTurn", () => {
     // Static prompt carries the scoring discipline, not the per-call signal.
     expect(arg.system).toContain("Task 7");
     expect(arg.system).not.toContain("recall's references");
+  });
+
+  // ── Task 7 rubric: the evolved user portrait ───────────────────────────
+
+  it("renders the portrait rubric into the USER prompt, never the static system prompt", async () => {
+    ai.streamText.mockResolvedValue(
+      makeToolCall({
+        message_tags: { reuse: [], create: [] },
+        semantic_hint: { strands: [], reason: "" },
+        intent: { type: "chat", reason: "chat" },
+        memory_worthy: true,
+        emotional_signal: { intensity: "none", register: "neutral", note: "" },
+      }),
+    );
+    await analyzeTurn({
+      model,
+      userMessage: "x",
+      existingStrandNames: [],
+      portrait: "用户不喜欢感性的回答",
+    });
+    const arg = ai.streamText.mock.calls.at(-1)?.[0] as { prompt: string; system: string };
+    expect(arg.prompt).toContain("Scoring rubric — the evolved user portrait");
+    expect(arg.prompt).toContain("用户不喜欢感性的回答");
+    expect(arg.system).not.toContain("用户不喜欢感性的回答");
+    // The static system prompt carries the rubric-scoring discipline itself.
+    expect(arg.system).toContain("KNOWN FAILURE PATTERN");
+  });
+
+  it("omits the rubric block when no portrait is provided", async () => {
+    ai.streamText.mockResolvedValue(
+      makeToolCall({
+        message_tags: { reuse: [], create: [] },
+        semantic_hint: { strands: [], reason: "" },
+        intent: { type: "chat", reason: "chat" },
+        memory_worthy: true,
+        emotional_signal: { intensity: "none", register: "neutral", note: "" },
+      }),
+    );
+    await analyzeTurn({ model, userMessage: "x", existingStrandNames: [] });
+    const arg = ai.streamText.mock.calls.at(-1)?.[0] as { prompt: string };
+    expect(arg.prompt).not.toContain("Scoring rubric");
+  });
+
+  it("runs with the 50-step anti-loop fuse (the wall clock is the real budget)", async () => {
+    ai.streamText.mockResolvedValue(
+      makeToolCall({
+        message_tags: { reuse: [], create: [] },
+        semantic_hint: { strands: [], reason: "" },
+        intent: { type: "chat", reason: "chat" },
+        memory_worthy: false,
+        emotional_signal: { intensity: "none", register: "neutral", note: "" },
+      }),
+    );
+    await analyzeTurn({ model, userMessage: "x", existingStrandNames: [] });
+    expect(ai.isStepCount).toHaveBeenCalledWith(50);
   });
 });
 

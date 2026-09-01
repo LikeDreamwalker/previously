@@ -39,7 +39,6 @@ import {
   SELF_MODEL_LINE_MAX_CHARS,
   PAST_ANCHOR_MAX_CHARS,
   CARD_NOW_MAX,
-  CARD_SELF_MODEL_MAX,
   PAST_ANCHORS_MAX,
   HORIZON_MAX,
   type CardDocument,
@@ -93,7 +92,9 @@ export function serializeSession(session: CardSession): string {
 
 /**
  * Substance comparison — ignores the sliceId/updated stamps, which refresh on
- * every pass. True when identity/past/now/horizon/self-model are identical.
+ * every pass. True when identity/past/now/horizon are identical. The legacy
+ * selfModel list is compared too, so stripping a legacy `## Self-model`
+ * section (the writer never re-emits it) correctly registers as a change.
  */
 export function sameCardSubstance(
   a: CardDocument | null,
@@ -256,23 +257,6 @@ function brakeReject(session: CardSession, key: string, base: string): string {
 /** Result text for a force-applied write. */
 function forcedOk(what: string, limit: number): string {
   return `OK — FORCED: ${what} was truncated to the ${limit}-char limit and applied after repeated identical rejections. Call finish when your remaining writes are done.`;
-}
-
-// ─── Self-model invariant backstop ─────────────────────────────────────────
-// (Moved from the retired previously-updater. The prompt's delta rule is the
-// primary guard; this backstop ensures a single bad line can never break core
-// tool discipline — unless the user explicitly overrode it.)
-
-const SELF_MODEL_INVARIANTS: Array<{ re: RegExp; rule: string }> = [
-  { re: /never\s+use\s+(the\s+)?recall/i, rule: "recall is the memory-search tool" },
-  { re: /don'?t\s+(use|call)\s+(the\s+)?recall/i, rule: "recall is the memory-search tool" },
-  { re: /never\s+read\s+(the\s+)?(memory|slices)/i, rule: "readSlice/recall are the memory tools" },
-];
-
-function contradictsInvariant(line: string): string | null {
-  if (/\boverrides\s*[:=]/.test(line)) return null; // explicit user override
-  const hit = SELF_MODEL_INVARIANTS.find(({ re }) => re.test(line));
-  return hit ? hit.rule : null;
 }
 
 // ─── Identity ─────────────────────────────────────────────────────────────
@@ -498,39 +482,9 @@ export function sessionResolveHorizon(
   }`;
 }
 
-// ─── Self-model ───────────────────────────────────────────────────────────
-
-export function sessionAddSelfModel(session: CardSession, text: string): string {
-  const key = brakeKey("addSelfModel", text);
-  let effective = text.trim();
-  let forced = false;
-  const len = brakeLength(session, key, "Self-model line", text, SELF_MODEL_LINE_MAX_CHARS);
-  if (len) {
-    if ("forcedText" in len) {
-      effective = len.forcedText;
-      forced = true;
-    } else return len.reject;
-  }
-  const dup = checkDup(session.doc.selfModel, effective, "Self-model");
-  if (dup) return brakeReject(session, key, dup);
-  const rule = contradictsInvariant(effective);
-  if (rule)
-    return brakeReject(session, key, `REJECTED: this contradicts the standing rule "${rule}". If the user EXPLICITLY overrode it, append "overrides: <rule>" citing their words; otherwise drop this lesson.`);
-  if (session.doc.selfModel.length >= CARD_SELF_MODEL_MAX)
-    return brakeReject(session, key, `REJECTED: Self-model is full (${CARD_SELF_MODEL_MAX}). Remove an obsolete lesson first — the list is a delta, not an archive.`);
-  session.doc.selfModel.push(effective);
-  session.log.push(`${forced ? "forced: " : ""}addSelfModel: ${effective.slice(0, 50)}`);
-  return forced
-    ? forcedOk("Self-model line", SELF_MODEL_LINE_MAX_CHARS)
-    : `OK — Self-model line added (${session.doc.selfModel.length}/${CARD_SELF_MODEL_MAX}).`;
-}
-
-export function sessionRemoveSelfModel(session: CardSession, match: string): string {
-  const items = session.doc.selfModel.map((text) => ({ text }));
-  const hit = findMatch(items, match);
-  if (!hit)
-    return brakeReject(session, brakeKey("removeSelfModel", match), noMatch("Self-model", match, items));
-  session.doc.selfModel = session.doc.selfModel.filter((l) => l !== hit.text);
-  session.log.push(`removeSelfModel: ${hit.text.slice(0, 50)}`);
-  return `OK — Self-model line removed: "${hit.text.slice(0, 60)}".`;
-}
+// NOTE: there are deliberately NO Self-model session mutations — the card is a
+// pure semantic memory pool (Identity/Past/Now/Horizon); user patterns live in
+// the evolution direction's Portrait (src/lib/evolution/direction-agent.ts).
+// parseCard still fills doc.selfModel from a LEGACY card so the old lines
+// survive until the evolution agent migrates them; serializeSession never
+// writes the section back.

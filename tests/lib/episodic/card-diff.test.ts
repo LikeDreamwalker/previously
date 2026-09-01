@@ -59,13 +59,15 @@ describe("summarizeCardChanges", () => {
       past: { profile: "Bob is a developer.", anchors: [] },
       now: [{ text: "Exploring timeline UI", refs: [], since: "2026-08-13" }],
       horizon: [],
-      selfModel: ["Always cite refs"],
+      selfModel: [],
       ...over,
     });
 
   it("counts brand-new entries as added", () => {
     const before = card({});
-    const after = card({ selfModel: ["Always cite refs", "Prefer terse answers"] });
+    const after = card({
+      horizon: [{ text: "Await the visa decision", by: "2026-09-01", refs: [] }],
+    });
     expect(summarizeCardChanges(before, after)).toEqual({
       added: 1,
       reinforced: 0,

@@ -3,6 +3,10 @@ export type SliceStatus = "active" | "closed";
 
 /**
  * The signals that can trigger a slice boundary.
+ * - "time_cap" / "capacity": periodic autosave checkpoints — the follow-up
+ *   slice links back via `continuesFrom` and carries the closed slice's tail.
+ * - "idle_gap" / "context_lost": genuine conversation boundaries — no link,
+ *   no carry-over.
  * "time_silence" is a legacy value (pre-v0.9 inactivity-based closing) — no
  * longer written, but kept so historical slices with `closed_by: time_silence`
  * still round-trip instead of falling back to "user_explicit".
@@ -12,7 +16,8 @@ export type SlicingSignal =
   | "time_silence"
   | "user_explicit"
   | "capacity"
-  | "context_lost";
+  | "context_lost"
+  | "idle_gap";
 
 /** Emotional tone of a time slice, maintained by Flash */
 export type EmotionalTone =
@@ -76,6 +81,10 @@ export interface SliceFrontmatter {
    *  block can replay it verbatim on every turn — the system prompt stays
    *  byte-identical for the slice's whole life (v0.9 prefix-cache freeze). */
   evolution_summary?: string;
+  /** Id of the slice this one continues — set when it was born from a
+   *  time_cap/capacity CHECKPOINT close of the same ongoing conversation.
+   *  Absent for genuine conversation boundaries (idle_gap/context_lost). */
+  continues_from?: string;
 }
 
 // ─── Time Slice (in-memory) ──────────────────────────────────────────
@@ -108,6 +117,8 @@ export interface TimeSlice {
   closedBy?: SlicingSignal;
   /** Evolution summary captured at slice birth — see SliceFrontmatter.evolution_summary. */
   evolutionSummary?: string;
+  /** See SliceFrontmatter.continues_from. */
+  continuesFrom?: string;
 }
 
 // ─── Index structures ────────────────────────────────────────────────

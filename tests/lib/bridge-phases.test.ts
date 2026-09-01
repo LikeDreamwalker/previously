@@ -223,6 +223,16 @@ describe("buildHousekeepingPayload", () => {
     const { context } = buildHousekeepingPayload(baseInput());
     expect(context).not.toContain("Mechanical signals this slice");
   });
+
+  it("names the direction mode in context (migrate re-shape, lowered bar)", () => {
+    const { context } = buildHousekeepingPayload({
+      ...baseInput(),
+      directionContent: "# Direction\n\nKeep answers concrete.\n\n# Anti-goals\n\nNo fluff.",
+      directionMode: "migrate",
+    });
+    expect(context).toContain("mode: MIGRATE");
+    expect(context).toContain("# Portrait / # Hypotheses / # Evidence / # Log");
+  });
 });
 
 // ─── lenient extraction ──────────────────────────────────────────────────
@@ -681,6 +691,20 @@ describe("applyCardMutations", () => {
     expect(res.changed).toBe(true);
     expect(res.card).not.toContain("since:");
     expect(res.card).toContain("prepping the friday interview");
+  });
+
+  it("the legacy Self-model wire ops are SKIPPED with a pointer to the direction Portrait", () => {
+    // The zod schema still accepts add/removeSelfModel (legacy tolerance), but
+    // the card no longer carries the section — the applier skips them and says
+    // where the lesson actually belongs.
+    const res = applyCardMutations(newCardTemplate(SLICE), SLICE, "2026-08-22", [
+      { op: "addSelfModel", content: "ask before refactoring", evidence: [] },
+      { op: "removeSelfModel", match: "stale lesson" },
+    ]);
+    expect(res.changed).toBe(false);
+    expect(res.skipped.map((s) => s.op)).toEqual(["addSelfModel", "removeSelfModel"]);
+    expect(res.skipped[0].reason).toContain("no longer carries a Self-model section");
+    expect(res.skipped[0].reason).toContain("direction Portrait");
   });
 });
 

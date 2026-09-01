@@ -31,8 +31,8 @@ describe("searchViaFlash", () => {
     expect(opts.languageModel).toBeDefined();
     expect(opts.model).toBeUndefined();
     expect(opts.effortSdk).toBe("anthropic");
-    expect(opts.maxSteps).toBe(10);
-    expect(opts.timeoutMs).toBe(150_000);
+    expect(opts.maxSteps).toBe(50);
+    expect(opts.timeoutMs).toBe(240_000);
     expect(opts.reportToolName).toBe("searchReport");
     // Static role in system; the date anchor and query moved to the user prompt.
     expect(opts.system).toContain("sub-agent of the Previously memory system");
@@ -100,11 +100,31 @@ describe("searchViaFlash", () => {
       ok: false,
       timedOut: true,
       text: "",
-      error: "Sub-agent did not finish within 150s.",
+      error: "Sub-agent did not finish within 240s.",
     });
     await expect(searchViaFlash("q")).rejects.toThrow(
-      "Sub-agent did not finish within 150s.",
+      "Sub-agent did not finish within 240s.",
     );
+  });
+
+  it("recovers an interrupted run's partial text as a flagged low-confidence answer on timeout", async () => {
+    // Aligned with recall's soft-timeout degradation: a cut-off research run
+    // still hands back what it had written, instead of losing everything.
+    runner.runSubAgent.mockResolvedValue({
+      ok: false,
+      timedOut: true,
+      text: "The Next.js docs say the latest version is…",
+      error: "Sub-agent did not finish within 240s.",
+      sources: [{ sourceType: "url", url: "https://nextjs.org/docs", title: "Docs" }],
+    });
+    const out = await searchViaFlash("q");
+    expect(out.answer).toContain("The Next.js docs say");
+    expect(out.recommendation).toContain("time budget");
+    expect(out.recommendation).toContain("lower-confidence");
+    expect(out.suggestedReads).toEqual([]);
+    expect(out.sources).toEqual([
+      { title: "Docs", url: "https://nextjs.org/docs" },
+    ]);
   });
 
   it("caps the researcher's own page reads at the per-run quota", async () => {
@@ -119,11 +139,11 @@ describe("searchViaFlash", () => {
       execute: (input: { url: string }) => Promise<string>;
     };
     // Invalid URLs error before any network I/O — but still consume a slot.
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 6; i++) {
       const out = await webFetch.execute({ url: "not a url" });
       expect(out).toContain("ERROR: Invalid URL");
     }
-    // Slot 4: quota exhausted — a note, no fetch attempted.
+    // Slot 7: quota exhausted — a note, no fetch attempted.
     const out = await webFetch.execute({ url: "https://example.com" });
     expect(out).toContain("Page-read quota exhausted");
   });

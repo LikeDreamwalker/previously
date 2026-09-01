@@ -111,10 +111,13 @@ export interface EvolutionResult {
   }>;
   /** v1.0: the Phase-1 direction verdict — omitted entirely when the check
    *  did not run. A FAILED check surfaces as outcome "failed" (never
-   *  masquerading as "no_change"; a silent failure reads as "it never runs"). */
+   *  masquerading as "no_change"; a silent failure reads as "it never runs");
+   *  a proposal that failed validation surfaces as "rejected" with the reason
+   *  (the writing discipline did its job — distinct from the agent choosing
+   *  not to move the direction). */
   direction?: {
-    outcome: "no_change" | "updated" | "failed";
-    /** The update summary, or the failure reason when outcome is "failed". */
+    outcome: "no_change" | "updated" | "failed" | "rejected";
+    /** The update summary, or the failure/rejection reason. */
     summary?: string;
   };
   /** v1.0: playbook mutations applied this run (Phase 2). */
@@ -146,6 +149,16 @@ export interface HousekeepingResult {
    */
   identityPrompt: string;
   /**
+   * The direction layer (v1.1): the evolved user portrait + hypothesis pool
+   * (direction.md), injected between the card (L1) and the static rules (L2).
+   * Read per turn in housekeeping AFTER the turn's batch flush — an evolution
+   * run that landed a new direction THIS turn already shapes THIS turn's
+   * reply (the mid-slice prefix-cache drift on those turns is accepted
+   * deliberately). Absent when direction.md is missing / still the
+   * template / still the legacy skeleton awaiting migration.
+   */
+  directionBlock?: string;
+  /**
    * v0.8 — compact timeline brief (recent slice pointer lines + catalog
    * totals), assembled from the woven index. Injected into the system prompt
    * so the agent can perceive the recent past without reading slices. Since
@@ -154,6 +167,17 @@ export interface HousekeepingResult {
    * when the timeline isn't available yet.
    */
   timelineBrief?: string;
+  /**
+   * Checkpoint carry-over: when the slice was born from a time_cap/capacity
+   * close (`slice.continuesFrom`), the previous slice's trailing turns read
+   * server-side from the CLOSED slice file. The workflow prepends them to the
+   * slice-aligned history window so the same conversation continues
+   * seamlessly; the prefix is frozen for the slice's whole life (append-only
+   * window, prefix-cache friendly). Absent for genuine conversation
+   * boundaries (idle_gap/context_lost) and when the predecessor is
+   * unreadable (best-effort).
+   */
+  contextPrefix?: ModelMessage[];
 }
 
 /**

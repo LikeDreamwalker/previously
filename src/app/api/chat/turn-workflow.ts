@@ -418,6 +418,80 @@ export function buildTimeoutContinuation(opts: {
 // ─── Slice-aligned history window (pure) ─────────────────────────────────
 
 /**
+ * Sanitize a checkpoint carry-over prefix (the previous slice's frozen tail)
+ * so it cannot break strict role-alternation providers (Anthropic 400s) once
+ * the window's first message — the current USER turn — is appended after it.
+ * A raw slice tail can violate the contract twice:
+ *
+ *   - ORPHAN USER TAIL: a slice interrupted by stop/cancel ends with a user
+ *     question that never got its reply. Carried over verbatim it would sit
+ *     directly before the current user message — two consecutive user turns.
+ *     Trailing non-assistant messages are dropped (the unanswered question
+ *     stays recorded in the slice itself; the prefix only carries CONTEXT).
+ *   - CONSECUTIVE SAME-ROLE TURNS: a regenerate leaves two agent turns in a
+ *     row (the rejected reply + its replacement). Collapsed keeping the LATER
+ *     one — the replacement is what the conversation actually settled on.
+ *
+ * Pure; returns [] when nothing survives (the caller then omits the prefix).
+ */
+export function sanitizeCheckpointPrefix(
+  prefix: ModelMessage[],
+): ModelMessage[] {
+  const out: ModelMessage[] = [];
+  for (const msg of prefix) {
+    if (out.length > 0 && out[out.length - 1].role === msg.role) {
+      out[out.length - 1] = msg; // same role twice in a row — keep the later
+    } else {
+      out.push(msg);
+    }
+  }
+  while (out.length > 0 && out[out.length - 1].role !== "assistant") out.pop();
+  return out;
+}
+
+/**
+ * Prepend the checkpoint carry-over prefix (the frozen tail of the previous
+ * slice, assembled server-side by housekeeping) to the slice-aligned window.
+ * The prefix is sanitized first (sanitizeCheckpointPrefix) — an orphan user
+ * tail or a regenerate's double agent turn would break strict role
+ * alternation against the window's leading user message. Pure: no prefix (or
+ * nothing surviving sanitization) → the window is returned unchanged. The
+ * prefix is fixed for the slice's whole life, so the request prefix keeps
+ * growing append-only across a time_cap/capacity checkpoint boundary.
+ *
+ * Fallback-window dedup: when the client history was too short to cover the
+ * slice's turns, sliceAlignedWindow degrades to EVERYTHING given — which
+ * includes the previous slice's tail, i.e. exactly what the prefix already
+ * carries. Sending both would show the model the same exchange twice. The
+ * window is scanned for the prefix's messages as an ORDERED SUBSEQUENCE
+ * (matched by role + content) and the duplicates are dropped. Ordered
+ * matching keeps false positives negligible: a legitimately repeated "ok" in
+ * the current slice is only dropped when the ENTIRE prefix sequence replays
+ * in order — which is precisely the duplicated-tail case.
+ */
+export function withCheckpointPrefix(
+  window: ModelMessage[],
+  contextPrefix?: ModelMessage[],
+): ModelMessage[] {
+  const prefix = contextPrefix ? sanitizeCheckpointPrefix(contextPrefix) : [];
+  if (prefix.length === 0) return window;
+  let p = 0; // next prefix message awaiting its duplicate in the window
+  const deduped = window.filter((m) => {
+    if (p < prefix.length && messageKey(m) === messageKey(prefix[p])) {
+      p++;
+      return false; // already carried by the prefix — drop the duplicate
+    }
+    return true;
+  });
+  return [...prefix, ...deduped];
+}
+
+/** Stable identity for dedup matching: role + serialized content. */
+function messageKey(m: ModelMessage): string {
+  return `${m.role}:${typeof m.content === "string" ? m.content : JSON.stringify(m.content)}`;
+}
+
+/**
  * Cut the slice-aligned history window from the client's message history.
  *
  * The client remains the source of conversation history, but the model only
@@ -462,6 +536,31 @@ export function sliceAlignedWindow(
   return windowed;
 }
 
+/**
+ * The turn's history window: slice-aligned (plus checkpoint carry-over) for
+ * real deployments, the FULL client history in demo mode. Demo writes are
+ * no-ops (writeFileDemo), so housekeeping can never recover the previous
+ * turn's slice — every turn would mint a fresh one, `userTurnsInSlice` would
+ * be 1, and sliceAlignedWindow would shrink to just the current user message:
+ * the demo visitor's model would see no conversation history at all. Demo is
+ * a read-only preview whose only conversation truth is the client history, so
+ * slice alignment is skipped there (and nothing is persisted either way).
+ * Pure — extracted for unit tests.
+ */
+export function buildHistoryWindow(opts: {
+  modelMessages: ModelMessage[];
+  userTurnsInSlice: number;
+  maxMessages: number;
+  contextPrefix?: ModelMessage[];
+  useDemo?: boolean;
+}): ModelMessage[] {
+  if (opts.useDemo) return opts.modelMessages;
+  return withCheckpointPrefix(
+    sliceAlignedWindow(opts.modelMessages, opts.userTurnsInSlice, opts.maxMessages),
+    opts.contextPrefix,
+  );
+}
+
 // ─── Bridge mode — notice + fresh-time injection ─────────────────────────
 
 /**
@@ -503,6 +602,14 @@ export function buildBridgeTimeLine(opts: {
   maxSliceMinutes: number;
   timezone: string;
   nowIso: string;
+  /**
+   * When provided, the closing hint also names the idle-gap close (silence of
+   * this many minutes ends the slice EARLIER than the cap — v0.9.1: the hint
+   * used to quote only the time_cap remainder, promising time the idle gap
+   * would not grant). The idle timer resets on every message, so it is
+   * phrased as a silence threshold, not a countdown.
+   */
+  idleGapMinutes?: number;
 }): string {
   const t = formatLocalTime(opts.nowIso, opts.timezone);
   const offset = t.offset ? `, ${t.offset}` : "";
@@ -516,7 +623,12 @@ export function buildBridgeTimeLine(opts: {
     if (!Number.isNaN(startMs) && !Number.isNaN(nowMs)) {
       const elapsedMin = Math.max(0, Math.floor((nowMs - startMs) / 60_000));
       const remaining = opts.maxSliceMinutes - elapsedMin;
-      if (remaining > 0) line += `; slice closes in ~${remaining} min`;
+      if (remaining > 0) {
+        line += `; slice closes in ~${remaining} min`;
+        if (opts.idleGapMinutes !== undefined) {
+          line += ` at the latest, or after ~${opts.idleGapMinutes} min of silence`;
+        }
+      }
     }
   }
   return line + "]";
@@ -559,6 +671,11 @@ export function appendBridgeTimeSuffix(
  *   L0 identityPrompt  — SOUL + "who you're assisting" + DIRECTIVES
  *   L1 previously card — annotated relative to the SLICE-HEAD date; changes
  *                        only when an evolution rewrites the card
+ *   L1b directionBlock — the evolved user portrait + hypotheses (direction.md);
+ *                        changes when an evolution run lands a new direction —
+ *                        including mid-slice (the next turn then sees the fresh
+ *                        direction; the prefix-cache drift on those turns is
+ *                        accepted deliberately)
  *   L2 static rules    — the fixed card/tooling conventions below
  *   L2b overdueBlock   — Horizon items past their `by` date, derived from the
  *                        RAW card + the slice-head local date: both frozen, so
@@ -585,6 +702,13 @@ export function assembleSystemPrompt(opts: {
   identityPrompt: string;
   /** The user card (previously.md) — changes only on evolution. */
   previouslyContent: string;
+  /**
+   * Pre-built direction layer (L1b — the evolved user portrait + hypotheses,
+   * hypotheses explicitly marked UNVERIFIED GUESSES), from
+   * buildDirectionBlock in src/lib/evolution/direction-agent.ts; ""/undefined
+   * omits the layer entirely.
+   */
+  directionBlock?: string;
   /** Frozen slice-head snapshot block (L3), from buildSliceHeadBlock. */
   sliceHeadBlock: string;
   /** Pre-built frozen "## Timeline (recent)…" pointer block, or "" to omit. */
@@ -607,6 +731,7 @@ export function assembleSystemPrompt(opts: {
   const {
     identityPrompt,
     previouslyContent,
+    directionBlock,
     sliceHeadBlock,
     timelineBrief,
     strandsBlock,
@@ -617,9 +742,10 @@ export function assembleSystemPrompt(opts: {
   } = opts;
   return [
     identityPrompt,
-    `## What I know about the user (inference model — ${dateAnchor})`,
+    `## What I know about the user — the living recap (${dateAnchor})`,
     previouslyContent,
-    "The above is the current profile and operating model — distilled hypotheses, each carrying `refs` to its evidence. If any line seems outdated or contradicts what the user just said, cite its refs and say so; the correction flows into the archive. Every `refs` pointer is a drill-down entry: verify it through recall (or open the referenced slice with readSlice) before citing specifics from a past event — the card answers WHO the user is, not what was said.",
+    directionBlock ?? "",
+    "The recap above holds WHAT the user did, is doing, and plans — facts, states, commitments; when a direction layer follows it, that is the evolved user model — WHO the user is (a verified portrait plus explicitly-marked guesses). Every entry carries `refs` to its evidence: if a line seems outdated or contradicts what the user just said, cite its refs and say so — the correction flows into the archive. Each `refs` pointer is a drill-down entry: verify it through recall (or open the referenced slice with readSlice) before citing specifics from a past event — the recap says what happened, not what was said.",
     "GROUNDING RULE — never answer the past from a summary. Everything this prompt says about the past (this card, the timeline one-liners below) is a distilled POINTER, not the event itself; a summary paraphrased as fact is a hallucination in waiting. Before you assert any specific about a past conversation — what was said, decided, promised, felt — the original must already be in THIS conversation: a recall answer from earlier this conversation (its references count), or slice text you opened yourself with readSlice this conversation. With neither at hand, call recall FIRST (or readSlice when you already hold the exact slice id), then answer. Exempt: what the user just said in this conversation, and the slice you are currently in.",
     overdueBlock,
     sliceHeadBlock,
@@ -670,7 +796,9 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
     strandsMenu,
     sliceHeadBlock,
     identityPrompt,
+    directionBlock,
     timelineBrief,
+    contextPrefix,
   } = await housekeeping(input);
 
   // ── Assemble system prompt ──────────────────────────────────────────────
@@ -696,6 +824,10 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
       input.clientTimezone,
       input.locale,
     ),
+    // L1b — the evolved user portrait + hypotheses, read in housekeeping this
+    // turn (post-evolution), so a direction landed mid-slice is what the NEXT
+    // turn sees. Within a slice without an evolution it is byte-stable.
+    directionBlock: directionBlock ?? "",
     sliceHeadBlock,
     timelineBrief: timelineBrief
       ? `${timelineBrief}\nTimeline lines are pointers — if a line looks relevant, ask recall about it (a natural-language question) before answering from it.`
@@ -728,18 +860,27 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
   // The client still supplies the history, but the model only receives the
   // CURRENT slice's turns: N user turns in the slice → the tail of the client
   // history covering those N user messages. A fresh slice (just closed /
-  // first turn) sends only the current user message. Within a slice the
-  // prefix grows append-only, keeping the provider cache warm; context_lost
-  // mismatches were already handled by housekeeping (a new slice → N = 1).
+  // first turn) sends only the current user message — UNLESS the slice
+  // continues a checkpointed one (continuesFrom from a time_cap/capacity
+  // close): then the previous slice's frozen tail (contextPrefix, read
+  // server-side by housekeeping) is prepended, so the same conversation
+  // continues seamlessly. Within a slice the prefix grows append-only,
+  // keeping the provider cache warm; context_lost/idle_gap mismatches were
+  // already handled by housekeeping (a new slice → N = 1, no carry-over).
   const userTurnsInSlice = slice.turns.filter((t) => t.role === "user").length;
-  const historyWindow = sliceAlignedWindow(
-    input.modelMessages,
+  const historyWindow = buildHistoryWindow({
+    modelMessages: input.modelMessages,
     userTurnsInSlice,
-    input.config.slicing.maxTurnsPerSlice * 2,
-  );
+    maxMessages: input.config.slicing.maxTurnsPerSlice * 2,
+    contextPrefix,
+    // Demo writes never land (demo-fs no-ops), so no active slice survives
+    // between turns — aligning to the always-fresh slice would send only the
+    // current user message. Demo sends the full client history instead.
+    useDemo: input.useDemo,
+  });
   if (historyWindow.length !== input.modelMessages.length) {
     console.log(
-      `[Turn:${input.turnId}] history window: ${historyWindow.length}/${input.modelMessages.length} messages (slice ${slice.slice_id}, ${userTurnsInSlice} user turns)`,
+      `[Turn:${input.turnId}] history window: ${historyWindow.length}/${input.modelMessages.length} messages (slice ${slice.slice_id}, ${userTurnsInSlice} user turns${contextPrefix ? `, +${contextPrefix.length} carried` : ""})`,
     );
   }
 
@@ -870,6 +1011,7 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
             buildBridgeTimeLine({
               sliceId: slice.slice_id,
               maxSliceMinutes: input.config.slicing.maxSliceMinutes,
+              idleGapMinutes: input.config.slicing.idleGapMinutes,
               timezone: input.clientTimezone,
               nowIso: input.startedAtIso,
             }),
