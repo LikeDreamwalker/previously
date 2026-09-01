@@ -47,19 +47,12 @@ vi.mock("@/lib/episodic", () => ({
 }));
 
 // The card-evolution archive path must not touch the real memory/evolution/
-// files from tests — mock the store read + the append-only archive write.
+// files from tests — mock the append-only fossil archive write.
 const evolutionArchive = vi.hoisted(() => ({
-  appendMutationWithEvaluation: vi.fn(async () => ({
-    evaluatedPreviousTs: null as string | null,
-    markedIneffective: false,
-  })),
-  readFitness: vi.fn(async () => ({ events: [], signals: [] })),
-}));
-vi.mock("@/lib/evolution/acceptance", () => ({
-  appendMutationWithEvaluation: evolutionArchive.appendMutationWithEvaluation,
+  appendMutation: vi.fn(async () => {}),
 }));
 vi.mock("@/lib/evolution/store", () => ({
-  readFitness: evolutionArchive.readFitness,
+  appendMutation: evolutionArchive.appendMutation,
 }));
 
 const runBridgeMock = vi.mocked(runBridge);
@@ -723,22 +716,21 @@ describe("applyBridgeCardEvolution", () => {
     expect(res.summary).toBe("A durable interview commitment was stated.");
     expect(writeCurrentMock).toHaveBeenCalledOnce();
     expect(writeSliceMock).toHaveBeenCalledWith(SLICE, expect.any(String), undefined);
-    // v1.0 §2.7 — the bridge write-back enters the same mutation archive as
+    // v1.0 §2.7 — the bridge write-back enters the same fossil archive as
     // the sub-agent path, with the slice id + reason as its evidence trail.
-    expect(evolutionArchive.appendMutationWithEvaluation).toHaveBeenCalledOnce();
-    expect(evolutionArchive.appendMutationWithEvaluation).toHaveBeenCalledWith(
+    expect(evolutionArchive.appendMutation).toHaveBeenCalledOnce();
+    expect(evolutionArchive.appendMutation).toHaveBeenCalledWith(
       expect.objectContaining({
         target: "card",
         evidence: [SLICE, "A durable interview commitment was stated."],
         expectedBenefit: "A durable interview commitment was stated.",
       }),
-      expect.anything(),
       undefined,
     );
   });
 
   it("never eats the landed card write when the archive write fails", async () => {
-    evolutionArchive.appendMutationWithEvaluation.mockRejectedValueOnce(
+    evolutionArchive.appendMutation.mockRejectedValueOnce(
       new Error("disk blew up"),
     );
     const res = await applyBridgeCardEvolution({
@@ -765,6 +757,6 @@ describe("applyBridgeCardEvolution", () => {
     expect(res.note).toContain("rejected by validation");
     expect(writeCurrentMock).not.toHaveBeenCalled();
     expect(writeSliceMock).not.toHaveBeenCalled();
-    expect(evolutionArchive.appendMutationWithEvaluation).not.toHaveBeenCalled();
+    expect(evolutionArchive.appendMutation).not.toHaveBeenCalled();
   });
 });

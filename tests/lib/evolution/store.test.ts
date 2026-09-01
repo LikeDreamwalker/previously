@@ -1,7 +1,8 @@
 /**
  * Tests for the evolution data layer store (src/lib/evolution/store.ts):
- * the structural evidence-anchoring invariant, window net-score math, bounded
- * retention, the mutation archive format, and missing-file tolerance.
+ * the structural evidence-anchoring invariant, generation net-score math,
+ * the generation settle, bounded retention, the mutation archive format,
+ * and missing-file tolerance.
  *
  * Same harness as tests/lib/episodic/batch-mode.test.ts: a temp cwd +
  * STORAGE=local so all I/O lands on the local filesystem backend.
@@ -145,58 +146,74 @@ describe("appendFitnessEvents evidence invariant", () => {
   });
 });
 
-// ── Window net-score math ────────────────────────────────────────────────
+// ── Generation net-score math ─────────────────────────────────────────────
 
 describe("bucketNetScore", () => {
-  it("nets a bucket over the newest N distinct slices", async () => {
+  it("nets a bucket over the whole store (the current generation)", async () => {
     const { bucketNetScore } = await importFresh();
     const store = {
       signals: [],
       directionRejections: [],
       events: [
-        // slice A (oldest)
         { ts: "t1", sliceId: "A", bucket: "recall" as const, delta: -2 as const, evidence: "x" },
         { ts: "t2", sliceId: "A", bucket: "card" as const, delta: 1 as const, evidence: "x" },
-        // slice B
         { ts: "t3", sliceId: "B", bucket: "recall" as const, delta: -1 as const, evidence: "x" },
-        // slice C (newest)
         { ts: "t4", sliceId: "C", bucket: "recall" as const, delta: 1 as const, evidence: "x" },
       ],
     };
-    // Full window: recall = -2 + -1 + 1 = -2; card = +1.
+    // recall = -2 + -1 + 1 = -2; card = +1; untouched buckets net 0.
     expect(bucketNetScore(store, "recall")).toBe(-2);
     expect(bucketNetScore(store, "card")).toBe(1);
     expect(bucketNetScore(store, "search")).toBe(0);
-    // Window of the 2 newest slices (B, C) drops slice A's -2: recall = 0.
-    expect(bucketNetScore(store, "recall", 2)).toBe(0);
-    // Window of 1 newest slice (C): recall = +1.
-    expect(bucketNetScore(store, "recall", 1)).toBe(1);
   });
 });
 
-// ── Since-window net-score (effectiveness window, design §2.7) ────────────
+// ── Generation settle (v0.9.2) ─────────────────────────────────────────────
 
-describe("bucketNetScoreSince", () => {
-  it("nets a bucket over events strictly NEWER than the cutoff timestamp", async () => {
-    const { bucketNetScoreSince } = await importFresh();
-    const store = {
+describe("resetFitnessGeneration", () => {
+  it("clears events and signals, keeps the direction-rejection backoff", async () => {
+    const store = await importFresh();
+    await store.appendFitnessEvents([
+      { ts: "t1", sliceId: "A", bucket: "recall", delta: -2, evidence: "x" },
+      { ts: "t2", sliceId: "A", bucket: "card", delta: -1, evidence: "y" },
+    ]);
+    await store.appendSignal({
+      ts: "t3",
+      sliceId: "A",
+      type: "interaction_interrupt",
+      detail: "user interrupted the turn mid-stream",
+    });
+    await store.recordDirectionRejection("slice-with-rejection");
+
+    await store.resetFitnessGeneration();
+
+    expect(await store.readFitness()).toEqual({
+      events: [],
       signals: [],
-      directionRejections: [],
-      events: [
-        { ts: "2026-08-20T10:00:00Z", sliceId: "A", bucket: "recall" as const, delta: -2 as const, evidence: "x" },
-        { ts: "2026-08-22T10:00:00Z", sliceId: "B", bucket: "recall" as const, delta: -1 as const, evidence: "x" },
-        { ts: "2026-08-22T11:00:00Z", sliceId: "B", bucket: "card" as const, delta: -1 as const, evidence: "x" },
-        { ts: "2026-08-24T10:00:00Z", sliceId: "C", bucket: "recall" as const, delta: 1 as const, evidence: "x" },
-      ],
-    };
-    // Since before everything: all recall events = -2.
-    expect(bucketNetScoreSince(store, "recall", "2026-08-19T00:00:00Z")).toBe(-2);
-    // Since between the recall events: -1 + 1 = 0 (other buckets never count).
-    expect(bucketNetScoreSince(store, "recall", "2026-08-21T00:00:00Z")).toBe(0);
-    // Strictly newer: the event AT the cutoff is excluded.
-    expect(bucketNetScoreSince(store, "recall", "2026-08-22T10:00:00Z")).toBe(1);
-    // After everything: 0.
-    expect(bucketNetScoreSince(store, "recall", "2026-08-25T00:00:00Z")).toBe(0);
+      directionRejections: ["slice-with-rejection"],
+    });
+  });
+
+  it("is a no-op on an already-empty generation (no write, no error)", async () => {
+    const store = await importFresh();
+    await store.resetFitnessGeneration();
+    expect(readOnDisk("memory/evolution/fitness.json")).toBeNull();
+  });
+
+  it("the next generation re-accumulates from zero", async () => {
+    const store = await importFresh();
+    await store.appendFitnessEvents([
+      { ts: "t1", sliceId: "A", bucket: "interaction", delta: -2, evidence: "x" },
+      { ts: "t2", sliceId: "B", bucket: "interaction", delta: -2, evidence: "y" },
+      { ts: "t3", sliceId: "C", bucket: "interaction", delta: -1, evidence: "z" },
+    ]);
+    await store.resetFitnessGeneration();
+    await store.appendFitnessEvents([
+      { ts: "t4", sliceId: "D", bucket: "interaction", delta: -1, evidence: "fresh" },
+    ]);
+    const { events } = await store.readFitness();
+    expect(events).toHaveLength(1);
+    expect(store.bucketNetScore({ events, signals: [], directionRejections: [] }, "interaction")).toBe(-1);
   });
 });
 

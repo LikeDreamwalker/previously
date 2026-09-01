@@ -12,8 +12,7 @@ import {
   writeCurrentPreviously,
   writePreviously,
 } from "@/lib/episodic";
-import { writeDirection, readMutations } from "@/lib/evolution/store";
-import { appendMutationWithEvaluation } from "@/lib/evolution/acceptance";
+import { writeDirection, appendMutation } from "@/lib/evolution/store";
 import {
   newCardTemplate,
   serializeCard,
@@ -28,36 +27,21 @@ vi.mock("@/lib/episodic", () => ({
   writeCurrentPreviously: vi.fn(),
   writePreviously: vi.fn(),
 }));
-// The v1.0 mutation-archive boundary (fitness store / playbook write /
-// acceptance archive) is mocked so the tests stay hermetic — the real modules
-// would read/write memory/evolution/ on the local fs.
+// The v1.0 mutation-archive boundary (playbook write / fossil archive) is
+// mocked so the tests stay hermetic — the real modules would read/write
+// memory/evolution/ on the local fs.
 vi.mock("@/lib/evolution/store", () => ({
-  readFitness: vi.fn(async () => ({ events: [], signals: [] })),
-  readMutations: vi.fn(async (): Promise<string | null> => null),
+  appendMutation: vi.fn(async () => {}),
   writeDirection: vi.fn(async () => {}),
   writePlaybook: vi.fn(async () => {}),
 }));
-vi.mock("@/lib/evolution/acceptance", async () => {
-  const actual =
-    await vi.importActual<typeof import("@/lib/evolution/acceptance")>(
-      "@/lib/evolution/acceptance",
-    );
-  return {
-    ...actual, // mutationTrackRecord stays the real pure parser
-    appendMutationWithEvaluation: vi.fn(async () => ({
-      evaluatedPreviousTs: null,
-      markedIneffective: false,
-      markedEffective: false,
-    })),
-  };
-});
 
 const runPreviouslyAgentMock = vi.mocked(runPreviouslyAgent);
 const readMock = vi.mocked(readCurrentPreviously);
 const writeCurrentMock = vi.mocked(writeCurrentPreviously);
 const writeSliceMock = vi.mocked(writePreviously);
 const writeDirectionMock = vi.mocked(writeDirection);
-const appendMutationMock = vi.mocked(appendMutationWithEvaluation);
+const appendMutationMock = vi.mocked(appendMutation);
 
 const MODEL = {
   id: "deepseek-v4-flash",
@@ -197,39 +181,22 @@ describe("write-back rules", () => {
     expect(res.playbooks).toBeUndefined();
   });
 
-  it("feeds the mutation track-record line into the agent's input (omitted when the archive is empty)", async () => {
-    const readMutationsMock = vi.mocked(readMutations);
+  it("archives an accepted card mutation as a bare fossil record (no cross-generation evaluation, v0.9.2)", async () => {
     runPreviouslyAgentMock.mockResolvedValue({
-      updatedCard: BASE,
-      reasoning: "nothing new",
-      summary: "",
-      mutations: [],
+      updatedCard: CHANGED,
+      reasoning: "folded new identity fact",
+      summary: "identity updated",
+      mutations: ["addNow: prepping the friday interview"],
     });
-    // No archive yet → the line is omitted entirely.
     await runCardEvolution(baseInput());
-    expect(
-      runPreviouslyAgentMock.mock.calls[0][0].mutationTrackRecord,
-    ).toBeUndefined();
-
-    // An archive with one ineffective evaluation + one fresh record → the
-    // rendered tally rides the next run's input.
-    readMutationsMock.mockResolvedValue(
-      [
-        "## 2026-08-20T10:00:00.000Z — card",
-        "",
-        "- **Summary:** first",
-        "",
-        "- **Evaluation: ineffective** — 2026-08-20T10:00:00.000Z card: the card bucket kept scoring negative after this mutation (net -1 since).",
-        "",
-        "## 2026-08-22T10:00:00.000Z — card",
-        "",
-        "- **Summary:** second",
-      ].join("\n"),
+    expect(appendMutationMock).toHaveBeenCalledWith(
+      expect.objectContaining({ target: "card" }),
+      undefined,
     );
-    await runCardEvolution(baseInput());
-    expect(runPreviouslyAgentMock.mock.calls[1][0].mutationTrackRecord).toBe(
-      "Your mutation track record: 0 effective / 1 ineffective / 1 unevaluated",
-    );
+    // The record shape carries no evaluation fields — the archive is a
+    // fossil record, never a scoreboard.
+    const record = appendMutationMock.mock.calls[0][0];
+    expect(record).not.toHaveProperty("evaluation");
   });
 });
 
@@ -295,7 +262,6 @@ describe("the merged direction half (v1.1)", () => {
         summary: "First direction: concreteness",
         expectedBenefit: "Fewer vague answers",
       }),
-      expect.anything(),
       undefined,
     );
   });

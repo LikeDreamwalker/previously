@@ -70,8 +70,7 @@ import type { WriteBatch } from "@/lib/episodic/io-helpers";
 import type { TurnAnalysis, TurnIntent } from "@/lib/episodic/flash/turn-analyzer";
 import type { EmotionalTone } from "@/lib/episodic/types";
 import type { EvolutionResult } from "@/lib/chat/turn-types";
-import { readFitness, type FitnessSignal } from "@/lib/evolution/store";
-import { appendMutationWithEvaluation } from "@/lib/evolution/acceptance";
+import { appendMutation, type FitnessSignal } from "@/lib/evolution/store";
 
 // ─── Gate ──────────────────────────────────────────────────────────────────
 
@@ -881,14 +880,12 @@ export async function applyBridgeCardEvolution(input: {
   await writePreviously(input.sliceId, applied.card, input.batch);
 
   // v1.0 §2.7 — bridge-originated card mutations enter the SAME append-only
-  // archive (with the previous-mutation effectiveness evaluation) as the
-  // sub-agent path; the archive is the acceptance rule's only record, so
-  // skipping it here would silently blind the card target's effectiveness
-  // window. Best-effort: an archive failure must never eat the landed write.
+  // fossil record as the sub-agent path; skipping it here would silently
+  // blind the archive to a whole class of landed mutations. Best-effort: an
+  // archive failure must never eat the landed write.
   const reason = input.reason.trim();
   try {
-    const fitnessStore = await readFitness(input.batch);
-    await appendMutationWithEvaluation(
+    await appendMutation(
       {
         ts: new Date().toISOString(),
         target: "card",
@@ -896,7 +893,6 @@ export async function applyBridgeCardEvolution(input: {
         evidence: reason ? [input.sliceId, reason] : [input.sliceId],
         expectedBenefit: reason || "(none given)",
       },
-      fitnessStore,
       input.batch,
     );
   } catch (e) {

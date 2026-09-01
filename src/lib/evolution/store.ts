@@ -1,8 +1,8 @@
 /**
  * Typed I/O over the evolution data files (v1.0 design §2.2–§2.7) — the STORE
- * half. The analyzer scores (turn-analyzer.ts), the evolution agent mutates
- * (previously-agent.ts / direction-agent.ts), and the acceptance-rule
- * orchestration lives in ./acceptance.ts; this module only guarantees the
+ * half. The analyzer scores (turn-analyzer.ts), the trigger math aggregates
+ * (triggers.ts), and the evolution agent mutates (previously-agent.ts /
+ * direction-agent.ts); this module only guarantees the
  * data layer is safe to build on:
  *
  *   - All reads/writes route through io-helpers (fsReadFile / fsWriteFile), so
@@ -253,8 +253,9 @@ async function writeFitness(
   store: FitnessStore,
   batch?: WriteBatch,
 ): Promise<void> {
-  // Keep the newest entries — the tail is what the sliding-window aggregation
-  // (bucketNetScore) and the analyzer actually read.
+  // Keep the newest entries — the tail is what the generation aggregation
+  // (bucketNetScore) and the analyzer actually read. (Generations keep the
+  // store small by design; the caps are a pure safety valve.)
   const bounded: FitnessStore = {
     events: store.events.slice(-MAX_FITNESS_EVENTS),
     signals: store.signals.slice(-MAX_FITNESS_SIGNALS),
@@ -295,6 +296,26 @@ export async function appendSignal(
 }
 
 /**
+ * Settle the current generation (v0.9.2): a SUCCESSFUL evolution run has
+ * responded to everything the store was holding — the outcome already
+ * sedimented into the card / direction / playbooks, so the scored events
+ * and mechanical signals that produced it are spent and cleared. Every
+ * bucket re-accumulates from zero; there is deliberately no cross-generation
+ * bookkeeping (evolution has no direction — nothing is judged against its
+ * predecessor and nothing rolls back). directionRejections survive: they are
+ * a per-slice UI backoff, not selection pressure. Never demo-reachable —
+ * housekeeping's evolution block is skipped entirely in demo mode.
+ */
+export async function resetFitnessGeneration(batch?: WriteBatch): Promise<void> {
+  const store = await readFitness(batch);
+  if (store.events.length === 0 && store.signals.length === 0) return;
+  await writeFitness(
+    { events: [], signals: [], directionRejections: store.directionRejections },
+    batch,
+  );
+}
+
+/**
  * Record that this slice's direction proposal was REJECTED by validation —
  * the per-slice backoff for the migrate/bootstrap gate (see the
  * directionRejections field). Idempotent per slice. Never demo-reachable:
@@ -317,43 +338,20 @@ export async function readRecentSignals(n: number): Promise<FitnessSignal[]> {
 }
 
 /**
- * Net score for one bucket over the newest `windowSlices` DISTINCT slices
- * (design §2.5: the sliding-window aggregation lives in CODE, deterministic;
- * the LLM only ever produces single evidence-anchored deltas). Pure — takes
- * the store, never reads it.
+ * Net score for one bucket over the CURRENT GENERATION (design §2.5: the
+ * aggregation lives in CODE, deterministic; the LLM only ever produces
+ * single evidence-anchored deltas). Every event in the store is
+ * current-generation by construction — a successful evolution run settles
+ * the store (resetFitnessGeneration), so there is no window to compute.
+ * Pure — takes the store, never reads it.
  */
 export function bucketNetScore(
   store: FitnessStore,
   bucket: FitnessBucket,
-  windowSlices = 10,
-): number {
-  // The window is defined over ALL events (recency is a property of the
-  // slices, not of one bucket), then the sum is bucket-filtered.
-  const window = new Set<string>();
-  for (let i = store.events.length - 1; i >= 0 && window.size < windowSlices; i--) {
-    window.add(store.events[i].sliceId);
-  }
-  let net = 0;
-  for (const e of store.events) {
-    if (e.bucket === bucket && window.has(e.sliceId)) net += e.delta;
-  }
-  return net;
-}
-
-/**
- * Net score for one bucket over the events STRICTLY NEWER than `sinceTs`
- * (design §2.7 — the effectiveness window: did the bucket keep losing points
- * after a mutation landed?). ISO timestamps compare lexicographically. Pure —
- * takes the store, never reads it.
- */
-export function bucketNetScoreSince(
-  store: FitnessStore,
-  bucket: FitnessBucket,
-  sinceTs: string,
 ): number {
   let net = 0;
   for (const e of store.events) {
-    if (e.bucket === bucket && e.ts > sinceTs) net += e.delta;
+    if (e.bucket === bucket) net += e.delta;
   }
   return net;
 }
@@ -371,8 +369,9 @@ export type MutationTarget =
 /**
  * One accepted mutation, archived append-only. Every mutation must carry its
  * expected benefit and evidence pointers (design §2.7); there is no automatic
- * rollback, cooldown, or mutation budget — an ineffective mutation is marked
- * in the log later, never deleted.
+ * rollback, no cooldown, no mutation budget — and (v0.9.2) no cross-generation
+ * EVALUATION either: the archive is a fossil record, not a scoreboard.
+ * Evolution has no direction, so a later mutation never judges an earlier one.
  */
 export interface MutationRecord {
   ts: string;
@@ -384,11 +383,12 @@ export interface MutationRecord {
 
 const MUTATIONS_HEADER = `# Mutations Archive
 
-Log of accepted evolution mutations (design v1.0 §2.7). No automatic rollback,
-no cooldown, no mutation budget — a mutation that proves ineffective is marked
-\`ineffective\` here later. Bounded (v0.9.1): the archive keeps the newest
-100 records; older ones are retired on write to keep the file (and every
-full read of it) bounded.
+Fossil record of accepted evolution mutations (design v1.0 §2.7) — what
+changed, when, and why. No automatic rollback, no cooldown, no mutation
+budget, and (v0.9.2) no cross-generation verdicts: evolution has no
+direction, so a later mutation never judges an earlier one. Bounded (v0.9.1):
+the archive keeps the newest 100 records; older ones are retired on write to
+keep the file (and every full read of it) bounded.
 `;
 
 /**
@@ -401,10 +401,8 @@ export const MAX_MUTATION_RECORDS = 100;
 
 /**
  * Keep the header + the newest MAX_MUTATION_RECORDS record blocks, dropping
- * the oldest. A record block runs from its `## {ts} — {target}` heading to the
- * next heading; interstitial evaluation lines travel with the block they
- * follow, so a trim boundary can drop an evaluation line whose subject block
- * survives (or vice versa) — the track record tolerates that drift. Pure.
+ * the oldest. A record block runs from its `## {ts} — {target}` heading to
+ * the next heading. Pure.
  */
 export function trimMutationArchive(content: string): string {
   const lines = content.split("\n");

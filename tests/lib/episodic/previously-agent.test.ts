@@ -289,37 +289,6 @@ describe("writePlaybook — the v1.0 playbook mutation gate", () => {
     expect(opts.system).not.toContain("Triggered buckets");
     expect(opts.system).not.toContain("Keep answers concrete.");
   });
-
-  it("the mutation track-record line rides the USER prompt when provided — the loop's honesty feedback", async () => {
-    runSubAgentMock.mockResolvedValue({
-      ok: true,
-      report: { reasoning: "nothing", summary: "" },
-      text: "",
-    });
-    await runPreviouslyAgent(
-      baseInput({
-        mutationTrackRecord:
-          "Your mutation track record: 1 effective / 2 ineffective / 3 unevaluated",
-      }),
-    );
-    const opts = runSubAgentMock.mock.calls[0][0];
-    expect(opts.prompt).toContain(
-      "Your mutation track record: 1 effective / 2 ineffective / 3 unevaluated",
-    );
-    expect(opts.system).not.toContain("mutation track record");
-  });
-
-  it("omits the track-record line when no mutation has ever been archived", async () => {
-    runSubAgentMock.mockResolvedValue({
-      ok: true,
-      report: { reasoning: "nothing", summary: "" },
-      text: "",
-    });
-    await runPreviouslyAgent(baseInput());
-    expect(runSubAgentMock.mock.calls[0][0].prompt).not.toContain(
-      "mutation track record",
-    );
-  });
 });
 
 describe("the merged direction half (directionEval)", () => {

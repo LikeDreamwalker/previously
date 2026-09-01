@@ -129,23 +129,20 @@ vi.mock("@/lib/episodic/rework-signal", () => interactionSignal);vi.mock("@/lib/
 }));
 
 // The v1.0 evolution loop (fitness store / triggers / direction validation /
-// acceptance archive) is mocked at its module boundaries so the step tests
+// fossil archive) is mocked at its module boundaries so the step tests
 // stay hermetic — the real modules would read/write memory/evolution/ on the
 // local fs.
 const evolutionLoop = vi.hoisted(() => ({
   computeEvolutionTriggers: vi.fn((): Array<{ bucket: string; reason: string }> => []),
   validateDirectionProposal: vi.fn(() => ({ ok: true as const })),
-  appendMutationWithEvaluation: vi.fn(async () => ({
-    evaluatedPreviousTs: null,
-    markedIneffective: false,
-  })),
   store: {
     appendFitnessEvents: vi.fn(
       async (_events: unknown[], _batch?: unknown) => {},
     ),
+    appendMutation: vi.fn(async (_record: unknown, _batch?: unknown) => {}),
     appendSignal: vi.fn(async (_signal: unknown, _batch?: unknown) => {}),
     bucketNetScore: vi.fn(
-      (_store: unknown, _bucket: string, _window?: number) => -4,
+      (_store: unknown, _bucket: string) => -4,
     ),
     emptyFitnessStore: () => ({
       events: [],
@@ -167,6 +164,7 @@ const evolutionLoop = vi.hoisted(() => ({
     ),
     readRecentSignals: vi.fn(async () => []),
     recordDirectionRejection: vi.fn(async () => {}),
+    resetFitnessGeneration: vi.fn(async (_batch?: unknown) => {}),
     writeDirection: vi.fn(async () => {}),
   },
   /* Pure mirrors of the direction-agent helpers (template → bootstrap; the old
@@ -204,7 +202,6 @@ const evolutionLoop = vi.hoisted(() => ({
 }));
 vi.mock("@/lib/evolution/triggers", () => ({
   computeEvolutionTriggers: evolutionLoop.computeEvolutionTriggers,
-  EVOLVE_WINDOW_SLICES: 10,
 }));
 vi.mock("@/lib/evolution/direction-agent", () => ({
   DIRECTION_RECENT_EVENTS: 30,
@@ -213,9 +210,6 @@ vi.mock("@/lib/evolution/direction-agent", () => ({
   detectDirectionMode: evolutionLoop.detectDirectionMode,
   extractDirectionSection: evolutionLoop.extractDirectionSection,
   validateDirectionProposal: evolutionLoop.validateDirectionProposal,
-}));
-vi.mock("@/lib/evolution/acceptance", () => ({
-  appendMutationWithEvaluation: evolutionLoop.appendMutationWithEvaluation,
 }));
 vi.mock("@/lib/evolution/store", () => evolutionLoop.store);
 
@@ -805,8 +799,9 @@ describe("housekeeping boundary evolution gating", () => {
     evolutionLoop.store.readDirection.mockResolvedValue(
       "# Portrait\n\nThe user prefers concrete answers.\n\n# Hypotheses\n\n# Evidence\n\n# Log",
     );
+    evolutionLoop.store.resetFitnessGeneration.mockClear();
     evolutionLoop.computeEvolutionTriggers.mockReturnValue([
-      { bucket: "recall", reason: "net -3" },
+      { bucket: "recall", reason: "net -5" },
     ]);
     evolution.runCardEvolution.mockImplementationOnce(async (input) => {
       expect(input.directionEval?.current).toContain("# Portrait");
@@ -826,10 +821,33 @@ describe("housekeeping boundary evolution gating", () => {
       // The direction write-back lives INSIDE runCardEvolution now — the step
       // never touches writeDirection / the archive itself on this path.
       expect(evolutionLoop.store.writeDirection).not.toHaveBeenCalled();
-      expect(evolutionLoop.appendMutationWithEvaluation).not.toHaveBeenCalled();
+      expect(evolutionLoop.store.appendMutation).not.toHaveBeenCalled();
+      // A successful FITNESS-TRIGGERED run settles the generation (v0.9.2).
+      expect(evolutionLoop.store.resetFitnessGeneration).toHaveBeenCalledOnce();
     } finally {
       evolutionLoop.store.readDirection.mockResolvedValue(null);
       evolutionLoop.computeEvolutionTriggers.mockReturnValue([]);
+      evolutionLoop.store.resetFitnessGeneration.mockClear();
+    }
+  });
+
+  it("an analyzer-gated run WITHOUT fitness triggers does NOT settle the generation (it never saw the pressure)", async () => {
+    setupClosingSlice();
+    evolutionLoop.store.resetFitnessGeneration.mockClear();
+    mockAnalysis({ worth: true, reason: "durable" }); // card gate ON, triggers empty
+    evolution.runCardEvolution.mockResolvedValueOnce({
+      ran: true,
+      changed: true,
+      droppedRecent: 0,
+      note: "evolved",
+      summary: "folded a durable fact",
+    });
+    try {
+      await housekeeping(makeInput("wrapping up"));
+      expect(evolution.runCardEvolution).toHaveBeenCalledOnce();
+      expect(evolutionLoop.store.resetFitnessGeneration).not.toHaveBeenCalled();
+    } finally {
+      evolutionLoop.store.resetFitnessGeneration.mockClear();
     }
   });
 
@@ -1229,6 +1247,31 @@ describe("mid-turn evolution check (every turn, pre-reply)", () => {
         .filter((c) => c.type === "data-evolution")
         .at(-1);
       expect(terminal?.data).toMatchObject({ status: "done" });
+      // A successful fitness-triggered run settles the generation (v0.9.2).
+      expect(evolutionLoop.store.resetFitnessGeneration).toHaveBeenCalledOnce();
+    } finally {
+      evolutionLoop.computeEvolutionTriggers.mockReturnValue([]);
+      evolutionLoop.store.resetFitnessGeneration.mockClear();
+    }
+  });
+
+  it("a FAILED fitness-triggered run settles nothing — the pressure stays for next turn", async () => {
+    setupActiveSlice();
+    evolutionLoop.store.resetFitnessGeneration.mockClear();
+    evolutionLoop.computeEvolutionTriggers.mockReturnValue([
+      { bucket: "interaction", reason: "generation net -6" },
+    ]);
+    evolution.runCardEvolution.mockResolvedValueOnce({
+      ran: true,
+      changed: false,
+      droppedRecent: 0,
+      note: "worker timeout",
+      error: "worker timeout",
+    });
+    try {
+      await housekeeping(midTurnInput("again?"));
+      expect(evolution.runCardEvolution).toHaveBeenCalledOnce();
+      expect(evolutionLoop.store.resetFitnessGeneration).not.toHaveBeenCalled();
     } finally {
       evolutionLoop.computeEvolutionTriggers.mockReturnValue([]);
     }

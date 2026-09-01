@@ -188,13 +188,6 @@ export interface PreviouslyAgentInput {
   /** This slice's mechanical signals (recall verify/rework) — context for
    *  recall-bucket triggers. */
   fitnessSignals?: FitnessSignal[];
-  /**
-   * The loop's honesty feedback (design §2.7): the rendered mutation track
-   * record line ("Your mutation track record: N effective / M ineffective /
-   * K unevaluated"), built by the caller from the mutations archive. Absent
-   * when no mutation has ever been archived.
-   */
-  mutationTrackRecord?: string;
 
   // ── Tool implementations (callbacks provided by the executor) ──────
 
@@ -454,13 +447,6 @@ function buildUserPrompt(input: PreviouslyAgentInput): string {
     ? `\n**Current slice tags**: ${currentSliceTags.join(", ")}`
     : "";
 
-  // The loop's honesty feedback: the agent sees its own mutation track record
-  // — an "ineffective" mark means the mutation did NOT stop the signal it
-  // meant to stop. Absent until the first archived mutation.
-  const trackRecordNote = input.mutationTrackRecord
-    ? `\n**${input.mutationTrackRecord}** (an ineffective mark means that mutation did not stop the signal it meant to stop)`
-    : "";
-
   // The direction rides the prompt two ways: the merged run's EVALUATION
   // section (the agent judges + may propose), or — on the explicit-request
   // path — the orientation-only CRITERIA block.
@@ -510,7 +496,7 @@ ${buildTimeContext(input)}
 
 ${signalLabels[signal]}
 Note: "${note}"${tagsNote}
-Current slice: \`${currentSliceId}\`${deepNote}${trackRecordNote}${directionSection}${fitnessSection}
+Current slice: \`${currentSliceId}\`${deepNote}${directionSection}${fitnessSection}
 
 ## Current card (your working copy starts from this)
 
