@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { isPrivateHost, extractText } from "@/lib/search/fetch-utils";
+import {
+  isPrivateHost,
+  extractText,
+  readBodyCapped,
+  FETCH_BODY_MAX_BYTES,
+} from "@/lib/search/fetch-utils";
 import { splitParagraphs } from "@/lib/retrieval/doc-segments";
 
 describe("isPrivateHost", () => {
@@ -32,6 +37,50 @@ describe("isPrivateHost", () => {
     expect(isPrivateHost("example.com")).toBe(false);
     expect(isPrivateHost("sub.example.com")).toBe(false);
     expect(isPrivateHost("en.wikipedia.org")).toBe(false);
+  });
+});
+
+describe("readBodyCapped", () => {
+  it("reads a small body in full, not truncated", async () => {
+    const res = new Response("hello world");
+    const out = await readBodyCapped(res, 100);
+    expect(out.text).toBe("hello world");
+    expect(out.truncated).toBe(false);
+  });
+
+  it("cuts the stream at the byte cap even without a content-length", async () => {
+    const res = new Response("abcdefghij"); // 10 bytes, no declared length
+    const out = await readBodyCapped(res, 4);
+    expect(out.text).toBe("abcd");
+    expect(out.truncated).toBe(true);
+  });
+
+  it("marks truncation up front when content-length exceeds the cap", async () => {
+    // A truthful content-length over the cap flags the cut even if the body
+    // itself turns out short — conservative beats silent.
+    const res = new Response("abc", {
+      headers: { "content-length": "999999" },
+    });
+    const out = await readBodyCapped(res, 100);
+    expect(out.text).toBe("abc");
+    expect(out.truncated).toBe(true);
+  });
+
+  it("decodes a mid-character cut safely (replacement char, no throw)", async () => {
+    const res = new Response("ééé"); // 2 bytes each in UTF-8
+    const out = await readBodyCapped(res, 3); // cuts inside the second char
+    expect(out.truncated).toBe(true);
+    expect(out.text.startsWith("é")).toBe(true);
+  });
+
+  it("caps by BYTES, not characters", async () => {
+    const res = new Response("é".repeat(10)); // 20 bytes
+    const out = await readBodyCapped(res, 6);
+    expect(new TextEncoder().encode(out.text).byteLength).toBeLessThanOrEqual(6);
+  });
+
+  it("exports a 2 MB default cap", () => {
+    expect(FETCH_BODY_MAX_BYTES).toBe(2 * 1024 * 1024);
   });
 });
 

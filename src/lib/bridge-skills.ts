@@ -17,7 +17,7 @@
  * read-only reader commands instead of kernel tools. Keep the two in sync:
  * the colleague relationship (the caller is the main agent, the user is a
  * third party), the time-anchor → strands → broaden → verify exploration
- * order, the ≤5 full-read budget, "the current slice is never evidence", and
+ * order, the ≤8 full-read budget, "the current slice is never evidence", and
  * the answer/references/searched/confidence report shape with VERBATIM-quote
  * anchoring.
  */

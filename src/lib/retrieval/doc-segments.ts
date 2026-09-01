@@ -127,18 +127,25 @@ export function textLines(
  * only the matched segments with a header; otherwise returns the FULL document
  * prefixed with an explanatory note — the caller wanted selective content, so
  * give it the best available and say exactly what happened.
+ *
+ * `maxChars` caps the miss fallback: a keyword miss on a huge document (a
+ * several-hundred-KB web page) would otherwise flood the agent's context with
+ * the entire text. Callers with bounded documents (time slices) may omit it.
  */
 export function searchResultToString(
   docLabel: string,
   keywords: string[],
   hits: SearchHit[],
   fullDoc: string,
+  maxChars?: number,
 ): string {
   const kwList = keywords.length > 0 ? keywords.join(", ") : "(none)";
   if (hits.length === 0) {
+    const over = maxChars !== undefined && fullDoc.length > maxChars;
+    const body = over ? fullDoc.slice(0, maxChars) : fullDoc;
     return (
-      `No segments matched keywords [${kwList}] in ${docLabel} — full content returned:\n\n` +
-      fullDoc
+      `No segments matched keywords [${kwList}] in ${docLabel} — full content returned${over ? ` (truncated at ${maxChars} characters)` : ""}:\n\n` +
+      body
     );
   }
   const header = `Matched ${hits.length} segment${hits.length === 1 ? "" : "s"} for [${kwList}] in ${docLabel}:\n\n`;

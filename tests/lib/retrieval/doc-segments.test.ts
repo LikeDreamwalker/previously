@@ -132,4 +132,21 @@ describe("searchResultToString", () => {
     expect(s).toContain("No segments matched keywords [zzz]");
     expect(s).toContain("FULL-CONTENT");
   });
+
+  it("caps the miss fallback at maxChars and says so", () => {
+    // A keyword miss on a huge page must not flood the context with the
+    // entire document — the fallback respects the caller's cap.
+    const big = "x".repeat(100);
+    const s = searchResultToString("example.com/p", ["zzz"], [], big, 15);
+    expect(s).toContain("full content returned (truncated at 15 characters)");
+    expect(s).toContain("x".repeat(15));
+    expect(s).not.toContain("x".repeat(16));
+  });
+
+  it("leaves a small miss fallback intact when maxChars is given", () => {
+    const s = searchResultToString("example.com/p", ["zzz"], [], "SHORT", 15);
+    expect(s).toContain("full content returned:");
+    expect(s).toContain("SHORT");
+    expect(s).not.toContain("truncated");
+  });
 });

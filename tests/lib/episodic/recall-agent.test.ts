@@ -243,6 +243,9 @@ describe("runRecallSearch", () => {
     expect(opts.model).toBe(testModel);
     expect(opts.system).toContain("recall colleague");
     expect(opts.system).toContain("sub-agent of the Previously memory system");
+    // The answer reaches the user, so RECALL_ROLE explicitly overrides the
+    // shared base's "write in English" default.
+    expect(opts.system).toContain("overrides the shared base's English default");
     // A1: the colleague-relationship framing rides the shared static base.
     expect(opts.system).toContain("colleague");
     expect(opts.prompt).toContain(
@@ -321,7 +324,7 @@ describe("runRecallSearch", () => {
     expect(out.confidence).toBeLessThan(0.5);
   });
 
-  it("degrades an empty timeout to an empty answer instead of throwing", async () => {
+  it("degrades an empty timeout to an empty answer instead of throwing — flagged timedOut", async () => {
     runner.runSubAgent.mockResolvedValue({
       ok: false,
       timedOut: true,
@@ -332,6 +335,9 @@ describe("runRecallSearch", () => {
     expect(out.answer).toBe("");
     expect(out.references).toEqual([]);
     expect(out.confidence).toBe(0);
+    // The executor keys on this flag: an unfinished search is NOT a
+    // definitive "no such memory".
+    expect(out.timedOut).toBe(true);
   });
 
   it("returns the accumulated partial text as a low-confidence answer on timeout", async () => {
@@ -348,6 +354,7 @@ describe("runRecallSearch", () => {
     expect(out.answer).toContain("partial answer");
     expect(out.confidence).toBeLessThan(0.5);
     expect(out.references).toEqual([]);
+    expect(out.timedOut).toBe(true);
   });
 
   it("caps full-slice reads at the per-run quota", async () => {
@@ -395,8 +402,51 @@ describe("runRecallSearch", () => {
       const pointerLines = out.split("\n").filter((l) => l.startsWith("- **"));
       expect(pointerLines).toHaveLength(100);
       expect(out).toContain(
-        "showing first 100 of 150 slices in this window",
+        "showing newest 100 of 150 slices in this window",
       );
+    } finally {
+      mockedRead.mockRejectedValue(new Error("no catalog in tests"));
+    }
+  });
+
+  it("reports readStrand truncation instead of silently clipping at 40 paths", async () => {
+    runner.runSubAgent.mockResolvedValue({
+      ok: true,
+      report: { answer: "a", references: [], searched: [], confidence: 0.5 },
+      text: "",
+    });
+    const paths = Array.from(
+      { length: 45 },
+      (_, i) => `memory/episodic/slices/2026/08/01/${1000 + i}`,
+    );
+    const io = await import("@/lib/episodic/io-helpers");
+    const mockedRead = vi.mocked(io.fsReadFile);
+    mockedRead.mockImplementation(async (p: string) => {
+      if (p.includes("strands.json")) {
+        return JSON.stringify({ apples: paths });
+      }
+      throw new Error("no catalog in tests");
+    });
+    try {
+      await runRecallSearch(recallInput());
+      const opts = runner.runSubAgent.mock.calls[0]![0];
+      const readStrand = opts.tools.readStrand as {
+        execute: (input: { strand: string }) => Promise<string>;
+      };
+      const out = await readStrand.execute({ strand: "apples" });
+      expect(out).toContain('Strand "apples" appears in:');
+      expect(out).toContain("(showing 40 of 45)");
+      expect(out).not.toContain(paths[44]);
+      // A strand under the cap lists everything, with no truncation note.
+      mockedRead.mockImplementation(async (p: string) => {
+        if (p.includes("strands.json")) {
+          return JSON.stringify({ apples: paths.slice(0, 3) });
+        }
+        throw new Error("no catalog in tests");
+      });
+      const small = await readStrand.execute({ strand: "apples" });
+      expect(small).toContain(paths[2]);
+      expect(small).not.toContain("showing");
     } finally {
       mockedRead.mockRejectedValue(new Error("no catalog in tests"));
     }

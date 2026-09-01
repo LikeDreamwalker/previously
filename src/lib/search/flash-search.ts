@@ -42,9 +42,10 @@
  * affected. The call itself runs on the unified sub-agent runner
  * (src/lib/agents/sub-agent-runner.ts): thinking ON at effort "low" (via the
  * Anthropic-shaped effort mapping — this adapter speaks the Anthropic
- * protocol), a 50-step cap, and a 150s wall-clock budget. The provider path
- * is unchanged: the runner receives a PRE-BUILT model instance so the custom
- * endpoint + normalizing fetch stay exactly as they were.
+ * protocol), a 50-step cap, and a 240s wall-clock budget (sized for the 6-page
+ * read quota). The provider path is unchanged: the runner receives a PRE-BUILT
+ * model instance so the custom endpoint + normalizing fetch stay exactly as
+ * they were.
  */
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { tool } from "ai";
@@ -58,6 +59,8 @@ import {
   fetchWithGuard,
   extractText,
   isPrivateHost,
+  readBodyCapped,
+  FETCH_BODY_MAX_BYTES,
 } from "@/lib/search/fetch-utils";
 import {
   splitParagraphs,
@@ -168,17 +171,25 @@ async function readPageImpl(url: string, range?: PageReadRange): Promise<string>
     if (!res.ok) {
       return `ERROR: HTTP ${res.status} ${res.statusText}`;
     }
-    const text = await res.text();
-    const extracted = extractText(text);
+    const { text, truncated } = await readBodyCapped(res);
+    let extracted = extractText(text);
+    if (truncated) {
+      // The byte cap fired (see readBodyCapped) — tell the model the page
+      // continues past what it can see, in the same note style as the 15K
+      // character fallback below.
+      extracted += `\n\n(Fetched page truncated at ${Math.round(FETCH_BODY_MAX_BYTES / 1024 / 1024)} MB)`;
+    }
 
     // Document Segment Read protocol — applied before truncation so a matched
     // subset or line range is returned in full, not capped by the 15K fallback.
+    // A keyword MISS still caps at the same 15K: a miss on a huge page must
+    // not flood the context with the full text.
     if (range) {
       if (range.type === "search") {
         const keywords = range.keywords ?? [];
         const context = range.context ?? 1;
         const hits = segmentSearch(splitParagraphs(extracted), keywords, context, context);
-        return searchResultToString(parsed.hostname + parsed.pathname, keywords, hits, extracted);
+        return searchResultToString(parsed.hostname + parsed.pathname, keywords, hits, extracted, WEB_FETCH_MAX_CHARS);
       }
       if (range.type === "lines") {
         const { content, clamped } = textLines(extracted, range.start ?? 1, range.end ?? 1);
@@ -272,8 +283,10 @@ Process:
 
 Distinguish what the sources SAY from what YOU know — never blend the two silently. If the search found nothing usable, say so plainly in the answer instead of papering over it.`;
 
-/** Wall-clock budget for one research run (runner SDK timeout + backstop). */
-export const SEARCH_TIMEOUT_MS = 150_000;
+/** Wall-clock budget for one research run (runner SDK timeout + backstop).
+ *  Sized for the page quota: 6 reads (MAX_PAGE_READS) at the 30s fetch cap
+ *  alone can burn 180s, so the budget matches recall's 240s. */
+export const SEARCH_TIMEOUT_MS = 240_000;
 
 /**
  * Adapter #1: DeepSeek V4 Flash native search. Flash decides what to search
@@ -299,10 +312,12 @@ export const SEARCH_TIMEOUT_MS = 150_000;
  * search.md, design v1.0 §2.4) — appended to the USER prompt, never the static
  * system prompt, so the shared prefix cache is untouched. Absent → no block.
  *
- * Error contract: the runner never throws, so any failed run (timeout
- * included) is re-thrown here as a plain Error carrying the runner's message —
- * webSearchExecute's withStepTimeout/triage layer keeps classifying transient
- * failures (step retry) vs deterministic ones (error tool result).
+ * Error contract: the runner never throws. Failed runs are re-thrown here as
+ * a plain Error carrying the runner's message — EXCEPT a timeout that left
+ * partial text behind, which degrades in place to a flagged low-confidence
+ * answer (aligned with recall). webSearchExecute's withStepTimeout/triage
+ * layer keeps classifying the thrown failures (step retry for transient,
+ * error tool result for deterministic).
  */
 export async function searchViaFlash(
   query: string,
@@ -343,7 +358,7 @@ export async function searchViaFlash(
           `Costs one of your ${MAX_PAGE_READS} ` +
           "page-read slots — spend them on the strongest sources only. " +
           "Optional `range`: `search` matches keywords across the page " +
-          "(misses return the full text with a note); `lines` reads a " +
+          "(misses return the full text — 15K-capped — with a note); `lines` reads a " +
           "1-indexed line range.",
         inputSchema: z.object({
           url: z
@@ -355,7 +370,7 @@ export async function searchViaFlash(
                 .enum(["search", "lines"])
                 .describe(
                   "search = keyword match, returns matching paragraphs (+ context); " +
-                  "if nothing matches, returns the full page text with a note. " +
+                  "if nothing matches, returns the full page text (capped at ~15K characters) with a note. " +
                   "lines = 1-indexed line range of the extracted text.",
                 ),
               keywords: z
@@ -428,16 +443,34 @@ export async function searchViaFlash(
     },
   });
 
-  if (!res.ok) {
-    throw new Error(res.error ?? "Web search failed");
-  }
-
   const sources = (res.sources ?? [])
     .filter(
       (s): s is typeof s & { sourceType: "url"; url: string } =>
         s.sourceType === "url" && typeof s.url === "string"
     )
     .map((s) => ({ title: s.title ?? s.url, url: s.url }));
+
+  if (!res.ok) {
+    // Soft-timeout degradation, aligned with recall: a run cut off
+    // mid-research still returns the partial text it accumulated — flagged
+    // as truncated in the recommendation — instead of throwing it away. A
+    // COMPLETELY empty timeout still throws, so the executor's triage keeps
+    // classifying it (step retry vs error tool result).
+    if (res.timedOut) {
+      const partial = res.text?.trim();
+      if (partial) {
+        console.warn(`[WebSearch] ${res.error}`);
+        return {
+          answer: partial,
+          recommendation:
+            "The research run hit its time budget and was cut off — this answer was recovered from the interrupted run's partial text; treat it as lower-confidence and unverified.",
+          suggestedReads: [],
+          sources,
+        };
+      }
+    }
+    throw new Error(res.error ?? "Web search failed");
+  }
 
   const report = res.report;
   if (report) {
