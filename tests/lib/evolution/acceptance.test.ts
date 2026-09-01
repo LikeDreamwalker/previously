@@ -283,3 +283,77 @@ describe("mutationTrackRecord", () => {
     });
   });
 });
+
+// ── The minimum observation window (v0.9.1) ──────────────────────────────
+
+describe("hasEvaluationWindow", () => {
+  it("passes on age alone (≥24h), even with zero events since", async () => {
+    const { hasEvaluationWindow } = await import("@/lib/evolution/acceptance");
+    expect(hasEvaluationWindow(storeWith([]), TS_OLD)).toBe(true);
+  });
+
+  it("passes on sample alone (≥ MIN_EVALUATION_EVENTS events), even for a fresh mutation", async () => {
+    const { hasEvaluationWindow, MIN_EVALUATION_EVENTS } = await import(
+      "@/lib/evolution/acceptance"
+    );
+    const prev = new Date(Date.now() - 60_000).toISOString(); // 1 min ago
+    const fresh = new Date(Date.now() - 30_000).toISOString(); // events newer than prev
+    const store = {
+      signals: [],
+      directionRejections: [],
+      events: Array.from({ length: MIN_EVALUATION_EVENTS }, (_, i) => ({
+        ts: fresh,
+        sliceId: `s${i}`,
+        bucket: "card" as const,
+        delta: 0 as const,
+        evidence: "e",
+      })),
+    };
+    expect(hasEvaluationWindow(store, prev)).toBe(true);
+  });
+
+  it("fails when the mutation is fresh AND the sample is thin", async () => {
+    const { hasEvaluationWindow, MIN_EVALUATION_EVENTS } = await import(
+      "@/lib/evolution/acceptance"
+    );
+    const prev = new Date(Date.now() - 60_000).toISOString();
+    const fresh = new Date(Date.now() - 30_000).toISOString();
+    const store = {
+      signals: [],
+      directionRejections: [],
+      events: Array.from({ length: MIN_EVALUATION_EVENTS - 1 }, (_, i) => ({
+        ts: fresh,
+        sliceId: `s${i}`,
+        bucket: "card" as const,
+        delta: -1 as const,
+        evidence: "e",
+      })),
+    };
+    expect(hasEvaluationWindow(store, prev)).toBe(false);
+  });
+});
+
+describe("appendMutationWithEvaluation — thin window gate", () => {
+  it("writes NO verdict line when the previous mutation is minutes old with a thin sample (stays unevaluated)", async () => {
+    const { appendMutationWithEvaluation, INEFFECTIVE_MARK, EFFECTIVE_MARK } = await import(
+      "@/lib/evolution/acceptance"
+    );
+    const store = await import("@/lib/evolution/store");
+    // The previous mutation landed just now — a same-complaint follow-up must
+    // not judge it (the inclusive ≤ -1 trigger makes this the common case).
+    const tsPrev = new Date().toISOString();
+    await store.appendMutation(mutation(tsPrev, "card"));
+
+    const outcome = await appendMutationWithEvaluation(
+      mutation(new Date().toISOString(), "card"),
+      storeWith([{ bucket: "card", delta: -1 }]),
+    );
+    expect(outcome.markedIneffective).toBe(false);
+    expect(outcome.markedEffective).toBe(false);
+    const content = readOnDisk("memory/evolution/mutations.md")!;
+    expect(content).not.toContain(INEFFECTIVE_MARK);
+    expect(content).not.toContain(EFFECTIVE_MARK);
+    // Both records still archived — only the verdict was deferred.
+    expect(content).toContain(`— card`);
+  });
+});

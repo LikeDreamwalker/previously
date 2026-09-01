@@ -316,6 +316,77 @@ describe("appendMutation", () => {
   });
 });
 
+// ── Mutation archive retention (v0.9.1 bounded archive) ──────────────────
+
+describe("trimMutationArchive", () => {
+  it("keeps the header + newest MAX_MUTATION_RECORDS blocks, retiring the oldest", async () => {
+    const store = await importFresh();
+    const total = store.MAX_MUTATION_RECORDS + 5;
+    const blocks = Array.from({ length: total }, (_, i) =>
+      store.renderMutationRecord({
+        ts: `2026-08-27T${String(10 + i).padStart(2, "0")}:00:00Z`,
+        target: "card",
+        // Zero-padded so "mutation 004" is never a substring of "mutation 040".
+        summary: `mutation ${String(i).padStart(3, "0")}`,
+        evidence: [],
+        expectedBenefit: "x",
+      }),
+    );
+    const content = `# Mutations Archive\n\nheader text\n\n${blocks.join("\n\n")}\n`;
+    const trimmed = store.trimMutationArchive(content);
+    expect(trimmed).toContain("# Mutations Archive");
+    expect(trimmed).toContain("header text");
+    expect(trimmed.match(/^## /gm)).toHaveLength(store.MAX_MUTATION_RECORDS);
+    expect(trimmed).not.toContain("mutation 000");
+    expect(trimmed).not.toContain("mutation 004");
+    expect(trimmed).toContain("mutation 005"); // oldest survivor
+    expect(trimmed).toContain(`mutation ${String(total - 1).padStart(3, "0")}`);
+  });
+
+  it("is a no-op at or under the cap (append-only below it)", async () => {
+    const store = await importFresh();
+    const block = store.renderMutationRecord({
+      ts: "2026-08-27T10:00:00Z",
+      target: "card",
+      summary: "only one",
+      evidence: [],
+      expectedBenefit: "x",
+    });
+    const content = `# Mutations Archive\n\n${block}\n`;
+    expect(store.trimMutationArchive(content)).toBe(content);
+  });
+
+  it("appendMutation enforces the cap on write", async () => {
+    const store = await importFresh();
+    // Seed an at-cap archive directly, then one append must retire the oldest.
+    const blocks = Array.from({ length: store.MAX_MUTATION_RECORDS }, (_, i) =>
+      store.renderMutationRecord({
+        ts: `2026-08-27T${String(10 + i).padStart(2, "0")}:00:00Z`,
+        target: "card",
+        summary: `seeded ${i}`,
+        evidence: [],
+        expectedBenefit: "x",
+      }),
+    );
+    writeOnDisk(
+      "memory/evolution/mutations.md",
+      `# Mutations Archive\n\n${blocks.join("\n\n")}\n`,
+    );
+    await store.appendMutation({
+      ts: "2026-08-29T10:00:00Z",
+      target: "direction",
+      summary: "the overflow record",
+      evidence: [],
+      expectedBenefit: "x",
+    });
+    const content = readOnDisk("memory/evolution/mutations.md")!;
+    expect(content.match(/^## /gm)).toHaveLength(store.MAX_MUTATION_RECORDS);
+    expect(content).not.toContain("seeded 0");
+    expect(content).toContain("seeded 1");
+    expect(content).toContain("the overflow record");
+  });
+});
+
 // ── Playbook IO ──────────────────────────────────────────────────────────
 
 describe("playbook IO", () => {

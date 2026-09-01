@@ -16,14 +16,21 @@
  *     to stop did stop — the POSITIVE confirmation, symmetric to the mark);
  *   - net = 0 → no line (inconclusive — no evidence either way).
  *
+ * v0.9.1: the verdict requires a MINIMUM OBSERVATION WINDOW (see
+ * hasEvaluationWindow) — with the inclusive triggers a follow-up mutation can
+ * land minutes after the previous one, and judging it on the same complaint's
+ * tail would mark nearly everything ineffective. Too-thin windows leave the
+ * record unevaluated, which mutationTrackRecord reports honestly.
+ *
  * The archive's running tally (mutationTrackRecord) feeds back into the
  * evolution agent's prompt — the loop's honesty feedback: an agent that
  * keeps writing ineffective mutations should feel it.
  *
  * Append-only discipline: the evaluation is a NEW line appended to
- * mutations.md — history is never rewritten or deleted, and an ineffective
- * mutation stays in the record as a lesson (design §2.7: no rollback, no
- * cooldown, no budget).
+ * mutations.md — history is never rewritten, and an ineffective mutation
+ * stays in the record as a lesson (design §2.7: no rollback, no cooldown, no
+ * budget). The archive itself is bounded (MAX_MUTATION_RECORDS — oldest
+ * records retire on write, v0.9.1).
  *
  * The evaluation is deterministic and best-effort: a missing/unreadable
  * archive simply means "no previous mutation to evaluate", never an error.
@@ -62,6 +69,37 @@ export const INEFFECTIVE_MARK = "**Evaluation: ineffective**";
 
 /** The marker line appended when a previous mutation proved effective. */
 export const EFFECTIVE_MARK = "**Evaluation: effective**";
+
+/**
+ * Minimum observation before judging a previous mutation (v0.9.1): enough
+ * scored events must have landed since it OR it must be at least this old.
+ * Without the gate, the inclusive ≤ -1 triggers let a follow-up mutation land
+ * within minutes and "evaluate" its predecessor on the tail of the very same
+ * complaint — marking nearly everything ineffective and poisoning the
+ * mutationTrackRecord honesty feedback.
+ */
+export const MIN_EVALUATION_EVENTS = 10;
+export const MIN_EVALUATION_AGE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Whether a previous mutation (`sinceTs`, ISO) has been observable long
+ * enough to judge: at least MIN_EVALUATION_EVENTS fitness events (any bucket
+ * — activity is the sample) strictly newer than it, or it is at least
+ * MIN_EVALUATION_AGE_MS old (a quiet day is observation too). Pure.
+ */
+export function hasEvaluationWindow(
+  store: FitnessStore,
+  sinceTs: string,
+  nowMs = Date.now(),
+): boolean {
+  const prevMs = Date.parse(sinceTs);
+  if (Number.isFinite(prevMs) && nowMs - prevMs >= MIN_EVALUATION_AGE_MS) {
+    return true;
+  }
+  let n = 0;
+  for (const e of store.events) if (e.ts > sinceTs) n++;
+  return n >= MIN_EVALUATION_EVENTS;
+}
 
 /**
  * Find the most recent archived mutation for a target. The archive format
@@ -166,10 +204,11 @@ export interface MutationArchiveOutcome {
  *
  *   1. find the previous record for `record.target` in the archive;
  *   2. net-score its bucket over the fitness events strictly SINCE that
- *      record — negative → append an `**Evaluation: ineffective**` line (the
+ *      record — but only once the minimum observation window has passed
+ *      (hasEvaluationWindow); negative → append an `**Evaluation: ineffective**` line (the
  *      deductions the mutation meant to stop kept coming); positive → append
  *      an `**Evaluation: effective**` line (they stopped); zero → no line
- *      (inconclusive);
+ *      (inconclusive); too-thin window → no line (stays unevaluated);
  *   3. append the new record (via the store's appendMutation).
  *
  * `store` is passed in (not read) so the caller controls freshness — read it
@@ -191,7 +230,10 @@ export async function appendMutationWithEvaluation(
   const prev = existing ? findLastMutationForTarget(existing, record.target) : null;
   let markedIneffective = false;
   let markedEffective = false;
-  if (prev) {
+  // Too-thin observation window → no verdict: the record stays unevaluated
+  // (mutationTrackRecord reports it as such) rather than being judged on the
+  // tail of the same complaint that triggered this follow-up mutation.
+  if (prev && hasEvaluationWindow(store, prev.ts)) {
     const bucket = TARGET_TO_BUCKET[record.target];
     const net = bucketNetScoreSince(store, bucket, prev.ts);
     const line =

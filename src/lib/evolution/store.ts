@@ -384,10 +384,39 @@ export interface MutationRecord {
 
 const MUTATIONS_HEADER = `# Mutations Archive
 
-Append-only log of accepted evolution mutations (design v1.0 §2.7). No
-automatic rollback, no cooldown, no mutation budget — a mutation that proves
-ineffective is marked \`ineffective\` here later, never deleted.
+Log of accepted evolution mutations (design v1.0 §2.7). No automatic rollback,
+no cooldown, no mutation budget — a mutation that proves ineffective is marked
+\`ineffective\` here later. Bounded (v0.9.1): the archive keeps the newest
+100 records; older ones are retired on write to keep the file (and every
+full read of it) bounded.
 `;
+
+/**
+ * The archive is bounded (v0.9.1): past this many records the oldest are
+ * retired on write. The agent only ever says WHAT to record; retention
+ * planning lives here, not in the prompt. 100 records ≈ months of evolution
+ * history; the fitness events behind them are independently capped anyway.
+ */
+export const MAX_MUTATION_RECORDS = 100;
+
+/**
+ * Keep the header + the newest MAX_MUTATION_RECORDS record blocks, dropping
+ * the oldest. A record block runs from its `## {ts} — {target}` heading to the
+ * next heading; interstitial evaluation lines travel with the block they
+ * follow, so a trim boundary can drop an evaluation line whose subject block
+ * survives (or vice versa) — the track record tolerates that drift. Pure.
+ */
+export function trimMutationArchive(content: string): string {
+  const lines = content.split("\n");
+  const starts: number[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].startsWith("## ")) starts.push(i);
+  }
+  if (starts.length <= MAX_MUTATION_RECORDS) return content;
+  const keepFrom = starts[starts.length - MAX_MUTATION_RECORDS];
+  const firstRecord = starts[0];
+  return [...lines.slice(0, firstRecord), ...lines.slice(keepFrom)].join("\n");
+}
 
 /** Render one record as a compact, greppable markdown block. */
 export function renderMutationRecord(record: MutationRecord): string {
@@ -405,7 +434,9 @@ export function renderMutationRecord(record: MutationRecord): string {
 }
 
 /** Append a mutation to the archive, creating the file (with its header) when
- *  missing. Append-only: existing content is never rewritten. */
+ *  missing. Bounded: past MAX_MUTATION_RECORDS the oldest records are retired
+ *  on write (trimMutationArchive) — retention is the store's job, the agent
+ *  only declares what to record. */
 export async function appendMutation(
   record: MutationRecord,
   batch?: WriteBatch,
@@ -420,5 +451,5 @@ export async function appendMutation(
   const content = existing.trim()
     ? `${existing.trimEnd()}\n\n${block}\n`
     : `${MUTATIONS_HEADER}\n${block}\n`;
-  await fsWriteFile(MUTATIONS_PATH, content, batch);
+  await fsWriteFile(MUTATIONS_PATH, trimMutationArchive(content), batch);
 }

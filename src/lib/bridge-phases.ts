@@ -10,6 +10,12 @@
  * validates it (zod + the existing card-session caps) and applies it through
  * the same downstream code paths as the sub-agent flow.
  *
+ * KNOWN GAP (v0.9.1): the report carries CARD mutations only — playbook
+ * evolution (writePlaybook for triggered recall/search/thinkdeep buckets)
+ * has no channel here and silently does not happen on this path. Playbook
+ * proposals are an outsourcing TODO; the bucket triggers still fire and show
+ * in the terminal frame.
+ *
  * Wire contract (shared with the client repo — do not deviate):
  *   stdin : { task, context, phase: "housekeeping", protocol: 2 }
  *   stdout: the agent's final reply is EXACTLY one JSON object matching

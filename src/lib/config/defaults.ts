@@ -10,7 +10,7 @@ export const DEFAULTS: UserConfig = {
   slicing: {
     maxSliceMinutes: 30,
     maxTurnsPerSlice: 50,
-    idleGapMinutes: 15,
+    idleGapMinutes: 30,
   },
   model: {
     provider: "deepseek-v4-pro",
