@@ -212,6 +212,17 @@ describe("buildBridgeTimeLine (bridge-mode fresh clock read)", () => {
     });
     expect(line).not.toContain("slice closes");
   });
+
+  it("names the idle-gap close alongside the cap when idleGapMinutes is given (v0.9.1 — the cap alone would promise time the idle gap won't grant)", () => {
+    const line = buildBridgeTimeLine({ ...OPTS, idleGapMinutes: 15 });
+    expect(line).toContain("slice closes in ~18 min at the latest, or after ~15 min of silence");
+  });
+
+  it("keeps the cap-only wording when idleGapMinutes is absent (backwards compatible)", () => {
+    const line = buildBridgeTimeLine(OPTS);
+    expect(line).toContain("slice closes in ~18 min");
+    expect(line).not.toContain("silence");
+  });
 });
 
 describe("appendBridgeTimeSuffix (outbound-only tail injection)", () => {

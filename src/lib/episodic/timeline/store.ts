@@ -71,6 +71,11 @@ export async function sliceEntryFromDisk(relPath: string, batch?: WriteBatch): P
       summary,
       tags,
       ...(data.emotional_tone ? { tone: str(data.emotional_tone) } : {}),
+      // Continuity metadata — lets the pointer lines mark the checkpoint
+      // chain (↳cont) and the close reason instead of rendering a checkpointed
+      // conversation as several independent ones.
+      ...(data.continues_from ? { continues_from: str(data.continues_from) } : {}),
+      ...(data.closed_by ? { closed_by: str(data.closed_by) } : {}),
       open_loops: strArr(data.open_loops),
       decisions: strArr(data.decisions),
       // strands = the tags that exist in the global strand index — resolved
@@ -132,6 +137,8 @@ export async function upsertTimelineEntry(
     summary: slice.summary,
     tags: [...slice.tags],
     ...(slice.emotional_tone ? { tone: slice.emotional_tone } : {}),
+    ...(slice.continuesFrom ? { continues_from: slice.continuesFrom } : {}),
+    ...(slice.closedBy ? { closed_by: slice.closedBy } : {}),
     open_loops: [...slice.open_loops],
     decisions: [...slice.decisions],
     strands: prior?.strands ?? [],

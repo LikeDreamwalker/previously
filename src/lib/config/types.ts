@@ -38,10 +38,12 @@ export interface UserConfig {
 
 /**
  * Partial config overrides for a save — nested groups are partial too, so
- * callers can touch just `model.provider` without respecifying the rest.
+ * callers can touch just `model.provider` (or one slicing knob) without
+ * respecifying the rest.
  */
 export type UserConfigOverrides = Partial<
-  Omit<UserConfig, "model">
+  Omit<UserConfig, "model" | "slicing">
 > & {
   model?: Partial<ModelConfig>;
+  slicing?: Partial<SlicingConfig>;
 };
