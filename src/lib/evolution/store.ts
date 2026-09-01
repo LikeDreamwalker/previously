@@ -205,14 +205,27 @@ export interface FitnessSignal {
 export interface FitnessStore {
   events: FitnessEvent[];
   signals: FitnessSignal[];
+  /**
+   * Slice ids whose direction proposal was already REJECTED once (v1.1
+   * per-slice backoff): the doc keeps its old skeleton after a rejection, so
+   * the migrate/bootstrap gate would otherwise re-fire the full merged
+   * evolution run on EVERY remaining turn of that slice. Housekeeping reads
+   * this list and stops gating on the direction for the rest of the slice;
+   * the NEXT slice retries fresh (a new slice, a new chance). Ids are never
+   * reused, so the bound below only ages out long-dead slices.
+   */
+  directionRejections: string[];
 }
 
 /** Retention bounds — the store is read whole, so it must not grow forever. */
 export const MAX_FITNESS_EVENTS = 200;
 export const MAX_FITNESS_SIGNALS = 200;
+/** Rejection ids are one-per-slice at most; only the CURRENT slice's
+ *  membership is ever consulted, so a shallow tail is plenty. */
+export const MAX_DIRECTION_REJECTIONS = 50;
 
 export function emptyFitnessStore(): FitnessStore {
-  return { events: [], signals: [] };
+  return { events: [], signals: [], directionRejections: [] };
 }
 
 /**
@@ -227,6 +240,9 @@ export async function readFitness(batch?: WriteBatch): Promise<FitnessStore> {
     return {
       events: Array.isArray(parsed.events) ? parsed.events : [],
       signals: Array.isArray(parsed.signals) ? parsed.signals : [],
+      directionRejections: Array.isArray(parsed.directionRejections)
+        ? parsed.directionRejections
+        : [],
     };
   } catch {
     return emptyFitnessStore();
@@ -242,6 +258,9 @@ async function writeFitness(
   const bounded: FitnessStore = {
     events: store.events.slice(-MAX_FITNESS_EVENTS),
     signals: store.signals.slice(-MAX_FITNESS_SIGNALS),
+    directionRejections: store.directionRejections.slice(
+      -MAX_DIRECTION_REJECTIONS,
+    ),
   };
   await fsWriteFile(FITNESS_PATH, JSON.stringify(bounded, null, 2), batch);
 }
@@ -272,6 +291,22 @@ export async function appendSignal(
 ): Promise<void> {
   const store = await readFitness(batch);
   store.signals.push(signal);
+  await writeFitness(store, batch);
+}
+
+/**
+ * Record that this slice's direction proposal was REJECTED by validation —
+ * the per-slice backoff for the migrate/bootstrap gate (see the
+ * directionRejections field). Idempotent per slice. Never demo-reachable:
+ * housekeeping's evolution block is skipped entirely in demo mode.
+ */
+export async function recordDirectionRejection(
+  sliceId: string,
+  batch?: WriteBatch,
+): Promise<void> {
+  const store = await readFitness(batch);
+  if (store.directionRejections.includes(sliceId)) return;
+  store.directionRejections.push(sliceId);
   await writeFitness(store, batch);
 }
 

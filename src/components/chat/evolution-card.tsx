@@ -44,19 +44,25 @@ function EvolutionDetail({ data }: { data: EvolutionStepData }) {
           className={
             data.direction!.outcome === "failed"
               ? "text-xs leading-relaxed text-red-500/90"
-              : "text-xs leading-relaxed text-muted-foreground"
+              : data.direction!.outcome === "rejected"
+                ? "text-xs leading-relaxed text-amber-600 dark:text-amber-400"
+                : "text-xs leading-relaxed text-muted-foreground"
           }
         >
           {data.direction!.outcome === "failed"
             ? t("directionFailed", {
                 reason: data.direction!.summary?.trim() || "—",
               })
-            : data.direction!.outcome === "updated" &&
-                data.direction!.summary?.trim()
-              ? t("directionUpdated", {
-                  summary: data.direction!.summary.trim(),
+            : data.direction!.outcome === "rejected"
+              ? t("directionRejected", {
+                  reason: data.direction!.summary?.trim() || "—",
                 })
-              : t("directionUnchanged")}
+              : data.direction!.outcome === "updated" &&
+                  data.direction!.summary?.trim()
+                ? t("directionUpdated", {
+                    summary: data.direction!.summary.trim(),
+                  })
+                : t("directionUnchanged")}
         </p>
       )}
       {hasPlaybooks && (

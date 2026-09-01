@@ -300,13 +300,14 @@ describe("the merged direction half (v1.1)", () => {
     );
   });
 
-  it("a REJECTED proposal degrades to no_change (logged, never fatal) and writes nothing", async () => {
+  it("a REJECTED proposal reports outcome rejected with the reason (never a fake no_change) and writes nothing", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     runPreviouslyAgentMock.mockResolvedValue(
       agentResultWithProposal("# Portrait\n\nNo skeleton, no evidence."),
     );
     const res = await runCardEvolution({ ...baseInput(), directionEval: directionEvalInput() });
-    expect(res.direction).toEqual({ outcome: "no_change" });
+    expect(res.direction?.outcome).toBe("rejected");
+    expect(res.direction?.summary).toBeTruthy(); // the validation reason
     expect(writeDirectionMock).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();

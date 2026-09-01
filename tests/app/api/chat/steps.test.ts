@@ -147,7 +147,11 @@ const evolutionLoop = vi.hoisted(() => ({
     bucketNetScore: vi.fn(
       (_store: unknown, _bucket: string, _window?: number) => -4,
     ),
-    emptyFitnessStore: () => ({ events: [], signals: [] }),
+    emptyFitnessStore: () => ({
+      events: [],
+      signals: [],
+      directionRejections: [],
+    }),
     ensureEvolutionFiles: vi.fn(async () => {}),
     /* Pure predicates — mirror the real implementations so the direction gate
        tracks whatever readDirection is mocked to return. */
@@ -158,9 +162,11 @@ const evolutionLoop = vi.hoisted(() => ({
       async (): Promise<{
         events: Array<Record<string, unknown>>;
         signals: Array<Record<string, unknown>>;
-      }> => ({ events: [], signals: [] }),
+        directionRejections: string[];
+      }> => ({ events: [], signals: [], directionRejections: [] }),
     ),
     readRecentSignals: vi.fn(async () => []),
+    recordDirectionRejection: vi.fn(async () => {}),
     writeDirection: vi.fn(async () => {}),
   },
   /* Pure mirrors of the direction-agent helpers (template → bootstrap; the old
@@ -907,6 +913,7 @@ describe("housekeeping boundary evolution gating", () => {
           },
         ],
         signals: [],
+        directionRejections: [],
       });
       setupClosingSlice();
       mockAnalysis({ worth: false, reason: "pure logistics" });
@@ -917,7 +924,49 @@ describe("housekeeping boundary evolution gating", () => {
       );
     } finally {
       episodic.readCurrentPreviously.mockResolvedValue("");
-      evolutionLoop.store.readFitness.mockResolvedValue({ events: [], signals: [] });
+      evolutionLoop.store.readFitness.mockResolvedValue({
+        events: [],
+        signals: [],
+        directionRejections: [],
+      });
+    }
+  });
+
+  it("a REJECTED direction proposal rides the terminal frame as direction.rejected and backs the gate off on the ACTIVE slice", async () => {
+    setupClosingSlice();
+    mockAnalysis({ worth: false, reason: "pure logistics" });
+    episodic.readCurrentPreviously.mockResolvedValue(
+      "# Previously On\n\n_Active slice: 2026-07-14-0900 | Format: user card v2 | Updated: 2026-07-14T09:30:00.000Z_\n",
+    );
+    evolutionLoop.store.readDirection.mockResolvedValue(
+      "# Direction\n\nBe concrete.\n\n# Anti-goals\n\nNo coaching.\n\n# Evidence\n\n- 2026-07-14-0900 — x\n\n# Log\n\n- entry",
+    );
+    evolution.runCardEvolution.mockResolvedValueOnce({
+      ran: true,
+      changed: false,
+      droppedRecent: 0,
+      note: "reviewed",
+      direction: { outcome: "rejected", summary: "no substantive content" },
+    });
+    try {
+      await housekeeping(makeInput("wrapping up"));
+      // The backoff is keyed to the ACTIVE (new) slice — its remaining turns
+      // must not re-fire the migrate gate; the closed slice is done anyway.
+      expect(evolutionLoop.store.recordDirectionRejection).toHaveBeenCalledWith(
+        "2026-07-14-1000",
+        expect.anything(),
+      );
+      // The terminal frame keeps the rejection distinguishable from a
+      // deliberate no_change.
+      const terminal = workflowMock.written
+        .filter((c) => c.type === "data-evolution")
+        .at(-1);
+      expect(terminal?.data).toMatchObject({
+        direction: { outcome: "rejected", summary: "no substantive content" },
+      });
+    } finally {
+      episodic.readCurrentPreviously.mockResolvedValue("");
+      evolutionLoop.store.readDirection.mockResolvedValue(null);
     }
   });
 
@@ -1162,7 +1211,7 @@ describe("mid-turn evolution check (every turn, pre-reply)", () => {
   it("a mid-turn fitness trigger runs the merged evolution BEFORE the reply (no boundary)", async () => {
     setupActiveSlice();
     evolutionLoop.computeEvolutionTriggers.mockReturnValue([
-      { bucket: "interaction", reason: 'dissatisfaction signal this slice: "你又没回答我的问题"' },
+      { bucket: "interaction", reason: 'dissatisfaction signal in the just-scored slice: "你又没回答我的问题"' },
     ]);
     try {
       await housekeeping(midTurnInput("again?"));
@@ -1224,6 +1273,108 @@ describe("mid-turn evolution check (every turn, pre-reply)", () => {
     expect(
       workflowMock.written.filter((c) => c.type === "data-evolution"),
     ).toHaveLength(0);
+  });
+
+  it("a REJECTED direction proposal backs the migrate gate off for the REST of the slice (no per-turn rerun)", async () => {
+    setupActiveSlice();
+    // An old-skeleton direction doc → migrate mode: without the backoff this
+    // gate would re-fire the full merged run on EVERY mid-turn check.
+    evolutionLoop.store.readDirection.mockResolvedValue(
+      "# Direction\n\nBe concrete.\n\n# Anti-goals\n\nNo coaching.\n\n# Evidence\n\n- 2026-07-14-0900 — x\n\n# Log\n\n- entry",
+    );
+    try {
+      // Turn 1: the gate fires; the merged run's proposal is REJECTED.
+      evolution.runCardEvolution.mockResolvedValueOnce({
+        ran: true,
+        changed: false,
+        droppedRecent: 0,
+        note: "reviewed",
+        direction: {
+          outcome: "rejected",
+          summary: 'missing the fixed "# Log" section',
+        },
+      });
+      await housekeeping(midTurnInput("first"));
+      expect(evolution.runCardEvolution).toHaveBeenCalledOnce();
+      expect(evolutionLoop.store.recordDirectionRejection).toHaveBeenCalledWith(
+        "2026-07-14-0900", // the ACTIVE slice
+        expect.anything(),
+      );
+      let terminal = workflowMock.written
+        .filter((c) => c.type === "data-evolution")
+        .at(-1);
+      expect(terminal?.data).toMatchObject({
+        direction: {
+          outcome: "rejected",
+          summary: 'missing the fixed "# Log" section',
+        },
+      });
+
+      // Turn 2 (same slice, rejection now on record): NO rerun — a visible
+      // skip chunk explains the backoff instead.
+      workflowMock.written.length = 0;
+      evolutionLoop.store.readFitness.mockResolvedValue({
+        events: [],
+        signals: [],
+        directionRejections: ["2026-07-14-0900"],
+      });
+      await housekeeping(midTurnInput("second"));
+      expect(evolution.runCardEvolution).toHaveBeenCalledOnce(); // still once
+      const evoChunks = workflowMock.written.filter(
+        (c) => c.type === "data-evolution",
+      );
+      expect(evoChunks).toHaveLength(1);
+      expect(evoChunks[0].data).toMatchObject({
+        running: false,
+        status: "done",
+        hasChanges: false,
+      });
+      expect((evoChunks[0].data as { note: string }).note).toContain(
+        "backed off",
+      );
+    } finally {
+      evolutionLoop.store.readDirection.mockResolvedValue(null);
+      evolutionLoop.store.readFitness.mockResolvedValue({
+        events: [],
+        signals: [],
+        directionRejections: [],
+      });
+    }
+  });
+
+  it("the NEXT slice is not backed off — a rejection retires with its slice (new slice, new chance)", async () => {
+    // Active slice B; the store records a rejection for the PREVIOUS slice A
+    // only, and the direction doc is still the old skeleton.
+    const disk = makeSlice({
+      slice_id: "2026-07-14-1000",
+      turns: [
+        { timestamp: "t0", role: "user", content: "old" },
+        { timestamp: "t1", role: "agent", content: "reply" },
+      ],
+    });
+    episodic.tryLoadTodaySlice.mockResolvedValue(disk);
+    evolutionLoop.store.readDirection.mockResolvedValue(
+      "# Direction\n\nBe concrete.\n\n# Anti-goals\n\nNo coaching.\n\n# Evidence\n\n- 2026-07-14-0900 — x\n\n# Log\n\n- entry",
+    );
+    evolutionLoop.store.readFitness.mockResolvedValue({
+      events: [],
+      signals: [],
+      directionRejections: ["2026-07-14-0900"], // slice A — not this one
+    });
+    try {
+      await housekeeping(midTurnInput("new slice, same old direction doc"));
+      expect(evolution.runCardEvolution).toHaveBeenCalledOnce();
+      expect(
+        evolution.runCardEvolution.mock.calls[0][0].directionEval?.mode,
+      ).toBe("migrate");
+    } finally {
+      evolutionLoop.store.readDirection.mockResolvedValue(null);
+      evolutionLoop.store.readFitness.mockResolvedValue({
+        events: [],
+        signals: [],
+        directionRejections: [],
+      });
+    }
   });
 
   it("demo mode never runs evolution — explicit update + fired trigger notwithstanding", async () => {

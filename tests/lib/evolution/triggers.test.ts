@@ -26,7 +26,7 @@ function ev(
 }
 
 function store(events: FitnessEvent[]): FitnessStore {
-  return { events, signals: [] };
+  return { events, signals: [], directionRejections: [] };
 }
 
 describe("computeEvolutionTriggers", () => {
@@ -83,6 +83,10 @@ describe("computeEvolutionTriggers", () => {
     expect(triggers).toHaveLength(1);
     expect(triggers[0].bucket).toBe("card");
     expect(triggers[0].reason).toContain("explicit complaint/correction");
+    // Slice-neutral wording: on a boundary turn the scored slice is the one
+    // that JUST CLOSED, so "this slice" would misname it.
+    expect(triggers[0].reason).toContain("in the just-scored slice");
+    expect(triggers[0].reason).not.toContain("this slice");
     expect(triggers[0].reason).toContain("你写错了");
   });
 
@@ -93,6 +97,7 @@ describe("computeEvolutionTriggers", () => {
     expect(triggers).toHaveLength(1);
     expect(triggers[0].bucket).toBe("interaction");
     expect(triggers[0].reason).toContain("dissatisfaction signal");
+    expect(triggers[0].reason).toContain("in the just-scored slice");
     expect(triggers[0].reason).toContain("你又没回答我的问题");
   });
 

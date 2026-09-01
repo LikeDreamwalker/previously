@@ -85,11 +85,12 @@ export type EvolutionStepData = {
    * v1.0: the Phase-1 direction verdict (design §2.3). Absent only when the
    * check did not run; a FAILED check reports outcome "failed" with the
    * reason in `summary` — a failure must never masquerade as "no_change".
-   * Otherwise `summary` is the one-sentence account of what changed when the
-   * direction was updated.
+   * A validation-REJECTED proposal reports "rejected" with the reason (the
+   * discipline working, not the agent declining). Otherwise `summary` is the
+   * one-sentence account of what changed when the direction was updated.
    */
   direction?: {
-    outcome: "no_change" | "updated" | "failed";
+    outcome: "no_change" | "updated" | "failed" | "rejected";
     summary?: string;
   };
   /** v1.0: the playbook mutations applied this run (design §2.4). */

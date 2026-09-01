@@ -144,10 +144,11 @@ export interface RunCardEvolutionResult {
   playbooks?: Array<{ agent: PlaybookAgent; summary: string }>;
   /** v1.1: the direction half's verdict (merged run only — absent when no
    *  directionEval was carried). "failed" covers a write error; a REJECTED
-   *  proposal degrades to "no_change" (logged), mirroring the old Phase-1
-   *  discipline. */
+   *  proposal reports outcome "rejected" with the validation reason (never
+   *  masquerading as "no_change" — the caller backs the gate off for the rest
+   *  of the slice on a rejection, see housekeeping). */
   direction?: {
-    outcome: "no_change" | "updated" | "failed";
+    outcome: "no_change" | "updated" | "failed" | "rejected";
     summary?: string;
   };
 }
@@ -243,8 +244,13 @@ export async function runCardEvolution(
         { mode: input.directionEval.mode },
       );
       if (!validation.ok) {
+        // A rejection is NOT "no_change": the doc keeps its old skeleton, so
+        // the migrate/bootstrap gate would otherwise re-fire the full merged
+        // run on EVERY remaining turn of this slice. The distinct outcome lets
+        // housekeeping back the gate off (per-slice) and lets the terminal
+        // frame show the rejection instead of a fake "checked, unchanged".
         console.warn(`[Evolution] direction proposal rejected: ${validation.reason}`);
-        directionOutcome = { outcome: "no_change" };
+        directionOutcome = { outcome: "rejected", summary: validation.reason };
       } else {
         const summary =
           proposal.summary.trim() || "Direction updated (merged evolution run)";

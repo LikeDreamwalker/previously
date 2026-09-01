@@ -85,6 +85,7 @@ import {
   readDirection,
   readFitness,
   readRecentSignals,
+  recordDirectionRejection,
   writeDirection,
 } from "@/lib/evolution/store";
 import { logInteractionSignal } from "@/lib/episodic/rework-signal";
@@ -1298,13 +1299,23 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
         // old # Direction / # Anti-goals skeleton) is always due — the
         // existing doc IS the material. The gate dies permanently once the doc
         // lands in the new skeleton.
+        //
+        // Per-slice backoff: a proposal REJECTED by validation leaves the old
+        // skeleton in place, so the gate would re-fire the full merged run on
+        // every remaining turn of this slice — a rejected slice id (recorded
+        // below, keyed to the ACTIVE slice) silences the gate for the rest of
+        // the slice. The next slice is not on the list and retries fresh.
         await ensureEvolutionFiles();
         const currentDirection = await readDirection();
         const directionMode = detectDirectionMode(currentDirection);
+        const directionBackedOff = fitnessStore.directionRejections.includes(
+          slice.slice_id,
+        );
         const directionDue =
-          directionMode === "migrate" ||
-          (directionMode === "bootstrap" &&
-            (cardSelfModel !== null || fitnessStore.events.length > 0));
+          !directionBackedOff &&
+          (directionMode === "migrate" ||
+            (directionMode === "bootstrap" &&
+              (cardSelfModel !== null || fitnessStore.events.length > 0)));
 
         if (triggers.length > 0 || cardGate || directionDue) {
           // ONE merged run: the agent evaluates direction.md FIRST (the
@@ -1362,6 +1373,18 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
             .slice(-15),
           fitnessSignals: thisSliceSignals,
         });
+          // A REJECTED direction proposal (the old skeleton survives) must not
+          // re-fire the gate on every remaining turn of this slice — record
+          // the backoff keyed to the ACTIVE slice. Best-effort: a recording
+          // failure just means the gate fires once more next turn.
+          if (evolutionResult.direction?.outcome === "rejected") {
+            await recordDirectionRejection(slice.slice_id, batch).catch((e) =>
+              console.warn(
+                "[Evolution] could not record the direction rejection:",
+                e instanceof Error ? e.message : e,
+              ),
+            );
+          }
           // Fold the "why it ran" calibration rows into the terminal frame —
           // for BOTH the changed and the checked-no-updates outcomes. (The
           // direction verdict already rides the result from runCardEvolution.)
@@ -1415,7 +1438,15 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
       }
       // Same discipline as the boundary gate: MIGRATE is always due;
       // BOOTSTRAP is due with material at hand (legacy Self-model lines on
-      // the card, or any fitness events).
+      // the card, or any fitness events). `directionDue` stays RAW (backoff
+      // NOT applied) for mergedGate: the bridge path below applies verdicts
+      // its one housekeeping call already produced, so a rejected direction
+      // must not suppress an otherwise-worthy card mutation there. The backoff
+      // only gates the INLINE run — the one that costs a full merged
+      // Previously Agent call per turn.
+      const directionBackedOff = fitnessStore.directionRejections.includes(
+        slice.slice_id,
+      );
       const directionDue =
         directionMode === "migrate" ||
         (directionMode === "bootstrap" &&
@@ -1486,7 +1517,11 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
               }),
             );
           }
-        } else {
+        } else if (
+          evolutionTriggers.length > 0 ||
+          legacyCard ||
+          (directionDue && !directionBackedOff)
+        ) {
           // ONE merged run, light mode (no deep whole-slice review — that
           // stays boundary-scoped): the agent evaluates direction.md FIRST,
           // then evolves the card (+ triggered-bucket playbooks) under the
@@ -1531,6 +1566,16 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
               .slice(-15),
             fitnessSignals: thisSliceSignals,
           });
+          // Same per-slice backoff as the boundary path: a rejected direction
+          // proposal silences the gate for the rest of THIS slice.
+          if (evolutionResult.direction?.outcome === "rejected") {
+            await recordDirectionRejection(slice.slice_id, batch).catch((e) =>
+              console.warn(
+                "[Evolution] could not record the direction rejection:",
+                e instanceof Error ? e.message : e,
+              ),
+            );
+          }
           evolutionResult = {
             ...evolutionResult,
             ...(triggerRows.length > 0 ? { triggers: triggerRows } : {}),
@@ -1545,6 +1590,16 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
               (directionDue ? ` (direction ${directionMode})` : "") +
               (legacyCard ? " (legacy card migration)" : ""),
           );
+        } else {
+          // Only the direction gate fired and it is BACKED OFF for this slice
+          // (a proposal was already rejected) — skip visibly rather than
+          // re-running the full merged evolution on every remaining turn.
+          await emitEvolutionResult(stream, {
+            ran: false,
+            changed: false,
+            droppedRecent: 0,
+            note: `Direction ${directionMode} gate backed off for this slice — a proposal was already rejected; the next slice retries.`,
+          });
         }
       } else if (explicitUpdate) {
       if (phaseOutsource) {
@@ -1672,7 +1727,10 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   // seamlessly across the checkpoint. The tail is read server-side from the
   // CLOSED slice (never from client messages), so it is byte-fixed for this
   // slice's whole life and the window stays append-only. Best-effort: an
-  // unreadable predecessor just means no carry-over.
+  // unreadable predecessor just means no carry-over. Role-alternation safety
+  // (orphan user tail after a stop/cancel, double agent turns after a
+  // regenerate) is enforced where the prefix joins the window —
+  // sanitizeCheckpointPrefix in turn-workflow.ts.
   let contextPrefix: ModelMessage[] | undefined;
   if (slice.continuesFrom) {
     const prevTurns =
@@ -1707,11 +1765,14 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   const identityPrompt = buildAgentIdentityPrompt(profile);
 
   // The direction layer for the main agent's system prompt (v1.1): read per
-  // turn like the card, AFTER the batch flush so a direction an evolution run
-  // just landed (the slice boundary above, or a mid-slice explicit update) is
-  // what the NEXT turn sees — the prefix-cache drift on those turns is
-  // accepted deliberately. Missing / template / legacy-skeleton docs omit the
-  // layer entirely (buildDirectionBlock returns "").
+  // turn like the card, AFTER the batch flush — so a direction an evolution
+  // run just landed THIS turn (the slice boundary or the mid-turn merged run
+  // above) is read back fresh and already shapes THIS turn's reply, not only
+  // the next one. That makes the system prompt drift mid-slice on exactly
+  // those turns — a deliberate trade: on the rare turn the direction actually
+  // moves, freshness beats the prefix-cache hit.
+  // Missing / template / legacy-skeleton docs omit the layer entirely
+  // (buildDirectionBlock returns "").
   const directionBlock = buildDirectionBlock(
     await readDirection().catch(() => null),
   );

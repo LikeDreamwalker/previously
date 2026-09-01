@@ -3,9 +3,11 @@
  * USER PORTRAIT + HYPOTHESIS POOL (v1.0 redesign). The contract that matters:
  *   - the doc has a fixed four-section skeleton (# Portrait / # Hypotheses /
  *     # Evidence / # Log), descriptive-never-imperative by discipline;
- *   - a proposal is validated structurally: the skeleton, the bounded
- *     hypothesis pool (≤10, each line carrying proposed/checked metadata and a
- *     falsify-if condition), the evidence bar (≥2 distinct slice pointers
+ *   - a proposal is validated structurally: the skeleton, SUBSTANCE (Portrait
+ *     and Hypotheses cannot both be empty/placeholder — such a doc would flip
+ *     the mode to steady while rendering as no L1b layer at all), the bounded
+ *     hypothesis pool (≤10, each line carrying proposed/checked metadata and
+ *     a falsify-if condition), the evidence bar (≥2 distinct slice pointers
  *     steady-state, ≥1 on bootstrap AND migrate), the size cap;
  *   - the mode is detected from the current doc: template → bootstrap,
  *     old # Direction / # Anti-goals skeleton → migrate, else steady;
@@ -29,6 +31,7 @@ import {
   validateDirectionProposal,
   detectDirectionMode,
   buildDirectionBlock,
+  directionSubstance,
   DIRECTION_MAX_CHARS,
   DIRECTION_HYPOTHESES_MAX,
 } from "@/lib/evolution/direction-agent";
@@ -196,6 +199,48 @@ describe("validateDirectionProposal", () => {
       validateDirectionProposal(onePointer, null, { mode: "migrate" }),
     ).toEqual({ ok: true });
   });
+
+  it("rejects a doc with NO substantive content (Portrait + Hypotheses both empty/placeholder) — in every mode", () => {
+    // Such a doc would flip detectDirectionMode to steady (the migrate gate
+    // goes dark forever) while buildDirectionBlock renders nothing.
+    const shell = [
+      "# Portrait",
+      "",
+      "_(Not set yet — placeholder.)_",
+      "",
+      "# Hypotheses",
+      "",
+      "# Evidence",
+      "",
+      "- 2026-08-20-1430 — user corrected a vague answer",
+      "- 2026-08-22-1015 — user praised a concrete one",
+      "",
+      "# Log",
+      "",
+      "- 2026-08-27: re-shaped.",
+    ].join("\n");
+    for (const mode of ["steady", "bootstrap", "migrate"] as const) {
+      const res = validateDirectionProposal(shell, null, { mode });
+      expect(res.ok).toBe(false);
+      if (!res.ok) expect(res.reason).toContain("no substantive content");
+    }
+  });
+
+  it("accepts when ONE section carries substance (hypotheses-only pool, or a portrait with a still-placeholder pool)", () => {
+    const hypOnly = VALID_PROPOSAL.replace(
+      "The user prefers concrete, evidence-anchored answers over generic advice.",
+      "",
+    );
+    expect(validateDirectionProposal(hypOnly, null)).toEqual({ ok: true });
+
+    const placeholderPool = VALID_PROPOSAL.replace(
+      /^- \[proposed.*$/m,
+      "_(Not set yet — the pool is seeded on later runs.)_",
+    );
+    expect(
+      validateDirectionProposal(placeholderPool, null, { mode: "bootstrap" }),
+    ).toEqual({ ok: true });
+  });
 });
 
 describe("detectDirectionMode", () => {
@@ -218,6 +263,18 @@ describe("detectDirectionMode", () => {
 
   it("treats a written new-skeleton doc as steady", () => {
     expect(detectDirectionMode(VALID_PROPOSAL)).toBe("steady");
+  });
+});
+
+describe("directionSubstance (the shared placeholder rule)", () => {
+  it("treats absent, empty, and `_(`-placeholder sections as no content — the exact rule buildDirectionBlock uses", () => {
+    expect(directionSubstance(null)).toBe("");
+    expect(directionSubstance("   \n  ")).toBe("");
+    expect(directionSubstance("_(Not set yet — placeholder.)_")).toBe("");
+    expect(directionSubstance("\n  _(indented placeholder)_")).toBe("");
+    expect(directionSubstance("The user prefers concrete answers.")).toBe(
+      "The user prefers concrete answers.",
+    );
   });
 });
 

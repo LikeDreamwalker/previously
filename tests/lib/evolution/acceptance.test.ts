@@ -70,6 +70,7 @@ function mutation(
 function storeWith(events: Array<{ bucket: "card" | "recall"; delta: -2 | -1 | 0 | 1 }>) {
   return {
     signals: [],
+    directionRejections: [],
     events: events.map((e, i) => ({
       ts: `2026-08-2${4 + i}T10:00:00.000Z`,
       sliceId: `s${i}`,

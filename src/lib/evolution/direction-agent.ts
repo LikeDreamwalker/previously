@@ -137,13 +137,26 @@ export type DirectionValidation =
   | { ok: false; reason: string };
 
 /**
+ * A section body's SUBSTANCE: "" when the section is absent or carries only a
+ * `_(…)` placeholder line (the template's "(Not set yet…" markers). Shared by
+ * the L1b renderer (buildDirectionBlock) and the proposal validator so the two
+ * can never drift apart on what "empty" means — a doc the renderer would show
+ * as NOTHING must not pass validation.
+ */
+export function directionSubstance(section: string | null): string {
+  return section && !section.trimStart().startsWith("_(") ? section.trim() : "";
+}
+
+/**
  * Validate a proposed direction document. Structural checks only — the
  * descriptive/imperative discipline itself is the agent's (enforced by the
- * role prompt); code enforces what code can: the fixed skeleton, the
- * hypothesis pool's bound + per-line metadata, the evidence bar (steady-state
- * needs ≥2 DISTINCT slice pointers — the cross-slice requirement; bootstrap
- * and migrate writes clear with ≥1), the size cap, and that the proposal
- * actually changes something.
+ * role prompt); code enforces what code can: the fixed skeleton, SUBSTANCE
+ * (Portrait and Hypotheses cannot BOTH be empty/placeholder — such a doc would
+ * land, flip the mode to steady so the bootstrap/migrate gate goes dark, yet
+ * render as no L1b layer at all), the hypothesis pool's bound + per-line
+ * metadata, the evidence bar (steady-state needs ≥2 DISTINCT slice pointers —
+ * the cross-slice requirement; bootstrap and migrate writes clear with ≥1),
+ * the size cap, and that the proposal actually changes something.
  */
 export function validateDirectionProposal(
   proposed: string,
@@ -162,6 +175,24 @@ export function validateDirectionProposal(
     if (!text.includes(section)) {
       return { ok: false, reason: `missing the fixed "${section}" section` };
     }
+  }
+  // Substance (every mode, bootstrap/migrate included): a proposal whose
+  // Portrait AND Hypotheses are both empty or placeholder-only carries NO
+  // direction — but landing it would flip detectDirectionMode to steady,
+  // permanently silencing the bootstrap/migrate gate while buildDirectionBlock
+  // keeps returning "" (L1b absent, the analyzer rubric gone forever).
+  const portraitSubstance = directionSubstance(
+    extractDirectionSection(text, "# Portrait"),
+  );
+  const hypSubstance = directionSubstance(
+    extractDirectionSection(text, "# Hypotheses"),
+  );
+  if (!portraitSubstance && !hypSubstance) {
+    return {
+      ok: false,
+      reason:
+        "no substantive content — # Portrait and # Hypotheses are both empty/placeholder; an empty direction is not a direction",
+    };
   }
   // The hypothesis pool: bounded, and every guess carries its metadata.
   const hypSection = extractDirectionSection(text, "# Hypotheses") ?? "";
@@ -216,10 +247,10 @@ export function validateDirectionProposal(
  */
 export function buildDirectionBlock(direction: string | null): string {
   if (isDirectionTemplate(direction)) return "";
-  const placeholder = (s: string | null) =>
-    s && !s.trimStart().startsWith("_(") ? s.trim() : "";
-  const portrait = placeholder(extractDirectionSection(direction ?? "", "# Portrait"));
-  const hypotheses = placeholder(
+  const portrait = directionSubstance(
+    extractDirectionSection(direction ?? "", "# Portrait"),
+  );
+  const hypotheses = directionSubstance(
     extractDirectionSection(direction ?? "", "# Hypotheses"),
   );
   if (!portrait && !hypotheses) return "";

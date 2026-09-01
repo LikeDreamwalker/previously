@@ -65,13 +65,30 @@ describe("missing-file tolerance", () => {
 
   it("readFitness returns the empty store when fitness.json is missing", async () => {
     const store = await importFresh();
-    expect(await store.readFitness()).toEqual({ events: [], signals: [] });
+    expect(await store.readFitness()).toEqual({
+      events: [],
+      signals: [],
+      directionRejections: [],
+    });
   });
 
   it("readFitness degrades to the empty store on a CORRUPT file", async () => {
     writeOnDisk("memory/evolution/fitness.json", "{not json");
     const store = await importFresh();
-    expect(await store.readFitness()).toEqual({ events: [], signals: [] });
+    expect(await store.readFitness()).toEqual({
+      events: [],
+      signals: [],
+      directionRejections: [],
+    });
+  });
+
+  it("readFitness tolerates a legacy store without the directionRejections field", async () => {
+    writeOnDisk(
+      "memory/evolution/fitness.json",
+      JSON.stringify({ events: [], signals: [] }),
+    );
+    const store = await importFresh();
+    expect((await store.readFitness()).directionRejections).toEqual([]);
   });
 
   it("readRecentSignals returns [] when nothing was ever recorded", async () => {
@@ -135,6 +152,7 @@ describe("bucketNetScore", () => {
     const { bucketNetScore } = await importFresh();
     const store = {
       signals: [],
+      directionRejections: [],
       events: [
         // slice A (oldest)
         { ts: "t1", sliceId: "A", bucket: "recall" as const, delta: -2 as const, evidence: "x" },
@@ -163,6 +181,7 @@ describe("bucketNetScoreSince", () => {
     const { bucketNetScoreSince } = await importFresh();
     const store = {
       signals: [],
+      directionRejections: [],
       events: [
         { ts: "2026-08-20T10:00:00Z", sliceId: "A", bucket: "recall" as const, delta: -2 as const, evidence: "x" },
         { ts: "2026-08-22T10:00:00Z", sliceId: "B", bucket: "recall" as const, delta: -1 as const, evidence: "x" },
@@ -184,7 +203,9 @@ describe("bucketNetScoreSince", () => {
 // ── Bounded retention ────────────────────────────────────────────────────
 
 describe("bounded retention", () => {
-  it("retains only the newest MAX_FITNESS_EVENTS events", async () => {
+  // These two do 200+ sequential file writes — under full-suite parallel load
+  // (Windows disk) they can exceed vitest's default 5s test timeout.
+  it("retains only the newest MAX_FITNESS_EVENTS events", { timeout: 30_000 }, async () => {
     const store = await importFresh();
     const total = store.MAX_FITNESS_EVENTS + 25;
     for (let i = 0; i < total; i++) {
@@ -205,7 +226,7 @@ describe("bounded retention", () => {
     expect(events[events.length - 1].evidence).toBe(`e${total - 1}`);
   });
 
-  it("retains only the newest MAX_FITNESS_SIGNALS signals and serves readRecentSignals", async () => {
+  it("retains only the newest MAX_FITNESS_SIGNALS signals and serves readRecentSignals", { timeout: 30_000 }, async () => {
     const store = await importFresh();
     for (let i = 0; i < store.MAX_FITNESS_SIGNALS + 10; i++) {
       await store.appendSignal({
@@ -225,6 +246,32 @@ describe("bounded retention", () => {
       `d${store.MAX_FITNESS_SIGNALS + 8}`,
       `d${store.MAX_FITNESS_SIGNALS + 9}`,
     ]);
+  });
+});
+
+// ── Direction-rejection backoff (v1.1 per-slice gate backoff) ───────────
+
+describe("recordDirectionRejection", () => {
+  it("appends a slice id once (idempotent), persisting across reads", async () => {
+    const store = await importFresh();
+    await store.recordDirectionRejection("2026-08-27-1000");
+    await store.recordDirectionRejection("2026-08-27-1000");
+    await store.recordDirectionRejection("2026-08-27-1100");
+    const { directionRejections } = await store.readFitness();
+    expect(directionRejections).toEqual(["2026-08-27-1000", "2026-08-27-1100"]);
+  });
+
+  it("retains only the newest MAX_DIRECTION_REJECTIONS ids", async () => {
+    const store = await importFresh();
+    for (let i = 0; i < store.MAX_DIRECTION_REJECTIONS + 5; i++) {
+      await store.recordDirectionRejection(`2026-08-27-${String(1000 + i)}`);
+    }
+    const { directionRejections } = await store.readFitness();
+    expect(directionRejections).toHaveLength(store.MAX_DIRECTION_REJECTIONS);
+    expect(directionRejections[0]).toBe("2026-08-27-1005");
+    expect(directionRejections.at(-1)).toBe(
+      `2026-08-27-${1000 + store.MAX_DIRECTION_REJECTIONS + 4}`,
+    );
   });
 });
 

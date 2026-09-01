@@ -165,6 +165,7 @@
       "directionUnchanged": "方向：无变化",
       "directionUpdated": "方向：{summary}",
       "directionFailed": "方向：评估失败（{reason}）",
+      "directionRejected": "方向：提案未通过校验（{reason}）",
       "playbookUpdated": "{agent} 工作手册已更新：{summary}",
       "buckets": {
         "card": "卡片",
