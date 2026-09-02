@@ -893,6 +893,12 @@ export async function recallExecute(
           useGithub: ctx.useGithub,
           useDemo: ctx.useDemo,
           model: mainModel,
+          // The user's clock — timeline pointer lines get local-date
+          // annotations and the prompt states the current local time, so
+          // recall never reads a (UTC) slice id as wall-clock time.
+          timezone: ctx.timezone,
+          nowIso: ctx.startedAtIso,
+          locale: ctx.locale,
           // The runner streams each sub-agent tool step ("Reading global
           // timeline…", "Reading slice X…") onto the data-tool-progress
           // channel as it happens.
