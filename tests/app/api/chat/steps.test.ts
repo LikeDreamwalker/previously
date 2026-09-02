@@ -203,14 +203,19 @@ const evolutionLoop = vi.hoisted(() => ({
 vi.mock("@/lib/evolution/triggers", () => ({
   computeEvolutionTriggers: evolutionLoop.computeEvolutionTriggers,
 }));
-vi.mock("@/lib/evolution/direction-agent", () => ({
-  DIRECTION_RECENT_EVENTS: 30,
-  DIRECTION_RECENT_MARKINGS: 10,
-  buildDirectionBlock: evolutionLoop.buildDirectionBlock,
-  detectDirectionMode: evolutionLoop.detectDirectionMode,
-  extractDirectionSection: evolutionLoop.extractDirectionSection,
-  validateDirectionProposal: evolutionLoop.validateDirectionProposal,
-}));
+vi.mock("@/lib/evolution/direction-agent", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/lib/evolution/direction-agent")>();
+  return {
+    ...actual,
+    buildDirectionBlock: evolutionLoop.buildDirectionBlock,
+    detectDirectionMode: evolutionLoop.detectDirectionMode,
+    validateDirectionProposal: evolutionLoop.validateDirectionProposal,
+    // extractDirectionSection / retireExpiredHypotheses / applyDirectionOps /
+    // directionOpSchema stay REAL — they are pure functions/schemas, and the
+    // bridge-verdict path should exercise the actual ops logic.
+  };
+});
 vi.mock("@/lib/evolution/store", () => evolutionLoop.store);
 
 // Mock AI SDK for Flash tag extraction in housekeeping (and any sub-agent

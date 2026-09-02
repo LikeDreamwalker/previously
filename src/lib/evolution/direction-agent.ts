@@ -144,6 +144,316 @@ export function retireExpiredHypotheses(
   return { doc: kept.join("\n"), retired };
 }
 
+// ─── Atomic mutations (the ONLY write path — no whole-doc rewrites) ─────
+//
+// The evolution agent never rewrites direction.md wholesale; it issues
+// targeted OPS (the same discipline the card's mutation tools enforce), and
+// code applies them to the current doc one by one — validating structure per
+// op (dimension names, refs format, the pool cap, slice-id placement) and
+// stamping the `proposed` pointer itself (the agent CANNOT forge or refresh a
+// hypothesis's clock). The resulting doc then passes the whole-doc gate
+// (validateDirectionProposal — skeleton / substance / evidence bar) and the
+// engineering TTL (retireExpiredHypotheses) before writeDirection.
+
+/** A refs entry: a slice id, optionally turn-qualified (2026-08-07-0709-abc123). */
+const SLICE_REF_RE = /^\d{4}-\d{2}-\d{2}-\d{4}(-[0-9a-z]{4,})?$/i;
+
+export const directionOpSchema = z.discriminatedUnion("op", [
+  z.object({
+    op: z.literal("add_portrait"),
+    dimension: z.string().describe("One of the six fixed Portrait ## dimensions."),
+    text: z.string().describe("The portrait-grade entry — descriptive, no names/dates/events/slice ids."),
+    refs: z.array(z.string()).describe("Evidence slice ids (≥1)."),
+  }),
+  z.object({
+    op: z.literal("update_portrait"),
+    match: z.string().describe("A substring of the ONE existing Portrait line to replace."),
+    text: z.string(),
+    refs: z.array(z.string()),
+  }),
+  z.object({
+    op: z.literal("remove_portrait"),
+    match: z.string().describe("A substring of the ONE existing Portrait line to remove."),
+  }),
+  z.object({
+    op: z.literal("add_hypothesis"),
+    text: z.string().describe("The trait-level guess — about the PERSON, never an event prediction."),
+    falsify: z.string().describe("The falsification condition."),
+  }),
+  z.object({
+    op: z.literal("promote_hypothesis"),
+    match: z.string().describe("A substring of the ONE confirmed hypothesis line."),
+    dimension: z.string().describe("The Portrait ## dimension the confirmed guess promotes into."),
+    text: z.string().describe("The portrait-grade re-phrasing (descriptive, abstract)."),
+    refs: z.array(z.string()).describe("Evidence slice ids (≥1)."),
+  }),
+  z.object({
+    op: z.literal("remove_hypothesis"),
+    match: z.string().describe("A substring of the ONE refuted hypothesis line."),
+  }),
+]);
+export type DirectionOp = z.infer<typeof directionOpSchema>;
+
+/** The empty new-skeleton doc — the working base for bootstrap/migrate writes
+ *  and for a current doc that somehow lost a fixed heading. */
+export function emptyDirectionDoc(): string {
+  return [
+    "# Portrait",
+    "",
+    ...DIRECTION_PORTRAIT_DIMENSIONS.flatMap((d) => [d, ""]),
+    "# Hypotheses",
+    "",
+  ].join("\n");
+}
+
+export interface DirectionOpResult {
+  op: string;
+  ok: boolean;
+  detail: string;
+}
+
+export interface DirectionOpsApplyResult {
+  doc: string;
+  results: DirectionOpResult[];
+  /** False when every op was a no-op/rejection or the doc ended unchanged. */
+  changed: boolean;
+}
+
+/** [headingIndex, endIndex) of a top-level `# …` section; null when absent. */
+function sectionRange(lines: string[], heading: string): [number, number] | null {
+  const start = lines.findIndex((l) => l.trim() === heading);
+  if (start === -1) return null;
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i++) {
+    if (lines[i].trim().startsWith("# ")) {
+      end = i;
+      break;
+    }
+  }
+  return [start, end];
+}
+
+/** Indices of the `- ` bullet lines inside a range. */
+function bulletIndices(lines: string[], range: [number, number]): number[] {
+  const out: number[] = [];
+  for (let i = range[0] + 1; i < range[1]; i++) {
+    if (lines[i].trim().startsWith("- ")) out.push(i);
+  }
+  return out;
+}
+
+/** The ONE bullet in the range containing `match` — or a rejection reason. */
+function matchUniqueBullet(
+  lines: string[],
+  range: [number, number],
+  match: string,
+  what: string,
+): { index: number } | { error: string } {
+  const needle = match.trim();
+  if (!needle) return { error: `empty match — quote a substring of the ${what} line you mean` };
+  const hits = bulletIndices(lines, range).filter((i) => lines[i].includes(needle));
+  if (hits.length === 0) return { error: `no ${what} line contains "${needle.slice(0, 60)}"` };
+  if (hits.length > 1) {
+    return { error: `"${needle.slice(0, 60)}" matches ${hits.length} ${what} lines — be more specific` };
+  }
+  return { index: hits[0] };
+}
+
+/** Validate the shared portrait-entry payload (text + refs). */
+function validatePortraitPayload(
+  text: string,
+  refs: string[],
+): string | null {
+  const t = text.trim();
+  if (!t) return "text is empty";
+  if (new RegExp(SLICE_ID_RE).test(t)) {
+    return "the text carries a slice id — keep the statement abstract; pointers live in refs only";
+  }
+  const cleanRefs = refs.map((r) => r.trim()).filter(Boolean);
+  if (cleanRefs.length === 0) return "a Portrait entry needs ≥1 evidence ref (slice id)";
+  const bad = cleanRefs.find((r) => !SLICE_REF_RE.test(r));
+  if (bad) return `ref "${bad}" is not a slice id (YYYY-MM-DD-HHMM)`;
+  return null;
+}
+
+/**
+ * Apply direction ops to the current doc, in order. Each op is validated
+ * structurally BEFORE it lands (a rejected op leaves the doc untouched and
+ * reports why); a op that would push the doc past DIRECTION_MAX_CHARS is
+ * rolled back. Missing fixed headings are created on demand, so the applier
+ * also builds a bootstrap/migrate doc from the empty skeleton.
+ */
+export function applyDirectionOps(
+  current: string | null,
+  ops: DirectionOp[],
+  opts: { sliceId: string },
+): DirectionOpsApplyResult {
+  const base = current?.trim() ? current.trim() : emptyDirectionDoc();
+  let lines = base.split("\n");
+  const results: DirectionOpResult[] = [];
+
+  const sizeOk = () => lines.join("\n").length <= DIRECTION_MAX_CHARS;
+
+  for (const op of ops) {
+    const before = lines;
+    let result: DirectionOpResult;
+    switch (op.op) {
+      case "add_portrait":
+      case "promote_hypothesis": {
+        const dim = op.dimension.trim();
+        if (!(DIRECTION_PORTRAIT_DIMENSIONS as readonly string[]).includes(dim)) {
+          result = { op: op.op, ok: false, detail: `unknown dimension "${dim}" — use one of the six fixed ## dimensions` };
+          break;
+        }
+        const invalid = validatePortraitPayload(op.text, op.refs);
+        if (invalid) {
+          result = { op: op.op, ok: false, detail: invalid };
+          break;
+        }
+        const entry = `- ${op.text.trim()} — refs: ${op.refs.map((r) => r.trim()).filter(Boolean).join(", ")}`;
+        const work = [...lines];
+        // A promotion removes the confirmed guess first (same run, never lingers).
+        if (op.op === "promote_hypothesis") {
+          const hyp = sectionRange(work, "# Hypotheses");
+          if (!hyp) {
+            result = { op: op.op, ok: false, detail: "no # Hypotheses section to promote from" };
+            break;
+          }
+          const m = matchUniqueBullet(work, hyp, op.match, "hypothesis");
+          if ("error" in m) {
+            result = { op: op.op, ok: false, detail: m.error };
+            break;
+          }
+          work.splice(m.index, 1);
+        }
+        // Ensure the section + dimension heading exist ON THE WORK COPY.
+        let portrait = sectionRange(work, "# Portrait");
+        if (!portrait) {
+          work.unshift("# Portrait", "");
+          portrait = [0, work.length];
+        }
+        let dimIdx = work.findIndex((l) => l.trim() === dim);
+        if (dimIdx === -1) {
+          // Create the missing fixed heading at the end of the Portrait section.
+          const p = sectionRange(work, "# Portrait")!;
+          work.splice(p[1], 0, "", dim);
+          dimIdx = p[1] + 1;
+        }
+        // Insert at the end of the dimension's subsection (before the next
+        // heading of any level), past existing bullets.
+        let insertAt = work.length;
+        for (let i = dimIdx + 1; i < work.length; i++) {
+          if (work[i].trim().startsWith("#")) {
+            insertAt = i;
+            break;
+          }
+        }
+        work.splice(insertAt, 0, entry);
+        lines = work;
+        if (!sizeOk()) {
+          lines = before;
+          result = { op: op.op, ok: false, detail: `doc would exceed the ${DIRECTION_MAX_CHARS}-char cap — compress or remove something first` };
+          break;
+        }
+        result = { op: op.op, ok: true, detail: entry };
+        break;
+      }
+      case "update_portrait":
+      case "remove_portrait": {
+        const portrait = sectionRange(lines, "# Portrait");
+        if (!portrait) {
+          result = { op: op.op, ok: false, detail: "no # Portrait section" };
+          break;
+        }
+        const m = matchUniqueBullet(lines, portrait, op.match, "Portrait");
+        if ("error" in m) {
+          result = { op: op.op, ok: false, detail: m.error };
+          break;
+        }
+        if (op.op === "remove_portrait") {
+          const removed = lines[m.index];
+          lines = lines.filter((_, i) => i !== m.index);
+          result = { op: op.op, ok: true, detail: `removed: ${removed.trim()}` };
+          break;
+        }
+        const invalid = validatePortraitPayload(op.text, op.refs);
+        if (invalid) {
+          result = { op: op.op, ok: false, detail: invalid };
+          break;
+        }
+        const work = [...lines];
+        work[m.index] = `- ${op.text.trim()} — refs: ${op.refs.map((r) => r.trim()).filter(Boolean).join(", ")}`;
+        lines = work;
+        if (!sizeOk()) {
+          lines = before;
+          result = { op: op.op, ok: false, detail: `doc would exceed the ${DIRECTION_MAX_CHARS}-char cap — compress first` };
+          break;
+        }
+        result = { op: op.op, ok: true, detail: work[m.index] };
+        break;
+      }
+      case "add_hypothesis": {
+        const text = op.text.trim();
+        const falsify = op.falsify.trim();
+        if (!text) {
+          result = { op: op.op, ok: false, detail: "text is empty" };
+          break;
+        }
+        if (new RegExp(SLICE_ID_RE).test(text)) {
+          result = { op: op.op, ok: false, detail: "the guess carries a slice id — a guess is trait-level text; engineering stamps the [proposed …] pointer" };
+          break;
+        }
+        if (!falsify) {
+          result = { op: op.op, ok: false, detail: "a guess without a falsification condition is not a hypothesis" };
+          break;
+        }
+        const work = [...lines];
+        const hyp = ((): [number, number] => {
+          const r = sectionRange(work, "# Hypotheses");
+          if (r) return r;
+          work.push("", "# Hypotheses");
+          return [work.length - 1, work.length];
+        })();
+        const poolSize = bulletIndices(work, hyp).length;
+        if (poolSize >= DIRECTION_HYPOTHESES_MAX) {
+          result = { op: op.op, ok: false, detail: `the pool is full (${DIRECTION_HYPOTHESES_MAX}) — promote or remove a guess first` };
+          break;
+        }
+        const entry = `- [proposed ${opts.sliceId}] ${text} — falsify if: ${falsify}`;
+        work.splice(hyp[1], 0, entry);
+        lines = work;
+        if (!sizeOk()) {
+          lines = before;
+          result = { op: op.op, ok: false, detail: `doc would exceed the ${DIRECTION_MAX_CHARS}-char cap — compress first` };
+          break;
+        }
+        result = { op: op.op, ok: true, detail: entry };
+        break;
+      }
+      case "remove_hypothesis": {
+        const hyp = sectionRange(lines, "# Hypotheses");
+        if (!hyp) {
+          result = { op: op.op, ok: false, detail: "no # Hypotheses section" };
+          break;
+        }
+        const m = matchUniqueBullet(lines, hyp, op.match, "hypothesis");
+        if ("error" in m) {
+          result = { op: op.op, ok: false, detail: m.error };
+          break;
+        }
+        const removed = lines[m.index];
+        lines = lines.filter((_, i) => i !== m.index);
+        result = { op: op.op, ok: true, detail: `removed: ${removed.trim()}` };
+        break;
+      }
+    }
+    results.push(result);
+  }
+
+  const doc = lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  return { doc, results, changed: doc !== base };
+}
+
 /**
  * The three evaluation modes:
  *   - "bootstrap" — the FIRST-ever direction (template/unset): a lowered
@@ -457,15 +767,6 @@ export function renderDirectionMarkings(
     : "(no marked slices yet)";
 }
 
-/** A validated-in-caller direction proposal (the merged run's finish tool and
- *  the bridge report both carry this shape). */
-export interface DirectionProposal {
-  content: string;
-  summary: string;
-  evidence: string[];
-  expectedBenefit: string;
-}
-
 // ─── The standalone sub-agent (legacy path — the merged run is primary) ────
 
 export interface DirectionAgentInput {
@@ -522,19 +823,21 @@ const directionReportSchema = z.object({
     .describe("1-2 sentences: why no change, or why the direction must move."),
   proposed: z
     .object({
-      content: z
-        .string()
+      ops: z
+        .array(directionOpSchema)
         .describe(
-          "The FULL new direction.md — the two fixed sections (# Portrait / # Hypotheses): " +
-            "the Portrait in its six fixed ## dimensions, every entry DESCRIPTIVE, portrait-grade " +
-            "(cross-context, outlives its evidence, predictive), no names/dates/events in body text, " +
-            "slice pointers only in trailing \"— refs:\" tails; each Hypotheses line " +
-            "\"- [proposed YYYY-MM-DD-HHMM] <trait-level guess> — falsify if: <condition>\" (≤10). " +
-            "≥2 distinct slice pointers across the doc steady-state, ≥1 for bootstrap/migrate.",
+          "The ATOMIC direction mutations (never a rewritten document — entries you " +
+            "don't touch stay as they are): add_portrait / update_portrait / remove_portrait " +
+            "(dimension = one of the six fixed ## headings; text descriptive, portrait-grade, " +
+            "no names/dates/events/slice ids; refs = ≥1 evidence slice id), add_hypothesis " +
+            "(text + falsify — engineering stamps the [proposed …] pointer), promote_hypothesis " +
+            "(a CONFIRMED guess leaves the pool and enters a Portrait dimension in the same " +
+            "report), remove_hypothesis (refuted). Expiry needs no op — engineering retires " +
+            "over-age guesses deterministically.",
         ),
       summary: z
         .string()
-        .describe("One line: what changed in the direction (for the mutations archive)."),
+        .describe("One line: what changed in the direction."),
       evidence: z
         .array(z.string())
         .describe("Slice pointers / user quotes backing the change."),
@@ -611,7 +914,7 @@ There is no "progress" axis, only fit to the current user — when the user chan
 
 The current direction.md (or the untouched template in bootstrap mode), the card's legacy Self-model lines (migration source), the newest fitness events across all buckets (score: -2 explicit complaint / -1 dissatisfaction / +1 approval, each with the user's verbatim evidence), this slice's analysis (including its emotional signal), and the recent closed slices' markings — the episodic trail your portrait must stay consistent with. That is all — you have no read tools; judge from this evidence.
 
-Report through directionReport: outcome "no_change" + reason, or outcome "propose" with the full new document.`;
+Report through directionReport: outcome "no_change" + reason, or outcome "propose" with the ATOMIC ops — never a rewritten document; lines you don't touch stay as they are.`;
 
 const DIRECTION_SYSTEM = buildSubAgentSystem(DIRECTION_ROLE);
 
@@ -679,7 +982,7 @@ export async function runDirectionAgent(
     tools: {
       directionReport: tool({
         description:
-          "Report the direction evaluation: no_change (the common case) or a full proposed direction.md.",
+          "Report the direction evaluation: no_change (the common case) or the atomic direction ops to apply.",
         inputSchema: directionReportSchema,
       }),
     },
@@ -707,8 +1010,34 @@ export async function runDirectionAgent(
     return { outcome: "no_change", reason: report.reason };
   }
 
+  // Atomic ops: apply to the on-disk doc (steady) or build the new skeleton
+  // from scratch (bootstrap/migrate — the old doc's stale sections must not
+  // survive). Per-op rejections are logged; the result then passes the
+  // whole-doc gate.
+  const applied = applyDirectionOps(
+    input.mode === "steady" ? input.current : null,
+    report.proposed.ops,
+    { sliceId: input.sliceId },
+  );
+  const rejectedOps = applied.results.filter((r) => !r.ok);
+  if (rejectedOps.length > 0) {
+    console.warn(
+      `[DirectionAgent] ${rejectedOps.length} op(s) rejected — ${rejectedOps
+        .map((r) => r.detail)
+        .join("; ")
+        .slice(0, 200)}`,
+    );
+  }
+  if (!applied.changed) {
+    return {
+      outcome: "no_change",
+      reason: rejectedOps.length > 0
+        ? `all ops rejected (${rejectedOps[0].detail})`
+        : report.reason,
+    };
+  }
   const validation = validateDirectionProposal(
-    report.proposed.content,
+    applied.doc,
     input.current,
     { mode: input.mode },
   );
@@ -723,7 +1052,7 @@ export async function runDirectionAgent(
   }
   return {
     outcome: "proposed",
-    direction: report.proposed.content.trim(),
+    direction: applied.doc,
     reason: report.reason,
     summary: report.proposed.summary,
     evidence: report.proposed.evidence,

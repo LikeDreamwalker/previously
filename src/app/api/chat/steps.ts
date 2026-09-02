@@ -98,6 +98,7 @@ import {
   detectDirectionMode,
   extractDirectionSection,
   retireExpiredHypotheses,
+  applyDirectionOps,
   validateDirectionProposal,
 } from "@/lib/evolution/direction-agent";
 import {
@@ -1166,9 +1167,35 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   > => {
     if (!bridgeReport || !bridgeReport.direction) return undefined;
     if (bridgeReport.direction === "no_change") return { outcome: "no_change" };
-    const proposed = bridgeReport.direction;
+    const verdict = bridgeReport.direction;
+    // Atomic ops (same vocabulary as the merged run's direction tools):
+    // applyDirectionOps validates each op as it lands — rejected ops skip
+    // with their reason; the doc then passes the whole-doc gate + the
+    // engineering TTL before writeDirection.
+    const applied = applyDirectionOps(bridgeDirection, verdict.ops, {
+      sliceId: slice.slice_id,
+    });
+    const rejectedOps = applied.results.filter((r) => !r.ok);
+    if (rejectedOps.length > 0) {
+      console.warn(
+        `[Evolution] bridge direction: ${rejectedOps.length} op(s) rejected — ${rejectedOps
+          .map((r) => r.detail)
+          .join("; ")
+          .slice(0, 200)}`,
+      );
+    }
+    if (!applied.changed) {
+      if (rejectedOps.length > 0) {
+        hkActivity.warning = `Direction ops rejected: ${rejectedOps
+          .map((r) => r.detail)
+          .join("; ")
+          .slice(0, 200)}`;
+        sendHousekeepingCard(false);
+      }
+      return { outcome: "no_change" };
+    }
     const validation = validateDirectionProposal(
-      proposed.proposed,
+      applied.doc,
       bridgeDirection,
       { mode: bridgeDirectionMode },
     );
@@ -1181,7 +1208,7 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
       // Same engineering TTL as the merged run: strip pool lines whose
       // `proposed` pointer is ≥ TTL slices old before the write lands.
       const idx = await readTimelineIndex().catch(() => null);
-      const aged = retireExpiredHypotheses(proposed.proposed.trim(), [
+      const aged = retireExpiredHypotheses(applied.doc, [
         ...(idx?.slices ?? []).map((s) => s.id),
         slice.slice_id,
       ]);
@@ -1190,12 +1217,9 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
           `[Evolution] direction (bridge): retired ${aged.retired.length} expired hypothesis(es)`,
         );
       }
-      if (aged.doc.trim() === (bridgeDirection ?? "").trim()) {
-        return { outcome: "no_change" };
-      }
       await writeDirection(aged.doc, batch);
       const summary =
-        proposed.summary.trim() || "Direction updated (bridge housekeeping report)";
+        verdict.summary.trim() || "Direction updated (bridge housekeeping report)";
       console.log("[Evolution] direction updated (bridge report)");
       return { outcome: "updated", summary };
     } catch (e) {

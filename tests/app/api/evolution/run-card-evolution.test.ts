@@ -11,6 +11,7 @@ import {
   readCurrentPreviously,
   writeCurrentPreviously,
   writePreviously,
+  readTimelineIndex,
 } from "@/lib/episodic";
 import { writeDirection } from "@/lib/evolution/store";
 import {
@@ -41,6 +42,7 @@ const readMock = vi.mocked(readCurrentPreviously);
 const writeCurrentMock = vi.mocked(writeCurrentPreviously);
 const writeSliceMock = vi.mocked(writePreviously);
 const writeDirectionMock = vi.mocked(writeDirection);
+const timelineMock = vi.mocked(readTimelineIndex);
 
 const MODEL = {
   id: "deepseek-v4-flash",
@@ -232,17 +234,15 @@ describe("the merged direction half (v1.1)", () => {
     };
   }
 
-  function agentResultWithProposal(content: string) {
+  function agentResultWithProposal(doc: string) {
     return {
       updatedCard: BASE,
       reasoning: "direction moved",
       summary: "",
       mutations: [],
-      directionProposal: {
-        content,
+      direction: {
+        doc,
         summary: "First direction: concreteness",
-        evidence: ["2026-08-20-1430", "2026-08-22-1015"],
-        expectedBenefit: "Fewer vague answers",
       },
     };
   }
@@ -280,6 +280,35 @@ describe("the merged direction half (v1.1)", () => {
     const res = await runCardEvolution({ ...baseInput(), directionEval: directionEvalInput() });
     expect(res.direction).toEqual({ outcome: "no_change" });
     expect(writeDirectionMock).not.toHaveBeenCalled();
+  });
+
+  it("the engineering TTL runs even on a no-change verdict — expired hypotheses are retired", async () => {
+    timelineMock.mockResolvedValueOnce({
+      slices: [
+        { id: "2026-08-12-0900" },
+        { id: "2026-08-13-0900" },
+        { id: "2026-08-14-0900" },
+        { id: "2026-08-15-0900" },
+      ],
+    } as unknown as Awaited<ReturnType<typeof readTimelineIndex>>);
+    const current = `${VALID_DIRECTION}\n- [proposed 2026-08-11-0900] The user may prefer voice notes — falsify if: never used`;
+    runPreviouslyAgentMock.mockResolvedValue({
+      updatedCard: BASE,
+      reasoning: "direction holds",
+      summary: "",
+      mutations: [],
+    });
+    const res = await runCardEvolution({
+      ...baseInput(),
+      directionEval: { ...directionEvalInput(), current },
+    });
+    // 4 catalog slices + the current one are all newer than the proposed
+    // pointer → the expired guess is stripped and the doc written.
+    expect(res.direction?.outcome).toBe("updated");
+    expect(res.direction?.summary).toContain("Retired 1 expired");
+    const written = writeDirectionMock.mock.calls[0][0];
+    expect(written).not.toContain("voice notes");
+    expect(written).toContain("terse replies under time pressure");
   });
 
   it("a write failure surfaces outcome failed — never masquerading as no_change", async () => {

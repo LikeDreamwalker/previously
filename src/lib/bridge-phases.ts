@@ -71,6 +71,7 @@ import type { TurnAnalysis, TurnIntent } from "@/lib/episodic/flash/turn-analyze
 import type { EmotionalTone } from "@/lib/episodic/types";
 import type { EvolutionResult } from "@/lib/chat/turn-types";
 import type { FitnessSignal } from "@/lib/evolution/store";
+import { directionOpSchema } from "@/lib/evolution/direction-agent";
 
 // ─── Gate ──────────────────────────────────────────────────────────────────
 
@@ -175,14 +176,17 @@ const fitnessEntrySchema = z.object({
 
 /**
  * The Phase-1 direction verdict (v1.0 §2.3/§6) riding the same report:
- * "no_change" (the common case) or a full proposed direction.md. The proposal
- * is validated structurally at apply time (validateDirectionProposal — same
- * rules as the direction sub-agent), never trusted.
+ * "no_change" (the common case) or a list of ATOMIC direction ops — the same
+ * vocabulary the merged run's direction mutation tools use (single-sourced in
+ * direction-agent.ts). The ops are applied to the current doc one by one
+ * (applyDirectionOps — per-op structural validation, code-stamped `proposed`
+ * pointers), and the result still passes the whole-doc gate
+ * (validateDirectionProposal) + the engineering TTL before writeDirection.
  */
 const directionOutcomeSchema = z.union([
   z.literal("no_change"),
   z.object({
-    proposed: z.string(),
+    ops: z.array(directionOpSchema),
     summary: z.string().default(""),
     evidence: z.array(z.string()).default([]),
     expected_benefit: z.string().default(""),
@@ -342,7 +346,7 @@ One pass, these jobs:
 4. Dry-slice backfill — ONLY when the context carries a "Dry slices needing marks" section: one backfill_marks entry per listed slice ({slice_id copied verbatim, focus one sentence, summary ≤100 chars}); [] when the section is absent.
 5. Strand merge — ONLY when the context carries a "Strand merge candidates" section: propose from→to merges for NEAR-DUPLICATE strands (typos / same concept under two names / same entity written differently). Every "to" MUST be a name from the offered list; no chains (A→B and B→C in one pass); do NOT merge distinct concepts that merely share a word; when in doubt, do NOT merge — a wrong merge destroys thread history. [] when the section is absent or the index is already clean.
 6. Fitness scoring — score ONLY what THIS slice's user messages explicitly signal: -2 explicit complaint/correction, -1 signs of dissatisfaction, +1 explicit approval, attributed to a bucket (card | recall | search | thinkdeep | interaction). Every non-zero delta MUST quote the user's exact words in evidence — no quote, NO entry. Nothing signaled → omit fitness entirely (an absent/empty array, never 0-delta filler). When the context lists a recall_rework / recall_repeat mechanical signal, treat it as a -1 CANDIDATE for the recall bucket, and an interaction_regenerate / interaction_interrupt signal as a -1 CANDIDATE for the interaction bucket (the signal's detail line may serve as the evidence); recall_verify is neutral — no entry.
-7. Direction verdict — the context carries the current evolution direction (direction.md: the loop's USER PORTRAIT + HYPOTHESIS POOL — it describes WHO THE USER IS as a person and NEVER instructs the agent; it is NOT a log of what the user did; the card and playbooks are only its products) plus the card's legacy Self-model lines (rules to MIGRATE, see below). Judge whether the portrait itself should move. "no_change" is the common case — one slice's events are card/playbook material, never direction material by themselves; a single explicit durable user statement becomes a Portrait entry directly (descriptive: "用户明确不喜欢 X"), while suspected patterns enter the hypothesis pool first and promote only when confirmed across ≥2 distinct slices (or explicitly by the user). The new document has two fixed sections: "# Portrait" (CONFIRMED understanding, in six fixed "##" dimensions always all present: Traits & cognitive style / Triggers & rhythms / Patterns & loops / Strengths & resilience / Communication preferences / Values & boundaries; an entry is portrait-grade ONLY when it holds across contexts, outlives the event that evidenced it, and predicts — "用户面对不确定时先搭建结构再行动" qualifies, "用户周四聊了面试" is a case note and belongs nowhere here; NEVER imperative "you should/shouldn't" lines — if a line tells the agent what to do, phrase the USER PATTERN that motivates it instead; body text carries NO names/dates/events/slice ids — evidence rides ONLY as a trailing "— refs: YYYY-MM-DD-HHMM, …" tail), "# Hypotheses" (a bounded DYNAMIC pool of GUESSES about the user's traits/patterns, ≤10, each line exactly "- [proposed YYYY-MM-DD-HHMM] <the guess> — falsify if: <condition>"; confirmed → PROMOTE into the matching Portrait dimension in the same run — a confirmed guess never lingers in the pool; refuted → remove; still unverified 4 slices after its proposed pointer → retire; refill the pool toward 10; guesses are about the PERSON, never predictions about events). Evidence bar: ≥2 DISTINCT slice pointers across the doc steady-state; ≥1 suffices when the mode says BOOTSTRAP or MIGRATE. LEGACY MIGRATION: when the mode says MIGRATE (the doc still uses an old skeleton: # Direction / # Anti-goals, or the first portrait skeleton's # Evidence / # Log) or the Self-model lines below are non-empty, fold every worth-keeping conclusion into the new skeleton wholesale — re-abstract event-shaped notes into portrait-grade lines (names/dates/events out, pointers into trailing refs), re-propose surviving guesses in the new format, drop the rest — and note the card no longer grows a Self-model section. A proposal violating this discipline is rejected by the kernel.
+7. Direction verdict — the context carries the current evolution direction (direction.md: the loop's USER PORTRAIT + HYPOTHESIS POOL — it describes WHO THE USER IS as a person and NEVER instructs the agent; it is NOT a log of what the user did; the card and playbooks are only its products) plus the card's legacy Self-model lines (rules to MIGRATE, see below). Judge whether the portrait itself should move. "no_change" is the common case — one slice's events are card/playbook material, never direction material by themselves; a single explicit durable user statement becomes a Portrait entry directly (descriptive: "用户明确不喜欢 X"), while suspected patterns enter the hypothesis pool first and promote only when confirmed across ≥2 distinct slices (or explicitly by the user). The new document has two fixed sections: "# Portrait" (CONFIRMED understanding, in six fixed "##" dimensions always all present: Traits & cognitive style / Triggers & rhythms / Patterns & loops / Strengths & resilience / Communication preferences / Values & boundaries; an entry is portrait-grade ONLY when it holds across contexts, outlives the event that evidenced it, and predicts — "用户面对不确定时先搭建结构再行动" qualifies, "用户周四聊了面试" is a case note and belongs nowhere here; NEVER imperative "you should/shouldn't" lines — if a line tells the agent what to do, phrase the USER PATTERN that motivates it instead; body text carries NO names/dates/events/slice ids — evidence rides ONLY as a trailing "— refs: YYYY-MM-DD-HHMM, …" tail), "# Hypotheses" (a bounded DYNAMIC pool of GUESSES about the user's traits/patterns, ≤10, each line exactly "- [proposed YYYY-MM-DD-HHMM] <the guess> — falsify if: <condition>"; confirmed → PROMOTE into the matching Portrait dimension in the same run — a confirmed guess never lingers in the pool; refuted → remove; still unverified 4 slices after its proposed pointer → retire; refill the pool toward 10; guesses are about the PERSON, never predictions about events). Evidence bar: ≥2 DISTINCT slice pointers across the doc steady-state; ≥1 suffices when the mode says BOOTSTRAP or MIGRATE. LEGACY MIGRATION: when the mode says MIGRATE (the doc still uses an old skeleton: # Direction / # Anti-goals, or the first portrait skeleton's # Evidence / # Log) or the Self-model lines below are non-empty, fold every worth-keeping conclusion into the new skeleton wholesale — re-abstract event-shaped notes into portrait-grade lines (names/dates/events out, pointers into trailing refs), re-propose surviving guesses in the new format, drop the rest — and note the card no longer grows a Self-model section. A proposal violating this discipline is rejected by the kernel — and the direction moves ONLY through the direction ops vocabulary below (per-op structural validation; never a rewritten document).
 
 Mutation vocabulary (the evolution.mutations array):
 - {"op":"setIdentity","content":"Name: Alan"} — one Identity head line (Name / Address them as / Pronouns / Alias).
@@ -350,6 +354,13 @@ Mutation vocabulary (the evolution.mutations array):
 - {"op":"addPastAnchor","content":"…"} / {"op":"removePastAnchor","match":"…"} — durable fact / remove by substring.
 - {"op":"addNow","content":"…"} / {"op":"removeNow","match":"…"} / {"op":"promoteNowToPast","match":"…"} — current-state hooks.
 - {"op":"addHorizon","content":"…","by":"YYYY-MM-DD"|null,"refs":["<slice-id>",…]} / {"op":"resolveHorizon","match":"…","resolution":"…"} — open loops; resolve is the only way one leaves.
+
+Direction mutation vocabulary (the direction.ops array — the ONLY way the direction moves; never a whole-document rewrite; entries you don't touch stay as they are; the kernel stamps every hypothesis's [proposed …] pointer itself and enforces the pool's expiry TTL):
+- {"op":"add_portrait","dimension":"## …one of the six fixed dimensions…","text":"…","refs":["<slice-id>",…]} — a CONFIRMED portrait entry (descriptive, portrait-grade, no names/dates/events in text; ≥1 ref).
+- {"op":"update_portrait","match":"…","text":"…","refs":[…]} / {"op":"remove_portrait","match":"…"} — replace / remove ONE existing Portrait line by substring.
+- {"op":"add_hypothesis","text":"…","falsify":"…"} — a trait-level guess about the PERSON + its falsification condition.
+- {"op":"promote_hypothesis","match":"…","dimension":"## …","text":"…","refs":[…]} — a CONFIRMED guess leaves the pool and enters the Portrait (portrait-grade re-phrasing) in the same report.
+- {"op":"remove_hypothesis","match":"…"} — a refuted guess leaves the pool.
 
 The card is a PURE semantic memory pool (Identity/Past/Now/Horizon — what the user did, is doing, will do): it NEVER carries rules, lessons, or analysis. Patterns/tendencies about the user belong to the direction Portrait (job 7), guesses to its hypothesis pool. One fact, one home.
 
@@ -368,7 +379,7 @@ OUTPUT CONTRACT: your final reply must be EXACTLY ONE JSON object — no prose, 
   "backfill_marks": [ { "slice_id": string, "focus": string, "summary": string } ],
   "strand_merges": [ { "from": string, "to": string } ],
   "fitness": [ { "bucket": "card"|"recall"|"search"|"thinkdeep"|"interaction", "delta": -2|-1|0|1, "evidence": string } ],
-  "direction": "no_change" | { "proposed": string, "summary": string, "evidence": string[], "expected_benefit": string } | null
+  "direction": "no_change" | { "ops": [ …direction ops below… ], "summary": string, "evidence": string[], "expected_benefit": string } | null
 }
 closed_marking is null when no slice is closing; mutations is [] when nothing changes; backfill_marks is [] when no dry slices were provided; strand_merges is [] when no merge candidates were provided; fitness is [] (or omitted) when the slice carried no explicit signal; direction is "no_change" (or omitted) when the direction doc stays as it is. Analysis, closed_marking, backfill_marks, strand_merges and fitness must be produced from the data in this payload ALONE — do not read memory for them. Reading memory is card-evolution forensics ONLY (substantiating mutations, especially self-model lessons), and only through the three evidence commands the workspace allows in this phase (readslice / agentlog / card); the search-type commands (timeline / strands / slicesummary) are gated off in the housekeeping phase and will be refused.`;
 

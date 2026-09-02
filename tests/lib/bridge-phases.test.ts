@@ -330,14 +330,26 @@ describe("runHousekeepingBridge", () => {
     expect(res.report.direction).toBeNull();
   });
 
-  it("parses fitness deltas and a direction proposal when present", async () => {
+  it("parses fitness deltas and a direction ops verdict when present", async () => {
     const rich = JSON.parse(JSON.stringify(VALID_REPORT));
     rich.fitness = [
       { bucket: "recall", delta: -1, evidence: "main agent re-read slice 2026-08-20-1430 outside recall's references" },
       { bucket: "interaction", delta: 1, evidence: "exactly what I needed" },
     ];
     rich.direction = {
-      proposed: "# Direction\n\nKeep answers concrete.\n\n# Anti-goals\n\nNo fluff.\n\n# Evidence\n\n- 2026-08-20-1430\n- 2026-08-22-1015\n\n# Log\n\n- 2026-08-22: first direction.",
+      ops: [
+        {
+          op: "add_portrait",
+          dimension: "## Communication preferences",
+          text: "The user prefers concrete answers",
+          refs: ["2026-08-20-1430", "2026-08-22-1015"],
+        },
+        {
+          op: "add_hypothesis",
+          text: "The user may think better late at night",
+          falsify: "late-slice energy stays flat",
+        },
+      ],
       summary: "First direction: concreteness",
       evidence: ["2026-08-20-1430"],
       expected_benefit: "Less vague advice",
@@ -359,7 +371,8 @@ describe("runHousekeepingBridge", () => {
     expect(res.report.direction).not.toBeNull();
     expect(res.report.direction).not.toBe("no_change");
     if (res.report.direction && res.report.direction !== "no_change") {
-      expect(res.report.direction.proposed).toContain("# Direction");
+      expect(res.report.direction.ops).toHaveLength(2);
+      expect(res.report.direction.ops[0]).toMatchObject({ op: "add_portrait" });
       expect(res.report.direction.summary).toBe("First direction: concreteness");
     }
   });

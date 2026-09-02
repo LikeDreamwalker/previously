@@ -41,6 +41,7 @@ import {
   buildDirectionBlock,
   directionSubstance,
   retireExpiredHypotheses,
+  applyDirectionOps,
   DIRECTION_MAX_CHARS,
   DIRECTION_HYPOTHESES_MAX,
 } from "@/lib/evolution/direction-agent";
@@ -384,6 +385,161 @@ describe("retireExpiredHypotheses (the engineering TTL)", () => {
   });
 });
 
+describe("applyDirectionOps (the atomic write path)", () => {
+  const SLICE = "2026-08-27-1000";
+  const BASE = [
+    "# Portrait",
+    "",
+    DIMENSIONS[0],
+    "",
+    "- The user prefers concrete answers. — refs: 2026-08-20-1430",
+    "",
+    DIMENSIONS[1],
+    DIMENSIONS[2],
+    DIMENSIONS[3],
+    DIMENSIONS[4],
+    DIMENSIONS[5],
+    "",
+    "# Hypotheses",
+    "",
+    "- [proposed 2026-08-25-0900] The user may think better late at night — falsify if: late energy stays flat",
+  ].join("\n");
+
+  it("adds a Portrait entry under the right dimension, preserving untouched lines", () => {
+    const { doc, results, changed } = applyDirectionOps(
+      BASE,
+      [
+        {
+          op: "add_portrait",
+          dimension: DIMENSIONS[4],
+          text: "The user asks for sources when a claim matters",
+          refs: ["2026-08-26-2100"],
+        },
+      ],
+      { sliceId: SLICE },
+    );
+    expect(changed).toBe(true);
+    expect(results[0].ok).toBe(true);
+    expect(doc).toContain("The user prefers concrete answers. — refs: 2026-08-20-1430");
+    const dimIdx = doc.indexOf(DIMENSIONS[4]);
+    const entryIdx = doc.indexOf("asks for sources");
+    expect(entryIdx).toBeGreaterThan(dimIdx);
+    expect(entryIdx).toBeLessThan(doc.indexOf(DIMENSIONS[5]));
+  });
+
+  it("rejects an imperative-free violation the code CAN check: slice ids in text, missing refs, unknown dimension", () => {
+    const { doc, results, changed } = applyDirectionOps(
+      BASE,
+      [
+        { op: "add_portrait", dimension: DIMENSIONS[0], text: "Hiked on 2026-08-20-1430", refs: ["2026-08-20-1430"] },
+        { op: "add_portrait", dimension: DIMENSIONS[0], text: "No refs here", refs: [] },
+        { op: "add_portrait", dimension: "## Vibes", text: "x", refs: ["2026-08-20-1430"] },
+      ],
+      { sliceId: SLICE },
+    );
+    expect(changed).toBe(false);
+    expect(results.map((r) => r.ok)).toEqual([false, false, false]);
+    expect(doc).toBe(BASE);
+  });
+
+  it("stamps the [proposed] pointer itself on add_hypothesis and enforces the pool cap", () => {
+    const { doc, results } = applyDirectionOps(
+      BASE,
+      [{ op: "add_hypothesis", text: "The user may prefer plans over open exploration", falsify: "they reject structure twice" }],
+      { sliceId: SLICE },
+    );
+    expect(results[0].ok).toBe(true);
+    expect(doc).toContain(`- [proposed ${SLICE}] The user may prefer plans over open exploration — falsify if: they reject structure twice`);
+
+    let pooled = BASE;
+    for (let i = 0; i < 9; i++) {
+      pooled = applyDirectionOps(
+        pooled,
+        [{ op: "add_hypothesis", text: `guess number ${i}`, falsify: "x" }],
+        { sliceId: SLICE },
+      ).doc;
+    }
+    const full = applyDirectionOps(
+      pooled,
+      [{ op: "add_hypothesis", text: "one too many", falsify: "x" }],
+      { sliceId: SLICE },
+    );
+    expect(full.results[0].ok).toBe(false);
+    expect(full.results[0].detail).toContain("pool is full");
+  });
+
+  it("promote_hypothesis removes the guess AND lands the portrait entry in the same call", () => {
+    const { doc, results } = applyDirectionOps(
+      BASE,
+      [
+        {
+          op: "promote_hypothesis",
+          match: "think better late at night",
+          dimension: DIMENSIONS[1],
+          text: "The user's energy rises late at night",
+          refs: ["2026-08-25-0900", "2026-08-26-2330"],
+        },
+      ],
+      { sliceId: SLICE },
+    );
+    expect(results[0].ok).toBe(true);
+    expect(doc).not.toContain("[proposed 2026-08-25-0900]");
+    const dimIdx = doc.indexOf(DIMENSIONS[1]);
+    expect(doc.indexOf("energy rises late at night")).toBeGreaterThan(dimIdx);
+  });
+
+  it("match ops require exactly ONE hit — zero or two is a rejection, not a guess", () => {
+    const two = `${BASE}\n- [proposed 2026-08-26-0900] The user may think better in the morning — falsify if: x`;
+    const { results } = applyDirectionOps(
+      two,
+      [
+        { op: "remove_hypothesis", match: "think better" }, // ambiguous
+        { op: "remove_hypothesis", match: "nonexistent guess" }, // no hit
+      ],
+      { sliceId: SLICE },
+    );
+    expect(results.map((r) => r.ok)).toEqual([false, false]);
+  });
+
+  it("update_portrait / remove_portrait hit only the Portrait, never the pool", () => {
+    const { doc, results } = applyDirectionOps(
+      BASE,
+      [
+        {
+          op: "update_portrait",
+          match: "prefers concrete answers",
+          text: "The user prefers concrete, evidence-anchored answers",
+          refs: ["2026-08-20-1430", "2026-08-22-1015"],
+        },
+      ],
+      { sliceId: SLICE },
+    );
+    expect(results[0].ok).toBe(true);
+    expect(doc).toContain("- The user prefers concrete, evidence-anchored answers — refs: 2026-08-20-1430, 2026-08-22-1015");
+    expect(doc).toContain("[proposed 2026-08-25-0900]");
+  });
+
+  it("bootstrap: builds the new skeleton from a null current doc", () => {
+    const { doc, changed } = applyDirectionOps(
+      null,
+      [
+        {
+          op: "add_portrait",
+          dimension: DIMENSIONS[0],
+          text: "The user builds structure before acting under uncertainty",
+          refs: ["2026-08-27-1000"],
+        },
+      ],
+      { sliceId: SLICE },
+    );
+    expect(changed).toBe(true);
+    for (const d of DIMENSIONS) expect(doc).toContain(d);
+    expect(doc).toContain("# Hypotheses");
+    // …and the result passes the whole-doc gate at the (lowered) bootstrap bar.
+    expect(validateDirectionProposal(doc, null, { mode: "bootstrap" })).toEqual({ ok: true });
+  });
+});
+
 describe("directionSubstance (the shared placeholder rule)", () => {
   it("treats absent, empty, heading-only, and `_(`-placeholder sections as no content — the exact rule buildDirectionBlock uses", () => {
     expect(directionSubstance(null)).toBe("");
@@ -455,13 +611,25 @@ describe("runDirectionAgent", () => {
     expect(Object.keys(opts.tools)).toEqual(["directionReport"]);
   });
 
-  it("accepts and returns a structurally valid proposal", async () => {
+  it("accepts and returns a structurally valid ops proposal", async () => {
     ai.streamText.mockResolvedValue(
       makeToolCall({
         outcome: "propose",
         reason: "concreteness feedback recurred across slices",
         proposed: {
-          content: VALID_PROPOSAL,
+          ops: [
+            {
+              op: "add_portrait",
+              dimension: "## Communication preferences",
+              text: "The user prefers concrete, evidence-anchored answers",
+              refs: ["2026-08-20-1430", "2026-08-22-1015"],
+            },
+            {
+              op: "add_hypothesis",
+              text: "The user may think better late at night",
+              falsify: "late-slice energy stays flat",
+            },
+          ],
           summary: "First direction: concreteness",
           evidence: ["2026-08-20-1430", "2026-08-22-1015"],
           expectedBenefit: "Fewer vague answers",
@@ -472,20 +640,34 @@ describe("runDirectionAgent", () => {
     expect(res.outcome).toBe("proposed");
     if (res.outcome === "proposed") {
       expect(res.direction).toContain("# Portrait");
+      expect(res.direction).toContain(
+        "- The user prefers concrete, evidence-anchored answers — refs: 2026-08-20-1430, 2026-08-22-1015",
+      );
+      // Engineering stamped the proposed pointer with the run's slice.
+      expect(res.direction).toContain(
+        "- [proposed 2026-08-27-1000] The user may think better late at night — falsify if: late-slice energy stays flat",
+      );
       expect(res.summary).toBe("First direction: concreteness");
       expect(res.evidence).toEqual(["2026-08-20-1430", "2026-08-22-1015"]);
       expect(res.expectedBenefit).toBe("Fewer vague answers");
     }
   });
 
-  it("a structurally invalid proposal degrades to no_change (rejection logged, nothing written)", async () => {
+  it("a structurally invalid op set degrades to no_change (rejections logged, nothing written)", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     ai.streamText.mockResolvedValue(
       makeToolCall({
         outcome: "propose",
         reason: "episodic fact as direction",
         proposed: {
-          content: "# Portrait\n\nUser hiked yesterday.", // missing sections + pointer
+          ops: [
+            {
+              op: "add_portrait",
+              dimension: "## Traits & cognitive style",
+              text: "Hiked on 2026-08-20-1430", // a slice id in the text — rejected
+              refs: [],
+            },
+          ],
           summary: "bad",
           evidence: [],
           expectedBenefit: "none",
@@ -495,9 +677,9 @@ describe("runDirectionAgent", () => {
     const res = await runDirectionAgent(baseInput());
     expect(res.outcome).toBe("no_change");
     if (res.outcome === "no_change") {
-      expect(res.reason).toContain("proposal rejected");
+      expect(res.reason).toContain("rejected");
     }
-    expect(warn).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalled();
     warn.mockRestore();
   });
 
@@ -606,16 +788,19 @@ describe("runDirectionAgent", () => {
   });
 
   it("bootstrap mode accepts a first direction anchored to a single slice", async () => {
-    const onePointer = VALID_PROPOSAL.replace(
-      " — refs: 2026-08-20-1430, 2026-08-22-1015",
-      " — refs: 2026-08-20-1430",
-    );
     ai.streamText.mockResolvedValue(
       makeToolCall({
         outcome: "propose",
         reason: "seeding the baseline",
         proposed: {
-          content: onePointer,
+          ops: [
+            {
+              op: "add_portrait",
+              dimension: "## Communication preferences",
+              text: "The user prefers concrete, evidence-anchored answers",
+              refs: ["2026-08-20-1430"],
+            },
+          ],
           summary: "First direction",
           evidence: ["2026-08-20-1430"],
           expectedBenefit: "A baseline to evolve from",

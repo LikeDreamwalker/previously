@@ -324,52 +324,62 @@ describe("the merged direction half (directionEval)", () => {
     expect(opts.system).not.toContain("The user prefers concrete answers.");
   });
 
-  it("a directionProposal on finish is surfaced on the output when directionEval is set", async () => {
-    runSubAgentMock.mockResolvedValue({
-      ok: true,
-      report: {
-        reasoning: "portrait moved",
-        summary: "更新了画像",
-        directionProposal: {
-          content: "# Portrait\n\nNew portrait.\n\n# Hypotheses\n\n# Evidence\n\n- 2026-08-20-1430 — x\n- 2026-08-22-1015 — y\n\n# Log",
-          summary: "Direction: new portrait",
-          evidence: ["2026-08-20-1430", "2026-08-22-1015"],
-          expectedBenefit: "Better fit",
+  it("direction MUTATION tools edit the working copy; a moved direction rides the output", async () => {
+    runSubAgentMock.mockImplementation(async (opts) => {
+      await callTool(opts, "addPortraitEntry", {
+        dimension: "## Communication preferences",
+        text: "The user prefers concrete, evidence-anchored answers",
+        refs: ["2026-08-20-1430", "2026-08-22-1015"],
+      });
+      await callTool(opts, "addHypothesis", {
+        text: "The user may think better late at night",
+        falsify: "late-slice energy stays flat",
+      });
+      return {
+        ok: true,
+        report: {
+          reasoning: "portrait moved",
+          summary: "更新了画像",
+          directionSummary: "Direction: new portrait entry + one guess",
         },
-      },
-      text: "",
+        text: "",
+      };
     });
     const out = await runPreviouslyAgent(baseInput({ directionEval: DIRECTION_EVAL }));
-    expect(out.directionProposal?.summary).toBe("Direction: new portrait");
-    expect(out.directionProposal?.content).toContain("# Portrait");
+    expect(out.direction?.summary).toBe("Direction: new portrait entry + one guess");
+    // The old doc's lines survive untouched (mutation, not a rewrite).
+    expect(out.direction?.doc).toContain("The user prefers concrete answers.");
+    expect(out.direction?.doc).toContain(
+      "- The user prefers concrete, evidence-anchored answers — refs: 2026-08-20-1430, 2026-08-22-1015",
+    );
+    // Engineering stamps the [proposed] pointer with the current slice.
+    expect(out.direction?.doc).toContain(
+      `- [proposed ${SLICE}] The user may think better late at night — falsify if: late-slice energy stays flat`,
+    );
   });
 
-  it("a directionProposal is DROPPED when no directionEval was requested (explicit-request path)", async () => {
-    runSubAgentMock.mockResolvedValue({
-      ok: true,
-      report: {
-        reasoning: "unsolicited proposal",
-        summary: "",
-        directionProposal: {
-          content: "# Portrait\n\nx\n\n# Hypotheses\n\n# Evidence\n\n# Log",
-          summary: "unsolicited",
-          evidence: [],
-          expectedBenefit: "none",
-        },
-      },
-      text: "",
+  it("direction tools are NOT mounted when no directionEval was requested (explicit-request path)", async () => {
+    runSubAgentMock.mockImplementation(async (opts) => {
+      expect(opts.tools.addPortraitEntry).toBeUndefined();
+      expect(opts.tools.addHypothesis).toBeUndefined();
+      // A stray directionSummary without the direction half is dropped.
+      return {
+        ok: true,
+        report: { reasoning: "unsolicited", summary: "", directionSummary: "unsolicited" },
+        text: "",
+      };
     });
     const out = await runPreviouslyAgent(baseInput());
-    expect(out.directionProposal).toBeUndefined();
+    expect(out.direction).toBeUndefined();
   });
 
-  it("no proposal on finish → no directionProposal on the output", async () => {
+  it("no direction tool calls → no direction on the output", async () => {
     runSubAgentMock.mockResolvedValue({
       ok: true,
       report: { reasoning: "direction holds", summary: "" },
       text: "",
     });
     const out = await runPreviouslyAgent(baseInput({ directionEval: DIRECTION_EVAL }));
-    expect(out.directionProposal).toBeUndefined();
+    expect(out.direction).toBeUndefined();
   });
 });
