@@ -338,7 +338,7 @@ export function buildDirectionBlock(direction: string | null): string {
       "",
       "### Hypotheses — UNVERIFIED GUESSES about the user",
       "",
-      "The lines below are guesses about the user's traits and patterns, NOT established facts — treat them as your working model of the user and let your answers gently probe them (asking the user is allowed); never assert one as fact. User feedback on a guess is exactly the signal that confirms or refutes it:",
+      "The lines below are guesses about the user's traits and patterns, NOT established facts — they may shape what you pay attention to, and you may probe them gently (asking the user is allowed); never assert one as fact. User feedback on a guess is exactly the signal that confirms or refutes it:",
       "",
       hypBody!.trim(),
     );

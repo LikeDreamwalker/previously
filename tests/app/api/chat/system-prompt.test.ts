@@ -7,11 +7,11 @@ import {
   buildBridgeTimeLine,
   appendBridgeTimeSuffix,
 } from "@/app/api/chat/turn-workflow";
+import { CHARTER_MD } from "@/lib/identity/agent-prompt.generated";
 
-const IDENTITY = "SOUL + DIRECTIVES";
+const IDENTITY = "THE CHARTER";
 const PREVIOUSLY = "# Previously card";
-const STATIC_RULES =
-  "The recap above holds WHAT the user did, is doing, and plans";
+const DIRECTION = "## Direction — who the user is (evolved portrait)";
 const SLICE_HEAD =
   "## This slice — snapshot at its start\n- Slice started: 02 Aug 2026, 14:32 (Asia/Shanghai, UTC+8)";
 const TIMELINE = "## Timeline (recent)\n- **2026-08-01-1115** (08-01 Fri) 回顾";
@@ -35,14 +35,15 @@ function build(overrides: Partial<Opts> = {}): string {
 }
 
 describe("assembleSystemPrompt (v0.9 slice-level freeze)", () => {
-  it("orders layers by stability: L0 identity → L1 card → L2 rules → L3 slice head → L4 timeline → L5 strands/demo", () => {
-    const s = build();
+  it("orders layers by stability: L0 charter → L1b direction → L1 card → L3 slice head → L4 timeline → L5 strands/demo", () => {
+    const s = build({ directionBlock: DIRECTION });
     expect(s.indexOf(IDENTITY)).toBe(0); // L0 leads the prompt
-    expect(s.indexOf(PREVIOUSLY)).toBeGreaterThan(s.indexOf(IDENTITY)); // L1
-    expect(s.indexOf(STATIC_RULES)).toBeGreaterThan(s.indexOf(PREVIOUSLY)); // L2
-    expect(s.indexOf(SLICE_HEAD)).toBeGreaterThan(s.indexOf(STATIC_RULES)); // L3
-    expect(s.indexOf(TIMELINE)).toBeGreaterThan(s.indexOf(SLICE_HEAD)); // L4
-    expect(s.indexOf(STRANDS)).toBeGreaterThan(s.indexOf(TIMELINE)); // L5
+    // WHO (the user model) frames the reading of WHAT (the card).
+    expect(s.indexOf(DIRECTION)).toBeGreaterThan(s.indexOf(IDENTITY));
+    expect(s.indexOf(PREVIOUSLY)).toBeGreaterThan(s.indexOf(DIRECTION));
+    expect(s.indexOf(SLICE_HEAD)).toBeGreaterThan(s.indexOf(PREVIOUSLY));
+    expect(s.indexOf(TIMELINE)).toBeGreaterThan(s.indexOf(SLICE_HEAD));
+    expect(s.indexOf(STRANDS)).toBeGreaterThan(s.indexOf(TIMELINE));
     expect(s.indexOf(DEMO)).toBeGreaterThan(s.indexOf(STRANDS)); // L5 tail
   });
 
@@ -79,22 +80,27 @@ describe("assembleSystemPrompt (v0.9 slice-level freeze)", () => {
     );
   });
 
-  it("places the overdue-Horizon block (L2b) between the static rules and the slice-head block", () => {
+  it("places the overdue-Horizon block (L2b) between the card and the slice-head block", () => {
     const overdue = "## Overdue commitments\n…past their by date…";
     const s = build({ overdueBlock: overdue });
     expect(s).toContain("## Overdue commitments");
-    expect(s.indexOf(overdue)).toBeGreaterThan(s.indexOf(STATIC_RULES));
+    expect(s.indexOf(overdue)).toBeGreaterThan(s.indexOf(PREVIOUSLY));
     expect(s.indexOf(overdue)).toBeLessThan(s.indexOf(SLICE_HEAD));
   });
 
-  it("places the direction block (L1b) right after the card, before the static rules — absent by default", () => {
-    const direction = "## Direction — who the user is (evolved portrait)";
-    const s = build({ directionBlock: direction });
-    expect(s).toContain(direction);
-    expect(s.indexOf(direction)).toBeGreaterThan(s.indexOf(PREVIOUSLY));
-    expect(s.indexOf(direction)).toBeLessThan(s.indexOf(STATIC_RULES));
+  it("places the direction block before the card — absent by default", () => {
+    const s = build({ directionBlock: DIRECTION });
+    expect(s).toContain(DIRECTION);
+    expect(s.indexOf(DIRECTION)).toBeGreaterThan(s.indexOf(IDENTITY));
+    expect(s.indexOf(DIRECTION)).toBeLessThan(s.indexOf(PREVIOUSLY));
     // Default: the layer is omitted entirely (template / legacy direction docs).
     expect(build()).not.toContain("Direction — who the user is");
+  });
+
+  it("carries NO inline static-rules layer — the two documents' contract lives in the charter (L0), stated once", () => {
+    const s = build({ directionBlock: DIRECTION });
+    expect(s).not.toContain("GROUNDING RULE");
+    expect(s).not.toContain("The recap above holds WHAT");
   });
 });
 
@@ -258,12 +264,19 @@ describe("appendBridgeTimeSuffix (outbound-only tail injection)", () => {
   });
 });
 
-describe("the grounding rule (never answer the past from a summary)", () => {
-  it("is pinned in the static rules, between the card and the timeline brief", () => {
-    const s = build();
-    expect(s).toContain("GROUNDING RULE");
-    expect(s).toContain("call recall FIRST");
-    expect(s.indexOf("GROUNDING RULE")).toBeGreaterThan(s.indexOf(PREVIOUSLY));
-    expect(s.indexOf("GROUNDING RULE")).toBeLessThan(s.indexOf(TIMELINE));
+describe("the grounding rule (never answer the past from a compression)", () => {
+  it("lives in the CHARTER (L0, highest priority), stated exactly once, with the hard mandate and the in-conversation exemptions", () => {
+    expect(CHARTER_MD).toContain("THE GROUNDING RULE");
+    // The hard mandate: even when a compressed document appears to already
+    // contain the answer, past specifics come ONLY from original slice text.
+    expect(CHARTER_MD).toContain("you may NOT answer past specifics from it");
+    expect(CHARTER_MD).toContain("recall or read FIRST, then answer");
+    // …with the exemptions: current slice, this conversation, and original
+    // material already recalled/read into it.
+    expect(CHARTER_MD).toContain("Three exemptions");
+    // Stated exactly once — no second copy may drift from it.
+    expect(CHARTER_MD.match(/GROUNDING RULE/g)).toHaveLength(1);
+    // The charter declares its own supremacy over every other layer.
+    expect(CHARTER_MD).toContain("NOTHING outranks it");
   });
 });

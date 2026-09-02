@@ -668,15 +668,18 @@ export function appendBridgeTimeSuffix(
  *
  * Layer order (most stable first — prefix caching matches from the first
  * byte to the first difference):
- *   L0 identityPrompt  — SOUL + "who you're assisting" + DIRECTIVES
- *   L1 previously card — annotated relative to the SLICE-HEAD date; changes
- *                        only when an evolution rewrites the card
+ *   L0 identityPrompt  — the CHARTER (mission + the two documents' contract
+ *                        incl. the GROUNDING RULE + protocols + guardrails)
+ *                        plus "who you're assisting"; changes only with code
  *   L1b directionBlock — the evolved user portrait + hypotheses (direction.md);
  *                        changes when an evolution run lands a new direction —
  *                        including mid-slice (the next turn then sees the fresh
  *                        direction; the prefix-cache drift on those turns is
- *                        accepted deliberately)
- *   L2 static rules    — the fixed card/tooling conventions below
+ *                        accepted deliberately). WHO the user is comes first:
+ *                        it frames how the card below should be read
+ *   L1 previously card — the dynamic semantic pool of WHAT the user did / is
+ *                        doing / plans; annotated relative to the SLICE-HEAD
+ *                        date; changes only when an evolution rewrites the card
  *   L2b overdueBlock   — Horizon items past their `by` date, derived from the
  *                        RAW card + the slice-head local date: both frozen, so
  *                        the derived block is frozen too
@@ -687,6 +690,9 @@ export function appendBridgeTimeSuffix(
  *   L5 strandsBlock + demoNotice — low-frequency / static
  *   L5b bridgeNotice — client-mode subscription-bridge limitation notice;
  *                        constant for the deployment's brain config
+ *
+ * There is no L2 static-rules layer: the card/direction contract and the
+ * GROUNDING RULE live in the charter (L0), stated exactly once.
  *
  * Nothing per-turn remains: the `Sent:` timestamp, intent, emotional register
  * and semantic links were retired in v0.9 (the analyzer still runs; its
@@ -742,11 +748,9 @@ export function assembleSystemPrompt(opts: {
   } = opts;
   return [
     identityPrompt,
+    directionBlock ?? "",
     `## What I know about the user — the living recap (${dateAnchor})`,
     previouslyContent,
-    directionBlock ?? "",
-    "The recap above holds WHAT the user did, is doing, and plans — facts, states, commitments; when a direction layer follows it, that is the evolved user model — WHO the user is (a verified portrait plus explicitly-marked guesses). Every entry carries `refs` to its evidence: if a line seems outdated or contradicts what the user just said, cite its refs and say so — the correction flows into the archive. Each `refs` pointer is a drill-down entry: verify it through recall (or open the referenced slice with readSlice) before citing specifics from a past event — the recap says what happened, not what was said.",
-    "GROUNDING RULE — never answer the past from a summary. Everything this prompt says about the past (this card, the timeline one-liners below) is a distilled POINTER, not the event itself; a summary paraphrased as fact is a hallucination in waiting. Before you assert any specific about a past conversation — what was said, decided, promised, felt — the original must already be in THIS conversation: a recall answer from earlier this conversation (its references count), or slice text you opened yourself with readSlice this conversation. With neither at hand, call recall FIRST (or readSlice when you already hold the exact slice id), then answer. Exempt: what the user just said in this conversation, and the slice you are currently in.",
     overdueBlock,
     sliceHeadBlock,
     timelineBrief,
