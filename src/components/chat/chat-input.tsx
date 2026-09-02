@@ -179,7 +179,7 @@ export function ChatInput({
             accept="image/*"
           />
 
-          {/* Memory docs — previously / direction / mutations viewer */}
+          {/* Memory docs — previously / direction viewer */}
           <MemoryDocs persona={persona} />
 
           {/* Model selector — NEW */}

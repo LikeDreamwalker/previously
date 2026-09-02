@@ -12,7 +12,7 @@ import {
   writeCurrentPreviously,
   writePreviously,
 } from "@/lib/episodic";
-import { writeDirection, appendMutation } from "@/lib/evolution/store";
+import { writeDirection } from "@/lib/evolution/store";
 import {
   newCardTemplate,
   serializeCard,
@@ -27,11 +27,10 @@ vi.mock("@/lib/episodic", () => ({
   writeCurrentPreviously: vi.fn(),
   writePreviously: vi.fn(),
 }));
-// The v1.0 mutation-archive boundary (playbook write / fossil archive) is
-// mocked so the tests stay hermetic — the real modules would read/write
+// The evolution store boundary (direction / playbook writes) is mocked so
+// the tests stay hermetic — the real module would read/write
 // memory/evolution/ on the local fs.
 vi.mock("@/lib/evolution/store", () => ({
-  appendMutation: vi.fn(async () => {}),
   writeDirection: vi.fn(async () => {}),
   writePlaybook: vi.fn(async () => {}),
 }));
@@ -41,7 +40,6 @@ const readMock = vi.mocked(readCurrentPreviously);
 const writeCurrentMock = vi.mocked(writeCurrentPreviously);
 const writeSliceMock = vi.mocked(writePreviously);
 const writeDirectionMock = vi.mocked(writeDirection);
-const appendMutationMock = vi.mocked(appendMutation);
 
 const MODEL = {
   id: "deepseek-v4-flash",
@@ -149,7 +147,7 @@ describe("write-back rules", () => {
     expect(runPreviouslyAgentMock.mock.calls[0][0].onLine).toBe(onEvolutionLine);
   });
 
-  it("surfaces accepted playbook writes with their archive summaries (v1.0 §2.4)", async () => {
+  it("surfaces accepted playbook writes with their benefit summaries (v1.0 §2.4)", async () => {
     runPreviouslyAgentMock.mockResolvedValue({
       updatedCard: BASE,
       reasoning: "recall keeps guessing",
@@ -181,22 +179,17 @@ describe("write-back rules", () => {
     expect(res.playbooks).toBeUndefined();
   });
 
-  it("archives an accepted card mutation as a bare fossil record (no cross-generation evaluation, v0.9.2)", async () => {
+  it("writes a changed card back to the live card and the slice snapshot", async () => {
     runPreviouslyAgentMock.mockResolvedValue({
       updatedCard: CHANGED,
       reasoning: "folded new identity fact",
       summary: "identity updated",
       mutations: ["addNow: prepping the friday interview"],
     });
-    await runCardEvolution(baseInput());
-    expect(appendMutationMock).toHaveBeenCalledWith(
-      expect.objectContaining({ target: "card" }),
-      undefined,
-    );
-    // The record shape carries no evaluation fields — the archive is a
-    // fossil record, never a scoreboard.
-    const record = appendMutationMock.mock.calls[0][0];
-    expect(record).not.toHaveProperty("evaluation");
+    const res = await runCardEvolution(baseInput());
+    expect(res.changed).toBe(true);
+    expect(writeCurrentMock).toHaveBeenCalledWith(CHANGED, undefined);
+    expect(writeSliceMock).toHaveBeenCalledWith(SLICE, CHANGED, undefined);
   });
 });
 
@@ -204,18 +197,23 @@ describe("the merged direction half (v1.1)", () => {
   const VALID_DIRECTION = [
     "# Portrait",
     "",
-    "The user prefers concrete, evidence-anchored answers.",
+    "## Traits & cognitive style",
+    "",
+    "- The user prefers concrete, evidence-anchored answers. — refs: 2026-08-20-1430, 2026-08-22-1015",
+    "",
+    "## Triggers & rhythms",
+    "",
+    "## Patterns & loops",
+    "",
+    "## Strengths & resilience",
+    "",
+    "## Communication preferences",
+    "",
+    "## Values & boundaries",
     "",
     "# Hypotheses",
     "",
-    "# Evidence",
-    "",
-    "- 2026-08-20-1430 — user corrected a vague answer",
-    "- 2026-08-22-1015 — user praised a concrete one",
-    "",
-    "# Log",
-    "",
-    "- 2026-08-27: first direction.",
+    "- [proposed 2026-08-22-1015] The user may prefer terse replies under time pressure — falsify if: the user asks for more detail when rushed",
   ].join("\n");
 
   function directionEvalInput() {
@@ -248,7 +246,7 @@ describe("the merged direction half (v1.1)", () => {
     };
   }
 
-  it("a valid proposal is written through writeDirection + archived with target direction", async () => {
+  it("a valid proposal is written through writeDirection", async () => {
     runPreviouslyAgentMock.mockResolvedValue(agentResultWithProposal(VALID_DIRECTION));
     const res = await runCardEvolution({ ...baseInput(), directionEval: directionEvalInput() });
     expect(res.direction).toEqual({
@@ -256,14 +254,6 @@ describe("the merged direction half (v1.1)", () => {
       summary: "First direction: concreteness",
     });
     expect(writeDirectionMock).toHaveBeenCalledWith(VALID_DIRECTION, undefined);
-    expect(appendMutationMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        target: "direction",
-        summary: "First direction: concreteness",
-        expectedBenefit: "Fewer vague answers",
-      }),
-      undefined,
-    );
   });
 
   it("a REJECTED proposal reports outcome rejected with the reason (never a fake no_change) and writes nothing", async () => {

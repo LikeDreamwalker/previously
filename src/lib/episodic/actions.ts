@@ -5,7 +5,7 @@ import { resolveDataSource } from "@/lib/data-source/resolve";
 import { getUserName } from "@/lib/identity";
 import { formatErrorDetail } from "@/lib/chat/workflow-errors";
 import { readSliceIndex, readSliceBody, parseSlice, sliceIdToFilePath, readPreviously, readAgentTimeline } from "./manager";
-import { readDirection, readMutations } from "@/lib/evolution/store";
+import { readDirection } from "@/lib/evolution/store";
 import { readTimelineIndex } from "./timeline/store";
 import type { TimelineSliceEntry } from "./timeline/types";
 import type { Turn } from "./types";
@@ -310,7 +310,7 @@ export async function getTurnCognition(
   }
 }
 
-// ─── Memory docs viewer (previously / direction / mutations) ─────────────
+// ─── Memory docs viewer (previously / direction) ─────────────────────────
 
 export interface MemoryDocs {
   /** The slice the previously.md snapshot belongs to (null when no slices exist). */
@@ -319,12 +319,10 @@ export interface MemoryDocs {
   previously: string | null;
   /** memory/evolution/direction.md */
   direction: string | null;
-  /** memory/evolution/mutations.md */
-  mutations: string | null;
 }
 
 /**
- * Read the three user-facing memory documents in one round-trip. The "current"
+ * Read the user-facing memory documents in one round-trip. The "current"
  * slice is simply the NEWEST slice — an active slice is always the newest (a
  * new slice only starts after the previous one closes), so this covers both
  * "the current slice" and "the latest slice when none is active".
@@ -341,11 +339,10 @@ export async function getMemoryDocs(persona?: string): Promise<MemoryDocs> {
   );
   const latest = entries.sort((a, b) => b.start.localeCompare(a.start))[0] ?? null;
 
-  const [previously, direction, mutations] = await Promise.all([
+  const [previously, direction] = await Promise.all([
     latest ? readPreviously(latest.id).catch(() => null) : Promise.resolve(null),
     readDirection(),
-    readMutations(),
   ]);
 
-  return { sliceId: latest?.id ?? null, previously, direction, mutations };
+  return { sliceId: latest?.id ?? null, previously, direction };
 }

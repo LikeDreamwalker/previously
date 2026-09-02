@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback } from "react";
-import { BookOpenText, History, Compass, GitCommitHorizontal } from "lucide-react";
+import { BookOpenText, History, Compass } from "lucide-react";
 import { useTranslations } from "next-intl";
 import {
   Popover,
@@ -22,21 +22,19 @@ import {
 import { MarkdownRenderer } from "./markdown";
 import { getMemoryDocs, type MemoryDocs as MemoryDocsData } from "@/lib/episodic/actions";
 
-type DocKey = "previously" | "direction" | "mutations";
+type DocKey = "previously" | "direction";
 
 const DOC_ICONS: Record<DocKey, typeof History> = {
   previously: History,
   direction: Compass,
-  mutations: GitCommitHorizontal,
 };
 
 /**
- * Memory-docs viewer for the chat toolbar — lets the user peek at the three
+ * Memory-docs viewer for the chat toolbar — lets the user peek at the two
  * documents the self-evolution loop produces: the current slice's
- * previously.md snapshot (the latest slice when none is active), the
- * evolution direction.md, and the append-only mutations.md archive.
- * Fetched lazily on popover open (one server-action round trip per open, so
- * the content is always fresh).
+ * previously.md snapshot (the latest slice when none is active) and the
+ * evolution direction.md portrait. Fetched lazily on popover open (one
+ * server-action round trip per open, so the content is always fresh).
  */
 export function MemoryDocs({ persona }: { persona?: string }) {
   const t = useTranslations("chat.input");
@@ -53,7 +51,7 @@ export function MemoryDocs({ persona }: { persona?: string }) {
       getMemoryDocs(persona)
         .then(setDocs)
         .catch(() =>
-          setDocs({ sliceId: null, previously: null, direction: null, mutations: null }),
+          setDocs({ sliceId: null, previously: null, direction: null }),
         )
         .finally(() => setLoading(false));
     },

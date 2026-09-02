@@ -18,19 +18,17 @@
  * v1.0 (design §2.3/§2.7): the run also carries the evolution context
  * (direction.md orientation + the triggered fitness buckets, which gate the
  * agent's writePlaybook), and this function is the SINGLE-WRITER boundary —
- * accepted card/playbook mutations are archived to
- * memory/evolution/mutations.md here. The archive is a pure fossil record
- * (v0.9.2): what changed, when, why — never a scoreboard. Evolution has no
- * direction, so a new mutation never judges its predecessor.
+ * accepted card/playbook/direction writes land here. Evolution has no
+ * direction and no fossil archive (v0.9.2): a mutation is never judged
+ * against its predecessor and nothing rolls back.
  *
  * v1.1 (merged run): at a slice boundary the ONE agent run also evaluates
  * direction.md FIRST (input.directionEval) and may return a
  * `directionProposal` on its finish report. This function validates it
  * (validateDirectionProposal, mode-aware) and applies it through
- * writeDirection + appendMutation (target "direction") — exactly
- * the old Phase-1 write paths. A rejected proposal is logged and skipped,
- * never fatal; the verdict rides the result's `direction` field for the
- * terminal data-evolution frame.
+ * writeDirection — exactly the old Phase-1 write path. A rejected proposal
+ * is logged and skipped, never fatal; the verdict rides the result's
+ * `direction` field for the terminal data-evolution frame.
  *
  * Streaming is surfaced via the optional `onProgress` callback (phase steps)
  * and `onEvolutionLine` (the Previously Agent's live thinking/writing lines)
@@ -45,7 +43,6 @@ import { readCurrentPreviously, writeCurrentPreviously, writePreviously } from "
 import type { WriteBatch } from "@/lib/episodic/io-helpers";
 import type { ModelConfig } from "@/lib/models/registry";
 import {
-  appendMutation,
   writeDirection,
   writePlaybook,
   type FitnessBucket,
@@ -231,17 +228,6 @@ export async function runCardEvolution(
           proposal.summary.trim() || "Direction updated (merged evolution run)";
         try {
           await writeDirection(proposal.content.trim(), input.batch);
-          await appendMutation(
-            {
-              ts: new Date().toISOString(),
-              target: "direction",
-              summary,
-              evidence: proposal.evidence,
-              expectedBenefit:
-                proposal.expectedBenefit.trim() || "(none given)",
-            },
-            input.batch,
-          );
           directionOutcome = { outcome: "updated", summary };
           console.log(`[Evolution] direction updated: ${summary}`);
         } catch (e) {
@@ -283,54 +269,25 @@ export async function runCardEvolution(
     await writePreviously(input.sliceId, result.updatedCard, input.batch);
   }
 
-  // ── v1.0 §2.7 mutation archive — the evolution agent is the single writer
-  // of card / playbooks, and every accepted mutation lands in the append-only
-  // fossil record. Best-effort: an archive failure must never eat the card /
-  // playbook write that already landed. ──────────────────────────────────
+  // ── Playbook write-back — the evolution agent is the single writer of
+  // card / playbooks. The playbooks that actually landed are surfaced on the
+  // terminal evolution frame so the UI can tell the "what changed" story
+  // (design §2.4). ────────────────────────────────────────────────────────
   const playbookWrites = result.playbookWrites ?? [];
-  // The playbooks that actually landed — surfaced on the terminal evolution
-  // frame so the UI can tell the "what changed" story (design §2.4).
   const appliedPlaybooks: Array<{ agent: PlaybookAgent; summary: string }> = [];
-  if (!result.failed && (changed || playbookWrites.length > 0)) {
+  if (!result.failed) {
     try {
-      const ts = new Date().toISOString();
-      if (changed) {
-        await appendMutation(
-          {
-            ts,
-            target: "card",
-            summary:
-              result.summary.trim() || resultNote.slice(0, 200),
-            evidence: [input.sliceId],
-            expectedBenefit:
-              result.expectedBenefit ?? "Card updated from new evidence",
-          },
-          input.batch,
-        );
-      }
       for (const pw of playbookWrites) {
         await writePlaybook(pw.agent, pw.content, input.batch);
-        // The user-facing line comes from the archived record: the agent's
-        // one-line expected benefit, falling back to the archive summary.
         appliedPlaybooks.push({
           agent: pw.agent,
           summary:
             pw.expectedBenefit.trim() || `Rewrote the ${pw.agent} playbook`,
         });
-        await appendMutation(
-          {
-            ts,
-            target: `playbook:${pw.agent}`,
-            summary: `Rewrote the ${pw.agent} playbook (${pw.content.length} chars)`,
-            evidence: pw.evidence.length > 0 ? pw.evidence : [input.sliceId],
-            expectedBenefit: pw.expectedBenefit || "(none given)",
-          },
-          input.batch,
-        );
       }
     } catch (e) {
       console.warn(
-        "[Evolution] mutation archive write failed (the card/playbook writes landed):",
+        "[Evolution] playbook write failed (the card write landed):",
         e instanceof Error ? e.message : e,
       );
     }

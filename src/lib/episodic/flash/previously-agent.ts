@@ -243,8 +243,7 @@ export interface PreviouslyAgentOutput {
    * The direction half's proposal (v1.1 merged run) — present only when
    * `directionEval` was set AND the agent proposed a move. NOT validated yet:
    * the caller runs validateDirectionProposal (mode-aware) and applies through
-   * writeDirection + the mutations archive; a rejection is logged and skipped,
-   * never fatal.
+   * writeDirection; a rejection is logged and skipped, never fatal.
    */
   directionProposal?: DirectionProposal;
 }
@@ -281,15 +280,13 @@ The card must NEVER carry rules, lessons, or analysis. If the card you are readi
 
 ## The direction discipline (portrait + hypothesis pool)
 
-direction.md has a fixed skeleton: \`# Portrait\` / \`# Hypotheses\` / \`# Evidence\` / \`# Log\`.
+direction.md has a fixed skeleton: \`# Portrait\` (six fixed \`##\` dimensions) / \`# Hypotheses\`.
 
-- **Portrait** — CONFIRMED understanding of the user: descriptive, abstract, concept-level ("用户不喜欢感性的回答" is the right level; "用户不喜欢我说哈哈哈" is too specific). NEVER imperative — if a line tells you (the agent) what to do, it is misspelled: phrase the USER PATTERN that motivates it instead. Every entry is evidence-anchored with slice pointers.
-- **Hypotheses** — a bounded pool of GUESSES (≤10), each line exactly: \`- [proposed YYYY-MM-DD-HHMM · checked YYYY-MM-DD-HHMM] <the guess> — falsify if: <condition>\`. Lifecycle: confirmed (evidence from ≥2 distinct slices, or explicit user confirmation) → PROMOTE into the Portrait (log it); refuted → REMOVE (log it); unverified for >10 slices beyond its \`checked\` pointer → RETIRE (log it; re-proposable later). Refill the pool toward 10 each run with honest, falsifiable guesses from the evidence at hand.
-- **Evidence** — the slice pointers backing Portrait entries.
-- **Log** — append-only: every direction change AND every hypothesis promotion/refutation/retirement.
+- **Portrait** — CONFIRMED understanding of the user as a PERSON, in six fixed dimensions (always all present): \`## Traits & cognitive style\`, \`## Triggers & rhythms\`, \`## Patterns & loops\`, \`## Strengths & resilience\`, \`## Communication preferences\`, \`## Values & boundaries\`. An entry is portrait-grade ONLY when it holds across contexts, outlives the event that evidenced it, and predicts ("用户面对不确定时先搭建结构再行动" qualifies; "用户周四聊了面试" is a case note and belongs nowhere here). NEVER imperative — if a line tells you (the agent) what to do, it is misspelled: phrase the USER PATTERN that motivates it instead. Body text carries NO names/dates/events/slice ids — evidence rides ONLY as a trailing \`— refs: YYYY-MM-DD-HHMM, …\` tail.
+- **Hypotheses** — a bounded DYNAMIC pool of GUESSES about the user's traits/patterns (≤10), each line exactly: \`- [proposed YYYY-MM-DD-HHMM] <the guess> — falsify if: <condition>\`. Lifecycle: confirmed (evidence from ≥2 distinct slices, or explicit user confirmation) → PROMOTE into the matching Portrait dimension IN THE SAME RUN (a confirmed guess never lingers in the pool); refuted → REMOVE; still unverified 4 slices after its \`proposed\` pointer → RETIRE (re-proposable later). Refill the pool toward 10 each run with honest, falsifiable guesses about the PERSON — never predictions about events.
 - A single explicit, DURABLE user statement ("用户明确不喜欢 X") becomes a Portrait entry directly (descriptive). Single-slice impressions stay hypotheses.
 - "No change" is the common and correct outcome for the direction — one loud slice is card/playbook material. A proposal that violates the writing discipline is rejected by code, so stay within it.
-- Mode BOOTSTRAP (never written) or MIGRATE (old # Direction / # Anti-goals skeleton): seed/re-shape the doc wholesale; a single slice pointer suffices. Steady mode: Evidence needs ≥2 distinct slice pointers.
+- Mode BOOTSTRAP (never written) or MIGRATE (an old skeleton: \`# Direction\` / \`# Anti-goals\`, or the first portrait skeleton's \`# Evidence\` / \`# Log\`): seed/re-abstract the doc wholesale (event-shaped notes become portrait-grade lines, pointers into trailing refs); a single slice pointer suffices. Steady mode: ≥2 distinct slice pointers across the doc.
 
 ## How you write the card — MUTATIONS, never the whole file
 
@@ -395,8 +392,8 @@ function buildDirectionEvalSection(evalInput: DirectionEvalInput): string {
     evalInput.mode === "bootstrap"
       ? "BOOTSTRAP — the direction has never been written; seed the minimal baseline (a single slice pointer suffices)"
       : evalInput.mode === "migrate"
-        ? "MIGRATE — the doc still uses the OLD skeleton (# Direction / # Anti-goals); re-shape it wholesale into # Portrait / # Hypotheses / # Evidence / # Log (a single slice pointer suffices)"
-        : "steady — the normal high bar (Evidence needs ≥2 distinct slice pointers)";
+        ? "MIGRATE — the doc still uses an OLD skeleton (# Direction / # Anti-goals, or the first portrait skeleton's # Evidence / # Log); re-abstract it wholesale into the new # Portrait (six fixed ## dimensions, refs-tailed pointers) / # Hypotheses skeleton (a single slice pointer suffices)"
+        : "steady — the normal high bar (≥2 distinct slice pointers across the doc)";
   return `
 
 ## Direction evaluation (FIRST — before any card mutation)
@@ -728,10 +725,11 @@ function buildTools(
             content: z
               .string()
               .describe(
-                "The FULL new direction.md — # Portrait (descriptive, concept-level, NEVER " +
-                  "imperatives) / # Hypotheses (≤10 lines, each \"- [proposed YYYY-MM-DD-HHMM · " +
-                  "checked YYYY-MM-DD-HHMM] <guess> — falsify if: <condition>\") / # Evidence " +
-                  "(slice pointers) / # Log (append-only).",
+                "The FULL new direction.md — # Portrait (six fixed ## dimensions; every entry " +
+                  "descriptive, portrait-grade, NEVER imperative; no names/dates/events in body " +
+                  "text — slice pointers only in trailing \"— refs:\" tails) / # Hypotheses (≤10 " +
+                  "lines, each \"- [proposed YYYY-MM-DD-HHMM] <trait-level guess> — falsify if: " +
+                  "<condition>\"; confirmed guesses promoted into the Portrait in the same run).",
               ),
             summary: z.string().describe("One line: what changed in the direction."),
             evidence: z

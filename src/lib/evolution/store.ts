@@ -1,5 +1,5 @@
 /**
- * Typed I/O over the evolution data files (v1.0 design §2.2–§2.7) — the STORE
+ * Typed I/O over the evolution data files (v1.0 design §2.2–§2.6) — the STORE
  * half. The analyzer scores (turn-analyzer.ts), the trigger math aggregates
  * (triggers.ts), and the evolution agent mutates (previously-agent.ts /
  * direction-agent.ts); this module only guarantees the
@@ -26,31 +26,35 @@ import {
 import {
   DIRECTION_PATH,
   FITNESS_PATH,
-  MUTATIONS_PATH,
   playbookPath,
   type PlaybookAgent,
 } from "./paths";
 
 // ─── Direction document (design §2.2) ────────────────────────────────────
 
-/** The minimal direction.md template — the four fixed sections of the USER
- *  PORTRAIT + HYPOTHESIS POOL (see direction-agent.ts). Only the skeleton and
- *  the writing discipline are fixed; the content is the evolution agent's. */
+/** The minimal direction.md template — the two fixed sections of the USER
+ *  PORTRAIT (six fixed dimensions) + HYPOTHESIS POOL (see direction-agent.ts).
+ *  Only the skeleton and the writing discipline are fixed; the content is the
+ *  evolution agent's. */
 const DIRECTION_TEMPLATE = `# Portrait
 
-_(Not set yet — confirmed, evidence-anchored understanding of the user: descriptive, concept-level, never imperatives.)_
+_(Not set yet — confirmed, cross-slice understanding of WHO the user is: descriptive, portrait-grade (holds across contexts, outlives its evidence, predicts), never imperatives. Slice pointers ride trailing "— refs:" tails only.)_
+
+## Traits & cognitive style
+
+## Triggers & rhythms
+
+## Patterns & loops
+
+## Strengths & resilience
+
+## Communication preferences
+
+## Values & boundaries
 
 # Hypotheses
 
-_(Not set yet — bounded pool of guesses (≤10), each "- [proposed YYYY-MM-DD-HHMM · checked YYYY-MM-DD-HHMM] <guess> — falsify if: <condition>".)_
-
-# Evidence
-
-_(Each Portrait entry links its supporting slice pointers here.)_
-
-# Log
-
-_(Append-only: direction changes and hypothesis promotions/refutations/retirements, and on what evidence.)_
+_(Not set yet — bounded dynamic pool of trait-level guesses (≤10), each "- [proposed YYYY-MM-DD-HHMM] <guess> — falsify if: <condition>". Confirmed → promoted into the Portrait in the same run; refuted → removed; unverified 4 slices → retired. Refilled toward 10 each run.)_
 `;
 
 /**
@@ -85,19 +89,6 @@ export async function writeDirection(
   batch?: WriteBatch,
 ): Promise<void> {
   await fsWriteFile(DIRECTION_PATH, content, batch);
-}
-
-/**
- * Read the append-only mutation archive (design §2.7). Returns null when it
- * does not exist yet (no accepted mutations is a normal state, not an error).
- */
-export async function readMutations(): Promise<string | null> {
-  try {
-    const content = await fsReadFile(MUTATIONS_PATH);
-    return content.trim() ? content : null;
-  } catch {
-    return null;
-  }
 }
 
 /**
@@ -354,100 +345,4 @@ export function bucketNetScore(
     if (e.bucket === bucket) net += e.delta;
   }
   return net;
-}
-
-// ─── Mutations archive (design §2.7) ─────────────────────────────────────
-
-/** What an accepted mutation touched. */
-export type MutationTarget =
-  | "direction"
-  | "card"
-  | "playbook:recall"
-  | "playbook:search"
-  | "playbook:thinkdeep";
-
-/**
- * One accepted mutation, archived append-only. Every mutation must carry its
- * expected benefit and evidence pointers (design §2.7); there is no automatic
- * rollback, no cooldown, no mutation budget — and (v0.9.2) no cross-generation
- * EVALUATION either: the archive is a fossil record, not a scoreboard.
- * Evolution has no direction, so a later mutation never judges an earlier one.
- */
-export interface MutationRecord {
-  ts: string;
-  target: MutationTarget;
-  summary: string;
-  evidence: string[];
-  expectedBenefit: string;
-}
-
-const MUTATIONS_HEADER = `# Mutations Archive
-
-Fossil record of accepted evolution mutations (design v1.0 §2.7) — what
-changed, when, and why. No automatic rollback, no cooldown, no mutation
-budget, and (v0.9.2) no cross-generation verdicts: evolution has no
-direction, so a later mutation never judges an earlier one. Bounded (v0.9.1):
-the archive keeps the newest 100 records; older ones are retired on write to
-keep the file (and every full read of it) bounded.
-`;
-
-/**
- * The archive is bounded (v0.9.1): past this many records the oldest are
- * retired on write. The agent only ever says WHAT to record; retention
- * planning lives here, not in the prompt. 100 records ≈ months of evolution
- * history; the fitness events behind them are independently capped anyway.
- */
-export const MAX_MUTATION_RECORDS = 100;
-
-/**
- * Keep the header + the newest MAX_MUTATION_RECORDS record blocks, dropping
- * the oldest. A record block runs from its `## {ts} — {target}` heading to
- * the next heading. Pure.
- */
-export function trimMutationArchive(content: string): string {
-  const lines = content.split("\n");
-  const starts: number[] = [];
-  for (let i = 0; i < lines.length; i++) {
-    if (lines[i].startsWith("## ")) starts.push(i);
-  }
-  if (starts.length <= MAX_MUTATION_RECORDS) return content;
-  const keepFrom = starts[starts.length - MAX_MUTATION_RECORDS];
-  const firstRecord = starts[0];
-  return [...lines.slice(0, firstRecord), ...lines.slice(keepFrom)].join("\n");
-}
-
-/** Render one record as a compact, greppable markdown block. */
-export function renderMutationRecord(record: MutationRecord): string {
-  const evidence = record.evidence.length
-    ? record.evidence.map((e) => `  - ${e}`).join("\n")
-    : "  - (none recorded)";
-  return [
-    `## ${record.ts} — ${record.target}`,
-    "",
-    `- **Summary:** ${record.summary}`,
-    `- **Expected benefit:** ${record.expectedBenefit}`,
-    `- **Evidence:**`,
-    evidence,
-  ].join("\n");
-}
-
-/** Append a mutation to the archive, creating the file (with its header) when
- *  missing. Bounded: past MAX_MUTATION_RECORDS the oldest records are retired
- *  on write (trimMutationArchive) — retention is the store's job, the agent
- *  only declares what to record. */
-export async function appendMutation(
-  record: MutationRecord,
-  batch?: WriteBatch,
-): Promise<void> {
-  let existing = "";
-  try {
-    existing = await fsReadFile(MUTATIONS_PATH, batch);
-  } catch {
-    // Archive missing — created below with its header.
-  }
-  const block = renderMutationRecord(record);
-  const content = existing.trim()
-    ? `${existing.trimEnd()}\n\n${block}\n`
-    : `${MUTATIONS_HEADER}\n${block}\n`;
-  await fsWriteFile(MUTATIONS_PATH, trimMutationArchive(content), batch);
 }

@@ -4,19 +4,16 @@
  * Everything here is memory DATA under `memory/` — the mutable surface the
  * evolution loop owns. The sub-agent contracts (schemas, tools, step budgets)
  * stay in `src/`; these files are what the evolution agent may rewrite
- * (direction doc, per-agent playbooks) or append to (fitness store, mutation
- * archive). Keeping the paths in one module keeps every reader/writer
- * byte-identical on where the truth lives.
+ * (direction doc, per-agent playbooks) or append to (fitness store). Keeping
+ * the paths in one module keeps every reader/writer byte-identical on where
+ * the truth lives.
  */
 
-/** The cross-slice evolution-direction document (design §2.2). */
+/** The cross-slice user-portrait document (design §2.2). */
 export const DIRECTION_PATH = "memory/evolution/direction.md";
 
 /** Fitness events + mechanical signals store (design §2.5 / §2.6). */
 export const FITNESS_PATH = "memory/evolution/fitness.json";
-
-/** Append-only mutation archive (design §2.7). */
-export const MUTATIONS_PATH = "memory/evolution/mutations.md";
 
 /** Directory holding the per-sub-agent evolved playbooks (design §2.4). */
 export const PLAYBOOK_DIR = "memory/agent-playbooks";

@@ -70,7 +70,7 @@ import type { WriteBatch } from "@/lib/episodic/io-helpers";
 import type { TurnAnalysis, TurnIntent } from "@/lib/episodic/flash/turn-analyzer";
 import type { EmotionalTone } from "@/lib/episodic/types";
 import type { EvolutionResult } from "@/lib/chat/turn-types";
-import { appendMutation, type FitnessSignal } from "@/lib/evolution/store";
+import type { FitnessSignal } from "@/lib/evolution/store";
 
 // ─── Gate ──────────────────────────────────────────────────────────────────
 
@@ -342,7 +342,7 @@ One pass, these jobs:
 4. Dry-slice backfill — ONLY when the context carries a "Dry slices needing marks" section: one backfill_marks entry per listed slice ({slice_id copied verbatim, focus one sentence, summary ≤100 chars}); [] when the section is absent.
 5. Strand merge — ONLY when the context carries a "Strand merge candidates" section: propose from→to merges for NEAR-DUPLICATE strands (typos / same concept under two names / same entity written differently). Every "to" MUST be a name from the offered list; no chains (A→B and B→C in one pass); do NOT merge distinct concepts that merely share a word; when in doubt, do NOT merge — a wrong merge destroys thread history. [] when the section is absent or the index is already clean.
 6. Fitness scoring — score ONLY what THIS slice's user messages explicitly signal: -2 explicit complaint/correction, -1 signs of dissatisfaction, +1 explicit approval, attributed to a bucket (card | recall | search | thinkdeep | interaction). Every non-zero delta MUST quote the user's exact words in evidence — no quote, NO entry. Nothing signaled → omit fitness entirely (an absent/empty array, never 0-delta filler). When the context lists a recall_rework / recall_repeat mechanical signal, treat it as a -1 CANDIDATE for the recall bucket, and an interaction_regenerate / interaction_interrupt signal as a -1 CANDIDATE for the interaction bucket (the signal's detail line may serve as the evidence); recall_verify is neutral — no entry.
-7. Direction verdict — the context carries the current evolution direction (direction.md: the loop's USER PORTRAIT + HYPOTHESIS POOL — it describes WHO THE USER IS and NEVER instructs the agent; the card and playbooks are only its products) plus the card's legacy Self-model lines (rules to MIGRATE, see below). Judge whether the portrait itself should move. "no_change" is the common case — one slice's events are card/playbook material, never direction material by themselves; a single explicit durable user statement becomes a Portrait entry directly (descriptive: "用户明确不喜欢 X"), while suspected patterns enter the hypothesis pool first and promote only when confirmed across ≥2 distinct slices (or explicitly by the user). The new document has four fixed sections: "# Portrait" (CONFIRMED understanding — descriptive, abstract, concept-level; "用户不喜欢感性的回答" is the right level, "用户不喜欢我说哈哈哈" is too specific; NEVER imperative "you should/shouldn't" lines — if a line tells the agent what to do, phrase the USER PATTERN that motivates it instead; every entry evidence-anchored with slice pointers), "# Hypotheses" (a bounded pool of GUESSES, ≤10, each line exactly "- [proposed YYYY-MM-DD-HHMM · checked YYYY-MM-DD-HHMM] <the guess> — falsify if: <condition>"; confirmed → promote into Portrait, refuted → remove, unverified >10 slices beyond its checked pointer → retire; promotions/refutations/retirements all go to the Log; refill the pool toward 10), "# Evidence" (slice pointers backing Portrait entries — ≥2 DISTINCT slices steady-state; ≥1 suffices when the mode says BOOTSTRAP or MIGRATE), "# Log" (append-only). LEGACY MIGRATION: when the mode says MIGRATE (the doc still uses the old # Direction / # Anti-goals skeleton) or the Self-model lines below are non-empty, fold those legacy rules into the Portrait — descriptive phrasing, keep their slice refs — and note the card no longer grows a Self-model section. A proposal violating this discipline is rejected by the kernel.
+7. Direction verdict — the context carries the current evolution direction (direction.md: the loop's USER PORTRAIT + HYPOTHESIS POOL — it describes WHO THE USER IS as a person and NEVER instructs the agent; it is NOT a log of what the user did; the card and playbooks are only its products) plus the card's legacy Self-model lines (rules to MIGRATE, see below). Judge whether the portrait itself should move. "no_change" is the common case — one slice's events are card/playbook material, never direction material by themselves; a single explicit durable user statement becomes a Portrait entry directly (descriptive: "用户明确不喜欢 X"), while suspected patterns enter the hypothesis pool first and promote only when confirmed across ≥2 distinct slices (or explicitly by the user). The new document has two fixed sections: "# Portrait" (CONFIRMED understanding, in six fixed "##" dimensions always all present: Traits & cognitive style / Triggers & rhythms / Patterns & loops / Strengths & resilience / Communication preferences / Values & boundaries; an entry is portrait-grade ONLY when it holds across contexts, outlives the event that evidenced it, and predicts — "用户面对不确定时先搭建结构再行动" qualifies, "用户周四聊了面试" is a case note and belongs nowhere here; NEVER imperative "you should/shouldn't" lines — if a line tells the agent what to do, phrase the USER PATTERN that motivates it instead; body text carries NO names/dates/events/slice ids — evidence rides ONLY as a trailing "— refs: YYYY-MM-DD-HHMM, …" tail), "# Hypotheses" (a bounded DYNAMIC pool of GUESSES about the user's traits/patterns, ≤10, each line exactly "- [proposed YYYY-MM-DD-HHMM] <the guess> — falsify if: <condition>"; confirmed → PROMOTE into the matching Portrait dimension in the same run — a confirmed guess never lingers in the pool; refuted → remove; still unverified 4 slices after its proposed pointer → retire; refill the pool toward 10; guesses are about the PERSON, never predictions about events). Evidence bar: ≥2 DISTINCT slice pointers across the doc steady-state; ≥1 suffices when the mode says BOOTSTRAP or MIGRATE. LEGACY MIGRATION: when the mode says MIGRATE (the doc still uses an old skeleton: # Direction / # Anti-goals, or the first portrait skeleton's # Evidence / # Log) or the Self-model lines below are non-empty, fold every worth-keeping conclusion into the new skeleton wholesale — re-abstract event-shaped notes into portrait-grade lines (names/dates/events out, pointers into trailing refs), re-propose surviving guesses in the new format, drop the rest — and note the card no longer grows a Self-model section. A proposal violating this discipline is rejected by the kernel.
 
 Mutation vocabulary (the evolution.mutations array):
 - {"op":"setIdentity","content":"Name: Alan"} — one Identity head line (Name / Address them as / Pronouns / Alias).
@@ -422,8 +422,8 @@ export function buildHousekeepingPayload(input: HousekeepingBridgeInput): {
         input.directionMode === "bootstrap"
           ? "BOOTSTRAP — never written; seed the minimal baseline, a single slice pointer suffices"
           : input.directionMode === "migrate"
-            ? "MIGRATE — the doc still uses the OLD skeleton (# Direction / # Anti-goals); re-shape it wholesale into # Portrait / # Hypotheses / # Evidence / # Log, a single slice pointer suffices"
-            : "steady — the normal bar, Evidence needs ≥2 distinct slice pointers"
+            ? "MIGRATE — the doc still uses an OLD skeleton (# Direction / # Anti-goals, or the first portrait skeleton's # Evidence / # Log); re-abstract it wholesale into the new # Portrait (six fixed ## dimensions, refs-tailed pointers) / # Hypotheses skeleton, a single slice pointer suffices"
+            : "steady — the normal bar, ≥2 distinct slice pointers across the doc"
       })\n\n${
         input.directionContent?.trim() ||
         "(not set yet — this would be the FIRST direction)"
@@ -878,29 +878,6 @@ export async function applyBridgeCardEvolution(input: {
 
   await writeCurrentPreviously(applied.card, input.batch);
   await writePreviously(input.sliceId, applied.card, input.batch);
-
-  // v1.0 §2.7 — bridge-originated card mutations enter the SAME append-only
-  // fossil record as the sub-agent path; skipping it here would silently
-  // blind the archive to a whole class of landed mutations. Best-effort: an
-  // archive failure must never eat the landed write.
-  const reason = input.reason.trim();
-  try {
-    await appendMutation(
-      {
-        ts: new Date().toISOString(),
-        target: "card",
-        summary: oneSentence(reason) || "Card updated (bridge housekeeping report)",
-        evidence: reason ? [input.sliceId, reason] : [input.sliceId],
-        expectedBenefit: reason || "(none given)",
-      },
-      input.batch,
-    );
-  } catch (e) {
-    console.warn(
-      "[Evolution] bridge card-mutation archive write failed (the card write landed):",
-      e instanceof Error ? e.message : e,
-    );
-  }
 
   return {
     ran: true,

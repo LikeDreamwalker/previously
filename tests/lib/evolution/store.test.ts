@@ -102,7 +102,16 @@ describe("missing-file tolerance", () => {
     await store.ensureEvolutionFiles();
     const created = readOnDisk("memory/evolution/direction.md");
     expect(created).not.toBeNull();
-    for (const section of ["# Portrait", "# Hypotheses", "# Evidence", "# Log"]) {
+    for (const section of [
+      "# Portrait",
+      "# Hypotheses",
+      "## Traits & cognitive style",
+      "## Triggers & rhythms",
+      "## Patterns & loops",
+      "## Strengths & resilience",
+      "## Communication preferences",
+      "## Values & boundaries",
+    ]) {
       expect(created).toContain(section);
     }
 
@@ -289,118 +298,6 @@ describe("recordDirectionRejection", () => {
     expect(directionRejections.at(-1)).toBe(
       `2026-08-27-${1000 + store.MAX_DIRECTION_REJECTIONS + 4}`,
     );
-  });
-});
-
-// ── Mutation archive ─────────────────────────────────────────────────────
-
-describe("appendMutation", () => {
-  it("creates the archive with a header, then appends compact blocks", async () => {
-    const store = await importFresh();
-    await store.appendMutation({
-      ts: "2026-08-27T10:00:00Z",
-      target: "playbook:recall",
-      summary: "Prefer full-slice reads on emotional topics",
-      evidence: ["memory/episodic/slices/2026/08/20/1430/timeline/core.md"],
-      expectedBenefit: "Fewer rework signals on emotional recalls",
-    });
-    const first = readOnDisk("memory/evolution/mutations.md");
-    expect(first).not.toBeNull();
-    expect(first).toContain("# Mutations Archive");
-    expect(first).toContain("## 2026-08-27T10:00:00Z — playbook:recall");
-    expect(first).toContain("- **Summary:** Prefer full-slice reads on emotional topics");
-    expect(first).toContain("- **Expected benefit:** Fewer rework signals on emotional recalls");
-    expect(first).toContain("  - memory/episodic/slices/2026/08/20/1430/timeline/core.md");
-
-    await store.appendMutation({
-      ts: "2026-08-27T11:00:00Z",
-      target: "direction",
-      summary: "Direction: prioritize continuity of long-running projects",
-      evidence: [],
-      expectedBenefit: "Better multi-session follow-through",
-    });
-    const second = readOnDisk("memory/evolution/mutations.md")!;
-    // Append-only: the first block is untouched, the header appears once.
-    expect(second.indexOf("# Mutations Archive")).toBe(
-      second.lastIndexOf("# Mutations Archive"),
-    );
-    expect(second).toContain("## 2026-08-27T10:00:00Z — playbook:recall");
-    expect(second).toContain("## 2026-08-27T11:00:00Z — direction");
-    expect(second).toContain("  - (none recorded)");
-    expect(second.indexOf("## 2026-08-27T10:00:00Z")).toBeLessThan(
-      second.indexOf("## 2026-08-27T11:00:00Z"),
-    );
-  });
-});
-
-// ── Mutation archive retention (v0.9.1 bounded archive) ──────────────────
-
-describe("trimMutationArchive", () => {
-  it("keeps the header + newest MAX_MUTATION_RECORDS blocks, retiring the oldest", async () => {
-    const store = await importFresh();
-    const total = store.MAX_MUTATION_RECORDS + 5;
-    const blocks = Array.from({ length: total }, (_, i) =>
-      store.renderMutationRecord({
-        ts: `2026-08-27T${String(10 + i).padStart(2, "0")}:00:00Z`,
-        target: "card",
-        // Zero-padded so "mutation 004" is never a substring of "mutation 040".
-        summary: `mutation ${String(i).padStart(3, "0")}`,
-        evidence: [],
-        expectedBenefit: "x",
-      }),
-    );
-    const content = `# Mutations Archive\n\nheader text\n\n${blocks.join("\n\n")}\n`;
-    const trimmed = store.trimMutationArchive(content);
-    expect(trimmed).toContain("# Mutations Archive");
-    expect(trimmed).toContain("header text");
-    expect(trimmed.match(/^## /gm)).toHaveLength(store.MAX_MUTATION_RECORDS);
-    expect(trimmed).not.toContain("mutation 000");
-    expect(trimmed).not.toContain("mutation 004");
-    expect(trimmed).toContain("mutation 005"); // oldest survivor
-    expect(trimmed).toContain(`mutation ${String(total - 1).padStart(3, "0")}`);
-  });
-
-  it("is a no-op at or under the cap (append-only below it)", async () => {
-    const store = await importFresh();
-    const block = store.renderMutationRecord({
-      ts: "2026-08-27T10:00:00Z",
-      target: "card",
-      summary: "only one",
-      evidence: [],
-      expectedBenefit: "x",
-    });
-    const content = `# Mutations Archive\n\n${block}\n`;
-    expect(store.trimMutationArchive(content)).toBe(content);
-  });
-
-  it("appendMutation enforces the cap on write", async () => {
-    const store = await importFresh();
-    // Seed an at-cap archive directly, then one append must retire the oldest.
-    const blocks = Array.from({ length: store.MAX_MUTATION_RECORDS }, (_, i) =>
-      store.renderMutationRecord({
-        ts: `2026-08-27T${String(10 + i).padStart(2, "0")}:00:00Z`,
-        target: "card",
-        summary: `seeded ${i}`,
-        evidence: [],
-        expectedBenefit: "x",
-      }),
-    );
-    writeOnDisk(
-      "memory/evolution/mutations.md",
-      `# Mutations Archive\n\n${blocks.join("\n\n")}\n`,
-    );
-    await store.appendMutation({
-      ts: "2026-08-29T10:00:00Z",
-      target: "direction",
-      summary: "the overflow record",
-      evidence: [],
-      expectedBenefit: "x",
-    });
-    const content = readOnDisk("memory/evolution/mutations.md")!;
-    expect(content.match(/^## /gm)).toHaveLength(store.MAX_MUTATION_RECORDS);
-    expect(content).not.toContain("seeded 0");
-    expect(content).toContain("seeded 1");
-    expect(content).toContain("the overflow record");
   });
 });
 

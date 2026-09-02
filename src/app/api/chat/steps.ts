@@ -79,7 +79,6 @@ import { checkSliceAge, checkIdleGap } from "@/lib/episodic/slicer";
 import { fsReadFile, fsWriteFile } from "@/lib/episodic/io-helpers";
 import {
   appendFitnessEvents,
-  appendMutation,
   bucketNetScore,
   emptyFitnessStore,
   ensureEvolutionFiles,
@@ -1155,12 +1154,11 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   /**
    * Apply the bridge report's direction verdict (v1.0 §6) through the SAME
    * write paths as the merged run — structural validation identical to the
-   * direction sub-agent flow (validateDirectionProposal), then writeDirection
-   * + the mutations archive (target "direction"). Shared by the boundary and
-   * mid-turn bridge paths. Returns the outcome for the terminal frame; a
-   * failed/rejected write returns UNDEFINED (a failure must not masquerade as
-   * "no_change") and surfaces as an amber warning row on the housekeeping
-   * card, never a silent skip.
+   * direction sub-agent flow (validateDirectionProposal), then writeDirection.
+   * Shared by the boundary and mid-turn bridge paths. Returns the outcome for
+   * the terminal frame; a failed/rejected write returns UNDEFINED (a failure
+   * must not masquerade as "no_change") and surfaces as an amber warning row
+   * on the housekeeping card, never a silent skip.
    */
   const applyBridgeDirectionVerdict = async (): Promise<
     EvolutionResult["direction"]
@@ -1182,16 +1180,6 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
       await writeDirection(proposed.proposed.trim(), batch);
       const summary =
         proposed.summary.trim() || "Direction updated (bridge housekeeping report)";
-      await appendMutation(
-        {
-          ts: new Date().toISOString(),
-          target: "direction",
-          summary,
-          evidence: proposed.evidence,
-          expectedBenefit: proposed.expected_benefit.trim() || "(none given)",
-        },
-        batch,
-      );
       console.log("[Evolution] direction updated (bridge report)");
       return { outcome: "updated", summary };
     } catch (e) {

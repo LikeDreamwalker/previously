@@ -46,15 +46,6 @@ vi.mock("@/lib/episodic", () => ({
   writePreviously: vi.fn(async () => {}),
 }));
 
-// The card-evolution archive path must not touch the real memory/evolution/
-// files from tests — mock the append-only fossil archive write.
-const evolutionArchive = vi.hoisted(() => ({
-  appendMutation: vi.fn(async () => {}),
-}));
-vi.mock("@/lib/evolution/store", () => ({
-  appendMutation: evolutionArchive.appendMutation,
-}));
-
 const runBridgeMock = vi.mocked(runBridge);
 const writeCurrentMock = vi.mocked(writeCurrentPreviously);
 const writeSliceMock = vi.mocked(writePreviously);
@@ -224,7 +215,7 @@ describe("buildHousekeepingPayload", () => {
       directionMode: "migrate",
     });
     expect(context).toContain("mode: MIGRATE");
-    expect(context).toContain("# Portrait / # Hypotheses / # Evidence / # Log");
+    expect(context).toContain("# Portrait (six fixed ## dimensions, refs-tailed pointers) / # Hypotheses");
   });
 });
 
@@ -716,33 +707,6 @@ describe("applyBridgeCardEvolution", () => {
     expect(res.summary).toBe("A durable interview commitment was stated.");
     expect(writeCurrentMock).toHaveBeenCalledOnce();
     expect(writeSliceMock).toHaveBeenCalledWith(SLICE, expect.any(String), undefined);
-    // v1.0 §2.7 — the bridge write-back enters the same fossil archive as
-    // the sub-agent path, with the slice id + reason as its evidence trail.
-    expect(evolutionArchive.appendMutation).toHaveBeenCalledOnce();
-    expect(evolutionArchive.appendMutation).toHaveBeenCalledWith(
-      expect.objectContaining({
-        target: "card",
-        evidence: [SLICE, "A durable interview commitment was stated."],
-        expectedBenefit: "A durable interview commitment was stated.",
-      }),
-      undefined,
-    );
-  });
-
-  it("never eats the landed card write when the archive write fails", async () => {
-    evolutionArchive.appendMutation.mockRejectedValueOnce(
-      new Error("disk blew up"),
-    );
-    const res = await applyBridgeCardEvolution({
-      card: newCardTemplate(SLICE),
-      sliceId: SLICE,
-      today: "2026-08-22",
-      reason: "A durable interview commitment was stated.",
-      mutations: [{ op: "addNow", content: "prepping the friday interview" }],
-    });
-    expect(res.changed).toBe(true);
-    expect(writeCurrentMock).toHaveBeenCalledOnce();
-    expect(writeSliceMock).toHaveBeenCalledOnce();
   });
 
   it("writes nothing when every mutation was rejected", async () => {
@@ -757,6 +721,5 @@ describe("applyBridgeCardEvolution", () => {
     expect(res.note).toContain("rejected by validation");
     expect(writeCurrentMock).not.toHaveBeenCalled();
     expect(writeSliceMock).not.toHaveBeenCalled();
-    expect(evolutionArchive.appendMutation).not.toHaveBeenCalled();
   });
 });
