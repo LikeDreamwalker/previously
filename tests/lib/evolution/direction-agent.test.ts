@@ -18,6 +18,9 @@
  *     skeleton's # Evidence / # Log) → migrate, else steady;
  *   - buildDirectionBlock renders the L1b system-prompt layer (portrait +
  *     hypotheses-as-unverified-guesses) and is EMPTY for template/legacy docs;
+ *   - retireExpiredHypotheses is the engineering half of the pool lifecycle:
+ *     a guess still unverified TTL slices after its proposed pointer is
+ *     stripped from the applied doc (Portrait lines never eligible);
  *   - runner failures degrade to { outcome: "failed" }, never throw.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -37,6 +40,7 @@ import {
   detectDirectionMode,
   buildDirectionBlock,
   directionSubstance,
+  retireExpiredHypotheses,
   DIRECTION_MAX_CHARS,
   DIRECTION_HYPOTHESES_MAX,
 } from "@/lib/evolution/direction-agent";
@@ -313,6 +317,70 @@ describe("detectDirectionMode", () => {
 
   it("treats a written new-skeleton doc as steady", () => {
     expect(detectDirectionMode(VALID_PROPOSAL)).toBe("steady");
+  });
+});
+
+describe("retireExpiredHypotheses (the engineering TTL)", () => {
+  const DOC = [
+    "# Portrait",
+    "",
+    DIMENSIONS[0],
+    "",
+    "- The user prefers concrete, evidence-anchored answers. — refs: 2026-08-01-0900, 2026-08-02-0900",
+    "",
+    DIMENSIONS[1],
+    DIMENSIONS[2],
+    DIMENSIONS[3],
+    DIMENSIONS[4],
+    DIMENSIONS[5],
+    "",
+    "# Hypotheses",
+    "",
+    "- [proposed 2026-08-01-0900] The user may think better late at night — falsify if: late-slice energy stays flat",
+    "- [proposed 2026-08-04-0900] The user may prefer plans over open exploration — falsify if: they reject structure twice",
+    "- [proposed 2026-08-05-0900] The user may be terse under time pressure — falsify if: deadlines bring longer messages",
+  ].join("\n");
+  const CATALOG = [
+    "2026-08-01-0900",
+    "2026-08-02-0900",
+    "2026-08-03-0900",
+    "2026-08-04-0900",
+    "2026-08-05-0900",
+  ];
+
+  it("retires a guess once TTL slices have passed since its proposed pointer", () => {
+    const { doc, retired } = retireExpiredHypotheses(DOC, CATALOG);
+    // 4 newer slices (08-02…08-05) → retired at exactly the TTL boundary.
+    expect(retired).toHaveLength(1);
+    expect(retired[0]).toContain("2026-08-01-0900");
+    expect(doc).not.toContain("think better late at night");
+    // 3 and 0 newer slices → kept.
+    expect(doc).toContain("prefer plans over open exploration");
+    expect(doc).toContain("terse under time pressure");
+  });
+
+  it("ages lexicographically — the proposed id need not appear in the catalog", () => {
+    const { retired } = retireExpiredHypotheses(DOC, [
+      "2026-08-01-1000",
+      "2026-08-02-1000",
+      "2026-08-03-1000",
+      "2026-08-04-1000",
+    ]);
+    expect(retired).toHaveLength(1);
+    expect(retired[0]).toContain("2026-08-01-0900");
+  });
+
+  it("never touches Portrait lines, even ones whose refs cite old slices", () => {
+    const { doc, retired } = retireExpiredHypotheses(DOC, CATALOG);
+    expect(retired.every((l) => l.startsWith("- [proposed"))).toBe(true);
+    expect(doc).toContain("evidence-anchored answers. — refs: 2026-08-01-0900");
+  });
+
+  it("leaves malformed pool lines for the validator", () => {
+    const doc = `${DOC}\n- a guess without its proposed marker`;
+    const { doc: out, retired } = retireExpiredHypotheses(doc, CATALOG);
+    expect(out).toContain("a guess without its proposed marker");
+    expect(retired).toHaveLength(1);
   });
 });
 

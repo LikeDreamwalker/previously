@@ -25,10 +25,12 @@
  * v1.1 (merged run): at a slice boundary the ONE agent run also evaluates
  * direction.md FIRST (input.directionEval) and may return a
  * `directionProposal` on its finish report. This function validates it
- * (validateDirectionProposal, mode-aware) and applies it through
- * writeDirection — exactly the old Phase-1 write path. A rejected proposal
- * is logged and skipped, never fatal; the verdict rides the result's
- * `direction` field for the terminal data-evolution frame.
+ * (validateDirectionProposal, mode-aware), retires expired hypotheses
+ * deterministically (retireExpiredHypotheses — the pool TTL is engineering's
+ * half of the lifecycle), and applies the result through writeDirection —
+ * the old Phase-1 write path. A rejected proposal is logged and skipped,
+ * never fatal; the verdict rides the result's `direction` field for the
+ * terminal data-evolution frame.
  *
  * Streaming is surfaced via the optional `onProgress` callback (phase steps)
  * and `onEvolutionLine` (the Previously Agent's live thinking/writing lines)
@@ -39,7 +41,7 @@ import { runPreviouslyAgent, type DirectionEvalInput, type PreviouslySignal } fr
 import { parseCard } from "@/lib/episodic/previously-format";
 import { sameCardSubstance } from "@/lib/episodic/card-session";
 import { diffCardLines, summarizeCardChanges, type CardChangeSummary, type CardMutation } from "@/lib/episodic/card-diff";
-import { readCurrentPreviously, writeCurrentPreviously, writePreviously } from "@/lib/episodic";
+import { readCurrentPreviously, writeCurrentPreviously, writePreviously, readTimelineIndex } from "@/lib/episodic";
 import type { WriteBatch } from "@/lib/episodic/io-helpers";
 import type { ModelConfig } from "@/lib/models/registry";
 import {
@@ -50,7 +52,7 @@ import {
   type FitnessSignal,
 } from "@/lib/evolution/store";
 import type { PlaybookAgent } from "@/lib/evolution/paths";
-import { validateDirectionProposal } from "@/lib/evolution/direction-agent";
+import { validateDirectionProposal, retireExpiredHypotheses } from "@/lib/evolution/direction-agent";
 
 export interface CardEvolutionReaders {
   readSlice: (sliceId: string, range?: {
@@ -201,7 +203,7 @@ export async function runCardEvolution(
 
   // ── v1.1 direction half — the merged run's directionProposal is validated
   // mode-aware and applied through the SAME write paths the old Phase-1 agent
-  // used (writeDirection + the mutations archive, target "direction"). A
+  // used (writeDirection). A
   // rejected proposal is logged and SKIPPED (never fatal); a write failure is
   // surfaced as outcome "failed", never masquerading as "no_change". ──────
   let directionOutcome: RunCardEvolutionResult["direction"];
@@ -227,9 +229,34 @@ export async function runCardEvolution(
         const summary =
           proposal.summary.trim() || "Direction updated (merged evolution run)";
         try {
-          await writeDirection(proposal.content.trim(), input.batch);
-          directionOutcome = { outcome: "updated", summary };
-          console.log(`[Evolution] direction updated: ${summary}`);
+          // The hypothesis TTL is ENGINEERING's half of the lifecycle: after
+          // the agent's semantic pass (promotions/refutations), strip every
+          // pool line whose `proposed` pointer is ≥ TTL slices old. Best-effort
+          // catalog read — when the timeline is unreadable the agent's doc
+          // lands as proposed (the pool cap still bounds it).
+          const idx = await readTimelineIndex().catch(() => null);
+          const sliceIds = [
+            ...(idx?.slices ?? []).map((s) => s.id),
+            input.sliceId,
+          ];
+          const aged = retireExpiredHypotheses(
+            proposal.content.trim(),
+            sliceIds,
+          );
+          if (aged.retired.length > 0) {
+            console.log(
+              `[Evolution] direction: retired ${aged.retired.length} expired hypothesis(es)`,
+            );
+          }
+          if (aged.doc.trim() === (input.directionEval.current ?? "").trim()) {
+            // The agent's only change was keeping guesses engineering just
+            // retired — nothing to write.
+            directionOutcome = { outcome: "no_change" };
+          } else {
+            await writeDirection(aged.doc, input.batch);
+            directionOutcome = { outcome: "updated", summary };
+            console.log(`[Evolution] direction updated: ${summary}`);
+          }
         } catch (e) {
           const reason = e instanceof Error ? e.message : String(e);
           console.warn("[Evolution] direction write failed:", reason);

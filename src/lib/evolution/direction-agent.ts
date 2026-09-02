@@ -26,9 +26,11 @@
  *     confirmation) → PROMOTED into the matching Portrait dimension IN THE
  *     SAME RUN — a confirmed guess never lingers in the pool; refuted →
  *     REMOVED; still unverified 4 slices after its `proposed` pointer →
- *     RETIRED (re-proposable on new evidence). Every evolution run refills
- *     the pool up to the cap with guesses about the PERSON — never
- *     predictions about events.
+ *     RETIRED (re-proposable on new evidence) — the TTL is enforced IN CODE
+ *     (retireExpiredHypotheses) on every accepted proposal, so an undecided
+ *     guess can never settle in as a de-facto conclusion. Every evolution
+ *     run refills the pool up to the cap with guesses about the PERSON —
+ *     never predictions about events.
  *
  * The card and playbooks are PRODUCTS evolved under this portrait (the merged
  * self-evolution agent, previously-agent.ts, evaluates the direction FIRST and
@@ -99,6 +101,48 @@ export const DIRECTION_MAX_CHARS = 12000;
 
 /** The hypothesis pool's bound — a guess that can't earn its slot is noise. */
 export const DIRECTION_HYPOTHESES_MAX = 10;
+
+/**
+ * A hypothesis's time-to-live, in slices: a guess still unverified this many
+ * slices after its `proposed` pointer has overstayed — the promotion/refutation
+ * call is the AGENT's (semantic), the expiry is ENGINEERING's (deterministic,
+ * retireExpiredHypotheses). An expired guess may be re-proposed later on new
+ * evidence (a fresh `proposed` marker restarts the clock — that is a legal
+ * re-proposal, not a loophole).
+ */
+export const DIRECTION_HYPOTHESIS_TTL_SLICES = 4;
+
+/**
+ * The engineering half of the hypothesis lifecycle, applied to a validated
+ * proposal BEFORE it lands: deterministically RETIRE every pool line whose
+ * `proposed` pointer sits ≥ DIRECTION_HYPOTHESIS_TTL_SLICES slices behind the
+ * newest known slice. Slice ids (YYYY-MM-DD-HHMM) sort chronologically as
+ * plain strings, so age is a lexicographic count and the proposed id itself
+ * need not appear in the catalog. Only `# Hypotheses` bullet lines are
+ * eligible — Portrait entries (including this run's promotions) are never
+ * touched, and malformed pool lines are left for the validator. Returns the
+ * rewritten doc plus the retired lines (for logging).
+ */
+export function retireExpiredHypotheses(
+  doc: string,
+  sliceIds: readonly string[],
+): { doc: string; retired: string[] } {
+  const retired: string[] = [];
+  let inPool = false;
+  const kept = doc.split("\n").filter((line) => {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("# ")) inPool = trimmed === "# Hypotheses";
+    if (!inPool || !trimmed.startsWith("- ")) return true;
+    const m = trimmed.match(/^-\s*\[proposed\s+(\d{4}-\d{2}-\d{2}-\d{4})\]/i);
+    if (!m) return true;
+    let newer = 0;
+    for (const id of sliceIds) if (id > m[1]) newer++;
+    if (newer < DIRECTION_HYPOTHESIS_TTL_SLICES) return true;
+    retired.push(trimmed);
+    return false;
+  });
+  return { doc: kept.join("\n"), retired };
+}
 
 /**
  * The three evaluation modes:
@@ -531,7 +575,7 @@ Think like a psychologist writing a case formulation, not a journalist writing a
 
 - CONFIRMED (evidence from ≥2 distinct slices, or explicit user confirmation) → PROMOTE it into the matching Portrait dimension IN THE SAME RUN, as a portrait-grade descriptive line with its refs. A confirmed guess NEVER lingers in the pool — promotion removes it from Hypotheses.
 - REFUTED → REMOVE it from the pool.
-- STILL UNVERIFIED 4 slices after its \`proposed\` pointer → RETIRE it (drop the line; it may be re-proposed later on new evidence). Do not keep stale guesses warm.
+- STILL UNVERIFIED 4 slices after its \`proposed\` pointer → RETIRE it (drop the line; it may be re-proposed later on new evidence). Do not keep stale guesses warm — engineering enforces this TTL deterministically: an expired guess you keep is stripped from the applied doc anyway.
 - Every evaluation REFILLS the pool toward 10 with fresh guesses grounded in the evidence at hand.
 
 Hypotheses are guesses about the PERSON — traits, preferences, rhythms, patterns you suspect but cannot yet confirm ("用户可能在深夜更健谈、更愿意暴露情绪"). They are NEVER predictions about events ("用户下周面试会通过" is fortune-telling, not a hypothesis — reject that thought yourself). A guess with no falsification condition is not a hypothesis.

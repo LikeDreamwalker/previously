@@ -97,6 +97,7 @@ import {
   buildDirectionBlock,
   detectDirectionMode,
   extractDirectionSection,
+  retireExpiredHypotheses,
   validateDirectionProposal,
 } from "@/lib/evolution/direction-agent";
 import {
@@ -1177,7 +1178,22 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
       return undefined;
     }
     try {
-      await writeDirection(proposed.proposed.trim(), batch);
+      // Same engineering TTL as the merged run: strip pool lines whose
+      // `proposed` pointer is ≥ TTL slices old before the write lands.
+      const idx = await readTimelineIndex().catch(() => null);
+      const aged = retireExpiredHypotheses(proposed.proposed.trim(), [
+        ...(idx?.slices ?? []).map((s) => s.id),
+        slice.slice_id,
+      ]);
+      if (aged.retired.length > 0) {
+        console.log(
+          `[Evolution] direction (bridge): retired ${aged.retired.length} expired hypothesis(es)`,
+        );
+      }
+      if (aged.doc.trim() === (bridgeDirection ?? "").trim()) {
+        return { outcome: "no_change" };
+      }
+      await writeDirection(aged.doc, batch);
       const summary =
         proposed.summary.trim() || "Direction updated (bridge housekeeping report)";
       console.log("[Evolution] direction updated (bridge report)");

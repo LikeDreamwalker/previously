@@ -26,6 +26,7 @@ vi.mock("@/lib/episodic", () => ({
   readCurrentPreviously: vi.fn(),
   writeCurrentPreviously: vi.fn(),
   writePreviously: vi.fn(),
+  readTimelineIndex: vi.fn(async () => ({ slices: [] })),
 }));
 // The evolution store boundary (direction / playbook writes) is mocked so
 // the tests stay hermetic — the real module would read/write
