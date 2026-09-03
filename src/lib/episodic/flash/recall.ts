@@ -62,6 +62,8 @@ import {
 } from "@/lib/agents/sub-agent-runner";
 import { buildSubAgentSystem } from "@/lib/agents/prompts";
 import { capPlaybook } from "@/lib/evolution/store";
+import { sliceLineWithTime, type SliceLineTimeOpts } from "@/lib/episodic/timeline/render";
+import { formatLocalTime } from "@/lib/turn-priming";
 
 // ─── Types ──────────────────────────────────────────────────────────────
 
@@ -113,6 +115,13 @@ export interface RecallSearchInput {
   /** The model to run the recall on — the turn's MAIN model, resolved
    *  by the caller via `resolveSubAgentModel(ctx)` (v0.9 unified runner). */
   model: ModelConfig;
+  /** The user's clock (turn context): timezone + the turn's start instant +
+   *  UI locale. When present, timeline pointer lines carry LOCAL-date
+   *  annotations and the prompt states the current local time, so recall
+   *  never reads a slice id (a UTC label) as the user's wall-clock time. */
+  timezone?: string;
+  nowIso?: string;
+  locale?: string;
   /** Progress routing ref — the runner streams each exploration step
    *  ("Reading global timeline…", "Reading slice X…") onto the shared
    *  data-tool-progress channel. */
@@ -141,10 +150,13 @@ function isStaleTimestamp(iso: string | undefined): boolean {
 }
 
 /** Render the newest `limit` catalog entries as pointer lines (newest first),
- *  with a header noting the total and how to reach older slices. */
+ *  with a header noting the total and how to reach older slices. When `time`
+ *  carries the user's clock, each id gets its LOCAL-date annotation so the
+ *  agent never reads the UTC id as wall-clock time. */
 export function paginateTimelineEntries(
   slices: TimelineSliceEntry[],
   limit: number = TIMELINE_PAGE_SIZE,
+  time?: SliceLineTimeOpts,
 ): string {
   const newest = [...slices]
     .sort((a, b) => b.id.localeCompare(a.id))
@@ -155,7 +167,9 @@ export function paginateTimelineEntries(
   const header =
     `Global timeline: showing newest ${newest.length} of ${slices.length} slices. ` +
     "Older slices: use readTimelineWindow with a date range.";
-  return `${header}\n${newest.map(sliceLine).join("\n")}`;
+  const line = (s: TimelineSliceEntry) =>
+    time ? sliceLineWithTime(s, time) : sliceLine(s);
+  return `${header}\n${newest.map(line).join("\n")}`;
 }
 
 /** Same pagination for the markdown projection — the fallback when
@@ -177,20 +191,20 @@ export function paginateTimelineMarkdown(
 }
 
 /** Regenerate the projection, then return the paginated view. */
-async function regenerateAndPaginate(): Promise<string> {
+async function regenerateAndPaginate(time?: SliceLineTimeOpts): Promise<string> {
   // generateGlobalTimeline reweaves both index.json and timeline.md.
   await generateGlobalTimeline();
   try {
     const raw = await fsReadFile(TIMELINE_INDEX_PATH);
     const idx = JSON.parse(raw) as Partial<TimelineIndex>;
-    return paginateTimelineEntries(idx.slices ?? []);
+    return paginateTimelineEntries(idx.slices ?? [], TIMELINE_PAGE_SIZE, time);
   } catch {
     const content = await fsReadFile(GLOBAL_TIMELINE_PATH);
     return paginateTimelineMarkdown(content);
   }
 }
 
-async function readGlobalTimelineImpl(): Promise<string> {
+async function readGlobalTimelineImpl(time?: SliceLineTimeOpts): Promise<string> {
   // Preferred path: the structured catalog, paginated to the newest slices.
   try {
     const raw = await fsReadFile(TIMELINE_INDEX_PATH);
@@ -201,9 +215,9 @@ async function readGlobalTimelineImpl(): Promise<string> {
       console.log(
         `[Recall] Global timeline stale (${Math.round((Date.now() - new Date(idx.updated_at!).getTime()) / 3_600_000)}h old), regenerating...`,
       );
-      return await regenerateAndPaginate();
+      return await regenerateAndPaginate(time);
     }
-    return paginateTimelineEntries(idx.slices ?? []);
+    return paginateTimelineEntries(idx.slices ?? [], TIMELINE_PAGE_SIZE, time);
   } catch {
     // Index missing or corrupt — fall back to the markdown projection.
   }
@@ -216,16 +230,16 @@ async function readGlobalTimelineImpl(): Promise<string> {
         console.log(
           `[Recall] Global timeline stale (${Math.round((Date.now() - new Date(match[1]).getTime()) / 3_600_000)}h old), regenerating...`,
         );
-        return await regenerateAndPaginate();
+        return await regenerateAndPaginate(time);
       }
       return paginateTimelineMarkdown(content);
     }
     // File exists but is empty — regenerate
-    return await regenerateAndPaginate();
+    return await regenerateAndPaginate(time);
   } catch {
     // File doesn't exist yet — generate it from the catalog
     try {
-      return await regenerateAndPaginate();
+      return await regenerateAndPaginate(time);
     } catch {
       return "(No timeline index found and could not generate one. This may be the first session.)";
     }
@@ -274,8 +288,10 @@ const TIMELINE_WINDOW_PAGE_SIZE = 100;
 
 /** Timeline catalog over a date window (inclusive YYYY-MM-DD) — compact
  *  pointer lines. Lets recall navigate by TIME ("what happened in 2025-03 to
- *  2025-10") in addition to tracing strands by topic. */
-async function readTimelineWindowImpl(from?: string, to?: string): Promise<string> {
+ *  2025-10") in addition to tracing strands by topic. NOTE: from/to filter
+ *  the id's UTC date — the local-date annotations on the returned lines are
+ *  the user's calendar. */
+async function readTimelineWindowImpl(from?: string, to?: string, time?: SliceLineTimeOpts): Promise<string> {
   try {
     const raw = await fsReadFile(TIMELINE_INDEX_PATH);
     const idx = JSON.parse(raw) as { slices?: TimelineSliceEntry[] };
@@ -295,7 +311,9 @@ async function readTimelineWindowImpl(from?: string, to?: string): Promise<strin
       inWindow.length > slices.length
         ? `\n(showing newest ${TIMELINE_WINDOW_PAGE_SIZE} of ${inWindow.length} slices in this window — narrow the date range to see the rest)`
         : "";
-    return `Timeline ${from ?? "start"} → ${to ?? "now"} (${slices.length} slices):\n${slices.map(sliceLine).join("\n")}${truncation}`;
+    const line = (s: TimelineSliceEntry) =>
+      time ? sliceLineWithTime(s, time) : sliceLine(s);
+    return `Timeline ${from ?? "start"} → ${to ?? "now"} (${slices.length} slices):\n${slices.map(line).join("\n")}${truncation}`;
   } catch {
     return "(timeline index not available yet — the weave hasn't run)";
   }
@@ -517,6 +535,8 @@ Recall strategy (mirror how a person remembers):
 3. BROADEN LAST — only then scan the global timeline for anything the first two passes missed.
 4. VERIFY BEFORE ANSWERING — check candidate slices with readSliceSummary, then read the most promising ones in full with readSlice (range filters keep it cheap). You may read at most ${MAX_SLICE_READS} slices in full — spend them on the strongest candidates.
 
+Time discipline (critical): a slice id (YYYY-MM-DD-HHMM) is an ADDRESS derived from the slice's UTC start instant — NEVER read it as the user's wall-clock time. Pointer lines carry the user's LOCAL date (+ weekday) in parentheses right after the id; THAT annotation is what "yesterday evening" or "last Friday" refers to. readTimelineWindow's from/to dates filter the id's UTC date, so when the question's anchor is a local day, pad the window by one day on both sides and let the local-date annotations guide you. When you cite a time in your answer, speak in the user's local calendar, not UTC.
+
 Answering:
 - Answer in the user's language, colleague to colleague ("Yes — you and the user talked about that on …", "You two haven't talked about this") — the answer reaches the user, so this overrides the shared base's English default.
 - Your answer field is PROSE for your colleague — the shared base's "keep every field short" applies to the references/searched metadata, not to the answer itself.
@@ -639,6 +659,15 @@ export async function runRecallSearch(
 ): Promise<RecallSearchOutput> {
   const { question, currentSliceId, strandsContext, progress } = input;
 
+  // The user's clock: pointer-line annotations + the prompt's time anchor.
+  const timeOpts: SliceLineTimeOpts | undefined =
+    input.timezone && input.nowIso
+      ? { nowIso: input.nowIso, timezone: input.timezone, locale: input.locale }
+      : undefined;
+  const timeBlock = timeOpts
+    ? `\n\nTime anchor: the user's local time is now ${formatLocalTime(input.nowIso!, input.timezone!).local} (${input.timezone}); UTC is ${input.nowIso}. Slice ids are UTC labels — the parenthesized dates on pointer lines are the user's LOCAL calendar.`
+    : "";
+
   const strandsHint = strandsContext && Object.keys(strandsContext).length > 0
     ? `
 Available strands (keyword tags threaded across slices): ${Object.keys(strandsContext).join(", ")}
@@ -654,7 +683,7 @@ IMPORTANT: After checking any time anchor, trace the strands that match the ques
 
   const userPrompt = `Your colleague (the main agent) asks: "${question}"
 
-Current slice: ${currentSliceId} — this is the ONGOING conversation, NOT a past memory. EXCLUDE it from your references; you recall the PAST only.${strandsHint}${playbookBlock}
+Current slice: ${currentSliceId} — this is the ONGOING conversation, NOT a past memory. EXCLUDE it from your references; you recall the PAST only.${timeBlock}${strandsHint}${playbookBlock}
 
 Follow your recall strategy: time anchor first (readTimelineWindow), then clue strands (readStrand), broaden only after that; verify candidates with readSliceSummary and read the strongest slices in full (readSlice, at most ${MAX_SLICE_READS}) before answering. For questions spanning a longer period, triage with readSliceSummary first and spend full reads only on the strongest candidates; answers resting on summaries should be hedged as uncertain — don't force a verbatim quote for every slice.
 
@@ -681,13 +710,16 @@ IMPORTANT: You MUST end by calling recallReport. Even when the honest answer is 
           "conversation slices (with the total count). Use readTimelineWindow " +
           "to reach older slices.",
         inputSchema: z.object({}),
-        execute: async () => readGlobalTimelineImpl(),
+        execute: async () => readGlobalTimelineImpl(timeOpts),
       }),
       readTimelineWindow: tool({
         description:
           "Read the timeline catalog over a date window (inclusive, YYYY-MM-DD) — " +
           "one compact pointer line per slice. Your FIRST move when the question " +
-          "carries a time anchor ('last week', 'that night', 'in March').",
+          "carries a time anchor ('last week', 'that night', 'in March'). " +
+          "from/to filter the slice id's UTC date — pad the window by one day " +
+          "on both sides for a local-day anchor and use the parenthesized " +
+          "local-date annotations.",
         inputSchema: z.object({
           from: z
             .string()
@@ -699,7 +731,7 @@ IMPORTANT: You MUST end by calling recallReport. Even when the honest answer is 
             .describe("End date YYYY-MM-DD (inclusive). Omit for now."),
         }),
         execute: async ({ from, to }: { from?: string; to?: string }) =>
-          readTimelineWindowImpl(from, to),
+          readTimelineWindowImpl(from, to, timeOpts),
       }),
       listStrands: tool({
         description:

@@ -86,20 +86,19 @@ import {
   readFitness,
   readRecentSignals,
   recordDirectionRejection,
+  resetFitnessGeneration,
   writeDirection,
 } from "@/lib/evolution/store";
 import { logInteractionSignal } from "@/lib/episodic/rework-signal";
-import {
-  computeEvolutionTriggers,
-  EVOLVE_WINDOW_SLICES,
-} from "@/lib/evolution/triggers";
-import { appendMutationWithEvaluation } from "@/lib/evolution/acceptance";
+import { computeEvolutionTriggers } from "@/lib/evolution/triggers";
 import {
   DIRECTION_RECENT_EVENTS,
   DIRECTION_RECENT_MARKINGS,
   buildDirectionBlock,
   detectDirectionMode,
   extractDirectionSection,
+  retireExpiredHypotheses,
+  applyDirectionOps,
   validateDirectionProposal,
 } from "@/lib/evolution/direction-agent";
 import {
@@ -1057,19 +1056,30 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   // owner's model: when negative feedback is identified, the evolution check
   // must fire — the reply the user is about to read should already reflect
   // it). The check is a deterministic fitness-trigger computation
-  // (computeEvolutionTriggers — inclusive: any evidence-anchored ≤ -1 delta
-  // this slice fires its bucket, plus the windowed net score) combined with
-  // the card bucket's legacy gates and the direction bootstrap/migrate gate;
-  // a fired check runs the MERGED self-evolution agent ONCE (max one run per
-  // turn — a boundary turn never also takes the mid-turn path): it evaluates
-  // direction.md FIRST (its proposal is validated + applied inside
-  // runCardEvolution through the old Phase-1 write paths) and evolves the
-  // card + triggered-bucket playbooks under the possibly-new direction.
+  // (computeEvolutionTriggers) combined with the card bucket's legacy gates
+  // and the direction bootstrap/migrate gate; a fired check runs the MERGED
+  // self-evolution agent ONCE (max one run per turn — a boundary turn never
+  // also takes the mid-turn path): it evaluates direction.md FIRST (its
+  // proposal is validated + applied inside runCardEvolution through the old
+  // Phase-1 write paths) and evolves the card + triggered-bucket playbooks
+  // under the possibly-new direction.
   // Accepted mutations are archived with their expected benefit (design §2.7)
   // inside runCardEvolution.
+  //
+  // GENERATION SEMANTICS (v0.9.2): the fitness store holds only the CURRENT
+  // generation's selection pressure. A bucket fires when its generation net
+  // reaches EVOLVE_TRIGGER_THRESHOLD (-5) — purely quantitative, no semantic
+  // fast paths. A SUCCESSFUL fitness-triggered run SETTLES the generation
+  // (resetFitnessGeneration clears every bucket's events + signals — even a
+  // "checked, no change" verdict counts: the judge read the docket): the
+  // outcome already sedimented into card/direction/playbooks, so the spent
+  // pressure is discarded and re-accumulates from zero. A FAILED run settles
+  // nothing (the pressure stays and retries next turn). Runs gated by the
+  // boundary/direction/explicit channels WITHOUT a fitness trigger never saw
+  // the pressure's evidence, so they do not settle it.
   // Gates:
-  //   (a) fitness triggers — any bucket fired by this turn's fresh deltas or
-  //       the windowed slow bleed (every turn, boundary or not);
+  //   (a) fitness triggers — a bucket whose generation net dropped to the
+  //       threshold (every turn, boundary or not);
   //   (b) slice boundary — gated by the ANALYZER's judgment (evolveCard.worth);
   //       on analyzer failure the gate defaults to running (a wasted worker
   //       call is cheap, a missed evolution is permanent memory loss). A
@@ -1078,7 +1088,8 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   //       chunk (status "done") is still emitted so the skip stays visible
   //       (with the reason).
   //   (c) the user explicitly asking to record/evolve, or stating an explicit
-  //       behavioral correction (analyzeTurn's memoryUpdate);
+  //       behavioral correction (analyzeTurn's memoryUpdate) — the
+  //       INSTRUCTION channel, not selection pressure;
   //   (d) the direction bootstrap/migrate gate (v1.1) — the FIRST direction
   //       must not wait for a complaint, an OLD-skeleton doc not for a
   //       boundary.
@@ -1091,16 +1102,15 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   // Demo mode is skipped entirely — it is a read-only preview and must never
   // write the real card (the old /api/evolution route also returned skipped).
   //
-  // The deterministic trigger check: computed over this turn's FRESH deltas
-  // (analysis.fitness — §3a already persisted them; the evidence rule is
-  // re-applied inside) plus the store for the windowed path. No trigger, no
-  // gate → NO evolution run.
+  // The deterministic trigger check: computed over the store AFTER §3a
+  // appended this turn's fresh deltas (batch read-your-writes). No trigger,
+  // no gate → NO evolution run.
   const fitnessStore = input.useDemo
     ? emptyFitnessStore()
     : await readFitness(batch);
   const evolutionTriggers = input.useDemo
     ? []
-    : computeEvolutionTriggers(fitnessStore, analysis.fitness ?? []);
+    : computeEvolutionTriggers(fitnessStore);
   let evolutionResult: EvolutionResult | undefined;
   const explicitUpdate = analysis.memoryUpdate;
   // Ages/overdue compare against the USER's local calendar date, not UTC.
@@ -1146,21 +1156,46 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
   /**
    * Apply the bridge report's direction verdict (v1.0 §6) through the SAME
    * write paths as the merged run — structural validation identical to the
-   * direction sub-agent flow (validateDirectionProposal), then writeDirection
-   * + the mutations archive (target "direction"). Shared by the boundary and
-   * mid-turn bridge paths. Returns the outcome for the terminal frame; a
-   * failed/rejected write returns UNDEFINED (a failure must not masquerade as
-   * "no_change") and surfaces as an amber warning row on the housekeeping
-   * card, never a silent skip.
+   * direction sub-agent flow (validateDirectionProposal), then writeDirection.
+   * Shared by the boundary and mid-turn bridge paths. Returns the outcome for
+   * the terminal frame; a failed/rejected write returns UNDEFINED (a failure
+   * must not masquerade as "no_change") and surfaces as an amber warning row
+   * on the housekeeping card, never a silent skip.
    */
   const applyBridgeDirectionVerdict = async (): Promise<
     EvolutionResult["direction"]
   > => {
     if (!bridgeReport || !bridgeReport.direction) return undefined;
     if (bridgeReport.direction === "no_change") return { outcome: "no_change" };
-    const proposed = bridgeReport.direction;
+    const verdict = bridgeReport.direction;
+    // Atomic ops (same vocabulary as the merged run's direction tools):
+    // applyDirectionOps validates each op as it lands — rejected ops skip
+    // with their reason; the doc then passes the whole-doc gate + the
+    // engineering TTL before writeDirection.
+    const applied = applyDirectionOps(bridgeDirection, verdict.ops, {
+      sliceId: slice.slice_id,
+    });
+    const rejectedOps = applied.results.filter((r) => !r.ok);
+    if (rejectedOps.length > 0) {
+      console.warn(
+        `[Evolution] bridge direction: ${rejectedOps.length} op(s) rejected — ${rejectedOps
+          .map((r) => r.detail)
+          .join("; ")
+          .slice(0, 200)}`,
+      );
+    }
+    if (!applied.changed) {
+      if (rejectedOps.length > 0) {
+        hkActivity.warning = `Direction ops rejected: ${rejectedOps
+          .map((r) => r.detail)
+          .join("; ")
+          .slice(0, 200)}`;
+        sendHousekeepingCard(false);
+      }
+      return { outcome: "no_change" };
+    }
     const validation = validateDirectionProposal(
-      proposed.proposed,
+      applied.doc,
       bridgeDirection,
       { mode: bridgeDirectionMode },
     );
@@ -1170,27 +1205,53 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
       return undefined;
     }
     try {
-      const store = await readFitness(batch);
-      await writeDirection(proposed.proposed.trim(), batch);
+      // Same engineering TTL as the merged run: strip pool lines whose
+      // `proposed` pointer is ≥ TTL slices old before the write lands.
+      const idx = await readTimelineIndex().catch(() => null);
+      const aged = retireExpiredHypotheses(applied.doc, [
+        ...(idx?.slices ?? []).map((s) => s.id),
+        slice.slice_id,
+      ]);
+      if (aged.retired.length > 0) {
+        console.log(
+          `[Evolution] direction (bridge): retired ${aged.retired.length} expired hypothesis(es)`,
+        );
+      }
+      await writeDirection(aged.doc, batch);
       const summary =
-        proposed.summary.trim() || "Direction updated (bridge housekeeping report)";
-      await appendMutationWithEvaluation(
-        {
-          ts: new Date().toISOString(),
-          target: "direction",
-          summary,
-          evidence: proposed.evidence,
-          expectedBenefit: proposed.expected_benefit.trim() || "(none given)",
-        },
-        store,
-        batch,
-      );
+        verdict.summary.trim() || "Direction updated (bridge housekeeping report)";
       console.log("[Evolution] direction updated (bridge report)");
       return { outcome: "updated", summary };
     } catch (e) {
       hkActivity.warning = `Direction write failed: ${e instanceof Error ? e.message : e}`;
       sendHousekeepingCard(false);
       return undefined;
+    }
+  };
+  /**
+   * Settle the fitness generation after a SUCCESSFUL fitness-triggered
+   * evolution run (v0.9.2 — see the §4b header). Only a run that fired
+   * BECAUSE of selection pressure (evolutionTriggers non-empty) and
+   * completed without an error settles the store — a "checked, no change"
+   * verdict included (the judge read the docket). A failed run leaves the
+   * pressure in place so the next turn retries. Best-effort: a reset
+   * failure just means the pressure lingers until the next run.
+   */
+  const settleFitnessGeneration = async (result: {
+    ran: boolean;
+    error?: string;
+  }) => {
+    if (evolutionTriggers.length === 0 || !result.ran || result.error) return;
+    try {
+      await resetFitnessGeneration(batch);
+      console.log(
+        `[Evolution] generation settled (triggers: ${evolutionTriggers.map((t) => t.bucket).join(", ")})`,
+      );
+    } catch (e) {
+      console.warn(
+        "[Evolution] generation reset failed:",
+        e instanceof Error ? e.message : e,
+      );
     }
   };
   try {
@@ -1253,6 +1314,7 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
             mutations: bridgeReport.evolution.mutations,
             batch,
           });
+          await settleFitnessGeneration(evolutionResult);
           await emitEvolutionResult(stream, withDirection(evolutionResult));
           freezeEvolutionSummary(slice);
           console.log(
@@ -1273,22 +1335,21 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
       } else {
         // ── v1.1 merged evolution run
         // The deterministic trigger check already ran for this turn (above):
-        // per-bucket windowed net scores + this slice's evidence-anchored
-        // negative deltas (computeEvolutionTriggers), combined here with the
-        // card bucket's legacy gates (analyzer worth / legacy-card force) and
-        // the direction bootstrap/migrate gate below.
+        // per-bucket CURRENT-GENERATION net scores (computeEvolutionTriggers),
+        // combined here with the card bucket's legacy gates (analyzer worth /
+        // legacy-card force) and the direction bootstrap/migrate gate below.
         // Nothing due → NO evolution agent runs — the mandatory per-turn
         // check IS this code-level scoring (mandatory check ≠ mandatory
         // mutation).
         const triggers = evolutionTriggers;
         // The terminal frame's "why it ran" rows (v1.0 §2.5): each fired
-        // bucket with its current windowed net score. Empty when the run was
+        // bucket with its current generation net score. Empty when the run was
         // gated by the analyzer / a legacy card instead — the card then shows
         // no score rows.
         const triggerRows: NonNullable<EvolutionResult["triggers"]> =
           triggers.map((t) => ({
             bucket: t.bucket,
-            score: bucketNetScore(fitnessStore, t.bucket, EVOLVE_WINDOW_SLICES),
+            score: bucketNetScore(fitnessStore, t.bucket),
           }));
         const cardGate = shouldRunCardEvolution(analysis) || legacyCard;
 
@@ -1385,6 +1446,9 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
               ),
             );
           }
+          // A successful fitness-triggered run settles the generation (the
+          // spent pressure is discarded; a failed run settles nothing).
+          await settleFitnessGeneration(evolutionResult);
           // Fold the "why it ran" calibration rows into the terminal frame —
           // for BOTH the changed and the checked-no-updates outcomes. (The
           // direction verdict already rides the result from runCardEvolution.)
@@ -1457,7 +1521,7 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
       const triggerRows: NonNullable<EvolutionResult["triggers"]> =
         evolutionTriggers.map((t) => ({
           bucket: t.bucket,
-          score: bucketNetScore(fitnessStore, t.bucket, EVOLVE_WINDOW_SLICES),
+          score: bucketNetScore(fitnessStore, t.bucket),
         }));
 
       if (mergedGate) {
@@ -1490,6 +1554,7 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
               mutations: bridgeReport.evolution.mutations,
               batch,
             });
+            await settleFitnessGeneration(evolutionResult);
             await emitEvolutionResult(stream, withDirection({
               ...evolutionResult,
               ...(triggerRows.length > 0 ? { triggers: triggerRows } : {}),
@@ -1576,6 +1641,7 @@ export async function housekeeping(input: TurnInput): Promise<HousekeepingResult
               ),
             );
           }
+          await settleFitnessGeneration(evolutionResult);
           evolutionResult = {
             ...evolutionResult,
             ...(triggerRows.length > 0 ? { triggers: triggerRows } : {}),

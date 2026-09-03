@@ -1,7 +1,8 @@
 /**
  * Tests for the evolution data layer store (src/lib/evolution/store.ts):
- * the structural evidence-anchoring invariant, window net-score math, bounded
- * retention, the mutation archive format, and missing-file tolerance.
+ * the structural evidence-anchoring invariant, generation net-score math,
+ * the generation settle, bounded retention, the mutation archive format,
+ * and missing-file tolerance.
  *
  * Same harness as tests/lib/episodic/batch-mode.test.ts: a temp cwd +
  * STORAGE=local so all I/O lands on the local filesystem backend.
@@ -101,7 +102,16 @@ describe("missing-file tolerance", () => {
     await store.ensureEvolutionFiles();
     const created = readOnDisk("memory/evolution/direction.md");
     expect(created).not.toBeNull();
-    for (const section of ["# Portrait", "# Hypotheses", "# Evidence", "# Log"]) {
+    for (const section of [
+      "# Portrait",
+      "# Hypotheses",
+      "## Traits & cognitive style",
+      "## Triggers & rhythms",
+      "## Patterns & loops",
+      "## Strengths & resilience",
+      "## Communication preferences",
+      "## Values & boundaries",
+    ]) {
       expect(created).toContain(section);
     }
 
@@ -145,58 +155,74 @@ describe("appendFitnessEvents evidence invariant", () => {
   });
 });
 
-// ── Window net-score math ────────────────────────────────────────────────
+// ── Generation net-score math ─────────────────────────────────────────────
 
 describe("bucketNetScore", () => {
-  it("nets a bucket over the newest N distinct slices", async () => {
+  it("nets a bucket over the whole store (the current generation)", async () => {
     const { bucketNetScore } = await importFresh();
     const store = {
       signals: [],
       directionRejections: [],
       events: [
-        // slice A (oldest)
         { ts: "t1", sliceId: "A", bucket: "recall" as const, delta: -2 as const, evidence: "x" },
         { ts: "t2", sliceId: "A", bucket: "card" as const, delta: 1 as const, evidence: "x" },
-        // slice B
         { ts: "t3", sliceId: "B", bucket: "recall" as const, delta: -1 as const, evidence: "x" },
-        // slice C (newest)
         { ts: "t4", sliceId: "C", bucket: "recall" as const, delta: 1 as const, evidence: "x" },
       ],
     };
-    // Full window: recall = -2 + -1 + 1 = -2; card = +1.
+    // recall = -2 + -1 + 1 = -2; card = +1; untouched buckets net 0.
     expect(bucketNetScore(store, "recall")).toBe(-2);
     expect(bucketNetScore(store, "card")).toBe(1);
     expect(bucketNetScore(store, "search")).toBe(0);
-    // Window of the 2 newest slices (B, C) drops slice A's -2: recall = 0.
-    expect(bucketNetScore(store, "recall", 2)).toBe(0);
-    // Window of 1 newest slice (C): recall = +1.
-    expect(bucketNetScore(store, "recall", 1)).toBe(1);
   });
 });
 
-// ── Since-window net-score (effectiveness window, design §2.7) ────────────
+// ── Generation settle (v0.9.2) ─────────────────────────────────────────────
 
-describe("bucketNetScoreSince", () => {
-  it("nets a bucket over events strictly NEWER than the cutoff timestamp", async () => {
-    const { bucketNetScoreSince } = await importFresh();
-    const store = {
+describe("resetFitnessGeneration", () => {
+  it("clears events and signals, keeps the direction-rejection backoff", async () => {
+    const store = await importFresh();
+    await store.appendFitnessEvents([
+      { ts: "t1", sliceId: "A", bucket: "recall", delta: -2, evidence: "x" },
+      { ts: "t2", sliceId: "A", bucket: "card", delta: -1, evidence: "y" },
+    ]);
+    await store.appendSignal({
+      ts: "t3",
+      sliceId: "A",
+      type: "interaction_interrupt",
+      detail: "user interrupted the turn mid-stream",
+    });
+    await store.recordDirectionRejection("slice-with-rejection");
+
+    await store.resetFitnessGeneration();
+
+    expect(await store.readFitness()).toEqual({
+      events: [],
       signals: [],
-      directionRejections: [],
-      events: [
-        { ts: "2026-08-20T10:00:00Z", sliceId: "A", bucket: "recall" as const, delta: -2 as const, evidence: "x" },
-        { ts: "2026-08-22T10:00:00Z", sliceId: "B", bucket: "recall" as const, delta: -1 as const, evidence: "x" },
-        { ts: "2026-08-22T11:00:00Z", sliceId: "B", bucket: "card" as const, delta: -1 as const, evidence: "x" },
-        { ts: "2026-08-24T10:00:00Z", sliceId: "C", bucket: "recall" as const, delta: 1 as const, evidence: "x" },
-      ],
-    };
-    // Since before everything: all recall events = -2.
-    expect(bucketNetScoreSince(store, "recall", "2026-08-19T00:00:00Z")).toBe(-2);
-    // Since between the recall events: -1 + 1 = 0 (other buckets never count).
-    expect(bucketNetScoreSince(store, "recall", "2026-08-21T00:00:00Z")).toBe(0);
-    // Strictly newer: the event AT the cutoff is excluded.
-    expect(bucketNetScoreSince(store, "recall", "2026-08-22T10:00:00Z")).toBe(1);
-    // After everything: 0.
-    expect(bucketNetScoreSince(store, "recall", "2026-08-25T00:00:00Z")).toBe(0);
+      directionRejections: ["slice-with-rejection"],
+    });
+  });
+
+  it("is a no-op on an already-empty generation (no write, no error)", async () => {
+    const store = await importFresh();
+    await store.resetFitnessGeneration();
+    expect(readOnDisk("memory/evolution/fitness.json")).toBeNull();
+  });
+
+  it("the next generation re-accumulates from zero", async () => {
+    const store = await importFresh();
+    await store.appendFitnessEvents([
+      { ts: "t1", sliceId: "A", bucket: "interaction", delta: -2, evidence: "x" },
+      { ts: "t2", sliceId: "B", bucket: "interaction", delta: -2, evidence: "y" },
+      { ts: "t3", sliceId: "C", bucket: "interaction", delta: -1, evidence: "z" },
+    ]);
+    await store.resetFitnessGeneration();
+    await store.appendFitnessEvents([
+      { ts: "t4", sliceId: "D", bucket: "interaction", delta: -1, evidence: "fresh" },
+    ]);
+    const { events } = await store.readFitness();
+    expect(events).toHaveLength(1);
+    expect(store.bucketNetScore({ events, signals: [], directionRejections: [] }, "interaction")).toBe(-1);
   });
 });
 
@@ -272,118 +298,6 @@ describe("recordDirectionRejection", () => {
     expect(directionRejections.at(-1)).toBe(
       `2026-08-27-${1000 + store.MAX_DIRECTION_REJECTIONS + 4}`,
     );
-  });
-});
-
-// ── Mutation archive ─────────────────────────────────────────────────────
-
-describe("appendMutation", () => {
-  it("creates the archive with a header, then appends compact blocks", async () => {
-    const store = await importFresh();
-    await store.appendMutation({
-      ts: "2026-08-27T10:00:00Z",
-      target: "playbook:recall",
-      summary: "Prefer full-slice reads on emotional topics",
-      evidence: ["memory/episodic/slices/2026/08/20/1430/timeline/core.md"],
-      expectedBenefit: "Fewer rework signals on emotional recalls",
-    });
-    const first = readOnDisk("memory/evolution/mutations.md");
-    expect(first).not.toBeNull();
-    expect(first).toContain("# Mutations Archive");
-    expect(first).toContain("## 2026-08-27T10:00:00Z — playbook:recall");
-    expect(first).toContain("- **Summary:** Prefer full-slice reads on emotional topics");
-    expect(first).toContain("- **Expected benefit:** Fewer rework signals on emotional recalls");
-    expect(first).toContain("  - memory/episodic/slices/2026/08/20/1430/timeline/core.md");
-
-    await store.appendMutation({
-      ts: "2026-08-27T11:00:00Z",
-      target: "direction",
-      summary: "Direction: prioritize continuity of long-running projects",
-      evidence: [],
-      expectedBenefit: "Better multi-session follow-through",
-    });
-    const second = readOnDisk("memory/evolution/mutations.md")!;
-    // Append-only: the first block is untouched, the header appears once.
-    expect(second.indexOf("# Mutations Archive")).toBe(
-      second.lastIndexOf("# Mutations Archive"),
-    );
-    expect(second).toContain("## 2026-08-27T10:00:00Z — playbook:recall");
-    expect(second).toContain("## 2026-08-27T11:00:00Z — direction");
-    expect(second).toContain("  - (none recorded)");
-    expect(second.indexOf("## 2026-08-27T10:00:00Z")).toBeLessThan(
-      second.indexOf("## 2026-08-27T11:00:00Z"),
-    );
-  });
-});
-
-// ── Mutation archive retention (v0.9.1 bounded archive) ──────────────────
-
-describe("trimMutationArchive", () => {
-  it("keeps the header + newest MAX_MUTATION_RECORDS blocks, retiring the oldest", async () => {
-    const store = await importFresh();
-    const total = store.MAX_MUTATION_RECORDS + 5;
-    const blocks = Array.from({ length: total }, (_, i) =>
-      store.renderMutationRecord({
-        ts: `2026-08-27T${String(10 + i).padStart(2, "0")}:00:00Z`,
-        target: "card",
-        // Zero-padded so "mutation 004" is never a substring of "mutation 040".
-        summary: `mutation ${String(i).padStart(3, "0")}`,
-        evidence: [],
-        expectedBenefit: "x",
-      }),
-    );
-    const content = `# Mutations Archive\n\nheader text\n\n${blocks.join("\n\n")}\n`;
-    const trimmed = store.trimMutationArchive(content);
-    expect(trimmed).toContain("# Mutations Archive");
-    expect(trimmed).toContain("header text");
-    expect(trimmed.match(/^## /gm)).toHaveLength(store.MAX_MUTATION_RECORDS);
-    expect(trimmed).not.toContain("mutation 000");
-    expect(trimmed).not.toContain("mutation 004");
-    expect(trimmed).toContain("mutation 005"); // oldest survivor
-    expect(trimmed).toContain(`mutation ${String(total - 1).padStart(3, "0")}`);
-  });
-
-  it("is a no-op at or under the cap (append-only below it)", async () => {
-    const store = await importFresh();
-    const block = store.renderMutationRecord({
-      ts: "2026-08-27T10:00:00Z",
-      target: "card",
-      summary: "only one",
-      evidence: [],
-      expectedBenefit: "x",
-    });
-    const content = `# Mutations Archive\n\n${block}\n`;
-    expect(store.trimMutationArchive(content)).toBe(content);
-  });
-
-  it("appendMutation enforces the cap on write", async () => {
-    const store = await importFresh();
-    // Seed an at-cap archive directly, then one append must retire the oldest.
-    const blocks = Array.from({ length: store.MAX_MUTATION_RECORDS }, (_, i) =>
-      store.renderMutationRecord({
-        ts: `2026-08-27T${String(10 + i).padStart(2, "0")}:00:00Z`,
-        target: "card",
-        summary: `seeded ${i}`,
-        evidence: [],
-        expectedBenefit: "x",
-      }),
-    );
-    writeOnDisk(
-      "memory/evolution/mutations.md",
-      `# Mutations Archive\n\n${blocks.join("\n\n")}\n`,
-    );
-    await store.appendMutation({
-      ts: "2026-08-29T10:00:00Z",
-      target: "direction",
-      summary: "the overflow record",
-      evidence: [],
-      expectedBenefit: "x",
-    });
-    const content = readOnDisk("memory/evolution/mutations.md")!;
-    expect(content.match(/^## /gm)).toHaveLength(store.MAX_MUTATION_RECORDS);
-    expect(content).not.toContain("seeded 0");
-    expect(content).toContain("seeded 1");
-    expect(content).toContain("the overflow record");
   });
 });
 

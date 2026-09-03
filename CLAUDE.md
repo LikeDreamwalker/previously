@@ -20,7 +20,7 @@ Every chat turn itself runs inside a durable Vercel Workflow run (`src/app/api/c
 **Key principles**:
 - Code + data coexist in one repo. Code is agent-read-only, data directories are agent-read-write.
 - Execution is stateless and event-driven. State lives entirely in GitHub files, not in a database.
-- The agent's identity constitution (`identity/agent/`) is bundled at build time via `scripts/generate-identity.mjs`; all memory data (slices, timeline, strands, user card) is fetched at runtime from GitHub/local fs.
+- The agent's identity constitution (`identity/agent/CHARTER.md` — the single bedrock file: mission + the two documents' contract incl. the GROUNDING RULE + protocols + guardrails) is bundled at build time via `scripts/generate-identity.mjs`; all memory data (slices, timeline, strands, user card) is fetched at runtime from GitHub/local fs.
 
 ## Commands
 

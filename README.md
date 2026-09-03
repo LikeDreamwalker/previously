@@ -137,7 +137,7 @@ Two things make this unusual:
 - **Episodic memory** — time-slice storage with a single rule (30 min of silence closes a slice)
 - **Visible reasoning** — thinking, recall, and tool calls stream inline; nothing happens in a black box
 - **Colleague recall** — a recall sub-agent searches memory with evidence-anchored, verbatim-quoted answers; the main agent keeps only a verification channel
-- **Darwinian self-evolution** — a direction document (`memory/evolution/direction.md`) defines what "better for you" means; evidence-anchored fitness scoring decides *whether* to evolve; every accepted change lands in an append-only mutations archive. The user card is a product of that loop, not the loop itself
+- **Darwinian self-evolution** — a portrait document (`memory/evolution/direction.md`) models who you are, plus a dynamic pool of falsifiable hypotheses about you; evidence-anchored fitness scoring decides *whether* to evolve. The user card is a product of that loop, not the loop itself
 - **Local time, everywhere** — read tools pre-render your local time, so the agent never mangles timezones
 - **Trivial turns stay out of memory** — a semantic gate keeps "thanks" and "continue" from polluting your timeline
 - **Multi-model** — DeepSeek, Anthropic, and any OpenAI-compatible provider, with a pick-your-main-model toolbar

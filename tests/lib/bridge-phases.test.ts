@@ -46,22 +46,6 @@ vi.mock("@/lib/episodic", () => ({
   writePreviously: vi.fn(async () => {}),
 }));
 
-// The card-evolution archive path must not touch the real memory/evolution/
-// files from tests — mock the store read + the append-only archive write.
-const evolutionArchive = vi.hoisted(() => ({
-  appendMutationWithEvaluation: vi.fn(async () => ({
-    evaluatedPreviousTs: null as string | null,
-    markedIneffective: false,
-  })),
-  readFitness: vi.fn(async () => ({ events: [], signals: [] })),
-}));
-vi.mock("@/lib/evolution/acceptance", () => ({
-  appendMutationWithEvaluation: evolutionArchive.appendMutationWithEvaluation,
-}));
-vi.mock("@/lib/evolution/store", () => ({
-  readFitness: evolutionArchive.readFitness,
-}));
-
 const runBridgeMock = vi.mocked(runBridge);
 const writeCurrentMock = vi.mocked(writeCurrentPreviously);
 const writeSliceMock = vi.mocked(writePreviously);
@@ -231,7 +215,7 @@ describe("buildHousekeepingPayload", () => {
       directionMode: "migrate",
     });
     expect(context).toContain("mode: MIGRATE");
-    expect(context).toContain("# Portrait / # Hypotheses / # Evidence / # Log");
+    expect(context).toContain("# Portrait (six fixed ## dimensions, refs-tailed pointers) / # Hypotheses");
   });
 });
 
@@ -346,14 +330,26 @@ describe("runHousekeepingBridge", () => {
     expect(res.report.direction).toBeNull();
   });
 
-  it("parses fitness deltas and a direction proposal when present", async () => {
+  it("parses fitness deltas and a direction ops verdict when present", async () => {
     const rich = JSON.parse(JSON.stringify(VALID_REPORT));
     rich.fitness = [
       { bucket: "recall", delta: -1, evidence: "main agent re-read slice 2026-08-20-1430 outside recall's references" },
       { bucket: "interaction", delta: 1, evidence: "exactly what I needed" },
     ];
     rich.direction = {
-      proposed: "# Direction\n\nKeep answers concrete.\n\n# Anti-goals\n\nNo fluff.\n\n# Evidence\n\n- 2026-08-20-1430\n- 2026-08-22-1015\n\n# Log\n\n- 2026-08-22: first direction.",
+      ops: [
+        {
+          op: "add_portrait",
+          dimension: "## Communication preferences",
+          text: "The user prefers concrete answers",
+          refs: ["2026-08-20-1430", "2026-08-22-1015"],
+        },
+        {
+          op: "add_hypothesis",
+          text: "The user may think better late at night",
+          falsify: "late-slice energy stays flat",
+        },
+      ],
       summary: "First direction: concreteness",
       evidence: ["2026-08-20-1430"],
       expected_benefit: "Less vague advice",
@@ -375,7 +371,8 @@ describe("runHousekeepingBridge", () => {
     expect(res.report.direction).not.toBeNull();
     expect(res.report.direction).not.toBe("no_change");
     if (res.report.direction && res.report.direction !== "no_change") {
-      expect(res.report.direction.proposed).toContain("# Direction");
+      expect(res.report.direction.ops).toHaveLength(2);
+      expect(res.report.direction.ops[0]).toMatchObject({ op: "add_portrait" });
       expect(res.report.direction.summary).toBe("First direction: concreteness");
     }
   });
@@ -723,34 +720,6 @@ describe("applyBridgeCardEvolution", () => {
     expect(res.summary).toBe("A durable interview commitment was stated.");
     expect(writeCurrentMock).toHaveBeenCalledOnce();
     expect(writeSliceMock).toHaveBeenCalledWith(SLICE, expect.any(String), undefined);
-    // v1.0 §2.7 — the bridge write-back enters the same mutation archive as
-    // the sub-agent path, with the slice id + reason as its evidence trail.
-    expect(evolutionArchive.appendMutationWithEvaluation).toHaveBeenCalledOnce();
-    expect(evolutionArchive.appendMutationWithEvaluation).toHaveBeenCalledWith(
-      expect.objectContaining({
-        target: "card",
-        evidence: [SLICE, "A durable interview commitment was stated."],
-        expectedBenefit: "A durable interview commitment was stated.",
-      }),
-      expect.anything(),
-      undefined,
-    );
-  });
-
-  it("never eats the landed card write when the archive write fails", async () => {
-    evolutionArchive.appendMutationWithEvaluation.mockRejectedValueOnce(
-      new Error("disk blew up"),
-    );
-    const res = await applyBridgeCardEvolution({
-      card: newCardTemplate(SLICE),
-      sliceId: SLICE,
-      today: "2026-08-22",
-      reason: "A durable interview commitment was stated.",
-      mutations: [{ op: "addNow", content: "prepping the friday interview" }],
-    });
-    expect(res.changed).toBe(true);
-    expect(writeCurrentMock).toHaveBeenCalledOnce();
-    expect(writeSliceMock).toHaveBeenCalledOnce();
   });
 
   it("writes nothing when every mutation was rejected", async () => {
@@ -765,6 +734,5 @@ describe("applyBridgeCardEvolution", () => {
     expect(res.note).toContain("rejected by validation");
     expect(writeCurrentMock).not.toHaveBeenCalled();
     expect(writeSliceMock).not.toHaveBeenCalled();
-    expect(evolutionArchive.appendMutationWithEvaluation).not.toHaveBeenCalled();
   });
 });

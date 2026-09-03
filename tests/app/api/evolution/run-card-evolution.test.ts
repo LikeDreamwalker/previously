@@ -11,9 +11,9 @@ import {
   readCurrentPreviously,
   writeCurrentPreviously,
   writePreviously,
+  readTimelineIndex,
 } from "@/lib/episodic";
-import { writeDirection, readMutations } from "@/lib/evolution/store";
-import { appendMutationWithEvaluation } from "@/lib/evolution/acceptance";
+import { writeDirection } from "@/lib/evolution/store";
 import {
   newCardTemplate,
   serializeCard,
@@ -27,37 +27,22 @@ vi.mock("@/lib/episodic", () => ({
   readCurrentPreviously: vi.fn(),
   writeCurrentPreviously: vi.fn(),
   writePreviously: vi.fn(),
+  readTimelineIndex: vi.fn(async () => ({ slices: [] })),
 }));
-// The v1.0 mutation-archive boundary (fitness store / playbook write /
-// acceptance archive) is mocked so the tests stay hermetic — the real modules
-// would read/write memory/evolution/ on the local fs.
+// The evolution store boundary (direction / playbook writes) is mocked so
+// the tests stay hermetic — the real module would read/write
+// memory/evolution/ on the local fs.
 vi.mock("@/lib/evolution/store", () => ({
-  readFitness: vi.fn(async () => ({ events: [], signals: [] })),
-  readMutations: vi.fn(async (): Promise<string | null> => null),
   writeDirection: vi.fn(async () => {}),
   writePlaybook: vi.fn(async () => {}),
 }));
-vi.mock("@/lib/evolution/acceptance", async () => {
-  const actual =
-    await vi.importActual<typeof import("@/lib/evolution/acceptance")>(
-      "@/lib/evolution/acceptance",
-    );
-  return {
-    ...actual, // mutationTrackRecord stays the real pure parser
-    appendMutationWithEvaluation: vi.fn(async () => ({
-      evaluatedPreviousTs: null,
-      markedIneffective: false,
-      markedEffective: false,
-    })),
-  };
-});
 
 const runPreviouslyAgentMock = vi.mocked(runPreviouslyAgent);
 const readMock = vi.mocked(readCurrentPreviously);
 const writeCurrentMock = vi.mocked(writeCurrentPreviously);
 const writeSliceMock = vi.mocked(writePreviously);
 const writeDirectionMock = vi.mocked(writeDirection);
-const appendMutationMock = vi.mocked(appendMutationWithEvaluation);
+const timelineMock = vi.mocked(readTimelineIndex);
 
 const MODEL = {
   id: "deepseek-v4-flash",
@@ -165,7 +150,7 @@ describe("write-back rules", () => {
     expect(runPreviouslyAgentMock.mock.calls[0][0].onLine).toBe(onEvolutionLine);
   });
 
-  it("surfaces accepted playbook writes with their archive summaries (v1.0 §2.4)", async () => {
+  it("surfaces accepted playbook writes with their benefit summaries (v1.0 §2.4)", async () => {
     runPreviouslyAgentMock.mockResolvedValue({
       updatedCard: BASE,
       reasoning: "recall keeps guessing",
@@ -197,39 +182,17 @@ describe("write-back rules", () => {
     expect(res.playbooks).toBeUndefined();
   });
 
-  it("feeds the mutation track-record line into the agent's input (omitted when the archive is empty)", async () => {
-    const readMutationsMock = vi.mocked(readMutations);
+  it("writes a changed card back to the live card and the slice snapshot", async () => {
     runPreviouslyAgentMock.mockResolvedValue({
-      updatedCard: BASE,
-      reasoning: "nothing new",
-      summary: "",
-      mutations: [],
+      updatedCard: CHANGED,
+      reasoning: "folded new identity fact",
+      summary: "identity updated",
+      mutations: ["addNow: prepping the friday interview"],
     });
-    // No archive yet → the line is omitted entirely.
-    await runCardEvolution(baseInput());
-    expect(
-      runPreviouslyAgentMock.mock.calls[0][0].mutationTrackRecord,
-    ).toBeUndefined();
-
-    // An archive with one ineffective evaluation + one fresh record → the
-    // rendered tally rides the next run's input.
-    readMutationsMock.mockResolvedValue(
-      [
-        "## 2026-08-20T10:00:00.000Z — card",
-        "",
-        "- **Summary:** first",
-        "",
-        "- **Evaluation: ineffective** — 2026-08-20T10:00:00.000Z card: the card bucket kept scoring negative after this mutation (net -1 since).",
-        "",
-        "## 2026-08-22T10:00:00.000Z — card",
-        "",
-        "- **Summary:** second",
-      ].join("\n"),
-    );
-    await runCardEvolution(baseInput());
-    expect(runPreviouslyAgentMock.mock.calls[1][0].mutationTrackRecord).toBe(
-      "Your mutation track record: 0 effective / 1 ineffective / 1 unevaluated",
-    );
+    const res = await runCardEvolution(baseInput());
+    expect(res.changed).toBe(true);
+    expect(writeCurrentMock).toHaveBeenCalledWith(CHANGED, undefined);
+    expect(writeSliceMock).toHaveBeenCalledWith(SLICE, CHANGED, undefined);
   });
 });
 
@@ -237,18 +200,23 @@ describe("the merged direction half (v1.1)", () => {
   const VALID_DIRECTION = [
     "# Portrait",
     "",
-    "The user prefers concrete, evidence-anchored answers.",
+    "## Traits & cognitive style",
+    "",
+    "- The user prefers concrete, evidence-anchored answers. — refs: 2026-08-20-1430, 2026-08-22-1015",
+    "",
+    "## Triggers & rhythms",
+    "",
+    "## Patterns & loops",
+    "",
+    "## Strengths & resilience",
+    "",
+    "## Communication preferences",
+    "",
+    "## Values & boundaries",
     "",
     "# Hypotheses",
     "",
-    "# Evidence",
-    "",
-    "- 2026-08-20-1430 — user corrected a vague answer",
-    "- 2026-08-22-1015 — user praised a concrete one",
-    "",
-    "# Log",
-    "",
-    "- 2026-08-27: first direction.",
+    "- [proposed 2026-08-22-1015] The user may prefer terse replies under time pressure — falsify if: the user asks for more detail when rushed",
   ].join("\n");
 
   function directionEvalInput() {
@@ -266,22 +234,20 @@ describe("the merged direction half (v1.1)", () => {
     };
   }
 
-  function agentResultWithProposal(content: string) {
+  function agentResultWithProposal(doc: string) {
     return {
       updatedCard: BASE,
       reasoning: "direction moved",
       summary: "",
       mutations: [],
-      directionProposal: {
-        content,
+      direction: {
+        doc,
         summary: "First direction: concreteness",
-        evidence: ["2026-08-20-1430", "2026-08-22-1015"],
-        expectedBenefit: "Fewer vague answers",
       },
     };
   }
 
-  it("a valid proposal is written through writeDirection + archived with target direction", async () => {
+  it("a valid proposal is written through writeDirection", async () => {
     runPreviouslyAgentMock.mockResolvedValue(agentResultWithProposal(VALID_DIRECTION));
     const res = await runCardEvolution({ ...baseInput(), directionEval: directionEvalInput() });
     expect(res.direction).toEqual({
@@ -289,15 +255,6 @@ describe("the merged direction half (v1.1)", () => {
       summary: "First direction: concreteness",
     });
     expect(writeDirectionMock).toHaveBeenCalledWith(VALID_DIRECTION, undefined);
-    expect(appendMutationMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        target: "direction",
-        summary: "First direction: concreteness",
-        expectedBenefit: "Fewer vague answers",
-      }),
-      expect.anything(),
-      undefined,
-    );
   });
 
   it("a REJECTED proposal reports outcome rejected with the reason (never a fake no_change) and writes nothing", async () => {
@@ -323,6 +280,35 @@ describe("the merged direction half (v1.1)", () => {
     const res = await runCardEvolution({ ...baseInput(), directionEval: directionEvalInput() });
     expect(res.direction).toEqual({ outcome: "no_change" });
     expect(writeDirectionMock).not.toHaveBeenCalled();
+  });
+
+  it("the engineering TTL runs even on a no-change verdict — expired hypotheses are retired", async () => {
+    timelineMock.mockResolvedValueOnce({
+      slices: [
+        { id: "2026-08-12-0900" },
+        { id: "2026-08-13-0900" },
+        { id: "2026-08-14-0900" },
+        { id: "2026-08-15-0900" },
+      ],
+    } as unknown as Awaited<ReturnType<typeof readTimelineIndex>>);
+    const current = `${VALID_DIRECTION}\n- [proposed 2026-08-11-0900] The user may prefer voice notes — falsify if: never used`;
+    runPreviouslyAgentMock.mockResolvedValue({
+      updatedCard: BASE,
+      reasoning: "direction holds",
+      summary: "",
+      mutations: [],
+    });
+    const res = await runCardEvolution({
+      ...baseInput(),
+      directionEval: { ...directionEvalInput(), current },
+    });
+    // 4 catalog slices + the current one are all newer than the proposed
+    // pointer → the expired guess is stripped and the doc written.
+    expect(res.direction?.outcome).toBe("updated");
+    expect(res.direction?.summary).toContain("Retired 1 expired");
+    const written = writeDirectionMock.mock.calls[0][0];
+    expect(written).not.toContain("voice notes");
+    expect(written).toContain("terse replies under time pressure");
   });
 
   it("a write failure surfaces outcome failed — never masquerading as no_change", async () => {

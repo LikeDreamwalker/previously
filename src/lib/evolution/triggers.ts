@@ -5,17 +5,30 @@
  * The turn-analyzer LLM only ever produces single evidence-anchored deltas
  * (one per slice, per bucket); the AGGREGATION that decides "should evolution
  * run, and focused on which bucket" lives here, in code, so the trigger is
- * reproducible and never a model judgment:
+ * reproducible and never a model judgment.
  *
- *   - a bucket whose net score over the newest EVOLVE_WINDOW_SLICES distinct
- *     slices drops to EVOLVE_TRIGGER_THRESHOLD or below → trigger that bucket;
- *   - any evidence-anchored NEGATIVE delta in the just-scored slice → trigger
- *     its bucket immediately: a -2 (an explicit complaint/correction) or a -1
- *     (a dissatisfaction signal, incl. a portrait-rubric pattern match) both
- *     fire now instead of waiting for the window to fill;
- *   - no trigger → NO evolution sub-agent runs. The per-turn "mandatory
- *     evolution check" of design §2.3 IS this scoring — mandatory check ≠
- *     mandatory mutation.
+ * GENERATION SEMANTICS (v0.9.2): the fitness store is the CURRENT
+ * generation's selection-pressure gauge, not a credit history. A bucket
+ * whose generation net drops to EVOLVE_TRIGGER_THRESHOLD or below is under
+ * enough environmental pressure that evolution must run NOW. A successful
+ * evolution run SETTLES the generation (resetFitnessGeneration clears every
+ * bucket's events and signals) — the outcome has already sedimented into the
+ * card / direction / playbooks, so the pressure that produced it is spent
+ * and must re-accumulate from zero. There is deliberately no cross-
+ * generation bookkeeping: evolution has no direction, a mutation is never
+ * judged against its predecessor, and nothing rolls back.
+ *
+ * The rule is ONE number, purely quantitative — no semantic fast paths:
+ *
+ *   - per bucket: net of the current generation's events ≤ -5 → trigger.
+ *     (-2 explicit complaints simply weigh double; +1 approvals offset.)
+ *
+ * Explicit user instructions ("记住…", "别再…") are NOT selection pressure —
+ * they ride the separate memoryUpdate instruction channel.
+ *
+ * No trigger → NO evolution sub-agent runs. The per-turn "mandatory
+ * evolution check" of design §2.3 IS this scoring — mandatory check ≠
+ * mandatory mutation.
  *
  * The card bucket's legacy gates (the analyzer's evolve_card.worth, an explicit
  * memory_update, the legacy-card force) are NOT computed here — they need the
@@ -27,15 +40,16 @@
 import {
   bucketNetScore,
   type FitnessBucket,
-  type FitnessEvent,
   type FitnessStore,
 } from "./store";
 
-/** A bucket at or below this windowed net score triggers its own evolution. */
-export const EVOLVE_TRIGGER_THRESHOLD = -3;
-
-/** Sliding window (distinct slices) the net score is computed over. */
-export const EVOLVE_WINDOW_SLICES = 10;
+/**
+ * A bucket at or below this CURRENT-GENERATION net score triggers its own
+ * evolution. Calibration: -5 means five weak signals (-1), or two explicit
+ * complaints (-2) plus one weak signal — noise never fires it, a sustained
+ * pattern does.
+ */
+export const EVOLVE_TRIGGER_THRESHOLD = -5;
 
 export const FITNESS_BUCKETS: readonly FitnessBucket[] = [
   "card",
@@ -53,46 +67,20 @@ export interface BucketTrigger {
 }
 
 /**
- * Compute which buckets trigger evolution on this turn. `thisSliceEvents`
- * are the freshly scored deltas of the slice THIS TURN'S analysis scored —
- * the ACTIVE slice mid-turn, but the JUST-CLOSED slice on a boundary turn
- * (pre-store is fine — the evidence rule is re-applied here: an
- * evidence-less delta can never trigger, mirroring appendFitnessEvents'
- * force-zero backstop). Pure.
+ * Compute which buckets trigger evolution on this turn. Purely a function of
+ * the store: every event in it is current-generation by construction (a
+ * successful evolution run settles the store), so the generation net IS the
+ * whole-store net. Call AFTER this turn's fresh deltas were appended (§3a)
+ * with a batch-fresh read. Pure.
  */
-export function computeEvolutionTriggers(
-  store: FitnessStore,
-  thisSliceEvents: ReadonlyArray<
-    Pick<FitnessEvent, "bucket" | "delta" | "evidence">
-  >,
-): BucketTrigger[] {
+export function computeEvolutionTriggers(store: FitnessStore): BucketTrigger[] {
   const triggers: BucketTrigger[] = [];
   for (const bucket of FITNESS_BUCKETS) {
-    // Immediate trigger: any evidence-anchored negative delta in the scored
-    // slice. The -2 (explicit complaint/correction) is preferred for the
-    // reason string when both fired. Wording stays slice-neutral — on a
-    // boundary turn the scored slice is the one that JUST CLOSED, so "this
-    // slice" would misname it.
-    const fresh = thisSliceEvents.filter(
-      (e) => e.bucket === bucket && e.delta <= -1 && e.evidence.trim().length > 0,
-    );
-    const negative = fresh.find((e) => e.delta === -2) ?? fresh[0];
-    if (negative) {
-      triggers.push({
-        bucket,
-        reason:
-          negative.delta === -2
-            ? `explicit complaint/correction in the just-scored slice: "${negative.evidence.trim().slice(0, 120)}"`
-            : `dissatisfaction signal in the just-scored slice: "${negative.evidence.trim().slice(0, 120)}"`,
-      });
-      continue;
-    }
-    // Window trigger: sustained negative net score.
-    const net = bucketNetScore(store, bucket, EVOLVE_WINDOW_SLICES);
+    const net = bucketNetScore(store, bucket);
     if (net <= EVOLVE_TRIGGER_THRESHOLD) {
       triggers.push({
         bucket,
-        reason: `net score ${net} over the newest ${EVOLVE_WINDOW_SLICES} slices (threshold ${EVOLVE_TRIGGER_THRESHOLD})`,
+        reason: `generation net score ${net} (threshold ${EVOLVE_TRIGGER_THRESHOLD})`,
       });
     }
   }

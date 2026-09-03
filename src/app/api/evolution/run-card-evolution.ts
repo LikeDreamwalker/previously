@@ -18,20 +18,19 @@
  * v1.0 (design §2.3/§2.7): the run also carries the evolution context
  * (direction.md orientation + the triggered fitness buckets, which gate the
  * agent's writePlaybook), and this function is the SINGLE-WRITER boundary —
- * accepted card/playbook mutations are archived to
- * memory/evolution/mutations.md here, each archival first evaluating the
- * previous mutation on the same target (the effectiveness window). The
- * archive's running tally (effective / ineffective / unevaluated) feeds back
- * into the agent's prompt — the loop's honesty feedback.
+ * accepted card/playbook/direction writes land here. Evolution has no
+ * direction and no fossil archive (v0.9.2): a mutation is never judged
+ * against its predecessor and nothing rolls back.
  *
  * v1.1 (merged run): at a slice boundary the ONE agent run also evaluates
- * direction.md FIRST (input.directionEval) and may return a
- * `directionProposal` on its finish report. This function validates it
- * (validateDirectionProposal, mode-aware) and applies it through
- * writeDirection + appendMutationWithEvaluation (target "direction") — exactly
- * the old Phase-1 write paths. A rejected proposal is logged and skipped,
- * never fatal; the verdict rides the result's `direction` field for the
- * terminal data-evolution frame.
+ * direction.md FIRST (input.directionEval) and edits a working copy through
+ * ATOMIC direction mutation ops. This function gates the resulting doc
+ * (validateDirectionProposal, mode-aware), retires expired hypotheses
+ * deterministically (retireExpiredHypotheses — the pool TTL is engineering's
+ * half of the lifecycle, and it runs even on a no-change verdict), and
+ * applies through writeDirection — the old Phase-1 write path. A rejected
+ * doc is logged and skipped, never fatal; the verdict rides the result's
+ * `direction` field for the terminal data-evolution frame.
  *
  * Streaming is surfaced via the optional `onProgress` callback (phase steps)
  * and `onEvolutionLine` (the Previously Agent's live thinking/writing lines)
@@ -42,12 +41,10 @@ import { runPreviouslyAgent, type DirectionEvalInput, type PreviouslySignal } fr
 import { parseCard } from "@/lib/episodic/previously-format";
 import { sameCardSubstance } from "@/lib/episodic/card-session";
 import { diffCardLines, summarizeCardChanges, type CardChangeSummary, type CardMutation } from "@/lib/episodic/card-diff";
-import { readCurrentPreviously, writeCurrentPreviously, writePreviously } from "@/lib/episodic";
+import { readCurrentPreviously, writeCurrentPreviously, writePreviously, readTimelineIndex } from "@/lib/episodic";
 import type { WriteBatch } from "@/lib/episodic/io-helpers";
 import type { ModelConfig } from "@/lib/models/registry";
 import {
-  readFitness,
-  readMutations,
   writeDirection,
   writePlaybook,
   type FitnessBucket,
@@ -55,11 +52,7 @@ import {
   type FitnessSignal,
 } from "@/lib/evolution/store";
 import type { PlaybookAgent } from "@/lib/evolution/paths";
-import {
-  appendMutationWithEvaluation,
-  mutationTrackRecord,
-} from "@/lib/evolution/acceptance";
-import { validateDirectionProposal } from "@/lib/evolution/direction-agent";
+import { validateDirectionProposal, retireExpiredHypotheses } from "@/lib/evolution/direction-agent";
 
 export interface CardEvolutionReaders {
   readSlice: (sliceId: string, range?: {
@@ -106,8 +99,8 @@ export interface RunCardEvolutionInput {
   // ── Evolution inputs (v1.0 §2.3 / v1.1 merged run) ─────────────────────
 
   /** The direction half of the merged run (slice boundaries): the agent
-   *  evaluates direction.md FIRST and may return a directionProposal, which
-   *  THIS function validates and applies. */
+   *  evaluates direction.md FIRST and edits a working copy through atomic
+   *  mutation ops; the resulting doc is validated and applied HERE. */
   directionEval?: DirectionEvalInput;
   /** Orientation-only direction content (explicit-request path — no direction
    *  evaluation runs there). Ignored when directionEval is set. */
@@ -181,24 +174,6 @@ export async function runCardEvolution(
   // BEFORE it starts (it used to fire after, a ~ms flash before the terminal
   // chunk that left the whole run showing "reading").
   input.onProgress?.("reviewing");
-  // The loop's honesty feedback (design §2.7): the agent sees its own
-  // mutation track record — an archive full of ineffective mutations should
-  // discipline the next proposal. Best-effort; omitted until the first
-  // archived mutation.
-  let trackRecordLine: string | undefined;
-  try {
-    const archive = await readMutations();
-    if (archive) {
-      const rec = mutationTrackRecord(archive);
-      if (rec.effective + rec.ineffective + rec.unevaluated > 0) {
-        trackRecordLine =
-          `Your mutation track record: ${rec.effective} effective / ` +
-          `${rec.ineffective} ineffective / ${rec.unevaluated} unevaluated`;
-      }
-    }
-  } catch {
-    // The archive is advisory — never block the run on it.
-  }
   const result = await runPreviouslyAgent({
     signal,
     note,
@@ -214,7 +189,6 @@ export async function runCardEvolution(
     triggeredBuckets: input.triggeredBuckets,
     fitnessEvents: input.fitnessEvents,
     fitnessSignals: input.fitnessSignals,
-    mutationTrackRecord: trackRecordLine,
     readSliceFn: input.readers.readSlice,
     readAgentTimelineFn: input.readers.readAgentTimeline,
     readPreviouslyFn: input.readers.readPreviously,
@@ -227,20 +201,47 @@ export async function runCardEvolution(
     return { ran: true, changed: false, droppedRecent: 0, note: result.reasoning, error: result.reasoning };
   }
 
-  // ── v1.1 direction half — the merged run's directionProposal is validated
-  // mode-aware and applied through the SAME write paths the old Phase-1 agent
-  // used (writeDirection + the mutations archive, target "direction"). A
-  // rejected proposal is logged and SKIPPED (never fatal); a write failure is
-  // surfaced as outcome "failed", never masquerading as "no_change". ──────
+  // ── v1.1 direction half — the merged run edits direction.md through ATOMIC
+  // mutation ops (per-op validation in applyDirectionOps; `proposed` pointers
+  // code-stamped). The resulting doc still passes the whole-doc gate here
+  // (validateDirectionProposal, mode-aware) and the engineering TTL
+  // (retireExpiredHypotheses) before writeDirection. A rejected doc is logged
+  // and SKIPPED (never fatal); a write failure is surfaced as outcome
+  // "failed", never masquerading as "no_change". The TTL also runs on a
+  // NO-CHANGE verdict — expiry is engineering's, not the agent's. ──────────
   let directionOutcome: RunCardEvolutionResult["direction"];
   if (input.directionEval) {
-    const proposal = result.directionProposal;
+    const currentDir = input.directionEval.current;
+    const idx = await readTimelineIndex().catch(() => null);
+    const sliceIds = [...(idx?.slices ?? []).map((s) => s.id), input.sliceId];
+    const proposal = result.direction;
     if (!proposal) {
-      directionOutcome = { outcome: "no_change" };
+      // No agent move — engineering still retires expired hypotheses.
+      if (currentDir?.trim()) {
+        const aged = retireExpiredHypotheses(currentDir.trim(), sliceIds);
+        if (aged.retired.length > 0) {
+          try {
+            await writeDirection(aged.doc, input.batch);
+            directionOutcome = {
+              outcome: "updated",
+              summary: `Retired ${aged.retired.length} expired hypothesis(es)`,
+            };
+            console.log(
+              `[Evolution] direction: retired ${aged.retired.length} expired hypothesis(es) (no-change run)`,
+            );
+          } catch (e) {
+            console.warn(
+              "[Evolution] direction TTL write failed:",
+              e instanceof Error ? e.message : e,
+            );
+          }
+        }
+      }
+      if (!directionOutcome) directionOutcome = { outcome: "no_change" };
     } else {
       const validation = validateDirectionProposal(
-        proposal.content,
-        input.directionEval.current,
+        proposal.doc,
+        currentDir,
         { mode: input.directionEval.mode },
       );
       if (!validation.ok) {
@@ -255,27 +256,15 @@ export async function runCardEvolution(
         const summary =
           proposal.summary.trim() || "Direction updated (merged evolution run)";
         try {
-          const fitnessStore = await readFitness(input.batch);
-          await writeDirection(proposal.content.trim(), input.batch);
-          const archived = await appendMutationWithEvaluation(
-            {
-              ts: new Date().toISOString(),
-              target: "direction",
-              summary,
-              evidence: proposal.evidence,
-              expectedBenefit:
-                proposal.expectedBenefit.trim() || "(none given)",
-            },
-            fitnessStore,
-            input.batch,
-          );
+          const aged = retireExpiredHypotheses(proposal.doc.trim(), sliceIds);
+          if (aged.retired.length > 0) {
+            console.log(
+              `[Evolution] direction: retired ${aged.retired.length} expired hypothesis(es)`,
+            );
+          }
+          await writeDirection(aged.doc, input.batch);
           directionOutcome = { outcome: "updated", summary };
-          console.log(
-            `[Evolution] direction updated: ${summary}` +
-              (archived.markedIneffective
-                ? ` (previous direction mutation ${archived.evaluatedPreviousTs} marked ineffective)`
-                : ""),
-          );
+          console.log(`[Evolution] direction updated: ${summary}`);
         } catch (e) {
           const reason = e instanceof Error ? e.message : String(e);
           console.warn("[Evolution] direction write failed:", reason);
@@ -315,68 +304,25 @@ export async function runCardEvolution(
     await writePreviously(input.sliceId, result.updatedCard, input.batch);
   }
 
-  // ── v1.0 §2.7 mutation archive — the evolution agent is the single writer
-  // of card / playbooks, and every accepted mutation lands in the append-only
-  // archive WITH the effectiveness evaluation of the previous mutation on the
-  // same target. Best-effort: an archive failure must never eat the card /
-  // playbook write that already landed. ──────────────────────────────────
+  // ── Playbook write-back — the evolution agent is the single writer of
+  // card / playbooks. The playbooks that actually landed are surfaced on the
+  // terminal evolution frame so the UI can tell the "what changed" story
+  // (design §2.4). ────────────────────────────────────────────────────────
   const playbookWrites = result.playbookWrites ?? [];
-  // The playbooks that actually landed — surfaced on the terminal evolution
-  // frame so the UI can tell the "what changed" story (design §2.4).
   const appliedPlaybooks: Array<{ agent: PlaybookAgent; summary: string }> = [];
-  if (!result.failed && (changed || playbookWrites.length > 0)) {
+  if (!result.failed) {
     try {
-      const fitnessStore = await readFitness(input.batch);
-      const ts = new Date().toISOString();
-      if (changed) {
-        const archived = await appendMutationWithEvaluation(
-          {
-            ts,
-            target: "card",
-            summary:
-              result.summary.trim() || resultNote.slice(0, 200),
-            evidence: [input.sliceId],
-            expectedBenefit:
-              result.expectedBenefit ?? "Card updated from new evidence",
-          },
-          fitnessStore,
-          input.batch,
-        );
-        if (archived.markedIneffective) {
-          console.log(
-            `[Evolution] previous card mutation (${archived.evaluatedPreviousTs}) marked ineffective`,
-          );
-        }
-      }
       for (const pw of playbookWrites) {
         await writePlaybook(pw.agent, pw.content, input.batch);
-        // The user-facing line comes from the archived record: the agent's
-        // one-line expected benefit, falling back to the archive summary.
         appliedPlaybooks.push({
           agent: pw.agent,
           summary:
             pw.expectedBenefit.trim() || `Rewrote the ${pw.agent} playbook`,
         });
-        const archived = await appendMutationWithEvaluation(
-          {
-            ts,
-            target: `playbook:${pw.agent}`,
-            summary: `Rewrote the ${pw.agent} playbook (${pw.content.length} chars)`,
-            evidence: pw.evidence.length > 0 ? pw.evidence : [input.sliceId],
-            expectedBenefit: pw.expectedBenefit || "(none given)",
-          },
-          fitnessStore,
-          input.batch,
-        );
-        if (archived.markedIneffective) {
-          console.log(
-            `[Evolution] previous ${pw.agent} playbook mutation (${archived.evaluatedPreviousTs}) marked ineffective`,
-          );
-        }
       }
     } catch (e) {
       console.warn(
-        "[Evolution] mutation archive write failed (the card/playbook writes landed):",
+        "[Evolution] playbook write failed (the card write landed):",
         e instanceof Error ? e.message : e,
       );
     }

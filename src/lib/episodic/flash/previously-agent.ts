@@ -4,10 +4,12 @@
  *
  *   (a) DIRECTION FIRST — evaluate direction.md, the loop's USER PORTRAIT +
  *       HYPOTHESIS POOL (see src/lib/evolution/direction-agent.ts), including
- *       any legacy Self-model migration from the card. The agent only
- *       PROPOSES (the optional `directionProposal` on `finish`); the caller
- *       validates structurally (validateDirectionProposal) and applies through
- *       writeDirection + the mutations archive.
+ *       any legacy Self-model migration from the card. The agent edits a
+ *       working copy through the direction MUTATION tools (addPortraitEntry /
+ *       addHypothesis / promoteHypothesis / … — atomic ops, validated per op,
+ *       `proposed` pointers code-stamped); the caller runs the whole-doc gate
+ *       (validateDirectionProposal) + the engineering hypothesis TTL
+ *       (retireExpiredHypotheses) and applies through writeDirection.
  *   (b) CARD + PLAYBOOKS under the (possibly new) direction — evolve
  *       previously.md (the v5 user card) and the triggered-bucket playbooks.
  *
@@ -57,7 +59,7 @@
  * callback (wired by housekeeping onto the `data-evolution` channel).
  */
 
-import { tool } from "ai";
+import { tool, type Tool } from "ai";
 import { z } from "zod";
 import type { ModelConfig } from "@/lib/models/registry";
 import { runSubAgent } from "@/lib/agents/sub-agent-runner";
@@ -68,9 +70,11 @@ import {
   renderDirectionAnalysis,
   renderDirectionEvents,
   renderDirectionMarkings,
+  applyDirectionOps,
+  emptyDirectionDoc,
   type DirectionMarking,
   type DirectionMode,
-  type DirectionProposal,
+  type DirectionOp,
 } from "@/lib/evolution/direction-agent";
 import type { TurnAnalysis } from "@/lib/episodic/flash/turn-analyzer";
 import {
@@ -124,7 +128,8 @@ export interface PlaybookWrite {
 /**
  * The direction half of the merged run (v1.1): when present, the agent FIRST
  * evaluates direction.md (portrait + hypothesis pool + legacy Self-model
- * migration) and reports an optional `directionProposal` on `finish`. Absent
+ * migration) and edits its working copy through the direction MUTATION tools
+ * (addPortraitEntry / addHypothesis / …) — never a whole-doc rewrite. Absent
  * on explicit-request runs — the direction stays boundary-scoped.
  */
 export interface DirectionEvalInput {
@@ -188,13 +193,6 @@ export interface PreviouslyAgentInput {
   /** This slice's mechanical signals (recall verify/rework) — context for
    *  recall-bucket triggers. */
   fitnessSignals?: FitnessSignal[];
-  /**
-   * The loop's honesty feedback (design §2.7): the rendered mutation track
-   * record line ("Your mutation track record: N effective / M ineffective /
-   * K unevaluated"), built by the caller from the mutations archive. Absent
-   * when no mutation has ever been archived.
-   */
-  mutationTrackRecord?: string;
 
   // ── Tool implementations (callbacks provided by the executor) ──────
 
@@ -247,13 +245,14 @@ export interface PreviouslyAgentOutput {
    *  §2.7 — archived with the mutation record). */
   expectedBenefit?: string;
   /**
-   * The direction half's proposal (v1.1 merged run) — present only when
-   * `directionEval` was set AND the agent proposed a move. NOT validated yet:
-   * the caller runs validateDirectionProposal (mode-aware) and applies through
-   * writeDirection + the mutations archive; a rejection is logged and skipped,
-   * never fatal.
+   * The direction half's outcome (v1.1 merged run) — present only when
+   * `directionEval` was set AND the agent's direction MUTATION OPS actually
+   * changed the working doc. NOT yet written: the caller runs the whole-doc
+   * gate (validateDirectionProposal, mode-aware) + the engineering TTL
+   * (retireExpiredHypotheses) and applies through writeDirection; a rejection
+   * is logged and skipped, never fatal.
    */
-  directionProposal?: DirectionProposal;
+  direction?: { doc: string; summary: string };
 }
 
 // ─── Prompt ────────────────────────────────────────────────────────────
@@ -265,7 +264,7 @@ export interface PreviouslyAgentOutput {
 
 const PREVIOUSLY_ROLE = `You are the Previously Agent — the merged SELF-EVOLUTION agent. You do NOT talk to users. You work autonomously. ONE run, two domains, IN THIS ORDER:
 
-1. **Direction first** (when the task carries a "Direction evaluation" section): evaluate direction.md — the loop's USER PORTRAIT + HYPOTHESIS POOL — and, if it should move, carry your proposal on the \`directionProposal\` field of your final \`finish\` call.
+1. **Direction first** (when the task carries a "Direction evaluation" section): evaluate direction.md — the loop's USER PORTRAIT + HYPOTHESIS POOL — and, if it should move, edit it through the direction MUTATION tools (addPortraitEntry / updatePortraitEntry / removePortraitEntry / addHypothesis / promoteHypothesis / removeHypothesis), then note what moved on \`finish\`'s \`directionSummary\`.
 2. **Then the card** (+ triggered-bucket playbooks) — evolved UNDER the direction as it stands AFTER your proposal (your own accepted changes apply).
 
 ## What the card is
@@ -288,15 +287,13 @@ The card must NEVER carry rules, lessons, or analysis. If the card you are readi
 
 ## The direction discipline (portrait + hypothesis pool)
 
-direction.md has a fixed skeleton: \`# Portrait\` / \`# Hypotheses\` / \`# Evidence\` / \`# Log\`.
+direction.md has a fixed skeleton: \`# Portrait\` (six fixed \`##\` dimensions) / \`# Hypotheses\`. You edit it through MUTATION TOOLS, one targeted op per call — never a whole-doc rewrite; entries you never touch stay exactly as they are, and engineering stamps every hypothesis's \`[proposed …]\` pointer itself.
 
-- **Portrait** — CONFIRMED understanding of the user: descriptive, abstract, concept-level ("用户不喜欢感性的回答" is the right level; "用户不喜欢我说哈哈哈" is too specific). NEVER imperative — if a line tells you (the agent) what to do, it is misspelled: phrase the USER PATTERN that motivates it instead. Every entry is evidence-anchored with slice pointers.
-- **Hypotheses** — a bounded pool of GUESSES (≤10), each line exactly: \`- [proposed YYYY-MM-DD-HHMM · checked YYYY-MM-DD-HHMM] <the guess> — falsify if: <condition>\`. Lifecycle: confirmed (evidence from ≥2 distinct slices, or explicit user confirmation) → PROMOTE into the Portrait (log it); refuted → REMOVE (log it); unverified for >10 slices beyond its \`checked\` pointer → RETIRE (log it; re-proposable later). Refill the pool toward 10 each run with honest, falsifiable guesses from the evidence at hand.
-- **Evidence** — the slice pointers backing Portrait entries.
-- **Log** — append-only: every direction change AND every hypothesis promotion/refutation/retirement.
+- **Portrait** — CONFIRMED understanding of the user as a PERSON, in six fixed dimensions (always all present): \`## Traits & cognitive style\`, \`## Triggers & rhythms\`, \`## Patterns & loops\`, \`## Strengths & resilience\`, \`## Communication preferences\`, \`## Values & boundaries\`. An entry is portrait-grade ONLY when it holds across contexts, outlives the event that evidenced it, and predicts ("用户面对不确定时先搭建结构再行动" qualifies; "用户周四聊了面试" is a case note and belongs nowhere here). NEVER imperative — if a line tells you (the agent) what to do, it is misspelled: phrase the USER PATTERN that motivates it instead. Body text carries NO names/dates/events/slice ids — evidence rides ONLY as a trailing \`— refs: YYYY-MM-DD-HHMM, …\` tail.
+- **Hypotheses** — a bounded DYNAMIC pool of GUESSES about the user's traits/patterns (≤10), each line exactly: \`- [proposed YYYY-MM-DD-HHMM] <the guess> — falsify if: <condition>\`. Lifecycle: confirmed (evidence from ≥2 distinct slices, or explicit user confirmation) → PROMOTE into the matching Portrait dimension IN THE SAME RUN (a confirmed guess never lingers in the pool); refuted → REMOVE; still unverified 4 slices after its \`proposed\` pointer → RETIRE (re-proposable later — and engineering enforces the TTL deterministically, so an expired guess you keep is stripped from the applied doc anyway). Refill the pool toward 10 each run with honest, falsifiable guesses about the PERSON — never predictions about events.
 - A single explicit, DURABLE user statement ("用户明确不喜欢 X") becomes a Portrait entry directly (descriptive). Single-slice impressions stay hypotheses.
 - "No change" is the common and correct outcome for the direction — one loud slice is card/playbook material. A proposal that violates the writing discipline is rejected by code, so stay within it.
-- Mode BOOTSTRAP (never written) or MIGRATE (old # Direction / # Anti-goals skeleton): seed/re-shape the doc wholesale; a single slice pointer suffices. Steady mode: Evidence needs ≥2 distinct slice pointers.
+- Mode BOOTSTRAP (never written) or MIGRATE (an old skeleton: \`# Direction\` / \`# Anti-goals\`, or the first portrait skeleton's \`# Evidence\` / \`# Log\`): seed/re-abstract the doc wholesale (event-shaped notes become portrait-grade lines, pointers into trailing refs); a single slice pointer suffices. Steady mode: ≥2 distinct slice pointers across the doc.
 
 ## How you write the card — MUTATIONS, never the whole file
 
@@ -313,7 +310,9 @@ You edit an in-memory copy of the card through write tools. Each write is valida
 | \`readSlice(sliceId, range?)\` | Read conversation from any slice. Verify what the user actually said. |
 | \`readAgentTimeline(sliceId)\` | Read agent.md — the reasoning + tool calls. Process context for judging how interactions went. |
 | \`readPreviously(sliceId)\` | Read a past slice's card snapshot. Check how long a fact has been held. |
-| \`finish(reasoning, summary, expectedBenefit?, directionProposal?)\` | REQUIRED, LAST call — ends the pass. \`summary\` is ONE sentence IN THE USER'S LANGUAGE describing what changed (shown to the user + the core agent); empty when nothing changed. \`directionProposal\` carries the full new direction.md ({content, summary, evidence, expectedBenefit}) when — and only when — the direction half proposes a move. Call finish even when nothing changed. |
+| \`addPortraitEntry(dimension, text, refs)\` / \`updatePortraitEntry(match, text, refs)\` / \`removePortraitEntry(match)\` | Direction mutations — CONFIRMED portrait entries (present only on a direction-evaluation run). |
+| \`addHypothesis(text, falsify)\` / \`promoteHypothesis(match, dimension, text, refs)\` / \`removeHypothesis(match)\` | Direction mutations — the guess pool. Engineering stamps \`[proposed]\` and enforces the expiry TTL. |
+| \`finish(reasoning, summary, expectedBenefit?, directionSummary?)\` | REQUIRED, LAST call — ends the pass. \`summary\` is ONE sentence IN THE USER'S LANGUAGE describing what changed (shown to the user + the core agent); empty when nothing changed. \`directionSummary\` notes what moved in direction.md — only when you moved it. Call finish even when nothing changed. |
 
 ## What to do — fold in the NEW evidence only
 
@@ -352,9 +351,9 @@ FIRST check the current card's structure in the task. If it is NOT the v5 card (
 ## Your Process
 
 1. Read the time context + compare the conversation against the card and the direction. New durable info? Stale lines? Evidence for/against a hypothesis?
-2. Direction first (when the task carries the evaluation section): decide no_change or prepare the full proposal. Verify quotes with \`readSlice\` when unsure.
-3. Apply card mutations — one tool call per entry change — under the direction as it stands after your proposal.
-4. \`finish\` LAST — 1-3 sentences of reasoning (developer log) + a one-sentence user-language summary of what changed (shown in the UI; empty when nothing changed) + the optional \`directionProposal\`. Never write after finish.
+2. Direction first (when the task carries the evaluation section): decide no_change or apply the moves with the direction mutation tools. Verify quotes with \`readSlice\` when unsure.
+3. Apply card mutations — one tool call per entry change — under the direction as it stands after your moves.
+4. \`finish\` LAST — 1-3 sentences of reasoning (developer log) + a one-sentence user-language summary of what changed (shown in the UI; empty when nothing changed) + \`directionSummary\` when the direction moved. Never write after finish.
 
 **Semantic merging:** the same concept across languages (e.g. "self-evolution" and "自我进化") is ONE fact — merge, never duplicate.`;
 
@@ -402,8 +401,8 @@ function buildDirectionEvalSection(evalInput: DirectionEvalInput): string {
     evalInput.mode === "bootstrap"
       ? "BOOTSTRAP — the direction has never been written; seed the minimal baseline (a single slice pointer suffices)"
       : evalInput.mode === "migrate"
-        ? "MIGRATE — the doc still uses the OLD skeleton (# Direction / # Anti-goals); re-shape it wholesale into # Portrait / # Hypotheses / # Evidence / # Log (a single slice pointer suffices)"
-        : "steady — the normal high bar (Evidence needs ≥2 distinct slice pointers)";
+        ? "MIGRATE — the doc still uses an OLD skeleton (# Direction / # Anti-goals, or the first portrait skeleton's # Evidence / # Log); re-abstract it wholesale into the new # Portrait (six fixed ## dimensions, refs-tailed pointers) / # Hypotheses skeleton (a single slice pointer suffices)"
+        : "steady — the normal high bar (≥2 distinct slice pointers across the doc)";
   return `
 
 ## Direction evaluation (FIRST — before any card mutation)
@@ -430,7 +429,7 @@ ${renderDirectionMarkings(evalInput.recentMarkings)}
 
 ${renderDirectionAnalysis(evalInput.analysis)}
 
-Evaluate the PORTRAIT + HYPOTHESIS POOL against this evidence. "No change" is the common case. When the direction should move, put the FULL new document on finish's \`directionProposal\` — then evolve the card under the NEW direction.`;
+Evaluate the PORTRAIT + HYPOTHESIS POOL against this evidence. "No change" is the common case. When the direction should move, apply the moves with the direction mutation tools (addPortraitEntry / updatePortraitEntry / removePortraitEntry / addHypothesis / promoteHypothesis / removeHypothesis — your working copy starts from the doc above, or from the empty skeleton in BOOTSTRAP/MIGRATE) — then evolve the card under the NEW direction.`;
 }
 
 /** The dynamic USER prompt: time context, signal, current card, conversation. */
@@ -452,13 +451,6 @@ function buildUserPrompt(input: PreviouslyAgentInput): string {
 
   const tagsNote = currentSliceTags && currentSliceTags.length > 0
     ? `\n**Current slice tags**: ${currentSliceTags.join(", ")}`
-    : "";
-
-  // The loop's honesty feedback: the agent sees its own mutation track record
-  // — an "ineffective" mark means the mutation did NOT stop the signal it
-  // meant to stop. Absent until the first archived mutation.
-  const trackRecordNote = input.mutationTrackRecord
-    ? `\n**${input.mutationTrackRecord}** (an ineffective mark means that mutation did not stop the signal it meant to stop)`
     : "";
 
   // The direction rides the prompt two ways: the merged run's EVALUATION
@@ -510,7 +502,7 @@ ${buildTimeContext(input)}
 
 ${signalLabels[signal]}
 Note: "${note}"${tagsNote}
-Current slice: \`${currentSliceId}\`${deepNote}${trackRecordNote}${directionSection}${fitnessSection}
+Current slice: \`${currentSliceId}\`${deepNote}${directionSection}${fitnessSection}
 
 ## Current card (your working copy starts from this)
 
@@ -525,11 +517,124 @@ ${recentTurns.length > 0
 
 // ─── Tools ────────────────────────────────────────────────────────────────
 
+/**
+ * The per-attempt working copy of direction.md (merged run only): the agent
+ * edits it through the direction MUTATION tools — one targeted op at a time,
+ * each validated on apply, `proposed` pointers code-stamped — exactly the
+ * card's session discipline, never a whole-doc rewrite.
+ */
+export interface DirectionSession {
+  doc: string;
+  touched: boolean;
+  log: string[];
+}
+
 function buildTools(
   input: PreviouslyAgentInput,
   session: CardSession,
   playbookWrites: PlaybookWrite[],
+  directionSession: DirectionSession | null,
 ) {
+  /** Apply ONE direction op to the working copy; OK/REJECTED like the card tools. */
+  const applyDirOp = (op: DirectionOp): string => {
+    if (!directionSession) {
+      return "REJECTED — this run carries no direction evaluation.";
+    }
+    const r = applyDirectionOps(directionSession.doc, [op], {
+      sliceId: input.currentSliceId,
+    });
+    const res = r.results[0];
+    if (res.ok) {
+      directionSession.doc = r.doc;
+      directionSession.touched = true;
+      directionSession.log.push(`${op.op}: ${res.detail.slice(0, 120)}`);
+      return `OK — ${res.detail}`;
+    }
+    return `REJECTED — ${res.detail}`;
+  };
+  const DIMENSIONS_ENUM = [
+    "## Traits & cognitive style",
+    "## Triggers & rhythms",
+    "## Patterns & loops",
+    "## Strengths & resilience",
+    "## Communication preferences",
+    "## Values & boundaries",
+  ] as const;
+  const directionTools: Record<string, Tool> = directionSession
+    ? {
+        addPortraitEntry: tool({
+          description:
+            "Add a CONFIRMED portrait entry to one of the six fixed dimensions — " +
+            "descriptive, portrait-grade (holds across contexts, outlives its evidence, " +
+            "predicts), NEVER imperative, no names/dates/events in the text; evidence " +
+            "rides the refs array (≥1 slice id).",
+          inputSchema: z.object({
+            dimension: z.enum(DIMENSIONS_ENUM),
+            text: z.string(),
+            refs: z.array(z.string()).describe("Evidence slice ids, e.g. [\"2026-08-07-0709\"]."),
+          }),
+          execute: async ({ dimension, text, refs }) =>
+            applyDirOp({ op: "add_portrait", dimension, text, refs }),
+        }),
+        updatePortraitEntry: tool({
+          description:
+            "Replace ONE existing Portrait line (matched by a substring of its text) " +
+            "with a refined entry — same payload discipline as addPortraitEntry.",
+          inputSchema: z.object({
+            match: z.string().describe("A substring of the ONE existing line to replace."),
+            text: z.string(),
+            refs: z.array(z.string()),
+          }),
+          execute: async ({ match, text, refs }) =>
+            applyDirOp({ op: "update_portrait", match, text, refs }),
+        }),
+        removePortraitEntry: tool({
+          description:
+            "Remove ONE existing Portrait line (matched by a substring) — reversal is " +
+            "legal: when the user changes, a stale portrait entry SHOULD retire.",
+          inputSchema: z.object({
+            match: z.string().describe("A substring of the ONE existing line to remove."),
+          }),
+          execute: async ({ match }) => applyDirOp({ op: "remove_portrait", match }),
+        }),
+        addHypothesis: tool({
+          description:
+            "Add a GUESS about the user's traits/patterns to the hypothesis pool " +
+            "(≤10 — promote or remove first when full). Engineering stamps the " +
+            "[proposed <slice>] pointer; you supply the guess + its falsification " +
+            "condition. Guesses are about the PERSON, never event predictions.",
+          inputSchema: z.object({
+            text: z.string().describe("The trait-level guess, no slice ids."),
+            falsify: z.string().describe("The falsification condition."),
+          }),
+          execute: async ({ text, falsify }) =>
+            applyDirOp({ op: "add_hypothesis", text, falsify }),
+        }),
+        promoteHypothesis: tool({
+          description:
+            "Promote ONE CONFIRMED hypothesis (≥2 distinct slices' evidence, or " +
+            "explicit user confirmation) into a Portrait dimension — the guess leaves " +
+            " the pool IN THE SAME RUN, re-phrased portrait-grade with its refs.",
+          inputSchema: z.object({
+            match: z.string().describe("A substring of the ONE confirmed hypothesis line."),
+            dimension: z.enum(DIMENSIONS_ENUM),
+            text: z.string().describe("The portrait-grade re-phrasing."),
+            refs: z.array(z.string()),
+          }),
+          execute: async ({ match, dimension, text, refs }) =>
+            applyDirOp({ op: "promote_hypothesis", match, dimension, text, refs }),
+        }),
+        removeHypothesis: tool({
+          description:
+            "Remove ONE refuted hypothesis (matched by a substring). Expiry needs no " +
+            "call — engineering retires over-age guesses deterministically.",
+          inputSchema: z.object({
+            match: z.string().describe("A substring of the ONE refuted hypothesis line."),
+          }),
+          execute: async ({ match }) => applyDirOp({ op: "remove_hypothesis", match }),
+        }),
+      }
+    : {};
   return {
     // ── Write tools (mutations on the session's working document) ──
     setIdentity: tool({
@@ -665,6 +770,9 @@ function buildTools(
         );
       },
     }),
+    // ── Direction mutations (merged run only — the direction half edits its
+    // own working copy through these, same session discipline as the card) ──
+    ...directionTools,
     // ── Read tools ──────────────────────────────────────────────────
     readSlice: tool({
       description:
@@ -719,9 +827,9 @@ function buildTools(
         "developer log. `summary`: ONE short sentence IN THE USER'S LANGUAGE describing " +
         "what this evolution changed (shown to the user and the core agent) — empty string " +
         "when nothing changed. `expectedBenefit`: one line on what improves for the user — " +
-        "archived with the mutation record. `directionProposal`: ONLY when the direction " +
-        "evaluation (the first half of this run) proposes a move — the FULL new direction.md. " +
-        "Call finish even when nothing changed.",
+        "archived with the mutation record. `directionSummary`: one line on what changed " +
+        "in direction.md — ONLY when you moved the direction with the direction tools " +
+        "(the common case is omitting it). Call finish even when nothing changed.",
       inputSchema: z.object({
         reasoning: z.string().describe("1-3 sentences for the developer log."),
         summary: z
@@ -737,27 +845,12 @@ function buildTools(
             "One line: what improves for the user if this change holds (archived with the " +
             "mutation record, design: every mutation carries its expected benefit).",
           ),
-        directionProposal: z
-          .object({
-            content: z
-              .string()
-              .describe(
-                "The FULL new direction.md — # Portrait (descriptive, concept-level, NEVER " +
-                  "imperatives) / # Hypotheses (≤10 lines, each \"- [proposed YYYY-MM-DD-HHMM · " +
-                  "checked YYYY-MM-DD-HHMM] <guess> — falsify if: <condition>\") / # Evidence " +
-                  "(slice pointers) / # Log (append-only).",
-              ),
-            summary: z.string().describe("One line: what changed in the direction."),
-            evidence: z
-              .array(z.string())
-              .describe("Slice pointers / user quotes backing the change."),
-            expectedBenefit: z
-              .string()
-              .describe("One line: what improves for the user if this portrait holds."),
-          })
+        directionSummary: z
+          .string()
           .optional()
           .describe(
-            "The direction half's proposal — omit when the direction stays as it is (the common case).",
+            "One line: what changed in the direction (promotions / new guesses / retirements). " +
+            "Omit when the direction stayed as it is.",
           ),
       }),
     }),
@@ -777,21 +870,14 @@ const finishReportSchema = z.object({
   reasoning: z.string(),
   summary: z.string().catch(""),
   expectedBenefit: z.string().catch("").optional(),
-  directionProposal: z
-    .object({
-      content: z.string(),
-      summary: z.string().catch(""),
-      evidence: z.array(z.string()).catch([]),
-      expectedBenefit: z.string().catch(""),
-    })
-    .optional(),
+  directionSummary: z.string().catch("").optional(),
 });
 
 interface AttemptOutcome {
   reasoning: string;
   summary: string;
   expectedBenefit?: string;
-  directionProposal?: DirectionProposal;
+  directionSummary?: string;
   failed?: boolean;
   partial?: boolean;
 }
@@ -800,18 +886,19 @@ async function attemptCall(
   input: PreviouslyAgentInput,
   session: CardSession,
   playbookWrites: PlaybookWrite[],
+  directionSession: DirectionSession | null,
   temperature: number,
 ): Promise<AttemptOutcome> {
   const res = await runSubAgent<{
     reasoning: string;
     summary: string;
     expectedBenefit?: string;
-    directionProposal?: DirectionProposal;
+    directionSummary?: string;
   }>({
     model: input.model,
     system: PREVIOUSLY_SYSTEM,
     prompt: buildUserPrompt(input),
-    tools: buildTools(input, session, playbookWrites),
+    tools: buildTools(input, session, playbookWrites, directionSession),
     reportToolName: "finish",
     reportSchema: finishReportSchema,
     maxSteps: MAX_STEPS,
@@ -822,18 +909,14 @@ async function attemptCall(
   });
 
   if (res.ok && res.report) {
-    const proposal = res.report.directionProposal;
     return {
       reasoning: res.report.reasoning,
       summary: res.report.summary,
       ...(res.report.expectedBenefit?.trim()
         ? { expectedBenefit: res.report.expectedBenefit.trim() }
         : {}),
-      // Only meaningful when this run carried the direction half — the caller
-      // validates it structurally before applying; a stray proposal on a
-      // card-only run is dropped here.
-      ...(input.directionEval && proposal?.content.trim()
-        ? { directionProposal: proposal }
+      ...(input.directionEval && res.report.directionSummary?.trim()
+        ? { directionSummary: res.report.directionSummary.trim() }
         : {}),
     };
   }
@@ -856,15 +939,35 @@ async function attempt(
   temperature: number,
 ): Promise<PreviouslyAgentOutput> {
   // A fresh session per attempt — a retried pass never inherits half-applied
-  // mutations. The staged playbook writes are likewise per-attempt.
+  // mutations. The staged playbook writes and the direction working copy are
+  // likewise per-attempt.
   const session = createCardSession(
     input.previouslyContent,
     input.currentSliceId,
     today,
   );
   const playbookWrites: PlaybookWrite[] = [];
-  const r = await attemptCall(input, session, playbookWrites, temperature);
+  const directionSession: DirectionSession | null = input.directionEval
+    ? {
+        // Steady mode edits the on-disk doc; bootstrap/migrate BUILD the new
+        // skeleton from scratch (the old doc is evidence in the prompt, not
+        // the working copy — its stale sections must not survive the ops).
+        doc:
+          input.directionEval.mode === "steady" &&
+          input.directionEval.current?.trim()
+            ? input.directionEval.current.trim()
+            : emptyDirectionDoc(),
+        touched: false,
+        log: [],
+      }
+    : null;
+  const r = await attemptCall(input, session, playbookWrites, directionSession, temperature);
   const failed = r.failed === true;
+  // The direction moved when the working copy differs from the on-disk doc.
+  const directionChanged =
+    directionSession !== null &&
+    directionSession.touched &&
+    directionSession.doc.trim() !== (input.directionEval?.current?.trim() ?? "");
   return {
     updatedCard: failed ? "" : serializeSession(session),
     reasoning: r.reasoning,
@@ -876,7 +979,16 @@ async function attempt(
     // partial pass may still have landed a valid playbook mutation.
     ...(playbookWrites.length > 0 && !failed ? { playbookWrites } : {}),
     ...(r.expectedBenefit ? { expectedBenefit: r.expectedBenefit } : {}),
-    ...(r.directionProposal && !failed ? { directionProposal: r.directionProposal } : {}),
+    // Direction ops likewise land per-attempt; a partial pass may still have
+    // moved the direction. The caller runs the whole-doc gate + TTL.
+    ...(directionChanged && !failed
+      ? {
+          direction: {
+            doc: directionSession.doc,
+            summary: r.directionSummary ?? "",
+          },
+        }
+      : {}),
   };
 }
 

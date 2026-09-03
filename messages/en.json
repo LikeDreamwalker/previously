@@ -77,8 +77,7 @@
       "docsLabel": "Memory documents",
       "docs": {
         "previously": "Previously on",
-        "direction": "Direction",
-        "mutations": "Mutations"
+        "direction": "Direction"
       },
       "docsLoading": "Loading…",
       "docsEmpty": "Nothing here yet."

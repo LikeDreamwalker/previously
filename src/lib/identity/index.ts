@@ -1,32 +1,34 @@
 /**
- * Agent constitution — SOUL + DIRECTIVES, bundled into the build via
- * scripts/generate-identity.mjs (imported as compiled strings, never read from
- * disk at runtime). This makes the agent's identity immutable while running: a
- * bad edit or a mistaken agent write to the repo can't change a live
- * deployment, and the source files sit outside the tool whitelist so the agent
- * can't rewrite its own soul.
+ * Agent constitution — the single CHARTER.md, bundled into the build via
+ * scripts/generate-identity.mjs (imported as a compiled string, never read
+ * from disk at runtime). This makes the agent's identity immutable while
+ * running: a bad edit or a mistaken agent write to the repo can't change a
+ * live deployment, and the source file sits outside the tool whitelist so
+ * the agent can't rewrite its own charter.
  *
- * The user's profile is deliberately NOT here — it's mutable, agent-editable
+ * The charter is the bedrock layer (mission + the two documents' contract +
+ * protocols + guardrails) — nothing in the evolved data outranks it. The
+ * user's profile is deliberately NOT here — it's mutable, agent-editable
  * data loaded live from memory/. See ./user-profile.ts.
  */
 import matter from "gray-matter";
-import { SOUL_MD, DIRECTIVES_MD } from "./agent-prompt.generated";
+import { CHARTER_MD } from "./agent-prompt.generated";
 import type { UserProfile } from "./user-profile";
 
-const soul = matter(SOUL_MD);
-const soulName = typeof soul.data.name === "string" ? soul.data.name : "Previously";
-const soulBody = soul.content.trim();
-const directives = matter(DIRECTIVES_MD).content.trim();
+const charter = matter(CHARTER_MD);
+const charterName =
+  typeof charter.data.name === "string" ? charter.data.name : "Previously";
+const charterBody = charter.content.trim();
 
 /**
- * Compose the agent's base system prompt: bundled constitution (SOUL + who
- * you're assisting + DIRECTIVES). The caller passes the already-loaded user
- * profile and appends dynamic context (intent, memory, episodic timeline).
+ * Compose the agent's base system prompt: the bundled charter + who you're
+ * assisting. The caller passes the already-loaded user profile and appends
+ * the evolved layers (direction, card) and the frozen context blocks.
  */
 export function buildAgentIdentityPrompt(profile: UserProfile | null): string {
   const parts: string[] = [
-    soulBody ||
-      `You are ${soulName}, a personal AI agent that remembers everything the user does.`,
+    charterBody ||
+      `You are ${charterName}, a personal AI agent that remembers everything the user does.`,
   ];
 
   if (profile) {
@@ -44,8 +46,6 @@ export function buildAgentIdentityPrompt(profile: UserProfile | null): string {
       parts.push(block.trim());
     }
   }
-
-  if (directives) parts.push(directives);
 
   return parts.join("\n\n");
 }

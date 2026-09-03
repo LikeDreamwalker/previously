@@ -77,8 +77,7 @@
       "docsLabel": "记忆文档",
       "docs": {
         "previously": "前情提要",
-        "direction": "进化方向",
-        "mutations": "变更档案"
+        "direction": "进化方向"
       },
       "docsLoading": "加载中…",
       "docsEmpty": "暂无内容"
