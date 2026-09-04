@@ -836,7 +836,8 @@ function buildTools(
           .string()
           .describe(
             "One short sentence in the user's language describing what changed, e.g. " +
-            "'记下了你周五的面试安排，把等 HR 回复标记为进行中'. Empty when nothing changed.",
+            "'Noted your Friday interview and marked waiting-on-HR as in progress' " +
+            "(match the USER's language, not this example's). Empty when nothing changed.",
           ),
         expectedBenefit: z
           .string()
