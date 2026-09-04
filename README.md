@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  An AI agent that remembers by <em>when</em>, not by chat thread.
+  An AI agent that remembers by <em>when</em>, not by chat thread — and evolves a portrait of who you are.
 </p>
 
 <p align="center">
@@ -32,19 +32,22 @@
   <img src="https://img.shields.io/badge/TypeScript-6.x-3178C6" alt="TypeScript 6">
   <img src="https://img.shields.io/badge/Tailwind_CSS-4-38bdf8" alt="Tailwind CSS 4">
   <img src="https://img.shields.io/badge/memory-episodic-ec4899" alt="Memory: Episodic">
+  <img src="https://img.shields.io/badge/evolution-darwinian-10b981" alt="Evolution: Darwinian">
 </p>
 
 ---
 
 ## What this is
 
-Previously is a lightweight cloud agent that lives on the edge — open a browser tab and it's there. It reads, writes, reasons, and acts on your behalf. What makes it different isn't any single feature; it's that there are no "conversations." Just one continuous relationship, organized on a timeline.
+Previously is a self-evolving personal AI agent — open a browser tab (or run it on your own machine) and it's there. It reads, writes, reasons, and acts on your behalf. What makes it different isn't any single feature; it's that there are no "conversations." Just one continuous relationship, organized on a timeline.
 
 Most AI agents split your life into chat threads. Each new thread starts cold. Memory is siloed, fragile, lossy. The conversation list — a UI artifact from messaging apps — became the default interaction model for AI, even though human relationships don't work that way.
 
 Previously replaces chat threads with **time slices**: episodic memory organized the way human memory actually works — by _when_ something happened, then _what_ it was about. You don't manage conversations. You just show up and talk. And because context is assembled dynamically from the timeline rather than crammed into a growing prompt window, there's no point where the agent suddenly "forgets" the beginning of a long exchange.
 
 The name comes from how TV series recap previous episodes: _"Previously on…"_ — a brief reminder of what happened last time, just enough context to pick up where you left off.
+
+And it doesn't just remember you — it **evolves a model of who you are**, out in the open: a portrait with labeled guesses, updated only when the evidence says so.
 
 > Want to understand the ideas behind this? Read the deep-dive: [Is Time the Missing Dimension in AI Memory?](https://dev.to/likedreamwalker/is-time-the-missing-dimension-in-ai-memory-2l9c)
 
@@ -114,6 +117,56 @@ For the full picture — the recall colleague's contract, file structure, YAML s
 
 ---
 
+## The evolution loop
+
+Remembering you is only half of it — Previously also *learns* you, and the learning is inspectable, not hidden. The loop is Darwinian: a user portrait is the environment, evidence-anchored fitness scores are the selection pressure, and one evolution agent is the only writer. Every guarantee below is enforced in code, not in prompts.
+
+<p align="center">
+  <img alt="A real evolution run, expanded: the trigger's net score, the direction verdict, and the reviewer's note" src="public/screenshots/evolution-card.png" width="680">
+</p>
+
+<p align="center">
+  <sub>A real evolution run, captured live: the interaction bucket's net hit −7 (threshold −5), the direction was bootstrapped with a portrait entry and two falsifiable hypotheses, and the card diff dropped two stale "Now" hooks while adding the current one.</sub>
+</p>
+
+```mermaid
+flowchart TD
+    turn["Every chat turn"] --> analyzer["Turn analyzer — scores the turn against<br/>the portrait, one evidence-anchored delta<br/>(−2…+1) per bucket: card · recall ·<br/>search · thinkdeep · interaction"]
+    analyzer --> store[("Fitness store —<br/>the current generation's ledger")]
+    store -->|"any bucket's net ≤ −5"| run["ONE merged evolution run —<br/>fires before the reply"]
+    store -->|"otherwise"| nothing["Nothing evolves"]
+    run --> direction["direction.md —<br/>the user portrait + hypothesis pool"]
+    run --> card["previously.md — the user card<br/>(what you do, are doing, plan)"]
+    run --> playbooks["Colleague playbooks —<br/>recall · search · thinkdeep<br/>(only for triggered buckets)"]
+    direction --> prompt["L1b system-prompt layer —<br/>hypotheses marked UNVERIFIED"]
+    prompt -.->|"the next turn already<br/>treats you differently"| turn
+```
+
+**A portrait, not a rulebook.** `memory/evolution/direction.md` models who you are as a person in six fixed dimensions — traits & cognitive style, triggers & rhythms, patterns & loops, strengths & resilience, communication preferences, values & boundaries. An entry earns its place only when it holds across contexts, outlives the event that evidenced it, and predicts. Body text never carries names, dates, or events — the evidence rides trailing `— refs:` pointers only. The portrait describes you; it never tells the agent what to do.
+
+**Guesses are labeled guesses.** Alongside the portrait sits a bounded pool of falsifiable hypotheses — each a one-line trait-level guess with an explicit `falsify if:` condition, capped at 10 and refilled toward 10 each run:
+
+```mermaid
+stateDiagram-v2
+    [*] --> Proposed : a falsifiable guess,<br/>[proposed] stamped by code
+    Proposed --> Promoted : confirmed (≥2 slices of evidence) —<br/>moves into the Portrait in the same run
+    Proposed --> Removed : refuted
+    Proposed --> Retired : unverified 4 slices after proposal —<br/>retired by code, even on a "no change" verdict
+    Retired --> Proposed : re-proposable on new evidence
+```
+
+The engineering half matters: a hypothesis's `[proposed]` clock can neither be forged nor refreshed by the model, and expiry is deterministic — a guess can never quietly fossilize into fact.
+
+**Fitness is a ledger, not a vibe.** Every turn, the turn-analyzer scores against the portrait as its rubric and emits single evidence-anchored deltas — and a delta with no quoted evidence is force-zeroed by the store, so scoring without evidence is impossible by construction. Your mechanical reactions count too: regenerating an answer or interrupting the stream is recorded as a signal. The trigger math is pure accounting: any bucket whose current-generation net reaches **−5** (five weak signals, or two explicit complaints plus one) fires exactly one merged run *before the reply goes out*. A successful run settles the whole generation — a "checked, no change" verdict included; a failed run settles nothing. Scores are sensors, not judges: a trigger buys a careful re-read of the original evidence, never a mandatory mutation.
+
+**One writer, no fossil record.** A single merged evolution agent evaluates the direction first, then evolves the card and the triggered colleagues' playbooks under the possibly-new portrait — all in one run, all through atomic, structurally-validated operations (no whole-document rewrites). Accepted writes land in the living documents; there is no mutation archive and no rollback axis, because evolution has no direction — only fit. Git history remains the version trail. And an explicit instruction from you ("remember this", "stop doing that") never enters the selection pressure at all — it rides a separate channel and just applies.
+
+**The portrait rides the prompt.** The portrait and hypothesis pool are injected into the main agent's system prompt — guesses explicitly marked UNVERIFIED, probed gently, never asserted as fact — so what the loop learns actually changes how the agent treats you on the very next turn.
+
+The full story — selection pressure, the hypothesis lifecycle, the merged run's contract — is in [The Evolution Loop](https://previously.ldwid.com/docs/evolution). You can also watch real evolution runs in the [playground](https://previously.ldwid.com/docs/recall).
+
+---
+
 ## How it's built
 
 Three layers, one hard rule between them:
@@ -137,7 +190,7 @@ Two things make this unusual:
 - **Episodic memory** — time-slice storage with a single rule (30 min of silence closes a slice)
 - **Visible reasoning** — thinking, recall, and tool calls stream inline; nothing happens in a black box
 - **Colleague recall** — a recall sub-agent searches memory with evidence-anchored, verbatim-quoted answers; the main agent keeps only a verification channel
-- **Darwinian self-evolution** — a portrait document (`memory/evolution/direction.md`) models who you are, plus a dynamic pool of falsifiable hypotheses about you; evidence-anchored fitness scoring decides *whether* to evolve. The user card is a product of that loop, not the loop itself
+- **Darwinian self-evolution** — a six-dimension portrait of who you are (`memory/evolution/direction.md`) plus a code-guarded pool of falsifiable hypotheses; a quantitative fitness ledger (net −5 triggers, a successful run settles the generation) decides *whether* to evolve. The user card and the colleagues' playbooks are products of that loop, not the loop itself
 - **Local time, everywhere** — read tools pre-render your local time, so the agent never mangles timezones
 - **Trivial turns stay out of memory** — a semantic gate keeps "thanks" and "continue" from polluting your timeline
 - **Multi-model** — DeepSeek, Anthropic, and any OpenAI-compatible provider, with a pick-your-main-model toolbar
@@ -230,6 +283,10 @@ Thanks to [Vercel AI SDK](https://sdk.vercel.ai), [shadcn/ui](https://ui.shadcn.
 ---
 
 ## Author
+
+<p align="center">
+  Built with 💙 by <a href="https://likedreamwalker.space"><strong>LikeDreamwalker</strong></a>
+</p>
 
 <p align="center">
   <a href="https://likedreamwalker.space"><img alt="LikeDreamwalker" src="public/ldw.svg" width="220"></a>

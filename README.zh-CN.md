@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  一个按「时间」记忆、而不是按「聊天线程」记忆的 AI Agent。
+  一个按「时间」记忆、而不是按「聊天线程」记忆的 AI Agent——它还会进化出一幅关于你的画像。
 </p>
 
 <p align="center">
@@ -32,19 +32,22 @@
   <img src="https://img.shields.io/badge/TypeScript-6.x-3178C6" alt="TypeScript 6">
   <img src="https://img.shields.io/badge/Tailwind_CSS-4-38bdf8" alt="Tailwind CSS 4">
   <img src="https://img.shields.io/badge/memory-episodic-ec4899" alt="记忆：情景记忆">
+  <img src="https://img.shields.io/badge/进化-达尔文式-10b981" alt="进化：达尔文式">
 </p>
 
 ---
 
 ## 这是什么
 
-Previously 是一个轻量的云端 Agent——打开一个浏览器标签页，它就在那里。它能读、能写、能思考、能替你行动。它和其他 Agent 最大的不同不在某个单一功能，而在于：**没有「对话」。** 只有一段持续的关系，排布在一条时间线上。
+Previously 是一个会自我进化的个人 AI Agent——打开一个浏览器标签页（或跑在你自己的机器上），它就在那里。它能读、能写、能思考、能替你行动。它和其他 Agent 最大的不同不在某个单一功能，而在于：**没有「对话」。** 只有一段持续的关系，排布在一条时间线上。
 
 大多数 AI Agent 把你的生活切成一堆聊天线程。每开一个新线程，一切从零开始。记忆被割裂、脆弱、易失。那个「会话列表」——从即时通讯软件继承来的界面产物——成了 AI 的默认交互模型，可人类的关系从来不是这样运作的。
 
 Previously 用**时间切片**取代聊天线程：一种按人类记忆真实运作方式组织的情景记忆——先按_什么时候_发生的，再按_关于什么_。你不需要管理对话。你只需要出现、说话。因为上下文是从时间线上动态组装，而不是塞进一个越滚越大的 prompt 窗口，所以永远不会出现 Agent 突然「忘记」长对话开头的那一刻。
 
 名字来自电视剧开场前的闪回：_"Previously on…"（前情提要）_——一段简短回顾，提醒你上次发生了什么，刚刚好够你接上剧情。
+
+而它不只是记得你——它还会**进化出一个「你是怎样的人」的模型**，而且是公开可检视的：一幅画像，加上标注清楚的猜测，只有当证据说话时才更新。
 
 > 想了解背后的理念？读这篇深度文：[时间是不是 AI 记忆缺失的维度？](https://dev.to/likedreamwalker/is-time-the-missing-dimension-in-ai-memory-2l9c)（英文）
 
@@ -114,6 +117,60 @@ Previously 用**时间切片**取代聊天线程：一种按人类记忆真实�
 
 ---
 
+## 进化回路
+
+记住你只是它的一半——Previously 还会*学习*你，而这个学习过程是可检视的，不是黑箱。这个回路是达尔文式的：用户画像是环境，证据锚定的 fitness 评分是选择压力，一个进化 Agent 是唯一的写手。下面每一条保证都由代码强制，而不是靠 prompt 自觉。
+
+<p align="center">
+  <img alt="一次真实进化运行的展开态：触发净分、画像结论与评审备注" src="public/screenshots/evolution-card.png" width="680">
+</p>
+
+<p align="center">
+  <sub>一次真实抓取的进化运行：interaction bucket 净分跌到 −7（阈值 −5），画像 bootstrap 出一条画像记录和两条可证伪假说，卡片 diff 删掉两条过期的 Now 钩子、加上了当前事项。</sub>
+</p>
+
+```mermaid
+flowchart TD
+    turn["每一次对话回合"] --> analyzer["回合分析器——以画像为标尺打分，<br/>每个 bucket 产出一条证据锚定的评分<br/>（−2…+1）：card · recall ·<br/>search · thinkdeep · interaction"]
+    analyzer --> store[("fitness 存储——<br/>当前 generation 的账本")]
+    store -->|"任一 bucket 净分 ≤ −5"| run["一次合并的进化运行——<br/>在回复发出之前触发"]
+    store -->|"否则"| nothing["不进化"]
+    run --> direction["direction.md——<br/>用户画像 + 假说池"]
+    run --> card["previously.md——用户卡片<br/>（你做过、在做、打算做的事）"]
+    run --> playbooks["同事们的 playbook——<br/>recall · search · thinkdeep<br/>（仅限被触发的 bucket）"]
+    direction --> prompt["L1b 系统提示层——<br/>假说标注为 UNVERIFIED"]
+    prompt -.->|"下一回合的它<br/>已经不一样了"| turn
+```
+
+**是画像，不是规则手册。** `memory/evolution/direction.md` 用六个固定维度建模「你是怎样的人」——特质与认知风格、触发点与节奏、模式与循环、优势与韧性、沟通偏好、价值观与边界。一条记录只有跨场景成立、活过产生它的那个事件、并且能预测未来，才配进入画像。正文从不出现名字、日期、事件——证据只挂在句尾的 `— refs:` 指针里。画像描述你；它从不指挥 Agent 该做什么。
+
+**猜测就标注为猜测。** 画像旁边是一个有上限的可证伪假说池——每条是一行特质层面的猜测，带明确的 `falsify if:` 条件，上限 10 条、每次运行补齐到 10 条：
+
+```mermaid
+stateDiagram-v2
+    state "已提出" as P
+    state "转正 · 进入画像" as Pr
+    state "移除" as Rm
+    state "退休" as Rt
+    [*] --> P : 可证伪的猜测，[proposed] 由代码盖章
+    P --> Pr : 被证实（≥2 个切片证据）——同一次运行内
+    P --> Rm : 被证伪
+    P --> Rt : 连续 4 个切片未验证——代码强制，「无变化」也不例外
+    Rt --> P : 有新证据可重新提出
+```
+
+工程化的那一半才是关键：假说的 `[proposed]` 时钟既不能被模型伪造也不能被刷新，过期退休是确定性的——一条猜测永远不会悄悄固化成事实。
+
+**fitness 是账本，不是感觉。** 每个回合，回合分析器以画像为标尺，产出单条的、证据锚定的评分——而没有引用证据的评分会被存储层强制归零，所以「无证据打分」在构造上就不可能。你的机械反馈也算数：重新生成回答、打断流式输出都会被记录为信号。触发数学是纯记账：任一 bucket 的当前 generation 净分跌到 **−5**（五个弱信号，或两次明确抱怨加一次弱信号），就会在一次回复*发出之前*触发恰好一次合并运行。一次成功的运行结算整个 generation——「检查过、无变化」的结论也算；失败的运行不结算任何东西。分数是传感器，不是法官：触发换来的是对原始证据的仔细重读，而不是一次强制变异。
+
+**单一写手，没有化石档案。** 一个合并的进化 Agent 先评估画像，然后在可能是全新的画像之下进化卡片和被触发同事的 playbook——全部在一次运行内完成，全部通过原子化、逐项结构校验的操作落盘（整篇重写的时代结束了）。被接受的修改直接写进活着的文档；没有变异档案，也没有回滚轴——因为进化没有方向，只有拟合。版本轨迹交给 git 历史。而你的一句明确指令（「记住这个」「别再那样」）根本不进入选择压力——它走单独的通道，直接生效。
+
+**画像注入 prompt。** 画像和假说池作为主 Agent 系统提示的一层注入——猜测明确标注为 UNVERIFIED，温和地试探，永远不当事实断言——所以回路学到的东西，在下一个回合就真的改变 Agent 对待你的方式。
+
+完整的故事——选择压力、假说生命周期、合并运行的契约——在 [进化回路](https://previously.ldwid.com/docs/evolution) 文档里。你也可以在 [Playground](https://previously.ldwid.com/docs/recall) 里看真实的进化运行。
+
+---
+
 ## 它是怎么搭的
 
 三层，层与层之间一条硬边界：
@@ -137,7 +194,7 @@ Previously 用**时间切片**取代聊天线程：一种按人类记忆真实�
 - **情景记忆**——时间切片存储，只有一条规则（沉默 30 分钟就关闭切片）
 - **过程可见**——思考、回忆、工具调用全部实时内联流出，没有黑箱
 - **同事制回忆**——回忆子 Agent 以证据锚定、附原文引用的方式回答；主 Agent 只保留校验通道
-- **达尔文式自进化**——一份画像文档（`memory/evolution/direction.md`）建模「你是怎样的人」，外加一个关于你的可证伪假说动态池；证据锚定的 fitness 评分决定「要不要进化」。用户卡片只是这个回路的产物，而不是回路本身
+- **达尔文式自进化**——一幅六维度的「你是怎样的人」画像（`memory/evolution/direction.md`），外加一个由代码守护的可证伪假说池；纯定量的 fitness 账本（净分 −5 触发，一次成功运行结算整个 generation）决定「要不要进化」。用户卡片和同事们的 playbook 只是这个回路的产物，而不是回路本身
 - **处处是你的本地时间**——读工具预渲染你的本地时间，Agent 永远不会算错时区
 - **琐碎回合不进记忆**——语义门把「谢谢」「继续」挡在时间线之外
 - **多模型**——DeepSeek、Anthropic 以及任何 OpenAI 兼容供应商，工具栏可自选主模型
@@ -230,6 +287,10 @@ Previously 处于早期积极开发中，尚未准备好用于个人或生产环
 ---
 
 ## 作者
+
+<p align="center">
+  Built with 💙 by <a href="https://likedreamwalker.space"><strong>LikeDreamwalker</strong></a>
+</p>
 
 <p align="center">
   <a href="https://likedreamwalker.space"><img alt="LikeDreamwalker" src="public/ldw.svg" width="220"></a>
