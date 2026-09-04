@@ -238,11 +238,11 @@ export interface PreviouslyAgentOutput {
   /**
    * Accepted playbook mutations (v1.0 §2.4 — one per triggered recall /
    * search / thinkdeep bucket). NOT yet written to disk — the caller applies
-   * them (writePlaybook + mutations archive) next to the card write-back.
+   * them (writePlaybook) next to the card write-back.
    */
   playbookWrites?: PlaybookWrite[];
   /** The agent's one-line expected benefit for this pass's changes (design
-   *  §2.7 — archived with the mutation record). */
+   *  §2.7 — recorded with the playbook write). */
   expectedBenefit?: string;
   /**
    * The direction half's outcome (v1.1 merged run) — present only when
