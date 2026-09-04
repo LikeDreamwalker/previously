@@ -13,3 +13,8 @@ Caveats:
 - `migrate-slices-to-time.mjs`, `shift-all-dates.mjs`,
   `shift-demo-dates.mjs`, and `apply-enrichment.mjs` were single-use
   migrations whose transforms have already been applied.
+- `convert-worldmemarena.mjs` (originally `benchmark-data/convert.mjs`) was
+  the one-off WorldMemArena → slice converter; its input data lives in the
+  gitignored `benchmark-data/` dir, and its `__dirname`-relative paths still
+  point there. `smoke-search.mjs` was the one-off DeepSeek web-search smoke
+  test referenced from `src/lib/search/flash-search.ts`.

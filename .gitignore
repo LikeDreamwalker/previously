@@ -7,7 +7,12 @@ aragorn*/
 **/aragorn.json
 **/aragorn.yaml
 **/aragorn.yml
-.claude/aragorn/
+
+# Local agent config (skills, settings — machine-local)
+.claude/
+
+# Local run reports (overnight runs etc.)
+reports/
 
 # Project workflow docs (local only, contains private tooling references)
 doc/

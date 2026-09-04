@@ -96,7 +96,7 @@ const WEB_FETCH_MAX_CHARS = 15_000;
 
 /**
  * DeepSeek's Anthropic-compatible endpoint has one spec deviation (verified
- * 2026-07-17, scripts/smoke-search.mjs): web_search_tool_result ERRORS come
+ * 2026-07-17, scripts/archive/smoke-search.mjs): web_search_tool_result ERRORS come
  * wrapped in an array ("content":[{error}]) where the Anthropic spec — and
  * @ai-sdk/anthropic's response schema — expect a bare object. Normalize at
  * the fetch boundary so the SDK can parse the response.
