@@ -29,9 +29,8 @@ export default async function HomePage({
   // and the underlying GitHub read rides the readFile cache, so this is cheap.
   const config = await loadUserConfig();
 
-  // One page: the timeline wheel (left) + the conversation / empty briefing
-  // (right). The hero was removed — the "Previously On" title card now lives
-  // in the empty briefing (see empty-briefing.tsx).
+  // One page: the unified message stream / empty briefing (v0.10 §6.1 — the
+  // timeline wheel moved to the /timeline route; the home page is pure chat).
   return (
     <>
       {/* Window-level error listeners — catch anything the SDK transport or

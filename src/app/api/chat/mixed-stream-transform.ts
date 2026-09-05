@@ -34,6 +34,8 @@ const OUR_CHUNK_TYPES = new Set([
   "data-evolution",
   "data-turn-status",
   "data-tool-progress",
+  // v0.10 §4.1 — recall's evidence anchors for the references bar.
+  "data-recall-references",
 ]);
 
 function isOurs(c: Record<string, unknown>, chunkType: string): boolean {

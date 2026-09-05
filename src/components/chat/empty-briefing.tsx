@@ -21,6 +21,12 @@ interface EmptyBriefingProps {
   recent: SliceSummary[];
   /** Send a message (suggestion chips). */
   onSend: (message: string) => void;
+  /**
+   * "full" — the standalone full-screen arrival view (empty memory only).
+   * "card" — the stream-tail seat (§1.2 Rev 2): same content, but sized to its
+   * content instead of centering a full viewport, so history scrolls in above.
+   */
+  variant?: "full" | "card";
 }
 
 interface Chip {
@@ -46,12 +52,17 @@ const MAX_LOOPS = 4;
  * renders when it has real data — nothing says "上次聊到" followed by nothing.
  * The name doubles as the persona switcher in demo mode; "view full previously"
  * opens the same Previously On dialog used by the historical slice view.
+ *
+ * Since §1.2 Rev 2 the briefing has two seats: "card" rides the unified
+ * message stream's tail in briefing mode (history scrolls in above it); the
+ * standalone "full" form remains only for a brand-new, slice-less memory.
  */
 export function EmptyBriefing({
   persona,
   active,
   recent,
   onSend,
+  variant = "full",
 }: EmptyBriefingProps) {
   const t = useTranslations("emptyBriefing");
   const [identity, setIdentity] = useState<BriefingIdentity | null>(null);
@@ -116,13 +127,22 @@ export function EmptyBriefing({
   const sectionCard = "rounded-xl border border-border/50 bg-muted/20 px-4 py-3 backdrop-blur-sm";
 
   return (
-    // Tall briefings scroll instead of clipping (the parent chain is a fixed
-    // h-full) — overflow-x stays hidden so the glow blob never widens the page.
-    <div className="relative flex min-h-full flex-col items-center justify-center overflow-x-hidden overflow-y-auto pl-0 pr-4">
+    // Full variant: tall briefings scroll instead of clipping (the parent
+    // chain is a fixed h-full) — overflow-x stays hidden so the glow blob
+    // never widens the page. Card variant: one in-flow item, sized to content.
+    <div
+      className={
+        variant === "card"
+          ? "relative flex flex-col items-center overflow-x-hidden px-4 py-10"
+          : "relative flex min-h-full flex-col items-center justify-center overflow-x-hidden overflow-y-auto pl-0 pr-4"
+      }
+    >
       {/* Soft brand glow — the "stage light" behind the title card. */}
       <div
         aria-hidden
-        className="pointer-events-none absolute left-1/2 top-[36%] h-72 w-72 -translate-x-1/2 -translate-y-1/2 rounded-full bg-brand-500/10 blur-3xl"
+        className={`pointer-events-none absolute left-1/2 h-72 w-72 -translate-x-1/2 -translate-y-1/2 rounded-full bg-brand-500/10 blur-3xl ${
+          variant === "card" ? "top-24" : "top-[36%]"
+        }`}
       />
 
       <div className="relative w-full max-w-xl">
@@ -151,7 +171,7 @@ export function EmptyBriefing({
              truncated line. The full text is always one click away ("view
              full previously"). ── */}
         {hasSections && (
-          <div className="mt-12 space-y-4">
+          <div className={`space-y-4 ${variant === "card" ? "mt-8" : "mt-12"}`}>
             {focus && (
               <section className={sectionCard}>
                 <h3 className={sectionLabel}>
@@ -208,7 +228,7 @@ export function EmptyBriefing({
 
         {/* ── View the full previously ──────────────────────────────── */}
         {active?.slice_id && (
-          <div className="mt-12 text-center">
+          <div className={`text-center ${variant === "card" ? "mt-8" : "mt-12"}`}>
             <button
               onClick={() => setPrevOpen(true)}
               className="text-xs font-medium text-muted-foreground/70 transition-colors hover:text-foreground"

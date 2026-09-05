@@ -597,3 +597,85 @@ describe("deriveAgentStage — bridge data-phase", () => {
     ).toBeNull();
   });
 });
+
+describe("buildStream — recall references bar (v0.10 §4.1)", () => {
+  const refsChunk = (
+    references: Array<{ slice_id: string; note?: string } | null>,
+  ): AnyPart =>
+    part({
+      type: "data-recall-references",
+      data: { references },
+    });
+
+  it("collects the anchors into ONE trailing item under the reply", () => {
+    const items = buildStream(
+      [
+        part({ type: "tool-recall", toolCallId: "tc1", state: "running" }),
+        refsChunk([
+          { slice_id: "2026-08-01-1000", note: "a" },
+          { slice_id: "2026-08-02-1100", note: "b" },
+        ]),
+        part({ type: "text", text: "The answer." }),
+      ],
+      false,
+    );
+    const bar = items.find((i) => i.kind === "recall-references");
+    expect(bar).toBeDefined();
+    // Trailing: the bar sits AFTER the reply text, not mid-stream.
+    expect(items[items.length - 1]).toBe(bar);
+    expect(
+      (bar as { references: Array<{ slice_id: string }> }).references.map(
+        (r) => r.slice_id,
+      ),
+    ).toEqual(["2026-08-01-1000", "2026-08-02-1100"]);
+  });
+
+  it("merges several recall calls in one turn, deduped by slice id", () => {
+    const items = buildStream(
+      [
+        refsChunk([{ slice_id: "2026-08-01-1000" }]),
+        part({ type: "text", text: "half" }),
+        refsChunk([
+          { slice_id: "2026-08-01-1000", note: "dup" },
+          { slice_id: "2026-08-03-1200" },
+        ]),
+      ],
+      false,
+    );
+    const bars = items.filter((i) => i.kind === "recall-references");
+    expect(bars).toHaveLength(1);
+    expect(
+      (bars[0] as { references: Array<{ slice_id: string }> }).references.map(
+        (r) => r.slice_id,
+      ),
+    ).toEqual(["2026-08-01-1000", "2026-08-03-1200"]);
+  });
+
+  it("drops malformed anchors and emits no bar when nothing survives", () => {
+    const items = buildStream(
+      [
+        part({
+          type: "data-recall-references",
+          data: { references: [{ slice_id: "" }, { note: "no id" }, null] },
+        }),
+        part({ type: "text", text: "answer" }),
+      ],
+      false,
+    );
+    expect(items.some((i) => i.kind === "recall-references")).toBe(false);
+  });
+
+  it("does not split the streaming text buffer", () => {
+    const items = buildStream(
+      [
+        part({ type: "text", text: "before " }),
+        refsChunk([{ slice_id: "2026-08-01-1000" }]),
+        part({ type: "text", text: "after" }),
+      ],
+      false,
+    );
+    const texts = items.filter((i) => i.kind === "text");
+    expect(texts).toHaveLength(1);
+    expect((texts[0] as { content: string }).content).toBe("before after");
+  });
+});

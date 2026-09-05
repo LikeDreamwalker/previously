@@ -4,8 +4,9 @@ import { getDemoPersona, listDemoPersonas, setDemoPersona } from "@/lib/demo/dem
 import { resolveDataSource } from "@/lib/data-source/resolve";
 import { getUserName } from "@/lib/identity";
 import { formatErrorDetail } from "@/lib/chat/workflow-errors";
-import { readSliceIndex, readSliceBody, parseSlice, sliceIdToFilePath, readPreviously, readAgentTimeline } from "./manager";
+import { readSliceIndex, readSliceBody, parseSlice, sliceIdToFilePath, readPreviously, readAgentTimeline, loadSlice } from "./manager";
 import { readDirection } from "@/lib/evolution/store";
+import { loadUserConfig } from "@/lib/config/loader";
 import { readTimelineIndex } from "./timeline/store";
 import type { TimelineSliceEntry } from "./timeline/types";
 import type { Turn } from "./types";
@@ -116,9 +117,123 @@ export async function getEpisodicState(persona?: string): Promise<EpisodicState 
   };
 }
 
-export interface SlicePage {
-  slices: SliceSummary[];
+export interface SliceWithContent {
+  id: string;
+  start: string;
+  end?: string;
+  focus: string;
+  summary: string;
+  tags: string[];
+  strands: string[];
+  turnCount: number;
+  continuesFrom?: string;
+  closedBy?: string;
+  turns: Turn[];
+}
+
+export interface SliceContentPage {
+  /** Slices in chronological order (oldest → newest), ready to prepend into the message stream. */
+  slices: SliceWithContent[];
+  /** True when the catalog still holds slices older than this page. */
   hasMore: boolean;
+}
+
+/**
+ * One page of slices WITH their full turns (v0.10 unified message flow).
+ *
+ * The pagination source is the catalog (`timeline/index.json`, oldest →
+ * newest): `before` is the ISO `start` of the oldest already-loaded slice
+ * (null = initial page from the newest end); the page is the newest `limit`
+ * entries whose `start < before`, returned oldest → newest. `hasMore` is
+ * exact — derived from whether the catalog still holds older entries, not
+ * from page-fill heuristics. Turns are filled in through the same read path
+ * as `getSliceContent`; catalog entries whose slice file is missing
+ * (phantoms) are skipped, never faked.
+ */
+export async function getSlicePageWithContent(
+  before: string | null,
+  limit: number = 10,
+  persona?: string,
+): Promise<SliceContentPage> {
+  if (persona) setDemoPersona(persona);
+  const cap = Math.max(1, Math.min(limit, 50));
+  const idx = await readTimelineIndex();
+  const catalog = idx?.slices ?? [];
+
+  const eligible = before === null
+    ? catalog
+    : catalog.filter((e) => e.start < before);
+  const pageEntries = eligible.slice(-cap);
+  const hasMore = eligible.length > pageEntries.length;
+
+  const loaded = await Promise.all(
+    pageEntries.map(async (entry): Promise<SliceWithContent | null> => {
+      const slice = await loadSlice(entry.id);
+      if (!slice) return null;
+      return {
+        id: entry.id,
+        start: entry.start,
+        end: entry.end ?? slice.end,
+        focus: entry.focus,
+        summary: entry.summary,
+        tags: entry.tags,
+        strands: entry.strands,
+        turnCount: slice.turns.length,
+        continuesFrom: entry.continues_from,
+        closedBy: entry.closed_by,
+        turns: slice.turns,
+      };
+    }),
+  );
+
+  return {
+    slices: loaded.filter((s): s is SliceWithContent => s !== null),
+    hasMore,
+  };
+}
+
+export type ArrivalState =
+  | {
+      mode: "resume";
+      sliceId: string;
+      turns: Turn[];
+      focus: string;
+      start: string;
+    }
+  | { mode: "briefing" };
+
+/**
+ * Arrival gate (v0.10 design §2): is the newest slice still alive?
+ *
+ * Reuses the server's own same-conversation criterion — `slicing.idleGapMinutes`
+ * — so a config change moves both the close decision and the arrival decision
+ * together. Last activity is the slice's last turn timestamp (falling back to
+ * `end`, then `start`); younger than the idle gap → `resume` with the slice's
+ * turns, otherwise → `briefing` (the existing EmptyBriefing path).
+ */
+export async function getArrivalState(persona?: string): Promise<ArrivalState> {
+  if (persona) setDemoPersona(persona);
+  const idx = await readTimelineIndex();
+  const catalog = idx?.slices ?? [];
+  const last = catalog[catalog.length - 1];
+  if (!last) return { mode: "briefing" };
+
+  const slice = await loadSlice(last.id);
+  if (!slice) return { mode: "briefing" };
+
+  const lastActivity =
+    slice.turns[slice.turns.length - 1]?.timestamp ?? slice.end ?? slice.start;
+  const { slicing } = await loadUserConfig();
+  if (Date.now() - new Date(lastActivity).getTime() < slicing.idleGapMinutes * 60_000) {
+    return {
+      mode: "resume",
+      sliceId: slice.slice_id,
+      turns: slice.turns,
+      focus: slice.focus,
+      start: slice.start,
+    };
+  }
+  return { mode: "briefing" };
 }
 
 /**
@@ -155,41 +270,6 @@ export async function getBriefingIdentity(
   }
   const name = await getUserName().catch(() => "Previously");
   return { name, isDemo: false };
-}
-
-export async function getMoreSlices(
-  before: string,
-  limit: number = 10,
-  persona?: string,
-): Promise<SlicePage> {
-  if (persona) setDemoPersona(persona);
-  // Walk back through monthly indexes (batched + concurrent) until we fill a
-  // page or run out of history — up to 48 months so load-more can page across
-  // month/year boundaries.
-  const cap = Math.min(limit, 50);
-  const beforeDate = new Date(before);
-  const beforeYear = beforeDate.getUTCFullYear();
-  const beforeMonth = beforeDate.getUTCMonth() + 1;
-
-  const { entries } = await scanMonthsBack(beforeYear, beforeMonth, 48, cap);
-
-  const filtered = entries
-    .filter((e) => e.start < before)
-    .sort((a, b) => b.start.localeCompare(a.start))
-    .slice(0, cap);
-
-  return {
-    slices: filtered.map((s) => ({
-      slice_id: s.id,
-      focus: s.focus,
-      summary: s.summary,
-      start: s.start,
-      status: s.status as "active" | "closed",
-      open_loops: s.open_loops,
-      decisions: s.decisions,
-    })),
-    hasMore: filtered.length === cap,
-  };
 }
 
 export interface SliceContent {

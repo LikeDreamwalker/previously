@@ -11,6 +11,7 @@ import { HousekeepingCard } from "./housekeeping-card";
 import { EvolutionCard } from "./evolution-card";
 import { BridgeToolCard } from "./bridge-tools-card";
 import { BridgeHousekeepingCard } from "./bridge-housekeeping-card";
+import { RecallReferencesBar } from "./recall-references-bar";
 import { MessageActions } from "./message-actions";
 import { ToolRenderer } from "./tool-renderer";
 import { Message, MessageContent, MessageFooter } from "@/components/ui/message";
@@ -130,6 +131,8 @@ function itemKey(item: StreamItem, index: number): string {
       return `bridge-tools-${item.phase}-${index}`;
     case "phase":
       return `phase-${item.phase}-${index}`;
+    case "recall-references":
+      return `recall-references-${index}`;
   }
 }
 
@@ -386,6 +389,16 @@ export const ChatMessage = memo(function ChatMessage({
                             </div>
                           ) : undefined
                         }
+                      />
+                    );
+                  }
+
+                  if (item.kind === "recall-references") {
+                    // The "referenced N time slices" bar — trails the reply.
+                    return (
+                      <RecallReferencesBar
+                        key={key}
+                        references={item.references}
                       />
                     );
                   }

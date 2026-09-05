@@ -9,6 +9,8 @@ import { VersionBadge } from "@/components/layout/version-badge";
 import { DemoBadge } from "@/components/layout/demo-badge";
 import { ClientBadge } from "@/components/layout/client-badge";
 import { SettingsLink } from "@/components/layout/settings-link";
+import { SearchPalette } from "@/components/layout/search-palette";
+import { ModeSwitcher } from "@/components/layout/mode-switcher";
 
 export function AppHeader({ isDemo = false }: { isDemo?: boolean }) {
   const locale = useLocale();
@@ -24,7 +26,14 @@ export function AppHeader({ isDemo = false }: { isDemo?: boolean }) {
         </Link>
       </div>
 
+      {/* Mode switcher (v0.10 §6.1) — centered 「对话 · 时间线」 pill; URL is
+          the mode, so the active segment follows the route. */}
+      <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+        <ModeSwitcher />
+      </div>
+
       <nav className="flex items-center gap-1">
+        <SearchPalette />
         {isDemo && <DemoBadge />}
         <ClientBadge />
         <a

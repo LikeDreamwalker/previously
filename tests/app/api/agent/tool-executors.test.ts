@@ -82,6 +82,24 @@ vi.mock("@/lib/chat/step-timeout", () => ({
   StepTimeoutError: class StepTimeoutError extends Error {},
 }));
 
+// The workflow run writable — captured so tests can assert the data-* chunks
+// the executors stream to the client (data-tool-progress, data-recall-references).
+const workflowMock = vi.hoisted(() => {
+  const written: Array<{ type?: string; id?: string; data?: unknown }> = [];
+  return {
+    written,
+    getWritable: vi.fn(() => ({
+      getWriter: () => ({
+        write: vi.fn(async (chunk: { type?: string; id?: string; data?: unknown }) => {
+          written.push(chunk);
+        }),
+        releaseLock: vi.fn(),
+      }),
+    })),
+  };
+});
+vi.mock("workflow", () => ({ getWritable: workflowMock.getWritable }));
+
 import {
   readSliceSummaryExecute,
   readTimelineWindowExecute,
@@ -352,5 +370,54 @@ describe("recallExecute note logic", () => {
     const out = await recallExecute({ question: "q" }, opts());
     expect(out.note).toBeUndefined();
     expect(out.references).toHaveLength(1);
+  });
+});
+
+describe("recallExecute references channel (v0.10 §4.1)", () => {
+  beforeEach(() => {
+    recallDeps.runRecallSearch.mockReset();
+    workflowMock.written.length = 0;
+  });
+
+  it("streams the evidence anchors as a data-recall-references chunk", async () => {
+    recallDeps.runRecallSearch.mockResolvedValue({
+      answer: "Yes — you talked about it.",
+      references: [
+        { slice_id: "2026-08-01-1000", quote: "apples are great", note: "backs it" },
+        { slice_id: "2026-08-02-1100", quote: "more apples", note: "backs that" },
+      ],
+      searched: ["global timeline"],
+      confidence: 0.8,
+    });
+    await recallExecute({ question: "q" }, opts());
+    const chunk = workflowMock.written.find(
+      (c) => c.type === "data-recall-references",
+    );
+    expect(chunk).toBeDefined();
+    // One part per recall call — the id routes the merge client-side.
+    expect(chunk!.id).toBe("recall-refs-tc1");
+    const data = chunk!.data as {
+      references: Array<{ slice_id: string; note?: string; quote?: string }>;
+    };
+    // The bar carries id + note only — quotes stay in the tool result.
+    expect(data.references.map((r) => r.slice_id)).toEqual([
+      "2026-08-01-1000",
+      "2026-08-02-1100",
+    ]);
+    expect(data.references[0].note).toBeTruthy();
+    expect(data.references[0].quote).toBeUndefined();
+  });
+
+  it("emits nothing when the answer has no references", async () => {
+    recallDeps.runRecallSearch.mockResolvedValue({
+      answer: "You two haven't talked about this.",
+      references: [],
+      searched: ["global timeline"],
+      confidence: 0.9,
+    });
+    await recallExecute({ question: "q" }, opts());
+    expect(
+      workflowMock.written.some((c) => c.type === "data-recall-references"),
+    ).toBe(false);
   });
 });

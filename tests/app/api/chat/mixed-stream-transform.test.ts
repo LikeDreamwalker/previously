@@ -97,6 +97,17 @@ describe("createMixedStreamTransform", () => {
     expect(await through(chunks)).toEqual(chunks);
   });
 
+  it("passes data-recall-references chunks through unchanged (v0.10 §4.1)", async () => {
+    const chunks = [
+      {
+        type: "data-recall-references",
+        id: "recall-refs-call_1",
+        data: { references: [{ slice_id: "2026-08-01-1000", note: "backs it" }] },
+      },
+    ];
+    expect(await through(chunks)).toEqual(chunks);
+  });
+
   it("drops a raw model finish part (our steps own the finish chunk)", async () => {
     const out = await through([
       { type: "finish", finishReason: "stop", usage: { totalTokens: 3 } },

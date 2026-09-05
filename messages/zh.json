@@ -22,9 +22,11 @@
     "docs": "文档",
     "settings": "设置",
     "settingsBusy": "回复进行中——完成后即可修改设置",
-    "expand": "展开",
-    "collapse": "收起",
-    "timelineToggle": "切换时间线"
+    "mode": {
+      "label": "切换视图",
+      "chat": "对话",
+      "timeline": "时间线"
+    }
   },
   "theme": {
     "light": "浅色",
@@ -221,6 +223,37 @@
       "interruptedContinuePrompt": "请继续你之前被中断的回答——它还没完成。",
       "backgroundDone": "你的回答已就绪"
     },
+    "seam": {
+      "checkpoint": "自动存档 · 对话继续",
+      "newConversation": "{date} · 新对话",
+      "loadingOlder": "加载更早的对话…"
+    },
+    "timeIndicator": {
+      "label": "正在查看 {time} 附近的消息"
+    },
+    "rail": {
+      "label": "屏幕上消息的时间标尺"
+    },
+    "gesture": {
+      "openingTimeline": "正在打开时间线…"
+    },
+    "resume": {
+      "banner": "继续 {date} 的对话"
+    },
+    "history": {
+      "notFound": "时间片不存在或不可用。"
+    },
+    "search": {
+      "title": "搜索记忆",
+      "trigger": "搜索",
+      "placeholder": "搜索过去的对话… #线索名 按线索过滤",
+      "hint": "输入关键词搜索焦点、摘要、标签与决策；#线索名 按线索过滤。",
+      "searching": "搜索中…",
+      "empty": "没有匹配「{query}」的时间片"
+    },
+    "references": {
+      "title": "参考了 {count} 个时间片"
+    },
     "loadingTips": [
       "你的对话被切成时间片——一片进行 30 分钟自动收束，开启新的一片",
       "agent 在你离开之后才开始工作——不是一直在线，回来的时候结果已经等着了",
@@ -241,39 +274,39 @@
     ]
   },
   "timeline": {
-    "drawerTitle": "时间线",
-    "row": {
-      "charCount": "{value} 字",
-      "collapse": "收起",
-      "expandAll": "展开全部 ({value})",
-      "loading": "加载中…",
-      "viewMore": "查看更多",
-      "ongoing": "{count} 进行中",
-      "decided": "{count} 已决定",
-      "collapseMeta": "收起",
-      "date": {
-        "today": "今天",
-        "yesterday": "昨天"
-      }
-    },
     "panel": {
-      "now": "现在",
-      "earlier": "更早的记忆"
+      "now": "现在"
+    }
+  },
+  "timeline3d": {
+    "fallback": {
+      "loading": "正在加载时间线…",
+      "empty": "还没有记忆时间片——先开始一段对话吧。",
+      "unsupported": "当前设备或浏览器不支持 WebGL——已切换为精确时间线视图。"
     },
-    "gap": {
-      "moments": "片刻之后",
-      "minutes": "{count, plural, other {# 分钟后}}",
-      "hours": "{count, plural, other {# 小时后}}",
-      "days": "{count, plural, other {# 天后}}",
-      "weeks": "{count, plural, other {# 周后}}",
-      "months": "{count, plural, other {# 个月后}}",
-      "unit": {
-        "minute": "分钟后",
-        "hour": "小时后",
-        "day": "天后",
-        "week": "周后",
-        "month": "个月后"
-      }
+    "hint": {
+      "browse": "滚轮穿越时间 · Ctrl+滚轮缩放 · Alt+拖拽旋转 · 点击圆点打开",
+      "browseTouch": "单指竖滑穿越时间 · 双指捏合缩放 · 双指旋转视角",
+      "focused": "推近到底或双击圆点进入对话 · Esc 关闭",
+      "focusedTouch": "右滑进入对话"
+    },
+    "turns": {
+      "user": "你",
+      "agent": "Agent",
+      "close": "关闭",
+      "loading": "正在打开时间片…",
+      "failed": "无法打开这个时间片。",
+      "open": "在对话中打开"
+    },
+    "card": {
+      "turns": "{count} 轮",
+      "continues": "接续上文",
+      "decisions": "决定",
+      "openLoops": "未了"
+    },
+    "now": {
+      "label": "NOW",
+      "sub": "现在"
     }
   },
   "settings": {

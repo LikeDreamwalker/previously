@@ -177,6 +177,41 @@ function emitToolProgress(
   }
 }
 
+/**
+ * Surface a recall run's evidence anchors to the CLIENT as a
+ * `data-recall-references` chunk (v0.10 §4.1): the message stream renders them
+ * as the clickable "referenced N time slices" bar under the agent's reply.
+ * Same best-effort write discipline as emitToolProgress — a stream failure
+ * must never fail the tool.
+ *
+ * Channel reach: this write happens inside the kernel's recall STEP, so it
+ * flows under every model backend (BYOK, and the subscription bridge when the
+ * recall SUB-AGENT runs over it). The one path where it can never fire is
+ * bridge-as-chat-brain (`PREVIOUSLY_BRAIN=bridge` for the chat model itself):
+ * that chat agent mounts no kernel tools, so recall never runs there — nothing
+ * to transmit, by construction. Phase outsourcing is housekeeping-only and
+ * does not touch this path.
+ */
+function emitRecallReferences(
+  toolCallId: string,
+  references: Array<{ slice_id: string; note?: string }>,
+): Promise<void> {
+  try {
+    const writer = getWritable<UIMessageChunk>().getWriter();
+    return writer
+      .write({
+        type: "data-recall-references",
+        id: `recall-refs-${toolCallId}`,
+        data: { references },
+      })
+      .then(() => writer.releaseLock())
+      .catch(() => {});
+  } catch {
+    // getWritable() can throw outside a step context — never fail the tool.
+    return Promise.resolve();
+  }
+}
+
 // ─── Concept tool executors ────────────────────────────────
 
 /**
@@ -939,6 +974,16 @@ export async function recallExecute(
         : "Recall answered",
       "done",
     );
+
+    // v0.10 §4.1: hand the evidence anchors to the client too — the reply
+    // gets a clickable "referenced N time slices" bar (jump-to-slice). The
+    // full quotes stay in the tool result; the bar carries id + note only.
+    if (result.references.length > 0) {
+      await emitRecallReferences(
+        toolCallId,
+        result.references.map((r) => ({ slice_id: r.slice_id, note: r.note })),
+      );
+    }
 
     // A timed-out run is NOT a definitive result — the search never
     // finished, so an empty answer here means "ran out of time", not "no

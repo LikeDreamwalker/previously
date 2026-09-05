@@ -22,9 +22,11 @@
     "docs": "Docs",
     "settings": "Settings",
     "settingsBusy": "A reply is in progress — settings unlock when it finishes",
-    "expand": "Expand",
-    "collapse": "Collapse",
-    "timelineToggle": "Toggle timeline"
+    "mode": {
+      "label": "Switch view",
+      "chat": "Chat",
+      "timeline": "Timeline"
+    }
   },
   "theme": {
     "light": "Light",
@@ -221,6 +223,37 @@
       "interruptedContinuePrompt": "Please continue the response you were working on — it was interrupted before finishing.",
       "backgroundDone": "Your answer is ready"
     },
+    "seam": {
+      "checkpoint": "Auto-archived · conversation continues",
+      "newConversation": "{date} · New conversation",
+      "loadingOlder": "Loading earlier conversations…"
+    },
+    "timeIndicator": {
+      "label": "Viewing messages around {time}"
+    },
+    "rail": {
+      "label": "Timeline of the messages on screen"
+    },
+    "gesture": {
+      "openingTimeline": "Opening timeline…"
+    },
+    "resume": {
+      "banner": "Continuing the conversation from {date}"
+    },
+    "history": {
+      "notFound": "Slice not found or unavailable."
+    },
+    "search": {
+      "title": "Search memory",
+      "trigger": "Search",
+      "placeholder": "Search past conversations… #topic filters by strand",
+      "hint": "Search focuses, summaries, tags and decisions. #topic filters by strand.",
+      "searching": "Searching…",
+      "empty": "No time slices match \"{query}\""
+    },
+    "references": {
+      "title": "Referenced {count, plural, one {# time slice} other {# time slices}}"
+    },
     "loadingTips": [
       "Your conversations are saved as time slices — a slice closes 30 minutes after it starts and the next one begins",
       "The agent works after you're done — not always-on, but results are waiting when you return",
@@ -241,39 +274,39 @@
     ]
   },
   "timeline": {
-    "drawerTitle": "Timeline",
-    "row": {
-      "charCount": "{value} chars",
-      "collapse": "Collapse",
-      "expandAll": "Expand all ({value})",
-      "loading": "Loading...",
-      "viewMore": "View more",
-      "ongoing": "{count} ongoing",
-      "decided": "{count} decided",
-      "collapseMeta": "collapse",
-      "date": {
-        "today": "Today",
-        "yesterday": "Yesterday"
-      }
-    },
     "panel": {
-      "now": "Now",
-      "earlier": "Earlier memories"
+      "now": "Now"
+    }
+  },
+  "timeline3d": {
+    "fallback": {
+      "loading": "Loading timeline…",
+      "empty": "No memory slices yet — start a conversation first.",
+      "unsupported": "This device or browser doesn't support WebGL — here's the precise timeline view instead."
     },
-    "gap": {
-      "moments": "Moments later",
-      "minutes": "{count, plural, one {# minute later} other {# minutes later}}",
-      "hours": "{count, plural, one {# hour later} other {# hours later}}",
-      "days": "{count, plural, one {# day later} other {# days later}}",
-      "weeks": "{count, plural, one {# week later} other {# weeks later}}",
-      "months": "{count, plural, one {# month later} other {# months later}}",
-      "unit": {
-        "minute": "{count, plural, one {minute later} other {minutes later}}",
-        "hour": "{count, plural, one {hour later} other {hours later}}",
-        "day": "{count, plural, one {day later} other {days later}}",
-        "week": "{count, plural, one {week later} other {weeks later}}",
-        "month": "{count, plural, one {month later} other {months later}}"
-      }
+    "hint": {
+      "browse": "Scroll through time · Ctrl+scroll to zoom · Alt+drag to orbit · click a dot to open it",
+      "browseTouch": "Swipe through time · pinch to zoom · two-finger twist to orbit",
+      "focused": "Zoom all the way in or double-click the dot to enter the chat · Esc to close",
+      "focusedTouch": "Swipe right to enter the chat"
+    },
+    "turns": {
+      "user": "You",
+      "agent": "Agent",
+      "close": "Close",
+      "loading": "Opening slice…",
+      "failed": "Couldn't open this slice.",
+      "open": "Open in chat"
+    },
+    "card": {
+      "turns": "{count, plural, one {# turn} other {# turns}}",
+      "continues": "continued",
+      "decisions": "Decisions",
+      "openLoops": "Open loops"
+    },
+    "now": {
+      "label": "NOW",
+      "sub": "现在"
     }
   },
   "settings": {

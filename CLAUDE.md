@@ -62,7 +62,7 @@ Every chat turn itself runs inside a durable Vercel Workflow run (`src/app/api/c
 
 Streamed message-part rendering. See `src/components/chat/CLAUDE.md` for full details.
 
-1. **`ChatPage`** (`chat-page.tsx`) — Main container, useChat hook (WorkflowChatTransport), TimelineWheel
+1. **`ChatPage`** (`chat-page.tsx`) — Main container, useChat hook (WorkflowChatTransport), unified message stream
 2. **`ChatMessage`** — Classifies `UIMessage` parts (text / reasoning / tool / data-phase / data-evolution) in a single pass, rendered in stream order
 3. **`ThinkingSteps`** — Reasoning block (Brain icon, streaming subtitle)
 4. **`PhaseIndicator`** — `data-phase` parts (slicing, housekeeping, etc.)

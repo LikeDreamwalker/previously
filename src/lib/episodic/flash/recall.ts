@@ -55,6 +55,10 @@ import {
   textLines,
   searchResultToString,
 } from "@/lib/retrieval/doc-segments";
+import {
+  filterByWindow,
+  sortNewestFirst,
+} from "@/lib/search/slice-search";
 import type { ModelConfig } from "@/lib/models/registry";
 import {
   runSubAgent,
@@ -152,15 +156,16 @@ function isStaleTimestamp(iso: string | undefined): boolean {
 /** Render the newest `limit` catalog entries as pointer lines (newest first),
  *  with a header noting the total and how to reach older slices. When `time`
  *  carries the user's clock, each id gets its LOCAL-date annotation so the
- *  agent never reads the UTC id as wall-clock time. */
+ *  agent never reads the UTC id as wall-clock time. The newest-first ordering
+ *  is the shared `sortNewestFirst` from slice-search (v0.10 §3.1 — the user
+ *  side's search and the agent side's recall order the same catalog the same
+ *  way). */
 export function paginateTimelineEntries(
   slices: TimelineSliceEntry[],
   limit: number = TIMELINE_PAGE_SIZE,
   time?: SliceLineTimeOpts,
 ): string {
-  const newest = [...slices]
-    .sort((a, b) => b.id.localeCompare(a.id))
-    .slice(0, limit);
+  const newest = sortNewestFirst(slices).slice(0, limit);
   if (newest.length === 0) {
     return "(timeline is empty — no slices yet)";
   }
@@ -295,14 +300,11 @@ async function readTimelineWindowImpl(from?: string, to?: string, time?: SliceLi
   try {
     const raw = await fsReadFile(TIMELINE_INDEX_PATH);
     const idx = JSON.parse(raw) as { slices?: TimelineSliceEntry[] };
-    const inWindow = (idx.slices ?? [])
-      .filter((s) => {
-        const date = s.id.slice(0, 10); // "YYYY-MM-DD"
-        if (from && date < from) return false;
-        if (to && date > to) return false;
-        return true;
-      })
-      .sort((a, b) => b.id.localeCompare(a.id));
+    // The window filter + newest-first ordering are the SHARED slice-search
+    // functions (v0.10 §3.1) — same semantics as the user's command palette.
+    const inWindow = sortNewestFirst(
+      filterByWindow(idx.slices ?? [], from, to),
+    );
     const slices = inWindow.slice(0, TIMELINE_WINDOW_PAGE_SIZE);
     if (slices.length === 0) {
       return `(no slices in window ${from ?? "start"} → ${to ?? "now"})`;

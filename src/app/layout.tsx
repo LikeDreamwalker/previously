@@ -1,4 +1,4 @@
-import { Raleway, Geist_Mono } from "next/font/google";
+import { Raleway, Geist_Mono, Source_Serif_4 } from "next/font/google";
 import { ThemeProvider } from "@/providers/theme-provider";
 import { Toaster } from "@/components/ui/sonner";
 import "./globals.css";
@@ -13,6 +13,12 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+const sourceSerif = Source_Serif_4({
+  variable: "--font-source-serif",
+  subsets: ["latin"],
+  style: ["normal", "italic"],
+});
+
 export default async function RootLayout({
   children,
 }: {
@@ -22,7 +28,7 @@ export default async function RootLayout({
     <html
       lang="en"
       suppressHydrationWarning
-      className={`${raleway.variable} ${geistMono.variable} font-sans`}
+      className={`${raleway.variable} ${geistMono.variable} ${sourceSerif.variable} font-sans`}
     >
       <body>
         <ThemeProvider

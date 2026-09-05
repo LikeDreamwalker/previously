@@ -35,16 +35,19 @@ export interface ArrivalDecision {
  * The mount-time arrival decision — the pure half (side effects like reading /
  * clearing localStorage live in the caller).
  *
- * The rule is one-dimensional: the live view restores ONLY in-flight work.
- * `runActive` is the server's verdict on the persisted run ("pending" /
- * "running" — see isChatRunActive); the client never infers slice boundaries
- * from timestamps or silence windows.
+ * The rule is one-dimensional: the live view's useChat state restores ONLY
+ * in-flight work. `runActive` is the server's verdict on the persisted run
+ * ("pending" / "running" — see isChatRunActive); the client never infers slice
+ * boundaries from timestamps or silence windows.
  *
  * - Run still active → genuine reconnect: keep the working conversation, but
  *   drop the trailing partial assistant turn (the replay rebuilds it).
- * - Anything else (no run, or a terminal one) → fresh arrival: open blank so
- *   the arrival briefing greets the user. Completed conversation is NOT
- *   restored into the live view — it belongs to its slice on the timeline.
+ * - Anything else (no run, or a terminal one) → useChat opens empty. This is
+ *   NOT "the conversation is gone": since v0.10, continuity for an alive
+ *   slice is restored from the slice itself (getArrivalState — see
+ *   resolveArrival), and older conversation lives in the unified stream's
+ *   paged history. The localStorage stash's only remaining job is the
+ *   in-flight reconnect above.
  */
 export function decideArrival(
   runActive: boolean,

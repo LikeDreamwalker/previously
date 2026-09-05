@@ -122,6 +122,13 @@ export type BridgeToolRow = {
   status: "start" | "ok" | "error";
 };
 
+/**
+ * One recall evidence anchor surfaced to the user (v0.10 §4.1) — a slice the
+ * recall colleague quoted, rendered as a clickable jump chip. The full quote
+ * stays in the recall tool card; the bar carries only id + backing note.
+ */
+export type RecallReferenceAnchor = { slice_id: string; note?: string };
+
 export type StreamItem =
   | { kind: "reasoning"; text: string }
   | { kind: "text"; content: string }
@@ -174,6 +181,13 @@ export type StreamItem =
       mode?: string;
       summaries?: string[];
       compact?: boolean;
+    }
+  | {
+      /** The "referenced N time slices" bar (v0.10 §4.1) — all
+       *  `data-recall-references` chunks of the message merged into ONE
+       *  trailing item under the reply, deduped by slice id. */
+      kind: "recall-references";
+      references: RecallReferenceAnchor[];
     };
 
 /** The agent's coarse current activity while streaming. */
@@ -247,6 +261,9 @@ export function buildStream(
 ): StreamItem[] {
   const items: StreamItem[] = [];
   let textBuf: string[] = [];
+  // Recall evidence anchors (data-recall-references) — collected across the
+  // whole message, rendered ONCE as a trailing bar under the reply.
+  const recallRefs: RecallReferenceAnchor[] = [];
   // Progress chunks that arrived before their tool-* part (the tool-executor
   // writes mid-step; the tool part can surface a tick later). Applied when the
   // tool item is created.
@@ -302,6 +319,18 @@ export function buildStream(
           pendingProgress.set(d.toolCallId, d.text);
         }
       }
+      continue;
+    }
+
+    if (p.type === "data-recall-references") {
+      // Recall's evidence anchors for this turn (v0.10 §4.1). Collected, not
+      // rendered in place: the bar belongs UNDER the finished reply, and a
+      // turn may hold several recall calls (merged, deduped by slice id).
+      // Must not flush text.
+      const d = p.data as
+        | { references?: RecallReferenceAnchor[] }
+        | undefined;
+      if (Array.isArray(d?.references)) recallRefs.push(...d.references);
       continue;
     }
 
@@ -482,6 +511,21 @@ export function buildStream(
     }
   }
   flushText();
+
+  // The recall references bar trails the reply — dedupe by slice id (first
+  // occurrence wins) so several recall calls in one turn merge into one bar.
+  if (recallRefs.length > 0) {
+    const seen = new Set<string>();
+    const references = recallRefs.filter((r) => {
+      if (!r || typeof r.slice_id !== "string" || !r.slice_id) return false;
+      if (seen.has(r.slice_id)) return false;
+      seen.add(r.slice_id);
+      return true;
+    });
+    if (references.length > 0) {
+      items.push({ kind: "recall-references", references });
+    }
+  }
 
   return items;
 }

@@ -17,7 +17,7 @@ File storage is abstracted behind a local-filesystem vs. GitHub API switch, gate
 | `manager.ts` | Core CRUD: in-memory active slice, path helpers, gray-matter serialization/parsing, turn append, snapshot saves, monthly index and tag index maintenance, previously.md I/O |
 | `slicer.ts` | Slicing decision engine — slice age cap (30 min from slice start) |
 | `maintenance.ts` | Deprecated v1 module — retained as a stub. Sub-agent calls now live in `flash/recall.ts`, `flash/previously-agent.ts`, and `flash/turn-analyzer.ts`. |
-| `actions.ts` | Server actions (`"use server"`) for UI consumption: `getEpisodicState`, `getMoreSlices`, `getSliceContent`. Drives the episodic sidebar panel. |
+| `actions.ts` | Server actions (`"use server"`) for UI consumption: `getEpisodicState`, `getTimelineCatalog` (full catalog), `getSlicePageWithContent` (catalog-derived cursor pagination WITH turns — v0.10 unified message flow), `getArrivalState` (resume-vs-briefing gate reusing `slicing.idleGapMinutes`), `getSliceContent` (single-slice detail for /timeline and search jumps), previously/agent-timeline/memory-docs readers. |
 | `turn-parser.ts` | Pure functions to parse core.md into frontmatter + parsed turns, apply range filters, reassemble filtered slices |
 | `flash/recall.ts` | Recall sub-agent colleague (main model via the shared runner) — answers natural-language questions about past conversations, reading slices itself (timeline/strands/summaries/full reads, quota-bounded); every situational claim is anchored to verbatim-quote references |
 | `flash/turn-analyzer.ts` | The one housekeeping sub-agent call (main model via the shared runner): message tags + semantic hint + intent + (on close) slice marking + fitness scoring (Task 7 — per-slice evidence-anchored deltas per bucket, v1.0 §2.5; this slice's mechanical signals are an input) |
@@ -53,7 +53,7 @@ File storage is abstracted behind a local-filesystem vs. GitHub API switch, gate
 ### 3. Episodic state for the UI
 
 1. `getEpisodicState()` (server action in `actions.ts`) scans monthly indices backward, returns the most recent slice as `active` plus up to 2 more as `recent`, plus a `hasMore` flag for pagination.
-2. `getMoreSlices(before)` returns slices older than the given cursor, with cursor-based pagination.
+2. `getSlicePageWithContent(before, limit)` pages the full timeline catalog (`timeline/index.json`) backwards from the `before` cursor, filling each slice's turns in the same request — the scroll-back channel of the unified message flow (v0.10). `getArrivalState()` decides resume-vs-briefing on arrival using `slicing.idleGapMinutes`.
 3. `getSliceContent(sliceId)` reads the full MD file, parses turns, and returns structured content for the detail view.
 
 ### 4. Card evolution (every boundary, two-phase + explicit trigger)

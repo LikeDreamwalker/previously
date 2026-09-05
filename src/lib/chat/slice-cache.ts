@@ -10,7 +10,7 @@
  * closed, so the cache only evicts on TTL expiry.
  */
 
-import type { SliceContent } from "@/lib/episodic/actions";
+import type { SliceContent, SliceWithContent } from "@/lib/episodic/actions";
 
 export interface CacheEntry {
   content: SliceContent;
@@ -55,4 +55,38 @@ export function evictOld(): void {
 /** Clear all cached entries (e.g. on persona switch). */
 export function clearCache(): void {
   cache.clear();
+  streamCache.clear();
+}
+
+// ─── Unified-stream page cache (v0.10) ──────────────────────────────────
+// The unified message flow pages whole slices-with-turns via
+// getSlicePageWithContent. Snapshotting the loaded window per persona lets a
+// remount (route change, timeline overlay round-trip) restore the stream
+// instantly instead of re-paging from the newest end. Same TTL discipline:
+// paged slices are closed and immutable, so only expiry evicts.
+
+export interface StreamCacheEntry {
+  slices: SliceWithContent[];
+  hasMore: boolean;
+  fetchedAt: number;
+}
+
+const streamCache = new Map<string, StreamCacheEntry>();
+
+export function getStreamCache(persona: string): StreamCacheEntry | null {
+  const entry = streamCache.get(persona);
+  if (!entry) return null;
+  if (Date.now() - entry.fetchedAt > TTL_MS) {
+    streamCache.delete(persona);
+    return null;
+  }
+  return entry;
+}
+
+export function setStreamCache(
+  persona: string,
+  slices: SliceWithContent[],
+  hasMore: boolean,
+): void {
+  streamCache.set(persona, { slices, hasMore, fetchedAt: Date.now() });
 }
