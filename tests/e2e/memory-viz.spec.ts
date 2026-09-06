@@ -235,7 +235,10 @@ test.describe("Memory viz (v0.10)", () => {
   });
 
   test.describe("card-style mode gesture (Rev 2, §5.2/§6.1)", () => {
-    test("a committed left drag on the content card routes to /timeline", async ({
+    // Rev 6 (2026-09-07): the swipe mode switch is unwired — ModeSwitchGesture
+    // no longer wraps the content region. The spec stays for restoration once
+    // the gesture returns in its redesigned form.
+    test.skip("a committed left drag on the content card routes to /timeline", async ({
       page,
     }) => {
       // The timeline overlay compiles the three.js chunk on first hit in dev.
@@ -461,6 +464,184 @@ test.describe("Memory viz (v0.10)", () => {
       }
       await page.keyboard.press("Control+.");
       await expect(page).toHaveURL(/\/en\/?$/);
+    });
+  });
+
+  test.describe("3D scene (Rev 7)", () => {
+    /** One synthetic zoom step (Playwright modifier+wheel doesn't propagate
+     *  ctrlKey into the WheelEvent — dispatch it explicitly). */
+    async function zoomStep(page: Page, dir: "in" | "out") {
+      await page.evaluate((deltaY) => {
+        const canvas = document.querySelector("canvas");
+        const el = canvas?.parentElement ?? canvas;
+        el?.dispatchEvent(
+          new WheelEvent("wheel", {
+            deltaY,
+            ctrlKey: true,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      }, dir === "in" ? -240 : 240);
+    }
+
+    /** Wheel-up bursts toward the oldest loaded entries (paging trigger). */
+    async function scrollOlder(page: Page) {
+      await page.evaluate(() => {
+        const canvas = document.querySelector("canvas");
+        const el = canvas?.parentElement ?? canvas;
+        for (let i = 0; i < 6; i++) {
+          el?.dispatchEvent(
+            new WheelEvent("wheel", {
+              deltaY: -480,
+              bubbles: true,
+              cancelable: true,
+            }),
+          );
+        }
+      });
+    }
+
+    const cardCount = (page: Page) => page.locator(".tl-card-in").count();
+
+    test("zoom steps across the three levels with cards at every level", async ({
+      page,
+    }) => {
+      test.slow();
+      await seedSlices(datasetA());
+      await page.goto("/en/timeline");
+      if (!(await probeWebGL(page))) {
+        await expect(
+          page.getByText(/doesn't support WebGL/),
+        ).toBeVisible();
+        return;
+      }
+      // Landing is the day level — cards mount once the scene boots.
+      await expect
+        .poll(() => cardCount(page), { timeout: 30_000 })
+        .toBeGreaterThan(0);
+
+      // Out → week: the window empties only during the flight, never after.
+      await zoomStep(page, "out");
+      await expect
+        .poll(() => cardCount(page), { timeout: 10_000 })
+        .toBeGreaterThan(0);
+
+      // In → day → hour: cards render at every level.
+      await zoomStep(page, "in");
+      await expect
+        .poll(() => cardCount(page), { timeout: 10_000 })
+        .toBeGreaterThan(0);
+      await zoomStep(page, "in");
+      await expect
+        .poll(() => cardCount(page), { timeout: 10_000 })
+        .toBeGreaterThan(0);
+    });
+
+    test("an hour-level card click opens the reading panel; Esc closes it", async ({
+      page,
+    }) => {
+      test.slow();
+      const slices = datasetA();
+      await seedSlices(slices);
+      await page.goto("/en/timeline");
+      if (!(await probeWebGL(page))) return;
+      await expect
+        .poll(() => cardCount(page), { timeout: 30_000 })
+        .toBeGreaterThan(0);
+
+      // Day → hour, then click the first card (direct dispatch — the easing
+      // camera never sits still long enough for actionability checks). Gate
+      // on the HOUR-level card width (w-72 = 288px vs the day's 224px): the
+      // frozen flight probe still reports the old level, so an early click
+      // would drill instead of focusing.
+      await zoomStep(page, "in");
+      await expect
+        .poll(
+          () =>
+            page.evaluate(() =>
+              [...document.querySelectorAll(".tl-card-in")].some(
+                (c) => (c as HTMLElement).offsetWidth >= 280,
+              ),
+            ),
+          { timeout: 10_000 },
+        )
+        .toBe(true);
+      await page.evaluate(() => {
+        document
+          .querySelector(".tl-card-in")
+          ?.dispatchEvent(
+            new MouseEvent("click", { bubbles: true, cancelable: true }),
+          );
+      });
+
+      const panel = page.locator("aside[role=dialog]");
+      await expect(panel).toBeVisible();
+      // The panel carries the slice's full turn flow (§R7.3) — a sentinel
+      // turn proves real content loaded, not just the catalog metadata.
+      await expect(panel.getByText(/TURN S\d\d user question/).first()).toBeVisible({
+        timeout: 15_000,
+      });
+
+      await page.keyboard.press("Escape");
+      await expect(panel).toHaveCount(0);
+    });
+
+    test("scrolling to the top prefetches the older catalog window (§R7.4)", async ({
+      page,
+    }) => {
+      test.slow();
+      // Jan/Feb are the prefetch target (one slice each); Mar/Apr are dense
+      // enough that the initial 2-month window's scene is TALLER than the
+      // top-edge trigger band (max(10, visibleHalf×3) world units) — with a
+      // short scene the prefetch legitimately fires at boot and the
+      // initial-window assertion below can't tell boot from scroll.
+      const slices = [
+        makeSlice(new Date(Date.UTC(2026, 0, 12, 9)).toISOString(), { tag: "M1" }),
+        makeSlice(new Date(Date.UTC(2026, 1, 12, 9)).toISOString(), { tag: "M2" }),
+        ...[3, 6, 9, 12, 15, 18, 21, 24].map((d, i) =>
+          makeSlice(new Date(Date.UTC(2026, 2, d, 9)).toISOString(), {
+            tag: `MA${i}`,
+          }),
+        ),
+        ...[2, 5, 8, 11, 14, 17, 20, 23].map((d, i) =>
+          makeSlice(new Date(Date.UTC(2026, 3, d, 9)).toISOString(), {
+            tag: `MB${i}`,
+          }),
+        ),
+      ];
+      await seedSlices(slices);
+      await page.goto("/en/timeline");
+      if (!(await probeWebGL(page))) return;
+      await expect
+        .poll(() => cardCount(page), { timeout: 30_000 })
+        .toBeGreaterThan(0);
+
+      const regionLabels = () =>
+        page.evaluate(() =>
+          [...document.querySelectorAll("div")]
+            .map((d) => (d.children.length === 0 ? d.textContent?.trim() : null))
+            .filter((t): t is string => !!t && /^\d{2}\/\d{2}/.test(t)),
+        );
+      // Initially only Mar/Apr labels.
+      const initial = await regionLabels();
+      expect(initial.every((t) => t!.startsWith("03/") || t!.startsWith("04/"))).toBe(
+        true,
+      );
+
+      // Scroll up until the prefetch lands (Feb or Jan label appears) —
+      // bounded attempts so a regression fails instead of hanging.
+      let seen: string[] = [];
+      for (let burst = 0; burst < 15; burst++) {
+        await scrollOlder(page);
+        await page.waitForTimeout(900);
+        seen = await regionLabels();
+        if (seen.some((t) => t!.startsWith("02/") || t!.startsWith("01/"))) break;
+      }
+      expect(
+        seen.some((t) => t!.startsWith("02/") || t!.startsWith("01/")),
+        `expected an older-month region label after scrolling up, got ${JSON.stringify(seen)}`,
+      ).toBe(true);
     });
   });
 });

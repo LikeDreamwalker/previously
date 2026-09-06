@@ -54,6 +54,9 @@ export default defineConfig({
             PREVIOUSLY_BRAIN: "bridge",
             PREVIOUSLY_HOME: E2E_HOME,
             MEMORY_ROOT: E2E_MEMORY_ROOT,
+            // .env.local must not leak a datasource override (e.g. a
+            // developer's STORAGE=demo) into the seeded local fixture.
+            STORAGE: "local",
           },
         },
       }),

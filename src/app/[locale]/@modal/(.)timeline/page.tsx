@@ -1,6 +1,8 @@
 import { setRequestLocale } from "next-intl/server";
-import { getTimelineCatalog } from "@/lib/episodic/actions";
-import { computeTimelineLayout } from "@/lib/timeline3d/layout";
+import {
+  getTimelineCatalog,
+  getTimelineCatalogPage,
+} from "@/lib/episodic/actions";
 import { TimelineOverlay } from "@/components/timeline-3d/timeline-overlay";
 import { TimelineScene } from "@/components/timeline-3d/timeline-scene";
 
@@ -26,12 +28,29 @@ export default async function TimelineModalPage({
   setRequestLocale(locale);
   const { at } = await searchParams;
 
-  const entries = await getTimelineCatalog();
-  const layout = computeTimelineLayout(entries);
+  // Same paging contract as the full page: deep links load the full catalog.
+  if (at) {
+    const entries = await getTimelineCatalog();
+    return (
+      <TimelineOverlay>
+        <TimelineScene
+          initialEntries={entries}
+          initialOldestMonth={entries[0]?.date.slice(0, 7) ?? null}
+          initialHasMore={false}
+          initialAtId={at}
+        />
+      </TimelineOverlay>
+    );
+  }
 
+  const page = await getTimelineCatalogPage(null);
   return (
     <TimelineOverlay>
-      <TimelineScene layout={layout} initialAtId={at} />
+      <TimelineScene
+        initialEntries={page.entries}
+        initialOldestMonth={page.oldestMonth}
+        initialHasMore={page.hasMore}
+      />
     </TimelineOverlay>
   );
 }

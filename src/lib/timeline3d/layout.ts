@@ -366,7 +366,12 @@ export function computeTimelineLayout(
   };
 }
 
-// ─── Zoom levels (§R5.1: level is a first-class state) ─────────────────────
+// ─── Zoom levels (LEGACY, Rev 5 §R5.1 five-tier semantics) ─────────────────
+//
+// Rev 7 (§R7.0) replaced the L0–L4 abstraction tiers with the three
+// calendar-grain levels in `regions.ts` (week / day / hour) — the scene no
+// longer imports anything below this point. Kept in place for the layout
+// tests and as the historical record; do not wire back into the scene.
 
 /**
  * Discrete zoom levels. The zoom gesture STEPS between levels instead of

@@ -71,6 +71,7 @@ coverage/
 # Root-level screenshots/ is a scratch dir (gitignored). Screenshots that go in
 # the README/docs live in public/screenshots/ and are committed normally.
 /screenshots/
+/shots/
 test-results/
 
 # ===== Benchmark data (local only, large files) =====

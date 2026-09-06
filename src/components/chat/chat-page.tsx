@@ -7,7 +7,6 @@ import { useSearchParams } from "next/navigation";
 import type { UIMessage } from "ai";
 import type { VirtuosoHandle } from "react-virtuoso";
 import { ChatInput } from "./chat-input";
-import { ModeSwitchGesture } from "./mode-switch-gesture";
 import { useAvailableModels } from "@/hooks/use-available-models";
 import {
   UnifiedChatStream,
@@ -851,10 +850,10 @@ function Inner({
            Rev 2) — briefing mode rides its tail as a card; only an EMPTY
            memory falls back to the standalone full-screen briefing. ── */}
       <div className="pt-12">
-        {/* §5.2/§6.1 Rev 2: the card-style left swipe switches to the
-            timeline; the gesture wraps the content region only (the fixed
-            input bar keeps its own touches). */}
-        <ModeSwitchGesture>
+        {/* §5.2/§6.1 Rev 6: the swipe mode switch is OFF for now (user call,
+            2026-09-07 — revisit after the spine-left layout beds in); the
+            header switcher / Cmd+. are the way over. ModeSwitchGesture stays
+            in the tree, unwired. */}
         <div className="relative h-[calc(100vh-3rem)]">
           {emptyMemory ? (
             <div className="h-full overflow-y-auto pb-24">
@@ -920,7 +919,6 @@ function Inner({
             )}
           </AnimatePresence>
         </div>
-        </ModeSwitchGesture>
       </div>
 
       {/* ── Fixed bottom bar ────────────────────────────────────────────── */}

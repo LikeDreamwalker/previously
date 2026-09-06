@@ -8,6 +8,7 @@ import { readSliceIndex, readSliceBody, parseSlice, sliceIdToFilePath, readPrevi
 import { readDirection } from "@/lib/evolution/store";
 import { loadUserConfig } from "@/lib/config/loader";
 import { readTimelineIndex } from "./timeline/store";
+import { pageCatalog, type CatalogPage } from "./timeline/paginate";
 import type { TimelineSliceEntry } from "./timeline/types";
 import type { Turn } from "./types";
 
@@ -245,6 +246,20 @@ export async function getArrivalState(persona?: string): Promise<ArrivalState> {
 export async function getTimelineCatalog(): Promise<TimelineSliceEntry[]> {
   const idx = await readTimelineIndex();
   return idx?.slices ?? [];
+}
+
+/**
+ * Month-windowed catalog (Rev 7 §R7.4): the 3D timeline pages its history —
+ * the client loads the latest `months` months, then prefetches older windows
+ * as the camera approaches the oldest loaded entry. The on-disk index stays
+ * whole; the window only bounds what the client holds and lays out.
+ */
+export async function getTimelineCatalogPage(
+  before: string | null,
+  months = 2,
+): Promise<CatalogPage> {
+  const idx = await readTimelineIndex();
+  return pageCatalog(idx?.slices ?? [], before, months);
 }
 
 // ─── Empty-state briefing identity ─────────────────────────────────────────

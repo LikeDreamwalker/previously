@@ -95,7 +95,24 @@ export const TIMELINE_KEYFRAMES = `
   from { opacity: 0; transform: translateY(8px) scale(0.97); }
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
-.tl-card-in { animation: tl-card-in 320ms cubic-bezier(0.22, 1, 0.36, 1) both; will-change: transform, opacity; }
+.tl-card-in { animation: tl-card-in 320ms cubic-bezier(0.22, 1, 0.36, 1) both; will-change: transform, opacity; transition: opacity 180ms ease; }
+/* Level-flight fade: during a zoom flight the window probe is frozen and the
+   stale cards sit at the OLD level's scale — mostly off-frame on a zoom-in.
+   Fading the layer reads as an intentional cut, not a render glitch. The
+   !important beats the entrance animation's fill mode. */
+.tl-flying { opacity: 0 !important; }
+/* Reading panel dock-in (§R7.3): a short slide + fade on mount. */
+@keyframes tl-panel-in {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (min-width: 768px) {
+  @keyframes tl-panel-in {
+    from { opacity: 0; transform: translateX(24px); }
+    to { opacity: 1; transform: translateX(0); }
+  }
+}
+.tl-panel-in { animation: tl-panel-in 260ms cubic-bezier(0.22, 1, 0.36, 1) both; }
 @media (prefers-reduced-motion: reduce) {
   .tl-aurora, .tl-aurora-slow, .tl-now-ring, .tl-card-in { animation: none !important; }
 }
