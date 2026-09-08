@@ -45,9 +45,11 @@ export function HistoryTurn({
             </div>
             <BubbleContent>
               {isUser ? (
-                <span className="whitespace-pre-wrap text-sm">{content}</span>
+                <span className="whitespace-pre-wrap text-sm font-serif font-light">{content}</span>
               ) : (
-                <MarkdownRenderer content={content} />
+                <div className="font-serif font-light">
+                  <MarkdownRenderer content={content} />
+                </div>
               )}
             </BubbleContent>
           </Bubble>

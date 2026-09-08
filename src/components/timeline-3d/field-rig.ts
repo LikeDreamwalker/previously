@@ -45,6 +45,8 @@ export interface FieldRig {
   transition: DealTransition | null;
   /** Per-new-row world offset from old slot to new slot. */
   dealOrigins: Map<string, DealOrigin> | null;
+  /** Row keys eligible to play the deal-in animation on this generation. */
+  dealEligible: Set<string> | null;
 }
 
 /** A slice that got swallowed by a coarser stack during a level transition. */

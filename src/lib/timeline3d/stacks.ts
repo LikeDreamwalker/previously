@@ -136,10 +136,26 @@ export interface FrameGeometry {
   pitch: number;
 }
 
-/** Portrait aspect (W/H) of the frame card. */
+/** Portrait aspect (W/H) of the frame card for narrow fields. */
 export const FRAME_RATIO = 0.8;
 
+/** Landscape aspect (W/H) of the frame card for wide desktop fields. */
+export const FRAME_LANDSCAPE_RATIO = 1.5;
+
 export function frameGeometryFor(fieldW: number, fieldH: number): FrameGeometry {
+  // Wide desktop field: a landscape dossier card, ~78% of the field width,
+  // capped at 900px, with its height capped to ~82% of the field height.
+  if (fieldW >= 900) {
+    let cardW = Math.round(Math.min(fieldW * 0.78, 900));
+    let cardH = Math.round(Math.min(cardW / FRAME_LANDSCAPE_RATIO, fieldH * 0.82));
+    if (cardH < 300) {
+      cardH = 300;
+      cardW = Math.round(cardH * FRAME_LANDSCAPE_RATIO);
+    }
+    return { cardW, cardH, pitch: Math.round(cardH * 1.12) };
+  }
+
+  // Narrow field: keep the original portrait frame logic.
   const cardH = Math.round(Math.min(Math.max(fieldH * 0.7, 300), 720));
   const cardW = Math.round(
     Math.min(cardH * FRAME_RATIO, Math.max(fieldW - 40, 240), 600),

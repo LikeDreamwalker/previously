@@ -22,7 +22,7 @@
   --color-brand-950: var(--brand-950);
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-raleway);
+  --font-sans: var(--font-raleway), "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
   --font-mono: var(--font-geist-mono);
   --font-serif: var(--font-source-serif), "Songti SC", "Noto Serif SC", serif;
   --color-sidebar-ring: var(--sidebar-ring);

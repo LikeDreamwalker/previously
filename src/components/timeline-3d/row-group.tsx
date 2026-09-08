@@ -33,7 +33,18 @@ import type { FieldRig } from "./field-rig";
 const SHEET_GAP_PX = 5;
 const DEAL_DURATION = 0.55;
 const DEAL_STAGGER = 0.05;
-const GEN_WINDOW_MS = 650;
+
+declare global {
+  interface Window {
+    __dealDebug?: Array<{ rowKey: string; initialDeal: number; ts: number }>;
+  }
+}
+
+function recordDealMount(rowKey: string, initialDeal: number) {
+  if (typeof window === "undefined") return;
+  window.__dealDebug ??= [];
+  window.__dealDebug.push({ rowKey, initialDeal, ts: performance.now() });
+}
 
 function computeRowPosition(
   index: number,
@@ -109,12 +120,14 @@ export function RowGroup({
   const groupRef = useRef<THREE.Group>(null);
   const size = useThree((s) => s.size);
   const camera = useThree((s) => s.camera) as THREE.PerspectiveCamera;
-  // Deal starts at 0 only for rows mounted inside the generation window.
+  // Deal starts at 0 only for rows in the transition's visible set.
   const animRef = useRef<{ deal: number; lift: number } | null>(null);
   if (animRef.current === null) {
-    const inWindow =
-      !reducedMotion && performance.now() - rig.current.genAt < GEN_WINDOW_MS;
-    animRef.current = { deal: inWindow ? 0 : 1, lift: 0 };
+    const initialDeal = reducedMotion
+      ? 1
+      : (rig.current.dealEligible?.has(row.key) ? 0 : 1);
+    animRef.current = { deal: initialDeal, lift: 0 };
+    recordDealMount(row.key, initialDeal);
   }
 
   const camDist = Math.hypot(camera.position.y, camera.position.z);
@@ -168,6 +181,12 @@ export function RowGroup({
       1 + (12 * DEAL_STAGGER) / DEAL_DURATION,
       anim.deal + dt / DEAL_DURATION,
     );
+    if (
+      rig.current.dealEligible &&
+      anim.deal >= 1 + (12 * DEAL_STAGGER) / DEAL_DURATION
+    ) {
+      rig.current.dealEligible.delete(row.key);
+    }
     const liftTarget = rig.current.hoverKey === row.key ? 1 : 0;
     anim.lift += (liftTarget - anim.lift) * Math.min(1, dt * 10);
 

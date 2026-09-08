@@ -22,6 +22,10 @@ import type { Turn } from "@/lib/episodic/types";
 export interface SliceContent {
   state: "loading" | "ready" | "failed";
   turns?: Turn[];
+  previously?: string | null;
+  summary?: string;
+  open_loops?: string[];
+  decisions?: string[];
 }
 
 const cache = new Map<string, SliceContent>();
@@ -63,7 +67,14 @@ export function useSliceTurns(id: string): SliceContent {
       trimCache();
       const p = getSliceContent(id)
         .then((c) => {
-          cache.set(id, { state: c ? "ready" : "failed", turns: c?.turns });
+          cache.set(id, {
+            state: c ? "ready" : "failed",
+            turns: c?.turns,
+            previously: c?.previously,
+            summary: c?.summary,
+            open_loops: c?.open_loops,
+            decisions: c?.decisions,
+          });
         })
         .catch(() => {
           cache.set(id, { state: "failed" });

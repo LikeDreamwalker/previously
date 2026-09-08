@@ -134,6 +134,27 @@ function centeredScrollForAnchor(
   );
 }
 
+/** Row keys visible (including virtual-scroll margin) at a given scroll. */
+function visibleKeysFor(
+  rows: StackRow[],
+  pitch: number,
+  cardH: number,
+  fieldH: number,
+  scrollPx: number,
+): Set<string> {
+  const margin = cardH * 1.2;
+  const first = Math.max(0, Math.floor((scrollPx - margin) / pitch));
+  const last = Math.min(
+    rows.length - 1,
+    Math.ceil((scrollPx + fieldH + margin) / pitch),
+  );
+  const set = new Set<string>();
+  for (let i = first; i <= last; i++) {
+    if (rows[i]) set.add(rows[i].key);
+  }
+  return set;
+}
+
 /** Build the list of cards that get swallowed when zooming out.
  *  Only cards in the old visible window participate. */
 function buildLeaving(
@@ -354,6 +375,15 @@ export function CardField({
       turns: (count: number) => t("card.turns", { count }),
       user: t("turns.user"),
       agent: t("turns.agent"),
+      duration: (min: number) => t("card.duration", { min }),
+      no: (date: string, time: string) => t("card.no", { date, time }),
+      tone: t("card.tone"),
+      decided: t("card.decided"),
+      open: t("card.open"),
+      strands: t("card.strands"),
+      listSeparator: t("card.listSeparator"),
+      continuedFrom: (date: string) => t("card.continuedFrom", { date }),
+      fr: (date: string) => t("card.fr", { date }),
     }),
     [t],
   );
@@ -373,6 +403,7 @@ export function CardField({
     hoverKey: null,
     transition: null,
     dealOrigins: null,
+    dealEligible: null,
   });
   const pendingAnchorRef = useRef<string | null>(initialAtId ?? null);
   const initDoneRef = useRef(false);
@@ -397,6 +428,7 @@ export function CardField({
         rig.current.target += added * pitch;
         rig.current.current += added * pitch;
         rig.current.genAt = 0;
+        rig.current.dealEligible = null;
       }
     }
     prevFirstKeyRef.current = firstKey;
@@ -429,6 +461,13 @@ export function CardField({
   ) {
     genTrackRef.current = { level, genKey };
     rig.current.genAt = performance.now();
+    rig.current.dealEligible = visibleKeysFor(
+      rows,
+      framePitchFor(level, geo),
+      geo.cardH,
+      fieldSize.h || 800,
+      rig.current.current,
+    );
   }
 
   // Filter changes are not level transitions: clear stale transition state
@@ -454,6 +493,7 @@ export function CardField({
       if (reducedMotion) {
         rig.current.transition = null;
         rig.current.dealOrigins = null;
+        rig.current.dealEligible = null;
         setLeaving([]);
         return;
       }
@@ -509,6 +549,13 @@ export function CardField({
       };
       rig.current.dealOrigins = dealOrigins;
       rig.current.genAt = performance.now();
+      rig.current.dealEligible = visibleKeysFor(
+        toRows,
+        toPitch,
+        toCardH,
+        fieldH,
+        newCurrent,
+      );
 
       setLeaving(
         fromLevel < toLevel
@@ -543,6 +590,13 @@ export function CardField({
         rig.current.target = pos;
         rig.current.current = pos;
         rig.current.genAt = performance.now();
+        rig.current.dealEligible = visibleKeysFor(
+          rows,
+          pitch,
+          geo.cardH,
+          fieldSize.h,
+          pos,
+        );
       }
       return;
     }
@@ -553,6 +607,13 @@ export function CardField({
       rig.current.target = max;
       rig.current.current = max;
       rig.current.genAt = performance.now();
+      rig.current.dealEligible = visibleKeysFor(
+        rows,
+        pitch,
+        geo.cardH,
+        fieldSize.h,
+        max,
+      );
     }
   }, [rows, geo, level, fieldSize.h]);
 

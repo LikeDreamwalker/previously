@@ -303,7 +303,16 @@
       "turns": "{count, plural, one {# turn} other {# turns}}",
       "continues": "continued",
       "decisions": "Decisions",
-      "openLoops": "Open loops"
+      "openLoops": "Open loops",
+      "tone": "TONE",
+      "decided": "DECIDED",
+      "open": "OPEN",
+      "strands": "STRANDS",
+      "listSeparator": "; ",
+      "continuedFrom": "cont. {date}",
+      "fr": "FR.{date}",
+      "duration": "{min} MIN",
+      "no": "No.{date}·{time}"
     },
     "now": {
       "label": "NOW",

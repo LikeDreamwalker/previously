@@ -233,7 +233,9 @@ export const ChatMessage = memo(function ChatMessage({
             {(userText || fileParts.length === 0) && (
               <Bubble variant="secondary">
                 <BubbleContent>
-                  <MarkdownRenderer content={userText} />
+                  <div className="font-serif font-light">
+                    <MarkdownRenderer content={userText} />
+                  </div>
                 </BubbleContent>
               </Bubble>
             )}
@@ -410,7 +412,7 @@ export const ChatMessage = memo(function ChatMessage({
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
                         transition={{ duration: 0.15 }}
-                        className="px-3 [&:not(:last-child)]:mb-3"
+                        className="px-3 font-serif font-light [&:not(:last-child)]:mb-3"
                       >
                         <MarkdownRenderer
                           content={item.content}

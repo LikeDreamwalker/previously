@@ -303,7 +303,16 @@
       "turns": "{count} 轮",
       "continues": "接续上文",
       "decisions": "决定",
-      "openLoops": "未了"
+      "openLoops": "未了",
+      "tone": "基调",
+      "decided": "决定",
+      "open": "未决",
+      "strands": "线索",
+      "listSeparator": "、",
+      "continuedFrom": "续自 {date}",
+      "fr": "FR.{date}",
+      "duration": "{min} 分钟",
+      "no": "No.{date}·{time}"
     },
     "now": {
       "label": "NOW",

@@ -220,17 +220,25 @@ describe("sheetPose", () => {
   });
 });
 
-describe("frameGeometryFor (Rev 10)", () => {
-  it("sizes the card to ~70% of the field height, portrait", () => {
+describe("frameGeometryFor (Rev 11)", () => {
+  it("uses a landscape card on wide desktop fields", () => {
     const geo = frameGeometryFor(1424, 902);
-    expect(geo.cardH).toBe(Math.round(902 * 0.7));
-    expect(geo.cardW).toBeLessThanOrEqual(geo.cardH); // portrait
+    expect(geo.cardW).toBe(Math.round(Math.min(1424 * 0.78, 900)));
+    expect(geo.cardH).toBe(Math.round(Math.min(geo.cardW / 1.5, 902 * 0.82)));
+    expect(geo.cardW / geo.cardH).toBeCloseTo(1.5, 1);
+    expect(geo.cardH).toBeLessThanOrEqual(902 * 0.82);
+  });
+
+  it("keeps the portrait frame logic on narrow fields", () => {
+    const geo = frameGeometryFor(800, 902);
+    expect(geo.cardH).toBe(Math.round(Math.min(Math.max(902 * 0.7, 300), 720)));
+    expect(geo.cardW).toBeLessThanOrEqual(geo.cardH);
     expect(geo.cardW).toBeGreaterThan(0);
   });
 
-  it("clamps the height between 300 and 720", () => {
-    expect(frameGeometryFor(1424, 2000).cardH).toBe(720);
-    expect(frameGeometryFor(1424, 300).cardH).toBe(300);
+  it("clamps the portrait height between 300 and 720", () => {
+    expect(frameGeometryFor(800, 2000).cardH).toBe(720);
+    expect(frameGeometryFor(800, 300).cardH).toBe(300);
   });
 
   it("never lets the card overflow the field width", () => {
