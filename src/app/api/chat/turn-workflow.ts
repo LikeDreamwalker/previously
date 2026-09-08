@@ -834,7 +834,7 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
     directionBlock: directionBlock ?? "",
     sliceHeadBlock,
     timelineBrief: timelineBrief
-      ? `${timelineBrief}\nTimeline lines are pointers — if a line looks relevant, ask recall about it (a natural-language question) before answering from it.`
+      ? `${timelineBrief}\nTimeline lines are pointers. If the user's question has an explicit time anchor (a date, "last week", "in March"), scan further back with readTimelineWindow and open the slice with readSlice before answering. If the question has no time anchor and is topic-shaped ("did we ever talk about X"), ask recall DIRECTLY. Answer specifics only from original slice text.`
       : "",
     strandsBlock: strandsMenu
       ? `## Memory topics\n\n${strandsMenu}\nWhen the user mentions these topics, ask recall about related past conversations. If it answers that there is no such memory, do not ask again — answer from what you have.`

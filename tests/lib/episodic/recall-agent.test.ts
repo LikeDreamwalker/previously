@@ -261,6 +261,7 @@ describe("runRecallSearch", () => {
     expect(Object.keys(opts.tools)).toEqual([
       "readGlobalTimeline",
       "readTimelineWindow",
+      "searchTimeline",
       "listStrands",
       "readStrand",
       "readSliceSummary",
@@ -474,5 +475,93 @@ describe("runRecallSearch", () => {
     await expect(runRecallSearch(recallInput())).rejects.toThrow(
       "InvalidToolInputError",
     );
+  });
+
+  it("appends the knownContext block when the main agent already checked the core timeline", async () => {
+    runner.runSubAgent.mockResolvedValue({
+      ok: true,
+      report: { answer: "a", references: [], searched: [], confidence: 0.5 },
+      text: "",
+    });
+    await runRecallSearch({
+      ...recallInput("did we ever talk about apples?"),
+      knownContext:
+        "I already read 2026-08-01-1000 and confirmed the user mentioned apples there.",
+    });
+    const opts = runner.runSubAgent.mock.calls[0]![0];
+    expect(opts.prompt).toContain(
+      "Your colleague already checked on the core timeline: I already read 2026-08-01-1000 and confirmed the user mentioned apples there.",
+    );
+    expect(opts.prompt).toContain("— build on this, do not redo it.");
+  });
+
+  it("omits the knownContext block when none is provided", async () => {
+    runner.runSubAgent.mockResolvedValue({
+      ok: true,
+      report: { answer: "a", references: [], searched: [], confidence: 0.5 },
+      text: "",
+    });
+    await runRecallSearch(recallInput("did we ever talk about apples?"));
+    const opts = runner.runSubAgent.mock.calls[0]![0];
+    expect(opts.prompt).not.toContain("Your colleague already checked on the core timeline");
+  });
+
+  it("returns matching pointer lines from searchTimeline, newest first, capped with a truncation note", async () => {
+    runner.runSubAgent.mockResolvedValue({
+      ok: true,
+      report: { answer: "a", references: [], searched: [], confidence: 0.5 },
+      text: "",
+    });
+    const slices = Array.from({ length: 45 }, (_, i) =>
+      entry(`2026-08-${String(1 + (i % 2)).padStart(2, "0")}-${String(1000 + i)}`),
+    );
+    // Give every slice a focus/summary that matches "apples" so searchCatalog finds it.
+    for (const s of slices) {
+      s.focus = "apples planning";
+    }
+    const io = await import("@/lib/episodic/io-helpers");
+    const mockedRead = vi.mocked(io.fsReadFile);
+    mockedRead.mockResolvedValue(JSON.stringify({ slices }));
+    try {
+      await runRecallSearch(recallInput());
+      const opts = runner.runSubAgent.mock.calls[0]![0];
+      const searchTimeline = opts.tools.searchTimeline as {
+        execute: (input: { keywords: string[] }) => Promise<string>;
+      };
+      const out = await searchTimeline.execute({ keywords: ["apples"] });
+      const pointerLines = out.split("\n").filter((l) => l.startsWith("- **"));
+      expect(pointerLines).toHaveLength(40);
+      expect(out).toContain("Keyword matches for \"apples\"");
+      expect(out).toContain("showing newest 40 of 45 matches");
+      const ids = pointerLines.map((l) => l.match(/\*\*(.+?)\*\*/)![1]);
+      const sorted = [...ids].sort((a, b) => b.localeCompare(a));
+      expect(ids).toEqual(sorted);
+    } finally {
+      mockedRead.mockRejectedValue(new Error("no catalog in tests"));
+    }
+  });
+
+  it("searchTimeline reports an explicit no-match note that does not prove absence", async () => {
+    runner.runSubAgent.mockResolvedValue({
+      ok: true,
+      report: { answer: "a", references: [], searched: [], confidence: 0.5 },
+      text: "",
+    });
+    const io = await import("@/lib/episodic/io-helpers");
+    const mockedRead = vi.mocked(io.fsReadFile);
+    mockedRead.mockResolvedValue(JSON.stringify({ slices: [entry("2026-08-01-1000")] }));
+    try {
+      await runRecallSearch(recallInput());
+      const opts = runner.runSubAgent.mock.calls[0]![0];
+      const searchTimeline = opts.tools.searchTimeline as {
+        execute: (input: { keywords: string[] }) => Promise<string>;
+      };
+      const out = await searchTimeline.execute({ keywords: ["bananas"] });
+      expect(out).toContain("No catalog match");
+      expect(out).toContain("does NOT prove");
+      expect(out).toContain("Continue with strand tracing");
+    } finally {
+      mockedRead.mockRejectedValue(new Error("no catalog in tests"));
+    }
   });
 });

@@ -34,6 +34,7 @@ export function ToolRenderer({ toolName, state, input, output, streamingText, st
 
   switch (toolName) {
     case "readSlice":
+    case "readTimelineWindow":
     case "readAgentTimeline":
     case "readPreviously":
     case "readTimeline":

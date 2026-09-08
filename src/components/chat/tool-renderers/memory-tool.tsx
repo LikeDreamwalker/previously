@@ -70,6 +70,14 @@ function resolveName(
         ? t("readTimelineRunning", { period })
         : t("readTimelineDone", { period });
     }
+    case "readTimelineWindow": {
+      const from = typeof input?.from === "string" ? input.from : null;
+      const to = typeof input?.to === "string" ? input.to : null;
+      const period = from && to ? `${from} → ${to}` : from ? `${from} → …` : to ? `… → ${to}` : "…";
+      return running
+        ? t("readTimelineWindowRunning", { period })
+        : t("readTimelineWindowDone", { period });
+    }
     case "readStrand": {
       const name = typeof input?.name === "string" ? input.name : "";
       if (!name) return running ? t("readStrandRunning", { name: "…" }) : t("readStrandDone", { name: "…" });

@@ -44,15 +44,15 @@ describe("RECALL_SKILL_DOC", () => {
     expect(RECALL_SKILL_DOC).toContain("--lines A-B");
   });
 
-  it("prescribes the time-anchor → strands → broaden → verify exploration order", () => {
-    const anchor = RECALL_SKILL_DOC.indexOf("1. TIME ANCHOR FIRST");
-    const strands = RECALL_SKILL_DOC.indexOf("2. TRACE CLUES");
-    const broaden = RECALL_SKILL_DOC.indexOf("3. BROADEN LAST");
+  it("prescribes the strands → keyword → time-window → verify exploration order", () => {
+    const strands = RECALL_SKILL_DOC.indexOf("1. STRANDS FIRST");
+    const keyword = RECALL_SKILL_DOC.indexOf("2. KEYWORD PRE-CHECK");
+    const fallback = RECALL_SKILL_DOC.indexOf("3. TIME-WINDOW SCANNING AS FALLBACK");
     const verify = RECALL_SKILL_DOC.indexOf("4. VERIFY BEFORE ANSWERING");
-    expect(anchor).toBeGreaterThan(-1);
-    expect(strands).toBeGreaterThan(anchor);
-    expect(broaden).toBeGreaterThan(strands);
-    expect(verify).toBeGreaterThan(broaden);
+    expect(strands).toBeGreaterThan(-1);
+    expect(keyword).toBeGreaterThan(strands);
+    expect(fallback).toBeGreaterThan(keyword);
+    expect(verify).toBeGreaterThan(fallback);
   });
 
   it("pins the colleague relationship and the current-slice exclusion", () => {

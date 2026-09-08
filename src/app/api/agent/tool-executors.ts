@@ -34,6 +34,7 @@ import {
   runRecallSearch,
   RECALL_TIMEOUT_MS,
   type RecallReference,
+  type RecallSearchInput,
 } from "@/lib/episodic/flash/recall";
 import { readPlaybook, capPlaybook } from "@/lib/evolution/store";
 import {
@@ -889,7 +890,7 @@ export async function currentTimeExecute(
  * Runs on the unified sub-agent runner (v0.9): the turn's MAIN model with
  * thinking ON at effort "low", streamed progress, and a 240s budget. */
 export async function recallExecute(
-  { question }: { question: string },
+  { question, context }: { question: string; context?: string },
   { context: ctx, toolCallId }: ExecuteOpts<ToolContext>,
 ): Promise<{
   answer: string;
@@ -916,29 +917,34 @@ export async function recallExecute(
     // instead of a hard error. Transient failures inside runRecallSearch
     // re-throw and reach the triage catch below for the step's auto-retry.
     const mainModel = await resolveSubAgentModel(ctx);
+
+    // Forward any time-axis context the main agent already established, so the
+    // recall colleague does not redo work already on the timeline.
+    const recallInput: RecallSearchInput = {
+      question,
+      currentSliceId: ctx.sliceId,
+      owner: ctx.owner,
+      repo: ctx.repo,
+      strandsContext: strands,
+      playbook: playbook ?? undefined,
+      useGithub: ctx.useGithub,
+      useDemo: ctx.useDemo,
+      model: mainModel,
+      // The user's clock — timeline pointer lines get local-date
+      // annotations and the prompt states the current local time, so
+      // recall never reads a (UTC) slice id as wall-clock time.
+      timezone: ctx.timezone,
+      nowIso: ctx.startedAtIso,
+      locale: ctx.locale,
+      // The runner streams each sub-agent tool step ("Reading global
+      // timeline…", "Reading slice X…") onto the data-tool-progress
+      // channel as it happens.
+      progress: { toolCallId, toolName: "recall" },
+      knownContext: context,
+    };
+
     const timed = await withStepTimeout(
-      () =>
-        runRecallSearch({
-          question,
-          currentSliceId: ctx.sliceId,
-          owner: ctx.owner,
-          repo: ctx.repo,
-          strandsContext: strands,
-          playbook: playbook ?? undefined,
-          useGithub: ctx.useGithub,
-          useDemo: ctx.useDemo,
-          model: mainModel,
-          // The user's clock — timeline pointer lines get local-date
-          // annotations and the prompt states the current local time, so
-          // recall never reads a (UTC) slice id as wall-clock time.
-          timezone: ctx.timezone,
-          nowIso: ctx.startedAtIso,
-          locale: ctx.locale,
-          // The runner streams each sub-agent tool step ("Reading global
-          // timeline…", "Reading slice X…") onto the data-tool-progress
-          // channel as it happens.
-          progress: { toolCallId, toolName: "recall" },
-        }),
+      () => runRecallSearch(recallInput),
       RECALL_TIMEOUT_MS,
     );
 

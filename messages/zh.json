@@ -100,6 +100,8 @@
       "readSliceDone": "查看了 {date} 的对话",
       "readTimelineRunning": "正在查看 {period} 的时间线…",
       "readTimelineDone": "查看了 {period} 的时间线",
+      "readTimelineWindowRunning": "正在查看 {period} 的时间线…",
+      "readTimelineWindowDone": "查看了 {period} 的时间线",
       "readStrandRunning": "正在查找关于「{name}」的线索…",
       "readStrandDone": "查找了关于「{name}」的线索",
       "readPreviously": "查看前情提要…",

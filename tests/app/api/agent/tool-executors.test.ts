@@ -308,6 +308,44 @@ describe("currentTimeExecute", () => {
   });
 });
 
+describe("recallExecute context threading", () => {
+  beforeEach(() => {
+    recallDeps.runRecallSearch.mockReset();
+  });
+
+  it("passes `context` through to runRecallSearch as `knownContext`", async () => {
+    recallDeps.runRecallSearch.mockResolvedValue({
+      answer: "",
+      references: [],
+      searched: [],
+      confidence: 0,
+    });
+    await recallExecute(
+      {
+        question: "did we discuss apples?",
+        context: "I scanned 2026-08-01 → 2026-08-05 and saw pointer lines for 2026-08-02-1100 but no apple mentions.",
+      },
+      opts(),
+    );
+    const passed = recallDeps.runRecallSearch.mock.calls[0]![0];
+    expect(passed.knownContext).toBe(
+      "I scanned 2026-08-01 → 2026-08-05 and saw pointer lines for 2026-08-02-1100 but no apple mentions.",
+    );
+  });
+
+  it("omits `knownContext` when no context is provided", async () => {
+    recallDeps.runRecallSearch.mockResolvedValue({
+      answer: "",
+      references: [],
+      searched: [],
+      confidence: 0,
+    });
+    await recallExecute({ question: "did we discuss apples?" }, opts());
+    const passed = recallDeps.runRecallSearch.mock.calls[0]![0];
+    expect(passed.knownContext).toBeUndefined();
+  });
+});
+
 describe("recallExecute note logic", () => {
   beforeEach(() => {
     recallDeps.runRecallSearch.mockReset();

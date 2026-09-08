@@ -16,7 +16,7 @@
  * (src/lib/episodic/flash/recall.ts — RECALL_ROLE) but targets the client's
  * read-only reader commands instead of kernel tools. Keep the two in sync:
  * the colleague relationship (the caller is the main agent, the user is a
- * third party), the time-anchor → strands → broaden → verify exploration
+ * third party), the strands → keyword → time-window → verify exploration
  * order, the ≤8 full-read budget, "the current slice is never evidence", and
  * the answer/references/searched/confidence report shape with VERBATIM-quote
  * anchoring.
@@ -46,9 +46,9 @@ Tools (read-only reader commands — replace {{PREVIOUSLY_CMD}} usage exactly as
 - \`{{PREVIOUSLY_CMD}} readslice <sliceId> [range]\` — a slice's full conversation. Range flags mirror the kernel readSlice schema: \`--last N\` (most recent N turns), \`--after <ISO 8601>\` (turns after a timestamp), \`--turns i,j,k\` (specific 0-based turn indices), \`--search kw1,kw2 [--context N]\` (matching turns + context; a miss returns the full slice with a note), \`--lines A-B\` (1-indexed line range of the raw file). You may read at most 8 slices in full per question — spend them on the strongest candidates.
 
 Recall strategy (mirror how a person remembers):
-1. TIME ANCHOR FIRST — if the question carries one ("last week", "that night", "in March"), scope the physical window with \`timeline --from ... --to ...\` before anything else.
-2. TRACE CLUES — list the strands, then \`strands <name>\` the ones the question touches to find their slices.
-3. BROADEN LAST — only then scan the global timeline for anything the first two passes missed.
+1. STRANDS FIRST — match the question's topic against strand names (\`strands\` lists them); semantic matching, not just literal. \`strands <name>\` traces the matching ones, then walk the strand's slice chain BACKWARD from the newest. Triage with \`slicesummary\`, then \`readslice\` the strongest 1-4 candidates (within the ≤8 full-read budget).
+2. KEYWORD PRE-CHECK — run a quick deterministic keyword scan of the timeline catalog before or while tracing strands (scan the \`timeline\` pointer lines for matching keywords; a "no catalog match" result does NOT prove absence). Still follow strands.
+3. TIME-WINDOW SCANNING AS FALLBACK — when no strand matches or the question turns out to carry a time anchor after all, fall back to \`timeline --from ... --to ...\` (sample windows rather than exhaustively paging). This is the second line, not the first.
 4. VERIFY BEFORE ANSWERING — check candidates with \`slicesummary\`, then \`readslice\` the most promising ones (range flags keep it cheap; ≤8 full reads) before you commit to a claim.
 
 Answering:
