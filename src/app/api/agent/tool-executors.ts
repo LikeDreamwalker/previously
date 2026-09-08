@@ -586,7 +586,7 @@ export async function readPreviouslyExecute(
  * returned as data; transient search failures throw and get the step retries.
  */
 export async function webSearchExecute(
-  { query }: { query: string },
+  { query, mode }: { query: string; mode?: "standard" | "scout" },
   { toolCallId }: ExecuteOpts<ToolContext>,
 ): Promise<WebSearchResult | { error: string }> {
   "use step";
@@ -617,7 +617,13 @@ export async function webSearchExecute(
   let timed: Awaited<ReturnType<typeof withStepTimeout<WebSearchResult>>>;
   try {
     timed = await withStepTimeout(
-      () => searchViaFlash(query, { toolCallId, toolName: "webSearch" }, playbook ?? undefined),
+      () =>
+        searchViaFlash(
+          query,
+          { toolCallId, toolName: "webSearch" },
+          playbook ?? undefined,
+          { scout: mode === "scout" },
+        ),
       SEARCH_TIMEOUT_MS,
     );
   } catch (err) {

@@ -100,11 +100,22 @@ const workflowMock = vi.hoisted(() => {
 });
 vi.mock("workflow", () => ({ getWritable: workflowMock.getWritable }));
 
+// webSearchExecute dependencies — mocked so mode-threading tests drive
+// searchViaFlash's call shape directly (no network / model calls).
+const searchFlashDeps = vi.hoisted(() => ({
+  searchViaFlash: vi.fn(),
+}));
+vi.mock("@/lib/search/flash-search", () => ({
+  searchViaFlash: searchFlashDeps.searchViaFlash,
+  SEARCH_TIMEOUT_MS: 240_000,
+}));
+
 import {
   readSliceSummaryExecute,
   readTimelineWindowExecute,
   currentTimeExecute,
   recallExecute,
+  webSearchExecute,
   type ToolContext,
 } from "@/app/api/agent/tool-executors";
 
@@ -457,5 +468,50 @@ describe("recallExecute references channel (v0.10 §4.1)", () => {
     expect(
       workflowMock.written.some((c) => c.type === "data-recall-references"),
     ).toBe(false);
+  });
+});
+
+describe("webSearchExecute mode threading", () => {
+  beforeEach(() => {
+    searchFlashDeps.searchViaFlash.mockReset();
+    searchFlashDeps.searchViaFlash.mockResolvedValue({
+      answer: "answer",
+      sources: [],
+      recommendation: "",
+      suggestedReads: [],
+    });
+    vi.stubEnv("DEEPSEEK_API_KEY", "test-key");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("passes { scout: true } to searchViaFlash when mode is 'scout'", async () => {
+    await webSearchExecute(
+      { query: "best Rust web frameworks", mode: "scout" },
+      { context: makeCtx(), toolCallId: "tc-web" },
+    );
+    expect(searchFlashDeps.searchViaFlash).toHaveBeenCalledTimes(1);
+    const [, , , opts] = searchFlashDeps.searchViaFlash.mock.calls[0]!;
+    expect(opts).toEqual({ scout: true });
+  });
+
+  it("passes { scout: false } to searchViaFlash when mode is 'standard'", async () => {
+    await webSearchExecute(
+      { query: "best Rust web frameworks", mode: "standard" },
+      { context: makeCtx(), toolCallId: "tc-web" },
+    );
+    const [, , , opts] = searchFlashDeps.searchViaFlash.mock.calls[0]!;
+    expect(opts).toEqual({ scout: false });
+  });
+
+  it("passes { scout: false } to searchViaFlash when mode is omitted", async () => {
+    await webSearchExecute(
+      { query: "best Rust web frameworks" },
+      { context: makeCtx(), toolCallId: "tc-web" },
+    );
+    const [, , , opts] = searchFlashDeps.searchViaFlash.mock.calls[0]!;
+    expect(opts).toEqual({ scout: false });
   });
 });

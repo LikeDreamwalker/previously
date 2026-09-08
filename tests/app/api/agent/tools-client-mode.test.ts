@@ -47,6 +47,21 @@ describe("client-mode tool gating", () => {
   });
 });
 
+describe("chat tool surface", () => {
+  it("exposes webFetch in chatTools and gives it a context entry", () => {
+    expect(chatTools).toHaveProperty("webFetch");
+    expect(buildChatToolsContext(ctx).webFetch).toBe(ctx);
+  });
+
+  it("webSearch accepts the optional mode input", async () => {
+    const { chatTools } = await import("@/app/api/agent/tools");
+    const schema = chatTools.webSearch.inputSchema as unknown as {
+      shape: Record<string, unknown>;
+    };
+    expect(schema.shape).toHaveProperty("mode");
+  });
+});
+
 describe("toolContextSchema — step-boundary round-trip", () => {
   it("keeps timezone / startedAtIso / locale through the schema re-parse (zod strips undeclared keys)", async () => {
     const { toolContextSchema } = await import("@/app/api/agent/tools");

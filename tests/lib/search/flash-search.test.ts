@@ -2,10 +2,26 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 
 // searchViaFlash runs on the unified sub-agent runner — mock it so tests
 // drive structured runner results instead of real model calls. The DeepSeek
-// provider itself is constructed offline (no network).
+// provider itself is constructed offline (no network), but we mock the
+// Anthropic SDK factory so we can assert on the webSearch maxUses cap.
 const runner = vi.hoisted(() => ({ runSubAgent: vi.fn() }));
 vi.mock("@/lib/agents/sub-agent-runner", () => ({
   runSubAgent: runner.runSubAgent,
+}));
+
+const anthropic = vi.hoisted(() => {
+  const modelFn = vi.fn(() => ({ __kind: "languageModel" }));
+  const webSearchToolFn = vi.fn(() => ({ __tool: "web_search" }));
+  const provider = Object.assign(modelFn, {
+    tools: { webSearch_20260209: webSearchToolFn },
+  });
+  return {
+    createAnthropic: vi.fn(() => provider),
+    webSearchToolFn,
+  };
+});
+vi.mock("@ai-sdk/anthropic", () => ({
+  createAnthropic: anthropic.createAnthropic,
 }));
 
 import { searchViaFlash } from "@/lib/search/flash-search";
@@ -146,5 +162,88 @@ describe("searchViaFlash", () => {
     // Slot 7: quota exhausted — a note, no fetch attempted.
     const out = await webFetch.execute({ url: "https://example.com" });
     expect(out).toContain("Page-read quota exhausted");
+  });
+
+  it("uses standard-mode effective caps (6 pages / 3 search rounds) by default", async () => {
+    runner.runSubAgent.mockResolvedValue({
+      ok: true,
+      report: { answer: "a", recommendation: "r", suggested_reads: [] },
+      text: "",
+    });
+    await searchViaFlash("q");
+    const opts = runner.runSubAgent.mock.calls[0]![0];
+
+    expect(anthropic.webSearchToolFn).toHaveBeenCalledTimes(1);
+    expect(anthropic.webSearchToolFn).toHaveBeenCalledWith({ maxUses: 3 });
+    expect(opts.system).toContain("up to 3 search rounds");
+    expect(opts.system).toContain("read at most 6 pages per run");
+    expect(opts.tools.webFetch.description).toContain(
+      "one of your 6 page-read slots",
+    );
+    expect(opts.prompt).not.toContain(
+      "one of several researchers working in parallel",
+    );
+  });
+
+  it("uses scout-mode effective caps (3 pages / 2 search rounds) when opts.scout is true", async () => {
+    runner.runSubAgent.mockResolvedValue({
+      ok: true,
+      report: { answer: "a", recommendation: "r", suggested_reads: [] },
+      text: "",
+    });
+    await searchViaFlash("q", undefined, undefined, { scout: true });
+    const opts = runner.runSubAgent.mock.calls[0]![0];
+
+    expect(anthropic.webSearchToolFn).toHaveBeenCalledTimes(1);
+    expect(anthropic.webSearchToolFn).toHaveBeenCalledWith({ maxUses: 2 });
+    expect(opts.system).toContain("up to 2 search rounds");
+    expect(opts.system).toContain("read at most 3 pages per run");
+    expect(opts.tools.webFetch.description).toContain(
+      "one of your 3 page-read slots",
+    );
+    expect(opts.prompt).toContain(
+      "You are one of several researchers working in parallel on different sub-questions",
+    );
+  });
+
+  it("enforces the lower scout-mode page-read quota", async () => {
+    runner.runSubAgent.mockResolvedValue({
+      ok: true,
+      report: { answer: "a", recommendation: "r", suggested_reads: [] },
+      text: "",
+    });
+    await searchViaFlash("q", undefined, undefined, { scout: true });
+    const opts = runner.runSubAgent.mock.calls[0]![0];
+    const webFetch = opts.tools.webFetch as {
+      execute: (input: { url: string }) => Promise<string>;
+    };
+
+    for (let i = 0; i < 3; i++) {
+      const out = await webFetch.execute({ url: "not a url" });
+      expect(out).toContain("ERROR: Invalid URL");
+    }
+    const out = await webFetch.execute({ url: "https://example.com" });
+    expect(out).toContain("Page-read quota exhausted — 3 reads per run");
+  });
+
+  it("embeds query-planning discipline in the researcher role", async () => {
+    runner.runSubAgent.mockResolvedValue({
+      ok: true,
+      report: { answer: "a", recommendation: "r", suggested_reads: [] },
+      text: "",
+    });
+    await searchViaFlash("q");
+    const opts = runner.runSubAgent.mock.calls[0]![0];
+
+    expect(opts.system).toContain("Round 1 may use the query as-is");
+    expect(opts.system).toContain(
+      "every later round must either reformulate based on what you have learned or chase a new lead",
+    );
+    expect(opts.system).toContain(
+      "Before issuing a new search round, state (in thinking) what is still missing",
+    );
+    expect(opts.system).toContain(
+      "read the most promising pages with webFetch between rounds",
+    );
   });
 });
