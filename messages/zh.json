@@ -283,8 +283,7 @@
   "timeline3d": {
     "fallback": {
       "loading": "正在加载时间线…",
-      "empty": "还没有记忆时间片——先开始一段对话吧。",
-      "unsupported": "当前设备或浏览器不支持 WebGL——已切换为精确时间线视图。"
+      "empty": "还没有记忆时间片——先开始一段对话吧。"
     },
     "hint": {
       "browse": "滚轮穿越时间 · Ctrl+滚轮缩放 · Alt+拖拽旋转 · 点击圆点打开",
@@ -309,6 +308,12 @@
     "now": {
       "label": "NOW",
       "sub": "现在"
+    },
+    "filter": {
+      "label": "筛选时间线",
+      "all": "核心时间线",
+      "placeholder": "搜索线索…",
+      "empty": "没有匹配的线索"
     }
   },
   "settings": {

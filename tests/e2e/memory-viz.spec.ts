@@ -11,8 +11,9 @@ import {
  * scroll-up paging + seams, the arrival resume/briefing gate (Rev 2: the
  * briefing seats as a stream-tail card), the scroll-transient left time rail
  * (Rev 2, §1.3), the card-style left-drag mode gesture (Rev 2, §5.2/§6.1),
- * the search palette's jump-to-slice, and the /timeline route's two entry
- * forms (Rev 2 hint copy + the NOW convergence point's DOM existence).
+ * the search palette's jump-to-slice, the /timeline route's two entry forms,
+ * and the Rev 8 stack list: day-stack landing, click-to-step-finer,
+ * ctrl+wheel level stepping, strand filter, and month-window paging.
  *
  * All specs seed slice files + the timeline catalog straight into the
  * isolated MEMORY_ROOT (see memory-fixture.ts) — no chat turn ever runs, so
@@ -363,25 +364,17 @@ test.describe("Memory viz (v0.10)", () => {
           .getByRole("button", { name: "Timeline" }),
       ).toHaveAttribute("aria-pressed", "true");
 
-      // WebGL branch: the R3F canvas + gesture hint. No-WebGL branch: the
-      // wheel fallback. The 3D scene itself stays out of assertions (§9).
+      // Rev 8: the stack list IS the data view — it renders with or without
+      // WebGL (the ambient strip's R3F canvas is decorative and only mounts
+      // when WebGL exists).
+      await expect(page.locator(".tl-card-in").first()).toBeVisible({
+        timeout: 30_000,
+      });
+      await expect(page.getByText(/NOW · now/)).toBeVisible();
       if (await probeWebGL(page)) {
         await expect(page.locator("canvas").first()).toBeVisible({
           timeout: 30_000,
         });
-        // The gesture hint has a desktop ("Scroll through time · Ctrl+scroll
-        // to unbraid …") and a touch ("Swipe through time …") variant — the
-        // runner machine decides which.
-        await expect(page.getByText(/through time/)).toBeVisible();
-        // §5.1 Rev 2: the NOW convergence point is a DOM button (drei Html).
-        await expect(
-          page.getByRole("button", { name: "NOW", exact: true }),
-        ).toBeVisible({ timeout: 30_000 });
-      } else {
-        await expect(
-          page.getByText(/doesn't support WebGL/),
-        ).toBeVisible();
-        await expect(page.getByText(/2026\/02\//).first()).toBeVisible();
       }
     });
 
@@ -415,16 +408,10 @@ test.describe("Memory viz (v0.10)", () => {
       // The chat input survives under the overlay (chat 常驻, §6.1).
       await expect(page.locator("textarea")).toBeAttached();
 
-      // The overlay renders the same scene/fallback as the full page.
-      if (await probeWebGL(page)) {
-        await expect(page.locator("canvas").first()).toBeVisible({
-          timeout: 30_000,
-        });
-      } else {
-        await expect(
-          page.getByText(/doesn't support WebGL/),
-        ).toBeVisible();
-      }
+      // The overlay renders the same stack list as the full page.
+      await expect(page.locator(".tl-card-in").first()).toBeVisible({
+        timeout: 30_000,
+      });
 
       // The overlay's own Chat segment closes it — back to the untouched chat.
       await page
@@ -452,29 +439,27 @@ test.describe("Memory viz (v0.10)", () => {
       // Wait for the scene to actually render before toggling back: a
       // router.push issued while the /timeline navigation is still in flight
       // is silently dropped (observed in the full-suite run), swallowing the
-      // return toggle. Same scene-ready gate as the overlay test above.
-      if (await probeWebGL(page)) {
-        await expect(page.locator("canvas").first()).toBeVisible({
-          timeout: 30_000,
-        });
-      } else {
-        await expect(
-          page.getByText(/doesn't support WebGL/),
-        ).toBeVisible();
-      }
+      // return toggle. Gate on the stack list being up.
+      await expect(page.locator(".tl-card-in").first()).toBeVisible({
+        timeout: 30_000,
+      });
       await page.keyboard.press("Control+.");
       await expect(page).toHaveURL(/\/en\/?$/);
     });
   });
 
-  test.describe("3D scene (Rev 7)", () => {
-    /** One synthetic zoom step (Playwright modifier+wheel doesn't propagate
-     *  ctrlKey into the WheelEvent — dispatch it explicitly). */
+  test.describe("stack list (Rev 8)", () => {
+    /** One synthetic level step (Playwright modifier+wheel doesn't propagate
+     *  ctrlKey into the WheelEvent — dispatch it explicitly). The listener
+     *  lives on the CardField wrap ([data-card-field]); without WebGL the
+     *  StackList fallback's virtuoso scroller bubbles up to its own wrap. */
     async function zoomStep(page: Page, dir: "in" | "out") {
       await page.evaluate((deltaY) => {
-        const canvas = document.querySelector("canvas");
-        const el = canvas?.parentElement ?? canvas;
-        el?.dispatchEvent(
+        const el =
+          document.querySelector("[data-card-field]") ??
+          document.querySelector("[data-virtuoso-scroller]") ??
+          document.body;
+        el.dispatchEvent(
           new WheelEvent("wheel", {
             deltaY,
             ctrlKey: true,
@@ -485,106 +470,169 @@ test.describe("Memory viz (v0.10)", () => {
       }, dir === "in" ? -240 : 240);
     }
 
-    /** Wheel-up bursts toward the oldest loaded entries (paging trigger). */
-    async function scrollOlder(page: Page) {
-      await page.evaluate(() => {
-        const canvas = document.querySelector("canvas");
-        const el = canvas?.parentElement ?? canvas;
-        for (let i = 0; i < 6; i++) {
-          el?.dispatchEvent(
-            new WheelEvent("wheel", {
-              deltaY: -480,
-              bubbles: true,
-              cancelable: true,
-            }),
+    const cards = (page: Page) => page.locator(".tl-card-in");
+    const cardCount = (page: Page) => cards(page).count();
+    /** aria-labels, e.g. "02/03 Tue · 1" (L1) / "2026/02 · 12" (L2). */
+    const cardLabels = (page: Page) =>
+      page.evaluate(() =>
+        [...document.querySelectorAll(".tl-card-in")].map(
+          (c) => c.getAttribute("aria-label") ?? c.textContent?.trim() ?? "",
+        ),
+      );
+    /** The frame cards are big — the first/last may be half outside the
+     *  viewport, so click the card with the most visible area. */
+    async function clickMostVisibleCard(page: Page) {
+      const index = await page.evaluate(() => {
+        const els = [...document.querySelectorAll(".tl-card-in")];
+        let best = 0;
+        let bestArea = -1;
+        const vh = window.innerHeight;
+        els.forEach((el, i) => {
+          const r = el.getBoundingClientRect();
+          const visible = Math.max(
+            0,
+            Math.min(r.bottom, vh) - Math.max(r.top, 0),
           );
-        }
+          if (visible > bestArea) {
+            bestArea = visible;
+            best = i;
+          }
+        });
+        return best;
       });
+      // force: the cards live in a continuously-rendered R3F scene, so the
+      // DOM node gets transform writes every frame and never reads as
+      // "stable" to Playwright's actionability checks.
+      await cards(page).nth(index).click({ force: true });
     }
 
-    const cardCount = (page: Page) => page.locator(".tl-card-in").count();
-
-    test("zoom steps across the three levels with cards at every level", async ({
+    test("lands on day stacks and steps levels via click and ctrl+wheel", async ({
       page,
     }) => {
       test.slow();
       await seedSlices(datasetA());
       await page.goto("/en/timeline");
-      if (!(await probeWebGL(page))) {
-        await expect(
-          page.getByText(/doesn't support WebGL/),
-        ).toBeVisible();
-        return;
-      }
-      // Landing is the day level — cards mount once the scene boots.
+
+      // Landing = L1 day stacks: "<MM/DD> <weekday> · <count>".
       await expect
         .poll(() => cardCount(page), { timeout: 30_000 })
         .toBeGreaterThan(0);
+      const dayLabels = await cardLabels(page);
+      expect(
+        dayLabels.some((l) => /^\d{2}\/\d{2} \w+ · \d+$/.test(l)),
+        `expected day-stack labels, got ${JSON.stringify(dayLabels.slice(0, 5))}`,
+      ).toBe(true);
 
-      // Out → week: the window empties only during the flight, never after.
-      await zoomStep(page, "out");
-      await expect
-        .poll(() => cardCount(page), { timeout: 10_000 })
-        .toBeGreaterThan(0);
-
-      // In → day → hour: cards render at every level.
-      await zoomStep(page, "in");
-      await expect
-        .poll(() => cardCount(page), { timeout: 10_000 })
-        .toBeGreaterThan(0);
-      await zoomStep(page, "in");
-      await expect
-        .poll(() => cardCount(page), { timeout: 10_000 })
-        .toBeGreaterThan(0);
-    });
-
-    test("an hour-level card click opens the reading panel; Esc closes it", async ({
-      page,
-    }) => {
-      test.slow();
-      const slices = datasetA();
-      await seedSlices(slices);
-      await page.goto("/en/timeline");
-      if (!(await probeWebGL(page))) return;
-      await expect
-        .poll(() => cardCount(page), { timeout: 30_000 })
-        .toBeGreaterThan(0);
-
-      // Day → hour, then click the first card (direct dispatch — the easing
-      // camera never sits still long enough for actionability checks). Gate
-      // on the HOUR-level card width (w-72 = 288px vs the day's 224px): the
-      // frozen flight probe still reports the old level, so an early click
-      // would drill instead of focusing.
-      await zoomStep(page, "in");
+      // Click a stack → the whole view steps to L0 slice cards (HH:MM rows).
+      await clickMostVisibleCard(page);
       await expect
         .poll(
-          () =>
-            page.evaluate(() =>
-              [...document.querySelectorAll(".tl-card-in")].some(
-                (c) => (c as HTMLElement).offsetWidth >= 280,
-              ),
+          async () =>
+            (await cardLabels(page)).some((l) =>
+              /\d{2}\/\d{2} \d{2}:\d{2}/.test(l),
             ),
           { timeout: 10_000 },
         )
         .toBe(true);
-      await page.evaluate(() => {
-        document
-          .querySelector(".tl-card-in")
-          ?.dispatchEvent(
-            new MouseEvent("click", { bubbles: true, cancelable: true }),
-          );
-      });
+
+      // Ctrl+wheel out ×2 → L2 month stacks: "2026/02 · 12".
+      await zoomStep(page, "out");
+      await zoomStep(page, "out");
+      await expect
+        .poll(
+          async () =>
+            (await cardLabels(page)).some((l) =>
+              /^\d{4}\/\d{2} · \d+$/.test(l),
+            ),
+          { timeout: 10_000 },
+        )
+        .toBe(true);
+
+      // Back in returns to finer grains.
+      await zoomStep(page, "in");
+      await expect
+        .poll(
+          async () =>
+            (await cardLabels(page)).some((l) =>
+              /^\d{2}\/\d{2} \w+ · \d+$/.test(l),
+            ),
+          { timeout: 10_000 },
+        )
+        .toBe(true);
+    });
+
+    test("an L0 card click opens the reading panel; Esc closes it", async ({
+      page,
+    }) => {
+      test.slow();
+      await seedSlices(datasetA());
+      await page.goto("/en/timeline");
+      await expect
+        .poll(() => cardCount(page), { timeout: 30_000 })
+        .toBeGreaterThan(0);
+
+      // Day stack → L0, then click a slice card.
+      await clickMostVisibleCard(page);
+      await expect
+        .poll(
+          async () =>
+            (await cardLabels(page)).some((l) =>
+              /\d{2}\/\d{2} \d{2}:\d{2}/.test(l),
+            ),
+          { timeout: 10_000 },
+        )
+        .toBe(true);
+      await clickMostVisibleCard(page);
 
       const panel = page.locator("aside[role=dialog]");
       await expect(panel).toBeVisible();
-      // The panel carries the slice's full turn flow (§R7.3) — a sentinel
-      // turn proves real content loaded, not just the catalog metadata.
-      await expect(panel.getByText(/TURN S\d\d user question/).first()).toBeVisible({
-        timeout: 15_000,
-      });
+      // The panel carries the slice's full turn flow — a sentinel turn proves
+      // real content loaded, not just the catalog metadata.
+      await expect(
+        panel.getByText(/TURN S\d\d user question/).first(),
+      ).toBeVisible({ timeout: 15_000 });
 
       await page.keyboard.press("Escape");
       await expect(panel).toHaveCount(0);
+    });
+
+    test("the strand filter narrows the list to the strand's carriers", async ({
+      page,
+    }) => {
+      test.slow();
+      const slices = [
+        makeSlice(new Date(Date.UTC(2026, 1, 1, 9)).toISOString(), {
+          tag: "F1",
+          strands: ["zebra thread"],
+        }),
+        makeSlice(new Date(Date.UTC(2026, 1, 2, 9)).toISOString(), {
+          tag: "F2",
+        }),
+        makeSlice(new Date(Date.UTC(2026, 1, 3, 9)).toISOString(), {
+          tag: "F3",
+          strands: ["zebra thread"],
+        }),
+      ];
+      await seedSlices(slices);
+      await page.goto("/en/timeline");
+      await expect
+        .poll(() => cardCount(page), { timeout: 30_000 })
+        .toBe(3);
+
+      await page.getByRole("button", { name: "Filter timeline" }).click();
+      await page
+        .getByRole("button", { name: /zebra thread/ })
+        .click();
+
+      // Only the two carrier days remain; the chip shows the selection.
+      await expect.poll(() => cardCount(page), { timeout: 10_000 }).toBe(2);
+      const labels = await cardLabels(page);
+      expect(labels.some((l) => l.startsWith("02/01"))).toBe(true);
+      expect(labels.some((l) => l.startsWith("02/03"))).toBe(true);
+      expect(labels.some((l) => l.startsWith("02/02"))).toBe(false);
+      await expect(
+        page.getByRole("button", { name: /zebra thread/ }),
+      ).toBeVisible();
     });
 
     test("scrolling to the top prefetches the older catalog window (§R7.4)", async ({
@@ -592,10 +640,9 @@ test.describe("Memory viz (v0.10)", () => {
     }) => {
       test.slow();
       // Jan/Feb are the prefetch target (one slice each); Mar/Apr are dense
-      // enough that the initial 2-month window's scene is TALLER than the
-      // top-edge trigger band (max(10, visibleHalf×3) world units) — with a
-      // short scene the prefetch legitimately fires at boot and the
-      // initial-window assertion below can't tell boot from scroll.
+      // enough that the initial 2-month window's list scrolls — with a short
+      // list the prefetch legitimately fires at boot and the initial-window
+      // assertion below can't tell boot from scroll.
       const slices = [
         makeSlice(new Date(Date.UTC(2026, 0, 12, 9)).toISOString(), { tag: "M1" }),
         makeSlice(new Date(Date.UTC(2026, 1, 12, 9)).toISOString(), { tag: "M2" }),
@@ -612,35 +659,31 @@ test.describe("Memory viz (v0.10)", () => {
       ];
       await seedSlices(slices);
       await page.goto("/en/timeline");
-      if (!(await probeWebGL(page))) return;
       await expect
         .poll(() => cardCount(page), { timeout: 30_000 })
         .toBeGreaterThan(0);
 
-      const regionLabels = () =>
-        page.evaluate(() =>
-          [...document.querySelectorAll("div")]
-            .map((d) => (d.children.length === 0 ? d.textContent?.trim() : null))
-            .filter((t): t is string => !!t && /^\d{2}\/\d{2}/.test(t)),
-        );
-      // Initially only Mar/Apr labels.
-      const initial = await regionLabels();
-      expect(initial.every((t) => t!.startsWith("03/") || t!.startsWith("04/"))).toBe(
-        true,
-      );
+      // Initially only Mar/Apr day stacks.
+      const initial = await cardLabels(page);
+      expect(
+        initial.every((l) => l.startsWith("03/") || l.startsWith("04/")),
+        `expected only Mar/Apr day stacks, got ${JSON.stringify(initial)}`,
+      ).toBe(true);
 
-      // Scroll up until the prefetch lands (Feb or Jan label appears) —
+      // Scroll up until the prefetch lands (a Feb or Jan stack appears) —
       // bounded attempts so a regression fails instead of hanging.
+      const field = page.locator("[data-card-field]");
+      await field.hover();
       let seen: string[] = [];
       for (let burst = 0; burst < 15; burst++) {
-        await scrollOlder(page);
-        await page.waitForTimeout(900);
-        seen = await regionLabels();
-        if (seen.some((t) => t!.startsWith("02/") || t!.startsWith("01/"))) break;
+        await page.mouse.wheel(0, -1400);
+        await page.waitForTimeout(700);
+        seen = await cardLabels(page);
+        if (seen.some((l) => l.startsWith("02/") || l.startsWith("01/"))) break;
       }
       expect(
-        seen.some((t) => t!.startsWith("02/") || t!.startsWith("01/")),
-        `expected an older-month region label after scrolling up, got ${JSON.stringify(seen)}`,
+        seen.some((l) => l.startsWith("02/") || l.startsWith("01/")),
+        `expected an older-month day stack after scrolling up, got ${JSON.stringify(seen)}`,
       ).toBe(true);
     });
   });

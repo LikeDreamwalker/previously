@@ -89,18 +89,10 @@ export const TIMELINE_KEYFRAMES = `
   0%, 100% { opacity: 0.15; transform: scale(1); }
   50% { opacity: 0.4; transform: scale(1.3); }
 }
-/* Node-card mount: rise + settle, staggered by the scene (§R5.2). Runs once
-   per mount; the Html portal gives no enter transition of its own. */
-@keyframes tl-card-in {
-  from { opacity: 0; transform: translateY(8px) scale(0.97); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
-}
-.tl-card-in { animation: tl-card-in 320ms cubic-bezier(0.22, 1, 0.36, 1) both; will-change: transform, opacity; transition: opacity 180ms ease; }
-/* Level-flight fade: during a zoom flight the window probe is frozen and the
-   stale cards sit at the OLD level's scale — mostly off-frame on a zoom-in.
-   Fading the layer reads as an intentional cut, not a render glitch. The
-   !important beats the entrance animation's fill mode. */
-.tl-flying { opacity: 0 !important; }
+/* Card entrance (Rev 9 §R9.4): the staggered rise lives in stack-list.tsx's
+   generation-window motion wrapper — .tl-card-in remains only as the card
+   MARKER class (e2e selector), no CSS animation. Scroll-mounted rows must
+   not re-play an entrance. */
 /* Reading panel dock-in (§R7.3): a short slide + fade on mount. */
 @keyframes tl-panel-in {
   from { opacity: 0; transform: translateY(12px); }
@@ -113,7 +105,13 @@ export const TIMELINE_KEYFRAMES = `
   }
 }
 .tl-panel-in { animation: tl-panel-in 260ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+/* ?at= deep-link flash (Rev 8): a brief primary ring pulse on the target row. */
+@keyframes tl-flash {
+  0%, 100% { box-shadow: 0 0 0 0 transparent; }
+  35% { box-shadow: 0 0 0 3px color-mix(in oklch, var(--primary) 55%, transparent); }
+}
+.tl-flash { animation: tl-flash 1.6s ease-out 2; }
 @media (prefers-reduced-motion: reduce) {
-  .tl-aurora, .tl-aurora-slow, .tl-now-ring, .tl-card-in { animation: none !important; }
+  .tl-aurora, .tl-aurora-slow, .tl-now-ring, .tl-flash { animation: none !important; }
 }
 `;

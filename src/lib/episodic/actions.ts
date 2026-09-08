@@ -262,6 +262,37 @@ export async function getTimelineCatalogPage(
   return pageCatalog(idx?.slices ?? [], before, months);
 }
 
+/** One strand's selector row (Rev 8 §R8 筛选器). */
+export interface StrandListItem {
+  name: string;
+  /** Slices carrying the strand. */
+  count: number;
+  /** UTC ISO start of the newest carrier — sort key for "最近活跃". */
+  lastStart: string;
+}
+
+/**
+ * The strand list for the timeline filter, aggregated from the FULL catalog
+ * (the client's month window would miss strands that only appear in unloaded
+ * history). Sorted by most recent activity first.
+ */
+export async function getStrandList(): Promise<StrandListItem[]> {
+  const idx = await readTimelineIndex();
+  const acc = new Map<string, StrandListItem>();
+  for (const s of idx?.slices ?? []) {
+    for (const name of s.strands) {
+      const item = acc.get(name);
+      if (item) {
+        item.count += 1;
+        if (s.start > item.lastStart) item.lastStart = s.start;
+      } else {
+        acc.set(name, { name, count: 1, lastStart: s.start });
+      }
+    }
+  }
+  return [...acc.values()].sort((a, b) => b.lastStart.localeCompare(a.lastStart));
+}
+
 // ─── Empty-state briefing identity ─────────────────────────────────────────
 // The empty-live state shows a small "Previously On" + the user's name (+ a
 // persona switcher in demo mode). No episodic re-scan here — ChatPage already

@@ -283,8 +283,7 @@
   "timeline3d": {
     "fallback": {
       "loading": "Loading timeline…",
-      "empty": "No memory slices yet — start a conversation first.",
-      "unsupported": "This device or browser doesn't support WebGL — here's the precise timeline view instead."
+      "empty": "No memory slices yet — start a conversation first."
     },
     "hint": {
       "browse": "Scroll through time · Ctrl+scroll to zoom · Alt+drag to orbit · click a dot to open it",
@@ -308,7 +307,13 @@
     },
     "now": {
       "label": "NOW",
-      "sub": "现在"
+      "sub": "now"
+    },
+    "filter": {
+      "label": "Filter timeline",
+      "all": "Core timeline",
+      "placeholder": "Search strands…",
+      "empty": "No matching strands"
     }
   },
   "settings": {

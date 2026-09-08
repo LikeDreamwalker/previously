@@ -44,6 +44,7 @@ vi.mock("@/lib/config/loader", () => ({
 import {
   getSlicePageWithContent,
   getArrivalState,
+  getStrandList,
 } from "@/lib/episodic/actions";
 
 // ─── Fixtures ────────────────────────────────────────────────────────────
@@ -314,5 +315,27 @@ describe("getArrivalState", () => {
     mocks.setDemoPersona.mockClear();
     await getArrivalState();
     expect(mocks.setDemoPersona).not.toHaveBeenCalled();
+  });
+});
+
+describe("getStrandList", () => {
+  it("aggregates counts and sorts by most recent activity", async () => {
+    mocks.readTimelineIndex.mockResolvedValue({
+      _schema: 1, updated_at: "", slice_count: 3, needs_marking: 0,
+      slices: [
+        makeEntry({ id: "2026-08-11-1000", date: "2026-08-11", start: "2026-08-11T10:00:00.000Z", strands: ["running", "work"] }),
+        makeEntry({ id: "2026-08-12-1000", date: "2026-08-12", start: "2026-08-12T10:00:00.000Z", strands: ["running"] }),
+        makeEntry({ id: "2026-08-13-1000", date: "2026-08-13", start: "2026-08-13T10:00:00.000Z", strands: ["work"] }),
+      ],
+    });
+    expect(await getStrandList()).toEqual([
+      { name: "work", count: 2, lastStart: "2026-08-13T10:00:00.000Z" },
+      { name: "running", count: 2, lastStart: "2026-08-12T10:00:00.000Z" },
+    ]);
+  });
+
+  it("returns an empty list when the catalog is missing", async () => {
+    mocks.readTimelineIndex.mockResolvedValue(null);
+    expect(await getStrandList()).toEqual([]);
   });
 });

@@ -38,6 +38,16 @@ export function ReadingPanel({
   const [expanded, setExpanded] = useState<number | null>(null);
   useEffect(() => setExpanded(null), [entry.id]);
 
+  // Esc closes the dock (Rev 8: the scene-level focus machine that used to
+  // own this is retired with the serpentine scene).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
   const accent =
     entry.strands.length > 0
       ? strandColor(entry.strands[0])
