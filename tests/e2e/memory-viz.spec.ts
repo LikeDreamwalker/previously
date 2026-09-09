@@ -530,19 +530,22 @@ test.describe("Memory viz (v0.10)", () => {
       ).toBe(true);
 
       // Click a stack → the whole view steps to L0 slice cards (HH:MM rows).
-      await clickMostVisibleCard(page);
-      await expect
-        .poll(
-          async () =>
-            (await cardLabels(page)).some((l) =>
-              /\d{2}\/\d{2} \d{2}:\d{2}/.test(l),
-            ),
-          { timeout: 10_000 },
-        )
-        .toBe(true);
+      // Settle past the row-entrance animation first: a force-click on a
+      // translating row can dispatch mousedown/up on different elements and
+      // swallow the click. Retry covers the residual race.
+      await page.waitForTimeout(600);
+      await expect(async () => {
+        await clickMostVisibleCard(page);
+        const labels = await cardLabels(page);
+        expect(labels.some((l) => /\d{2}\/\d{2} \d{2}:\d{2}/.test(l))).toBe(
+          true,
+        );
+      }).toPass({ timeout: 15_000 });
 
-      // Ctrl+wheel out ×2 → L2 month stacks: "2026/02 · 12".
+      // Ctrl+wheel out ×2 → L2 month stacks: "2026/02 · 12". Pause between
+      // steps so the level remount's listener gap can't eat an event.
       await zoomStep(page, "out");
+      await page.waitForTimeout(400);
       await zoomStep(page, "out");
       await expect
         .poll(
