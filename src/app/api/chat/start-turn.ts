@@ -86,18 +86,58 @@ async function resolveModelConfig(id: string): Promise<{
   return { model: fallback.id, modelConfig: fallback };
 }
 
+/** Max image attachments extracted per turn when the main model lacks vision. */
+const MAX_IMAGE_ATTACHMENTS = 4;
+
 /**
- * Drop image/file parts when the resolved model has no vision capability. The
- * client gates attachments on `supportsVision`, but the client is untrusted —
- * this is the server-side enforcement.
+ * For non-vision main models: extract image file parts into a per-turn
+ * attachments array and replace each stripped image with a text placeholder
+ * telling the model to call `viewImage`. Non-image file parts are dropped.
+ *
+ * The data URLs ride the workflow step boundary via ToolContext.imageAttachments,
+ * so viewImage can resolve `attachment:N`. They are capped to keep the payload
+ * bounded (client-side 1568px compression + a 4-image count cap).
  */
-export function stripFileParts(messages: UIMessage[]): UIMessage[] {
-  return messages
-    .map((m) => ({
-      ...m,
-      parts: (m.parts ?? []).filter((p) => p.type !== "file"),
-    }))
-    .filter((m) => m.parts.length > 0);
+export function extractImageAttachments(
+  messages: UIMessage[],
+  locale: string,
+): { messages: UIMessage[]; attachments: string[] } {
+  const attachments: string[] = [];
+  const placeholder = (idx: number) =>
+    locale === "zh"
+      ? `[用户附带了一张图片（附件 #${idx}）。你当前无法直接查看图片——调用 viewImage，source 填 "attachment:${idx}"，question 描述你想知道什么。]`
+      : `[The user attached an image (attachment #${idx}). You cannot see it directly right now — call viewImage with source "attachment:${idx}" and use question to say what you want to know.]`;
+
+  const out = messages
+    .map((m) => {
+      if (m.role !== "user" || attachments.length >= MAX_IMAGE_ATTACHMENTS) {
+        return m;
+      }
+      const newParts: UIMessage["parts"] = [];
+      for (const p of m.parts ?? []) {
+        if (p.type !== "file") {
+          newParts.push(p);
+          continue;
+        }
+        const mediaType = (p as { mediaType?: string }).mediaType ?? "";
+        const url = (p as { url?: string }).url ?? "";
+        if (
+          !mediaType.startsWith("image/") ||
+          attachments.length >= MAX_IMAGE_ATTACHMENTS ||
+          !url
+        ) {
+          // Drop non-image files and excess/unloadable images.
+          continue;
+        }
+        const idx = attachments.length;
+        attachments.push(url);
+        newParts.push({ type: "text", text: placeholder(idx) });
+      }
+      return { ...m, parts: newParts };
+    })
+    .filter((m) => (m.parts ?? []).length > 0);
+
+  return { messages: out, attachments };
 }
 
 /**
@@ -168,13 +208,18 @@ export async function startTurn(
   // This is only a broad payload cap guarding against a misbehaving client.
   const MAX_HISTORY_MESSAGES = 200;
   let inbound = args.messages;
+  let imageAttachments: string[] = [];
   if (!modelConfig.capabilities.vision) {
-    const hasFiles = args.messages.some((m) =>
-      (m.parts ?? []).some((p) => p.type === "file"),
+    const hasImageFiles = args.messages.some((m) =>
+      (m.parts ?? []).some(
+        (p) => p.type === "file" && (p as { mediaType?: string }).mediaType?.startsWith("image/"),
+      ),
     );
-    if (hasFiles) {
-      console.warn(`[Turn] model=${model} has no vision — file parts dropped`);
-      inbound = stripFileParts(args.messages);
+    if (hasImageFiles) {
+      console.warn(`[Turn] model=${model} has no vision — extracting image attachments`);
+      const extracted = extractImageAttachments(args.messages, locale);
+      inbound = extracted.messages;
+      imageAttachments = extracted.attachments;
     }
   }
   const fullMessages = await convertToModelMessages(inbound);
@@ -206,6 +251,7 @@ export async function startTurn(
     useDemo: dataSource === "demo",
     startedAtIso: new Date().toISOString(),
     turnId,
+    imageAttachments,
     ...(args.regenerate === true ? { regenerate: true } : {}),
   };
 

@@ -56,7 +56,7 @@ describe("searchViaFlash", () => {
     expect(opts.system).not.toContain("Today is");
     expect(opts.prompt).toMatch(/^Today is \d{4}-\d{2}-\d{2}\./);
     expect(opts.prompt).toContain("Query: latest Next.js version");
-    expect(Object.keys(opts.tools).sort()).toEqual(["searchReport", "webFetch", "web_search"]);
+    expect(Object.keys(opts.tools).sort()).toEqual(["searchReport", "viewImage", "webFetch", "web_search"]);
   });
 
   it("maps the searchReport into the neutral contract with url sources", async () => {
@@ -245,5 +245,36 @@ describe("searchViaFlash", () => {
     expect(opts.system).toContain(
       "read the most promising pages with webFetch between rounds",
     );
+  });
+
+  it("mentions viewImage in the researcher role", async () => {
+    runner.runSubAgent.mockResolvedValue({
+      ok: true,
+      report: { answer: "a", recommendation: "r", suggested_reads: [] },
+      text: "",
+    });
+    await searchViaFlash("q");
+    const opts = runner.runSubAgent.mock.calls[0]![0];
+    expect(opts.system).toContain("viewImage can look at it");
+    expect(opts.system).toContain("up to 2 images");
+  });
+
+  it("caps the researcher's image reads at the per-run quota", async () => {
+    runner.runSubAgent.mockResolvedValue({
+      ok: true,
+      report: { answer: "a", recommendation: "r", suggested_reads: [] },
+      text: "",
+    });
+    await searchViaFlash("q");
+    const opts = runner.runSubAgent.mock.calls[0]![0];
+    const viewImage = opts.tools.viewImage as {
+      execute: (input: { url: string }) => Promise<string>;
+    };
+    for (let i = 0; i < 2; i++) {
+      const out = await viewImage.execute({ url: "https://example.com/a.png" });
+      expect(out).not.toContain("quota exhausted");
+    }
+    const out = await viewImage.execute({ url: "https://example.com/b.png" });
+    expect(out).toContain("Image-read quota exhausted");
   });
 });

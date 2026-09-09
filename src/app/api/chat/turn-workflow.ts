@@ -946,6 +946,11 @@ export async function turnWorkflow(input: TurnInput): Promise<void> {
       timezone: input.clientTimezone,
       startedAtIso: input.startedAtIso,
       locale: input.locale,
+      // Image attachments ride the workflow step boundary as data URLs so the
+      // viewImage tool can resolve `attachment:N` for non-vision main models.
+      // They are capped at 4 images and client-compressed to 1568px, keeping the
+      // serialized payload bounded.
+      imageAttachments: input.imageAttachments,
     }),
     // Fire after every COMPLETED LLM step: snapshot its text + tool
     // calls/results for a possible timeout continuation. (The killed step

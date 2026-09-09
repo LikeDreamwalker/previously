@@ -62,6 +62,7 @@ import {
   readBodyCapped,
   FETCH_BODY_MAX_BYTES,
 } from "@/lib/search/fetch-utils";
+import { describeImage } from "@/lib/vision/describe-image";
 import {
   splitParagraphs,
   segmentSearch,
@@ -90,6 +91,9 @@ const MAX_SEARCHES_PER_QUERY = 3;
  *  would burn the whole step budget on reading. After the quota, webFetch
  *  returns a note and the researcher synthesizes from what it has. */
 export const MAX_PAGE_READS = 6;
+
+/** Images the researcher may look at per run. Separate from page reads. */
+const MAX_IMAGE_READS = 2;
 
 const WEB_FETCH_TIMEOUT_MS = 30_000;
 const WEB_FETCH_MAX_CHARS = 15_000;
@@ -277,7 +281,7 @@ function buildSearchRole(
 ): string {
   return `You are an independent researcher: the main agent hands you a topic, and you come back with a real answer.
 
-You both search AND read. web_search (provider-executed) finds the material; webFetch reads the most promising pages yourself — the search digest alone is often too thin to answer well. Pages come back as Markdown (headings, lists, links and tables preserved). You may read at most ${maxPageReads} pages per run — spend them on the strongest sources.
+You both search AND read. web_search (provider-executed) finds the material; webFetch reads the most promising pages yourself — the search digest alone is often too thin to answer well. Pages come back as Markdown (headings, lists, links and tables preserved). You may read at most ${maxPageReads} pages per run — spend them on the strongest sources. When a promising page's key content is an image, viewImage can look at it for you (up to ${MAX_IMAGE_READS} images per run).
 
 Process:
 1. Plan your search: you may use up to ${maxSearchRounds} search rounds. Round 1 may use the query as-is; every later round must either reformulate based on what you have learned or chase a new lead discovered in the material you have already read. Before issuing a new search round, state (in thinking) what is still missing.
@@ -357,6 +361,8 @@ export async function searchViaFlash(
   let searchRounds = 0;
   // Per-run page-read quota (effectiveMaxPageReads).
   let pageReads = 0;
+  // Per-run image-read quota (MAX_IMAGE_READS).
+  let imageReads = 0;
   const res = await runSubAgent<SearchReport>({
     languageModel: provider("deepseek-v4-flash"),
     // The pre-built model speaks the Anthropic protocol — the effort mapping
@@ -423,6 +429,37 @@ export async function searchViaFlash(
           return readPageImpl(url, range);
         },
       }),
+      viewImage: tool({
+        description:
+          "Describe the contents of an image URL. Use when a promising page's " +
+          "key content is an image, or when the user referenced an image link. " +
+          `Costs one of your ${MAX_IMAGE_READS} image-read slots per run. ` +
+          "Pass the full http(s) URL of the image and a question about what you " +
+          "need to know.",
+        inputSchema: z.object({
+          url: z
+            .string()
+            .describe("The full http(s) URL of the image to describe."),
+          question: z
+            .string()
+            .optional()
+            .describe(
+              "What you want to know about the image. Be specific. Omit for a " +
+              "general structured description.",
+            ),
+        }),
+        execute: async ({ url, question }: { url: string; question?: string }) => {
+          if (imageReads >= MAX_IMAGE_READS) {
+            return (
+              `(Image-read quota exhausted — ${MAX_IMAGE_READS} reads per run.) ` +
+              "Answer from what you have already searched and read."
+            );
+          }
+          imageReads += 1;
+          const result = await describeImage({ image: { url }, question });
+          return result.ok ? result.description : result.error;
+        },
+      }),
       searchReport: searchReportSchema,
     },
     toolChoice: "auto",
@@ -454,6 +491,9 @@ export async function searchViaFlash(
           line: host ? `Reading page ${host}…` : "Reading a page…",
           stage: "running",
         };
+      }
+      if (toolName === "viewImage") {
+        return { line: "Looking at an image…", stage: "running" };
       }
       if (toolName === "searchReport") {
         return { line: "Compiling the research report…", stage: "running" };

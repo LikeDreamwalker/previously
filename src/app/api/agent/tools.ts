@@ -31,6 +31,7 @@ import {
   thinkDeepExecute,
   currentTimeExecute,
   delegateTaskExecute,
+  viewImageExecute,
   type ToolContext,
 } from "./tool-executors";
 
@@ -93,6 +94,8 @@ export const toolContextSchema = z.object({
   startedAtIso: z.string().optional(),
   /** UI locale ("zh" | "en") — relative-time annotations follow it. */
   locale: z.string().optional(),
+  /** Image attachments (data URLs) extracted when the main model lacks vision. */
+  imageAttachments: z.array(z.string()).optional(),
 });
 
 // ─── Concept tools ───────────────────────────────────────────────────────
@@ -446,6 +449,32 @@ export const chatTools = {
     contextSchema: toolContextSchema,
     execute: webFetchExecute,
   }),
+  viewImage: tool({
+    description:
+      "See an image — a link the user pasted, an image found during research, " +
+      "or a user attachment on a non-vision model. One-shot look: pass a " +
+      "`question` to say what you want to know about the image. For `source`, " +
+      "use an http(s) URL or `attachment:N` where N is the attachment number " +
+      "from the placeholder in the user's message. NOT for pages — use webFetch " +
+      "for those.",
+    inputSchema: z.object({
+      source: z
+        .string()
+        .describe(
+          "Image source: an http(s) URL, or 'attachment:N' referring to the Nth " +
+          "image attachment of the current turn.",
+        ),
+      question: z
+        .string()
+        .optional()
+        .describe(
+          "What you want to know about the image. Be specific. Omit for a general " +
+          "structured description.",
+        ),
+    }),
+    contextSchema: toolContextSchema,
+    execute: viewImageExecute,
+  }),
   thinkDeep: tool({
     description:
       "Dispatch a question to a clean-room thinking pod — a think-only copy " +
@@ -545,6 +574,7 @@ export function buildChatToolsContext(
     recall: ctx,
     webSearch: ctx,
     webFetch: ctx,
+    viewImage: ctx,
     thinkDeep: ctx,
   };
   // Keep the context map in lockstep with getChatTools(): a registered tool

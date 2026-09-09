@@ -110,12 +110,20 @@ vi.mock("@/lib/search/flash-search", () => ({
   SEARCH_TIMEOUT_MS: 240_000,
 }));
 
+const visionDeps = vi.hoisted(() => ({
+  describeImage: vi.fn(),
+}));
+vi.mock("@/lib/vision/describe-image", () => ({
+  describeImage: visionDeps.describeImage,
+}));
+
 import {
   readSliceSummaryExecute,
   readTimelineWindowExecute,
   currentTimeExecute,
   recallExecute,
   webSearchExecute,
+  viewImageExecute,
   type ToolContext,
 } from "@/app/api/agent/tool-executors";
 
@@ -513,5 +521,72 @@ describe("webSearchExecute mode threading", () => {
     );
     const [, , , opts] = searchFlashDeps.searchViaFlash.mock.calls[0]!;
     expect(opts).toEqual({ scout: false });
+  });
+});
+
+describe("viewImageExecute", () => {
+  beforeEach(() => {
+    visionDeps.describeImage.mockReset();
+  });
+
+  it("resolves attachment:N and returns the description", async () => {
+    visionDeps.describeImage.mockResolvedValue({
+      ok: true,
+      description: "A red circle.",
+    });
+
+    const out = await viewImageExecute(
+      { source: "attachment:0", question: "What color?" },
+      opts({ imageAttachments: ["data:image/png;base64,xx"], locale: "en" }),
+    );
+
+    expect(out).toBe("A red circle.");
+    expect(visionDeps.describeImage).toHaveBeenCalledWith({
+      image: { data: "data:image/png;base64,xx", mediaType: "image/png" },
+      question: "What color?",
+      locale: "en",
+    });
+  });
+
+  it("resolves a URL source and returns the description", async () => {
+    visionDeps.describeImage.mockResolvedValue({
+      ok: true,
+      description: "A cat.",
+    });
+
+    const out = await viewImageExecute(
+      { source: "https://example.com/cat.png" },
+      opts(),
+    );
+
+    expect(out).toBe("A cat.");
+    expect(visionDeps.describeImage).toHaveBeenCalledWith({
+      image: { url: "https://example.com/cat.png" },
+      question: undefined,
+      locale: undefined,
+    });
+  });
+
+  it("returns an error string for an out-of-range attachment index", async () => {
+    const out = await viewImageExecute(
+      { source: "attachment:2" },
+      opts({ imageAttachments: ["data:image/png;base64,a"] }),
+    );
+    expect(out).toContain("Invalid attachment index");
+    expect(visionDeps.describeImage).not.toHaveBeenCalled();
+  });
+
+  it("returns an error string when describeImage fails", async () => {
+    visionDeps.describeImage.mockResolvedValue({
+      ok: false,
+      error: "ERROR: Could not fetch image: network down",
+    });
+
+    const out = await viewImageExecute(
+      { source: "https://example.com/x.png" },
+      opts(),
+    );
+
+    expect(out).toContain("network down");
   });
 });

@@ -82,6 +82,13 @@ export interface TurnInput {
    * normally — the rejected reply stays in the slice as what happened.
    */
   regenerate?: boolean;
+  /**
+   * Image attachments (data URLs) extracted from the current user message when
+   * the main model lacks vision. Passed through to ToolContext so the viewImage
+   * tool can resolve `attachment:N`. Capped at 4 images; each is client-compressed
+   * to 1568px before upload.
+   */
+  imageAttachments: string[];
 }
 
 /** Summary of a synchronous card evolution run (v0.7b — inline in housekeeping). */

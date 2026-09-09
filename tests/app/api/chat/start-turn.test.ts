@@ -33,7 +33,7 @@ vi.mock("@/lib/demo/model-lock", () => ({
 import {
   startTurn,
   summarizeModelContent,
-  stripFileParts,
+  extractImageAttachments,
 } from "@/app/api/chat/start-turn";
 
 describe("summarizeModelContent", () => {
@@ -78,34 +78,122 @@ describe("summarizeModelContent", () => {
   });
 });
 
-describe("stripFileParts", () => {
+describe("extractImageAttachments", () => {
   const msg = (parts: UIMessage["parts"], id: string): UIMessage =>
     ({ id, role: "user", parts }) as UIMessage;
 
-  it("drops file parts and keeps text parts", () => {
-    const out = stripFileParts([
-      msg(
-        [
-          { type: "text", text: "hi" },
-          { type: "file", mediaType: "image/png", url: "data:image/png;base64,xx" },
-        ] as UIMessage["parts"],
-        "m1",
-      ),
-    ]);
-    expect(out).toHaveLength(1);
-    expect(out[0].parts).toEqual([{ type: "text", text: "hi" }]);
+  it("extracts image file parts and replaces them with viewImage placeholders", () => {
+    const dataUrl = "data:image/png;base64,xx";
+    const { messages, attachments } = extractImageAttachments(
+      [
+        msg(
+          [
+            { type: "text", text: "what is this?" },
+            { type: "file", mediaType: "image/png", url: dataUrl },
+          ] as UIMessage["parts"],
+          "m1",
+        ),
+      ],
+      "en",
+    );
+    expect(attachments).toEqual([dataUrl]);
+    expect(messages).toHaveLength(1);
+    expect(messages[0].parts).toHaveLength(2);
+    expect(messages[0].parts[0]).toEqual({ type: "text", text: "what is this?" });
+    expect(messages[0].parts[1]).toEqual({
+      type: "text",
+      text: expect.stringContaining('source "attachment:0"'),
+    });
+  });
+
+  it("drops non-image file parts", () => {
+    const { messages, attachments } = extractImageAttachments(
+      [
+        msg(
+          [
+            { type: "file", mediaType: "application/pdf", url: "data:application/pdf;base64,xx" },
+          ] as UIMessage["parts"],
+          "m1",
+        ),
+        msg([{ type: "text", text: "still here" }] as UIMessage["parts"], "m2"),
+      ],
+      "en",
+    );
+    expect(attachments).toEqual([]);
+    expect(messages).toHaveLength(1);
+    expect(messages[0].id).toBe("m2");
   });
 
   it("drops messages left with no parts at all", () => {
-    const out = stripFileParts([
-      msg(
-        [{ type: "file", mediaType: "image/png", url: "data:image/png;base64,xx" }] as UIMessage["parts"],
-        "m1",
-      ),
-      msg([{ type: "text", text: "still here" }] as UIMessage["parts"], "m2"),
+    const { messages, attachments } = extractImageAttachments(
+      [
+        msg(
+          [{ type: "file", mediaType: "image/png", url: "data:image/png;base64,xx" }] as UIMessage["parts"],
+          "m1",
+        ),
+      ],
+      "en",
+    );
+    expect(attachments).toEqual(["data:image/png;base64,xx"]);
+    expect(messages).toHaveLength(1);
+    expect(messages[0].parts[0]).toEqual({
+      type: "text",
+      text: expect.stringContaining('source "attachment:0"'),
+    });
+  });
+
+  it("uses Chinese placeholders when locale is zh", () => {
+    const { messages } = extractImageAttachments(
+      [
+        msg(
+          [{ type: "file", mediaType: "image/png", url: "data:image/png;base64,xx" }] as UIMessage["parts"],
+          "m1",
+        ),
+      ],
+      "zh",
+    );
+    expect(messages[0].parts[0]).toEqual({
+      type: "text",
+      text: expect.stringContaining("调用 viewImage"),
+    });
+  });
+
+  it("caps extracted attachments at 4 images", () => {
+    const parts: UIMessage["parts"] = Array.from({ length: 6 }, (_, i) => ({
+      type: "file",
+      mediaType: "image/png",
+      url: `data:image/png;base64,${i}`,
+    })) as UIMessage["parts"];
+    const { attachments, messages } = extractImageAttachments(
+      [msg(parts, "m1")],
+      "en",
+    );
+    expect(attachments).toHaveLength(4);
+    expect(messages[0].parts).toHaveLength(4);
+  });
+
+  it("numbers multiple placeholders in order", () => {
+    const { messages, attachments } = extractImageAttachments(
+      [
+        msg(
+          [
+            { type: "file", mediaType: "image/png", url: "data:image/png;base64,a" },
+            { type: "file", mediaType: "image/jpeg", url: "data:image/jpeg;base64,b" },
+          ] as UIMessage["parts"],
+          "m1",
+        ),
+      ],
+      "en",
+    );
+    expect(attachments).toEqual([
+      "data:image/png;base64,a",
+      "data:image/jpeg;base64,b",
     ]);
-    expect(out).toHaveLength(1);
-    expect(out[0].id).toBe("m2");
+    const texts = messages[0].parts.map((p) =>
+      p.type === "text" ? p.text : "",
+    );
+    expect(texts[0]).toContain("attachment:0");
+    expect(texts[1]).toContain("attachment:1");
   });
 });
 
@@ -189,5 +277,66 @@ describe("startTurn thinking/effort pinning", () => {
     expect(input.model).toBe("deepseek-v4-flash-vision-exp");
     expect(input.thinking).toBe(true);
     expect(input.reasoningEffort).toBe("medium");
+  });
+});
+
+// ─── startTurn: image attachment extraction for non-vision models ──────────
+
+describe("startTurn image attachment handling", () => {
+  const SAVED_ENV = { ...process.env };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env = { ...SAVED_ENV };
+    dataSource.resolveDataSource.mockReturnValue("local");
+    demoLock.demoModelLock.mockReturnValue(null);
+    loader.loadUserConfig.mockResolvedValue({
+      model: { provider: "deepseek-v4-flash" },
+    });
+  });
+
+  /** The TurnInput handed to the workflow run. */
+  function turnInput(): Record<string, unknown> {
+    const call = workflow.start.mock.calls.at(-1);
+    expect(call).toBeDefined();
+    const args = call as unknown as [unknown, [Record<string, unknown>]];
+    return args[1][0];
+  }
+
+  it("non-vision model extracts image attachments and passes them to the workflow", async () => {
+    const imageUrl = "data:image/png;base64,xx";
+    const msgs: UIMessage[] = [
+      {
+        id: "m1",
+        role: "user",
+        parts: [
+          { type: "text", text: "what is this?" },
+          { type: "file", mediaType: "image/png", url: imageUrl },
+        ],
+      } as UIMessage,
+    ];
+
+    await startTurn({ messages: msgs, model: "deepseek-v4-flash" });
+    const input = turnInput();
+    expect(input.imageAttachments).toEqual([imageUrl]);
+    expect(Array.isArray(input.modelMessages)).toBe(true);
+  });
+
+  it("vision model keeps image file parts untouched and sends no attachments", async () => {
+    const imageUrl = "data:image/png;base64,xx";
+    const msgs: UIMessage[] = [
+      {
+        id: "m1",
+        role: "user",
+        parts: [
+          { type: "text", text: "what is this?" },
+          { type: "file", mediaType: "image/png", url: imageUrl },
+        ],
+      } as UIMessage,
+    ];
+
+    await startTurn({ messages: msgs, model: "deepseek-v4-flash-vision-exp" });
+    const input = turnInput();
+    expect(input.imageAttachments).toEqual([]);
   });
 });

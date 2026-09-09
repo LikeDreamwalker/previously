@@ -313,6 +313,7 @@ function makeInput(lastUserMessage: string, overrides: Partial<TurnInput> = {}):
     useDemo: false,
     startedAtIso: "2026-07-14T10:00:00.000Z",
     turnId: "test-id",
+    imageAttachments: [],
     ...overrides,
   };
 }

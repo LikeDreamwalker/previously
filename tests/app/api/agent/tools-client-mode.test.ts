@@ -53,6 +53,20 @@ describe("chat tool surface", () => {
     expect(buildChatToolsContext(ctx).webFetch).toBe(ctx);
   });
 
+  it("exposes viewImage in chatTools and gives it a context entry", () => {
+    expect(chatTools).toHaveProperty("viewImage");
+    expect(buildChatToolsContext(ctx).viewImage).toBe(ctx);
+  });
+
+  it("viewImage accepts source and optional question", async () => {
+    const { chatTools } = await import("@/app/api/agent/tools");
+    const schema = chatTools.viewImage.inputSchema as unknown as {
+      shape: Record<string, unknown>;
+    };
+    expect(schema.shape).toHaveProperty("source");
+    expect(schema.shape).toHaveProperty("question");
+  });
+
   it("webSearch accepts the optional mode input", async () => {
     const { chatTools } = await import("@/app/api/agent/tools");
     const schema = chatTools.webSearch.inputSchema as unknown as {
@@ -63,17 +77,19 @@ describe("chat tool surface", () => {
 });
 
 describe("toolContextSchema — step-boundary round-trip", () => {
-  it("keeps timezone / startedAtIso / locale through the schema re-parse (zod strips undeclared keys)", async () => {
+  it("keeps timezone / startedAtIso / locale / imageAttachments through the schema re-parse (zod strips undeclared keys)", async () => {
     const { toolContextSchema } = await import("@/app/api/agent/tools");
     const full: ToolContext = {
       ...ctx,
       timezone: "Asia/Shanghai",
       startedAtIso: "2026-08-28T07:39:01.339Z",
       locale: "zh",
+      imageAttachments: ["data:image/png;base64,xx"],
     };
     const parsed = toolContextSchema.parse(full);
     expect(parsed.timezone).toBe("Asia/Shanghai");
     expect(parsed.startedAtIso).toBe("2026-08-28T07:39:01.339Z");
     expect(parsed.locale).toBe("zh");
+    expect(parsed.imageAttachments).toEqual(["data:image/png;base64,xx"]);
   });
 });

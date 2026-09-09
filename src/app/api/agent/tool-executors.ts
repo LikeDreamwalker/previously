@@ -29,6 +29,7 @@ import {
 
 import { searchViaFlash, SEARCH_TIMEOUT_MS, type WebSearchResult } from "@/lib/search/flash-search";
 import { isPrivateHost, extractText, fetchWithGuard, readBodyCapped, FETCH_BODY_MAX_BYTES } from "@/lib/search/fetch-utils";
+import { describeImage } from "@/lib/vision/describe-image";
 import { isAIConfigured } from "@/lib/capabilities";
 import {
   runRecallSearch,
@@ -132,6 +133,13 @@ export interface ToolContext {
   startedAtIso?: string;
   /** UI locale ("zh" | "en") — relative-time annotations follow it. */
   locale?: string;
+  /**
+   * Image attachments extracted from the current user message when the main
+   * model lacks vision. Each entry is a data URL. These ride the workflow step
+   * boundary so viewImage can resolve `attachment:N`; they are capped to 4
+   * images and client-compressed to 1568px to keep the payload bounded.
+   */
+  imageAttachments?: string[];
 }
 
 /**
@@ -757,6 +765,59 @@ export async function webFetchExecute(
   } finally {
     clearTimeout(timer);
   }
+}
+
+// ── viewImage — one-shot image-to-text for non-vision main models ────────
+
+/**
+ * viewImage — describe an image the user attached (when the main model cannot
+ * see it natively) or an image found during research.
+ *
+ * `source` is either an http(s) URL or `attachment:N` referring to the Nth
+ * image attachment extracted from the current turn. The actual vision call is a
+ * one-shot infrastructure call to `deepseek-v4-flash-vision-exp` via
+ * `describeImage`.
+ */
+export async function viewImageExecute(
+  { source, question }: { source: string; question?: string },
+  { context: ctx, toolCallId }: ExecuteOpts<ToolContext>,
+): Promise<string> {
+  "use step";
+  await emitToolProgress(toolCallId, "viewImage", "Looking at image…", "running");
+
+  let imageInput: { data: string; mediaType: string } | { url: string };
+  if (source.startsWith("attachment:")) {
+    const idx = Number(source.slice("attachment:".length));
+    const attachments = ctx.imageAttachments ?? [];
+    if (Number.isNaN(idx) || idx < 0 || idx >= attachments.length) {
+      return `ERROR: Invalid attachment index "${source}". This turn has ${attachments.length} image attachment${attachments.length === 1 ? "" : "s"}.`;
+    }
+    const dataUrl = attachments[idx];
+    if (!dataUrl) {
+      return `ERROR: Attachment ${idx} is empty.`;
+    }
+    const match = /^data:([^;]+);base64,/.exec(dataUrl);
+    imageInput = {
+      data: dataUrl,
+      mediaType: match?.[1] ?? "image/png",
+    };
+  } else {
+    imageInput = { url: source };
+  }
+
+  const result = await describeImage({
+    image: imageInput,
+    question,
+    locale: ctx.locale,
+  });
+
+  await emitToolProgress(
+    toolCallId,
+    "viewImage",
+    result.ok ? "Looked at image" : "Could not view image",
+    result.ok ? "done" : "running",
+  );
+  return result.ok ? result.description : result.error;
 }
 
 // ── delegateTask — subscription bridge dispatch (client mode only) ───────
