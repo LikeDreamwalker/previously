@@ -12,8 +12,12 @@ import { useMemo, useRef } from "react";
 import * as THREE from "three";
 import { Html } from "@react-three/drei";
 import { useFrame, useThree } from "@react-three/fiber";
-import { framePitchFor, type FrameGeometry, type StackRow } from "@/lib/timeline3d/stacks";
-import { settleEase } from "@/lib/timeline3d/pile-scene";
+import {
+  framePitchFor,
+  settleEase,
+  type FrameGeometry,
+  type StackLevel,
+} from "@/lib/timeline3d/stacks";
 import { FrameCardTexts, SliceCardFace } from "./frame-card";
 import type { FieldRig, LeavingItem } from "./field-rig";
 
@@ -22,10 +26,17 @@ import type { FieldRig, LeavingItem } from "./field-rig";
 const SHEET_GAP_PX = 5;
 const DEAL_DURATION = 0.55;
 const LEAVING_STAGGER_S = 0.03;
+const LEAVING_MAX_DEPTH = 12;
+
+/** Fixed camera the scene and world-scale math agree on. */
+const CAM_Z = 9;
+const CAM_FOV = 30;
+
+const leavingScratch = new THREE.Vector3();
 
 function computeLeavingPosition(
   item: LeavingItem,
-  rows: StackRow[],
+  rowIndexMap: Map<string, number>,
   pitch: number,
   cardH: number,
   rig: FieldRig,
@@ -33,14 +44,15 @@ function computeLeavingPosition(
   wpp: number,
   reducedMotion: boolean,
   anim: { deal: number },
-): THREE.Vector3Tuple {
+): THREE.Vector3 {
+  const staggerDepth = Math.min(item.depth, LEAVING_MAX_DEPTH);
   const dealT = reducedMotion
     ? 1
-    : settleEase(anim.deal - item.depth * (LEAVING_STAGGER_S / DEAL_DURATION));
+    : settleEase(anim.deal - staggerDepth * (LEAVING_STAGGER_S / DEAL_DURATION));
 
   const fromYWorld = (viewportH / 2 - item.fromYpx) * wpp;
 
-  const targetIndex = rows.findIndex((r) => r.key === item.toRowKey);
+  const targetIndex = rowIndexMap.get(item.toRowKey) ?? -1;
   let targetYWorld = fromYWorld;
   if (targetIndex >= 0) {
     const centerPy = targetIndex * pitch + cardH / 2 - rig.current;
@@ -55,12 +67,13 @@ function computeLeavingPosition(
   const y = fromYWorld + dealT * (targetYWorld + targetYOffset - fromYWorld);
   const z = -(item.depth + 1) * SHEET_GAP_PX * wpp;
 
-  return [targetXOffset, y, z];
+  return leavingScratch.set(targetXOffset, y, z);
 }
 
 export interface LeavingCardProps {
   item: LeavingItem;
-  rows: StackRow[];
+  rowIndexMap: Map<string, number>;
+  level: StackLevel;
   geo: FrameGeometry;
   rig: React.MutableRefObject<FieldRig>;
   reducedMotion: boolean;
@@ -70,7 +83,8 @@ export interface LeavingCardProps {
 
 export function LeavingCard({
   item,
-  rows,
+  rowIndexMap,
+  level,
   geo,
   rig,
   reducedMotion,
@@ -79,17 +93,13 @@ export function LeavingCard({
 }: LeavingCardProps) {
   const groupRef = useRef<THREE.Group>(null);
   const size = useThree((s) => s.size);
-  const camera = useThree((s) => s.camera) as THREE.PerspectiveCamera;
   const animRef = useRef<{ deal: number; done: boolean }>({
     deal: reducedMotion ? 1 : 0,
     done: reducedMotion,
   });
 
-  const camDist = Math.hypot(camera.position.y, camera.position.z);
   const wpp =
-    (2 * camDist * Math.tan(((camera.fov ?? 30) * Math.PI) / 360)) /
-    size.height;
-  const level = rows[0]?.level ?? 1;
+    (2 * CAM_Z * Math.tan((CAM_FOV * Math.PI) / 360)) / size.height;
   const pitch = framePitchFor(level, geo);
 
   // Mount the group at the exact spot the first useFrame will compute so it
@@ -98,7 +108,7 @@ export function LeavingCard({
     () =>
       computeLeavingPosition(
         item,
-        rows,
+        rowIndexMap,
         pitch,
         geo.cardH,
         rig.current,
@@ -106,10 +116,10 @@ export function LeavingCard({
         wpp,
         reducedMotion,
         animRef.current,
-      ),
+      ).toArray(),
     [
       item,
-      rows,
+      rowIndexMap,
       pitch,
       geo.cardH,
       rig,
@@ -126,28 +136,28 @@ export function LeavingCard({
 
     const anim = animRef.current;
     anim.deal = Math.min(
-      1 + (12 * LEAVING_STAGGER_S) / DEAL_DURATION,
+      1 + (LEAVING_MAX_DEPTH * LEAVING_STAGGER_S) / DEAL_DURATION,
       anim.deal + dt / DEAL_DURATION,
     );
+    const staggerDepth = Math.min(item.depth, LEAVING_MAX_DEPTH);
     const dealT = reducedMotion
       ? 1
       : settleEase(
-          anim.deal - item.depth * (LEAVING_STAGGER_S / DEAL_DURATION),
+          anim.deal - staggerDepth * (LEAVING_STAGGER_S / DEAL_DURATION),
         );
 
-    group.position.set(
-      ...computeLeavingPosition(
-        item,
-        rows,
-        pitch,
-        geo.cardH,
-        rig.current,
-        size.height,
-        wpp,
-        reducedMotion,
-        anim,
-      ),
+    const p = computeLeavingPosition(
+      item,
+      rowIndexMap,
+      pitch,
+      geo.cardH,
+      rig.current,
+      size.height,
+      wpp,
+      reducedMotion,
+      anim,
     );
+    group.position.set(p.x, p.y, p.z);
 
     if (dealT >= 1 && !anim.done) {
       anim.done = true;

@@ -20,7 +20,6 @@
  */
 import type { TimelineSliceEntry } from "@/lib/episodic/timeline/types";
 import type { Turn } from "@/lib/episodic/types";
-import { TimeDisplay } from "@/components/chat/time-display";
 import { strandColor, STRANDLESS_GREY } from "@/lib/timeline3d/layout";
 import type { FrameGeometry, StackRow } from "@/lib/timeline3d/stacks";
 import { ColorSquare, hhmm } from "./cards";
@@ -124,26 +123,26 @@ function previouslyExcerpt(raw: string | null | undefined): string | null {
   // Clean residual inline markdown.
   text = cleanInlineMarkdown(text);
 
+  const isMetadata = (l: string) =>
+    /^(Active slice:|Format:|Updated:|updated:)/.test(l);
+  // A bare "Previously On" heading with nothing under it carries no
+  // information — treat it as absent so the card drops the whole section.
+  const isBoilerplate = (l: string) => /^previously on[.:：\s-]*$/i.test(l);
+
   const lines = text
     .replace(/\r\n/g, "\n")
     .split("\n")
     .map((l) => l.trim())
-    .filter((l) => l.length > 0);
+    .filter((l) => l.length > 0 && !isMetadata(l) && !isBoilerplate(l));
 
-  const isMetadata = (l: string) =>
-    /^(Active slice:|Format:|Updated:|updated:)/.test(l);
-
-  // Prefer the first non-bullet, non-metadata narrative line that's long enough
+  // Prefer the first non-bullet narrative line that's long enough
   // to be real prose (not a short heading like "User profile").
   let prose: string | undefined =
-    lines.find(
-      (l) => !isMetadata(l) && !/^[-*]/.test(l) && l.length > 20,
-    ) ||
-    lines.find((l) => !isMetadata(l) && !/^[-*]/.test(l));
+    lines.find((l) => !/^[-*]/.test(l) && l.length > 20) ||
+    lines.find((l) => !/^[-*]/.test(l));
 
   if (!prose) {
-    const first = lines.find((l) => !isMetadata(l));
-    prose = first ? first.replace(/^[-*]\s+/, "").trim() : undefined;
+    prose = lines[0]?.replace(/^[-*]\s+/, "").trim();
   }
 
   if (!prose || prose.length === 0) return null;
@@ -183,54 +182,83 @@ function LedgerRow({
   );
 }
 
-/** The bubbles: real turns, chat-style. User right/primary, agent left/muted. */
+/** The bubbles: one fixed exchange (server-truncated), chat-style. User
+ *  right, tinted with the card's strand accent; agent left/muted. */
 function TurnBubbles({
   turns,
   state,
   em,
+  accent,
   texts,
 }: {
   turns: Turn[] | undefined;
   state: "loading" | "ready" | "failed";
   em: number;
+  accent: string;
   texts: FrameCardTexts;
 }) {
-  if (state === "loading") {
-    return (
-      <div className="flex flex-col gap-[0.55em] pt-[0.2em]" aria-hidden>
-        <div className="h-[2.45em] w-[78%] animate-pulse rounded-[0.9em] rounded-bl-[0.2em] bg-muted" />
-        <div className="ml-auto h-[2.05em] w-[62%] animate-pulse rounded-[0.9em] rounded-br-[0.2em] bg-primary/25" />
-        <div className="h-[2.7em] w-[82%] animate-pulse rounded-[0.9em] rounded-bl-[0.2em] bg-muted" />
-        <div className="ml-auto h-[1.95em] w-[55%] animate-pulse rounded-[0.9em] rounded-br-[0.2em] bg-primary/25" />
-        <div className="h-[2.35em] w-[70%] animate-pulse rounded-[0.9em] rounded-bl-[0.2em] bg-muted" />
-      </div>
-    );
-  }
-  if (state === "failed" || !turns || turns.length === 0) return null;
-  const shown = turns.slice(0, 6);
+  // The skeleton stays mounted after resolve (absolute, fading out) so the
+  // swap reads as a crossfade into the real bubbles, not a hard cut.
+  const loading = state === "loading";
+  const hasTurns = !loading && turns != null && turns.length > 0;
+  const shown = hasTurns ? turns.slice(0, 2) : [];
   return (
-    <div className="flex flex-col gap-[0.55em] pt-[0.2em]">
-      {shown.map((turn, i) => {
-        const isUser = turn.role === "user";
-        return (
-          <div
-            key={`${turn.turnId ?? "t"}-${i}`}
-            className={`max-w-[86%] rounded-[0.9em] px-[0.85em] py-[0.6em] leading-relaxed ${
-              isUser
-                ? "ml-auto rounded-br-[0.2em] bg-primary text-primary-foreground"
-                : "rounded-bl-[0.2em] bg-muted text-foreground/85"
-            }`}
-            style={{ fontSize: em * 0.72 }}
-          >
-            <span className="sr-only">{isUser ? texts.user : texts.agent}</span>
-            <span
-              className="line-clamp-3 whitespace-pre-wrap break-words font-serif font-light"
-            >
-              {turn.content}
-            </span>
-          </div>
-        );
-      })}
+    <div className="relative">
+      {hasTurns && (
+        <div className="animate-content-arrive flex flex-col gap-[0.55em] pt-[0.2em]">
+          {shown.map((turn, i) => {
+            const isUser = turn.role === "user";
+            return (
+              <div
+                key={`${turn.turnId ?? "t"}-${i}`}
+                className={`max-w-[86%] rounded-[0.9em] px-[0.85em] py-[0.6em] leading-relaxed ${
+                  isUser
+                    ? "tl-user-bubble ml-auto rounded-br-[0.2em]"
+                    : "rounded-bl-[0.2em] bg-muted text-foreground/85"
+                }`}
+                style={
+                  {
+                    fontSize: em * 0.72,
+                    ...(isUser ? { "--bubble-accent": accent } : {}),
+                  } as React.CSSProperties
+                }
+              >
+                <span className="sr-only">{isUser ? texts.user : texts.agent}</span>
+                {/* Asymmetric clamps: a pasted wall of user text may not
+                    flood the frame — user gets 2 lines, the agent reply 3. */}
+                <span
+                  className={`whitespace-pre-wrap break-words font-serif font-light ${
+                    isUser ? "line-clamp-2" : "line-clamp-3"
+                  }`}
+                >
+                  {turn.content}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {/* Mirrors the fixed exchange exactly: one user bubble (2 lines →
+          3.5em) tinted with the card's accent, one agent reply (3 lines →
+          4.7em) in gray. */}
+      <div
+        aria-hidden
+        className={`flex flex-col gap-[0.55em] pt-[0.2em] transition-opacity duration-300 motion-reduce:transition-none ${
+          loading
+            ? "opacity-100"
+            : "pointer-events-none absolute inset-x-0 top-0 opacity-0"
+        }`}
+      >
+        <div
+          className="ml-auto h-[3.5em] w-[72%] animate-pulse motion-reduce:animate-none rounded-[0.9em] rounded-br-[0.2em]"
+          style={
+            {
+              backgroundColor: `color-mix(in oklch, ${accent} 22%, transparent)`,
+            } as React.CSSProperties
+          }
+        />
+        <div className="h-[4.7em] w-[80%] animate-pulse motion-reduce:animate-none rounded-[0.9em] rounded-bl-[0.2em] bg-foreground/8" />
+      </div>
     </div>
   );
 }
@@ -261,12 +289,14 @@ export function FrameCard({
   // Root em scales off the short edge so type stays consistent across the
   // responsive landscape and portrait geometry tiers.
   const landscape = geo.cardW > geo.cardH;
-  const em = landscape ? geo.cardH / 26 : geo.cardW / 26;
+  const em = Math.min(geo.cardW, geo.cardH) / 26;
 
   const minutes = durationMin(entry.start, entry.end);
   const stamp = archiveStamp(entry);
   const contDate = continuedDate(entry.continues_from);
   const dateClean = entry.date.replace(/-/g, "");
+  const startD = new Date(entry.start);
+  const dateText = `${startD.getFullYear()}/${startD.getMonth() + 1}/${startD.getDate()} ${hhmm(entry.start)}`;
 
   const decided = entry.decisions.slice(0, 2);
   const open = entry.open_loops.slice(0, 2);
@@ -338,13 +368,12 @@ export function FrameCard({
         {/* Time code row. The timestamp is ALWAYS the slice's original
             start, full precision — the card's face never changes with the
             zoom/aggregation level. */}
-        <div className="flex items-center gap-[0.5em] font-serif text-[0.62em] leading-none tracking-[0.08em] text-muted-foreground">
+        <div className="flex items-center gap-[0.5em] text-[0.62em] leading-none tracking-[0.08em] text-muted-foreground">
           <ColorSquare color={accent} className="size-[0.5em]" />
-          <TimeDisplay
-            timestamp={entry.start}
-            mode="full"
-            className="!font-serif !text-[1em]"
-          />
+          {/* Static timecode — NumberTicker's entrance roll (year counts up
+              from -30) replays on every virtualization remount and reads as
+              a glitch on a card face. Mono, same as the chat time readout. */}
+          <span className="font-mono tabular-nums">{dateText}</span>
           <span className="ml-auto flex items-center gap-[0.8em] font-sans lining-nums tracking-[0.08em]">
             {minutes != null && (
               <span className="text-foreground/55">· {texts.duration(minutes)}</span>
@@ -371,15 +400,32 @@ export function FrameCard({
           {entry.focus || `${entry.date.slice(5)} ${hhmm(entry.start)}`.trim()}
         </div>
 
-        {/* Previously — book-quoted italic serif. */}
-        {previouslyText && (
+        {/* Previously — book-quoted italic serif. While content loads, gray
+            bars reserve the exact two-line slot; on resolve they crossfade
+            into the real quote so the swap is visible but nothing jumps. */}
+        {(turnsState === "loading" || previouslyText) && (
           <>
             <Hairline className="mt-[0.65em]" />
-            <p className="mt-[0.55em] line-clamp-2 font-serif text-[0.74em] font-light italic leading-relaxed text-muted-foreground/85">
-              <span className="text-foreground/40">❝ </span>
-              {previouslyText}
-              <span className="text-foreground/40"> ❞</span>
-            </p>
+            <div className="relative mt-[0.55em]">
+              {turnsState !== "loading" && previouslyText && (
+                <p className="animate-content-arrive line-clamp-2 font-serif text-[0.74em] font-light italic leading-relaxed text-muted-foreground/85">
+                  <span className="text-foreground/40">❝ </span>
+                  {previouslyText}
+                  <span className="text-foreground/40"> ❞</span>
+                </p>
+              )}
+              <div
+                aria-hidden
+                className={`flex flex-col justify-between transition-opacity duration-300 motion-reduce:transition-none ${
+                  turnsState === "loading"
+                    ? "h-[2.4em] opacity-100"
+                    : "pointer-events-none absolute inset-x-0 top-0 h-full opacity-0"
+                }`}
+              >
+                <div className="h-[0.7em] w-[82%] animate-pulse rounded-full bg-foreground/8 motion-reduce:animate-none" />
+                <div className="h-[0.7em] w-[58%] animate-pulse rounded-full bg-foreground/8 motion-reduce:animate-none" />
+              </div>
+            </div>
           </>
         )}
 
@@ -400,20 +446,22 @@ export function FrameCard({
 
         <Hairline className="mt-[0.55em]" />
 
-        {/* The film frame: real conversation bubbles, faded at the bottom. */}
+        {/* The film frame: one fixed opening exchange, vertically centered
+            in the remaining space. No bottom fade — the server sends only
+            the truncated exchange, so there is nothing more to hint at. */}
         <div
-          className="mx-auto mt-[0.55em] min-h-0 w-full flex-1 overflow-hidden"
-          style={{
-            maxWidth: "34em",
-            maskImage:
-              "linear-gradient(to bottom, black 62%, transparent 98%)",
-            WebkitMaskImage:
-              "linear-gradient(to bottom, black 62%, transparent 98%)",
-          }}
+          className="mx-auto mt-[0.55em] flex min-h-0 w-full flex-1 flex-col justify-center overflow-hidden"
+          style={{ maxWidth: "34em" }}
         >
-          <TurnBubbles turns={turns} state={turnsState} em={em} texts={texts} />
+          <TurnBubbles
+            turns={turns}
+            state={turnsState}
+            em={em}
+            accent={accent}
+            texts={texts}
+          />
           {turnsState === "ready" && (turns == null || turns.length === 0) && (
-            <p className="pt-[0.2em] font-serif text-[0.78em] font-light italic leading-relaxed text-muted-foreground/80">
+            <p className="animate-content-arrive pt-[0.2em] font-serif text-[0.78em] font-light italic leading-relaxed text-muted-foreground/80">
               {entry.summary || "…"}
             </p>
           )}

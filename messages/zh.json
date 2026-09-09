@@ -117,6 +117,8 @@
       "webSearchSuggestedReads": "建议深度阅读",
       "webFetchRunning": "正在获取 {url}…",
       "webFetchDone": "已获取 {url}",
+      "viewImageRunning": "正在查看图片…",
+      "viewImageDone": "已查看图片",
       "listRunning": "正在浏览…",
       "listDone": "找到 {count} 项",
       "sources": "{count} 个来源",
@@ -285,25 +287,12 @@
       "loading": "正在加载时间线…",
       "empty": "还没有记忆时间片——先开始一段对话吧。"
     },
-    "hint": {
-      "browse": "滚轮穿越时间 · Ctrl+滚轮缩放 · Alt+拖拽旋转 · 点击圆点打开",
-      "browseTouch": "单指竖滑穿越时间 · 双指捏合缩放 · 双指旋转视角",
-      "focused": "推近到底或双击圆点进入对话 · Esc 关闭",
-      "focusedTouch": "右滑进入对话"
-    },
     "turns": {
       "user": "你",
-      "agent": "Agent",
-      "close": "关闭",
-      "loading": "正在打开时间片…",
-      "failed": "无法打开这个时间片。",
-      "open": "在对话中打开"
+      "agent": "Agent"
     },
     "card": {
       "turns": "{count} 轮",
-      "continues": "接续上文",
-      "decisions": "决定",
-      "openLoops": "未了",
       "tone": "基调",
       "decided": "决定",
       "open": "未决",

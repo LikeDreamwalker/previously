@@ -115,7 +115,7 @@ export function cardGeometryFor(viewportW: number): CardGeometry {
 }
 
 /** Row pitch (px) for a level under a geometry — the DOM row height AND the
- *  pile-field row spacing; both sides must read this one source. */
+ *  3D card-field row spacing; both sides must read this one source. */
 export function rowPitchFor(level: StackLevel, geo: CardGeometry): number {
   return geo.cardH + (level === 0 ? geo.gapSlice : geo.gapStack);
 }
@@ -163,10 +163,11 @@ export function frameGeometryFor(fieldW: number, fieldH: number): FrameGeometry 
   return { cardW, cardH, pitch: Math.round(cardH * 1.12) };
 }
 
-/** Row pitch per level: slice rows pack tight; stack levels leave a wide
- *  gap below the card so the backing-sheet pile has room to peek out. */
+/** Row pitch per level: L0 rows leave an 8%-of-card gap; stack levels add
+ *  a wider gap so the backing-sheet pile has room to peek out. Card height
+ *  is fixed (geo.cardH), so these multipliers are the real visual gaps. */
 export function framePitchFor(level: StackLevel, geo: FrameGeometry): number {
-  return Math.round(geo.cardH * (level === 0 ? 1.06 : 1.24));
+  return Math.round(geo.cardH * (level === 0 ? 1.08 : 1.16));
 }
 
 /**
@@ -216,8 +217,8 @@ export interface ShellPose {
  * through edge offsets, not rotation: a wide DOM card rotated even 3° swings
  * its corners tens of px, which reads as broken, not askew.
  *
- * Rev 9: this is the NO-WEBGL FALLBACK only — with WebGL the pile is real
- * 3D sheets (`sheetPose` below, rendered by pile-field.tsx).
+ * Rev 10: the 3D card field uses `sheetPose` for real backing-sheet meshes;
+ * the DOM fallback uses `shellPose`.
  */
 export function shellPose(groupKey: string, i: number): ShellPose {
   const h = hashString(`${groupKey}#${i}`);
@@ -243,11 +244,11 @@ export interface SheetPose {
 }
 
 /**
- * Hash-stable pose for 3D sheet `i` of a pile (pile-field.tsx). A real deck
- * placed by hand CASCADES — each sheet slips a little further in one stable
- * direction — so the pose is cumulative in `i` (sheet 0 peeks least) with a
- * per-pile direction/step drawn from the group hash, plus small per-sheet
- * jitter. Fits inside `gapStack` (max |offsetY| ≈ 14px < 44px).
+ * Hash-stable pose for 3D backing sheet `i` behind a stack's top card. A real
+ * deck placed by hand CASCADES — each sheet slips a little further in one
+ * stable direction — so the pose is cumulative in `i` (sheet 0 peeks least)
+ * with a per-pile direction/step drawn from the group hash, plus small
+ * per-sheet jitter. Fits inside `gapStack` (max |offsetY| ≈ 14px < 44px).
  */
 export function sheetPose(groupKey: string, i: number): SheetPose {
   const pile = hashString(`s3d:${groupKey}`);
@@ -305,4 +306,15 @@ export function filterByStrand(
 ): TimelineSliceEntry[] {
   if (!strand) return entries;
   return entries.filter((e) => e.strands.includes(strand));
+}
+
+// ─── Shared animation easing ────────────────────────────────────────────────
+
+/**
+ * smoothstep — deal progress → eased settle factor (0 = airborne, 1 = settled).
+ * Kept here because both the R3F card field and the DOM fallback use it.
+ */
+export function settleEase(t: number): number {
+  const x = Math.min(1, Math.max(0, t));
+  return x * x * (3 - 2 * x);
 }

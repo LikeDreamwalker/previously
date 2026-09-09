@@ -13,7 +13,7 @@
  *   over a threshold — the Rev 7 gesture discipline, minus the camera).
  * - Clicking a stack steps the WHOLE view one level finer, re-anchored on
  *   that group ("洗牌一起洗", no per-stack local expand). Clicking a slice
- *   card opens the reading panel via `onOpenSlice`.
+ *   card navigates to the chat at the slice (`/?at=<sliceId>`).
  * - Every level/filter/page change re-anchors the list on the same entry
  *   (`indexForAnchor`) so the world never jumps.
  */
@@ -25,10 +25,10 @@ import {
   useRef,
   useState,
 } from "react";
-import dynamic from "next/dynamic";
 import { Virtuoso, type VirtuosoHandle, type ListRange } from "react-virtuoso";
 import { motion, useReducedMotion } from "motion/react";
 import { useTranslations } from "next-intl";
+import { useRouter } from "@/i18n/navigation";
 import { useTheme } from "@teispace/next-themes";
 import type { TimelineSliceEntry } from "@/lib/episodic/timeline/types";
 import {
@@ -40,26 +40,18 @@ import {
   type StackLevel,
   type StackRow,
 } from "@/lib/timeline3d/stacks";
-import { pileSpecsFor } from "@/lib/timeline3d/pile-scene";
 import { STRAND_PALETTE, oklchToHex } from "@/lib/timeline3d/layout";
 import { SliceCard, StackCard } from "./cards";
-
-const PileField = dynamic(() => import("./pile-field"), { ssr: false });
 
 export interface StackListProps {
   /** Catalog window, already strand-filtered (oldest → newest). */
   entries: TimelineSliceEntry[];
   hasMore: boolean;
   onNeedOlder: () => void;
-  /** L0 card click → dock the reading panel. */
-  onOpenSlice: (sliceId: string) => void;
   /** ?at= deep link: land at L0 on this slice, flashed. */
   initialAtId?: string;
   /** Identity of the current filter — a change re-plays the row entrance. */
   genKey?: string;
-  /** WebGL available — the pile under stack cards is the R3F pile field;
-   *  without it the cards fall back to flat DOM shells. */
-  pile3d?: boolean;
 }
 
 /** virtuoso firstItemIndex base — prepends shift it down from here. */
@@ -74,12 +66,11 @@ export function StackList({
   entries,
   hasMore,
   onNeedOlder,
-  onOpenSlice,
   initialAtId,
   genKey = "",
-  pile3d = false,
 }: StackListProps) {
   const t = useTranslations("timeline3d");
+  const router = useRouter();
   const reducedMotion = useReducedMotion() ?? false;
   const { resolvedTheme } = useTheme();
   const [level, setLevel] = useState<StackLevel>(initialAtId ? 0 : DEFAULT_LEVEL);
@@ -366,14 +357,14 @@ export function StackList({
                 entry={row.top}
                 geo={geo}
                 flash={flash}
-                onOpen={onOpenSlice}
+                onOpen={(sliceId) => router.push(`/?at=${sliceId}`)}
               />
             ) : (
               <StackCard
                 row={row}
                 geo={geo}
                 flash={flash}
-                shells={!pile3d}
+                shells={true}
                 onZoomIn={(r) =>
                   stepLevel((r.level - 1) as StackLevel, r.top.id)
                 }
@@ -383,15 +374,11 @@ export function StackList({
         </div>
       );
     },
-    [flashId, onOpenSlice, stepLevel, geo, pile3d, reducedMotion],
+    [flashId, router, stepLevel, geo, reducedMotion],
   );
 
   const brandHex = oklchToHex(STRAND_PALETTE[0]);
   const pitch = rowPitchFor(level, geo);
-  const pileSpecs = useMemo(
-    () => (level > 0 ? pileSpecsFor(rows) : []),
-    [rows, level],
-  );
 
   if (entries.length === 0) {
     return (
@@ -407,20 +394,6 @@ export function StackList({
       className="relative h-full w-full"
       style={{ touchAction: "pan-y" }}
     >
-      {/* The 3D pile base UNDER the list (§R9.2) — rows stay transparent,
-          cards are opaque and occlude each pile's top sheet. */}
-      {pile3d && pileSpecs.length > 0 && (
-        <PileField
-          specs={pileSpecs}
-          geo={geo}
-          pitch={pitch}
-          scrollerElRef={scrollerElRef}
-          hoverKeyRef={hoverKeyRef}
-          dark={resolvedTheme !== "light"}
-          reducedMotion={reducedMotion}
-        />
-      )}
-
       {/* Keyed by level: the list crossfades on every step; the re-anchor
           effect then lands the same group in the middle of the frame. */}
       <motion.div

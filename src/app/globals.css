@@ -235,6 +235,40 @@
   animation: shimmer 1.5s ease-in-out infinite;
 }
 
+/* Skeleton → real content arrival (timeline frame card). Unlayered CSS beats
+   Tailwind's motion-reduce:animate-none, so the reduced-motion guard must
+   live on the class itself. */
+@keyframes content-arrive {
+  from {
+    opacity: 0;
+    transform: translateY(0.25em);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-content-arrive {
+  animation: content-arrive 0.32s ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-content-arrive {
+    animation: none;
+  }
+}
+
+/* User bubble on the timeline frame card: the card's strand accent,
+   lightness/chroma-normalized (L 0.58, chroma capped at 0.14) so every hue
+   lands at the same muted visual weight. First line is the fallback for
+   browsers without relative-color syntax. */
+.tl-user-bubble {
+  background-color: var(--bubble-accent);
+  background-color: oklch(from var(--bubble-accent) 0.58 min(c, 0.14) h);
+  color: oklch(0.97 0 0);
+}
+
 /* ── Streaming content animations ──────────────────────────────────── */
 
 @keyframes slide-in-heading {

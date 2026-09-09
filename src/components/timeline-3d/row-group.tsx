@@ -7,7 +7,7 @@
  * gesture/level/scroll orchestration. Each row renders:
  *   - the top card face (a real slice card, never a summary)
  *   - the pile's second real card in the first cascade slot (for L1/L2 stacks)
- *   - flat DOM backing sheets behind them to fake pile thickness.
+ *   - real 3D mesh backing sheets behind them for pile thickness/parallax.
  *
  * Content is loaded inside the card face via `SliceCardFace`; this file does
  * not know about the old `Map<string, ContentSlot>` data flow.
@@ -20,19 +20,26 @@ import {
   backingSheets,
   framePitchFor,
   poseScaleFor,
+  settleEase,
   sheetPose,
   type FrameGeometry,
   type StackRow,
 } from "@/lib/timeline3d/stacks";
-import { settleEase } from "@/lib/timeline3d/pile-scene";
 import { FrameCardTexts, frameCardLabel, SliceCardFace } from "./frame-card";
 import type { FieldRig } from "./field-rig";
 
 // ─── Tunables (mirrored from card-field.tsx) ─────────────────────────────────
 
-const SHEET_GAP_PX = 5;
+const SHEET_GAP_WORLD = 0.1; // ~20px equivalent; enough depth for visible parallax
 const DEAL_DURATION = 0.55;
 const DEAL_STAGGER = 0.05;
+const GEN_WINDOW_MS = 650;
+
+/** Fixed camera the scene and world-scale math agree on. */
+const CAM_Z = 9;
+const CAM_FOV = 30;
+
+const rowScratch = new THREE.Vector3();
 
 declare global {
   interface Window {
@@ -56,7 +63,7 @@ function computeRowPosition(
   reducedMotion: boolean,
   anim: { deal: number; lift: number },
   rowKey: string,
-): THREE.Vector3Tuple {
+): THREE.Vector3 {
   const staggerOrder = Math.min(Math.abs(index - rig.anchorIndex), 12);
   const dealT = reducedMotion
     ? 1
@@ -80,7 +87,7 @@ function computeRowPosition(
   }
 
   z += anim.lift * 0.05;
-  return [x, y, z];
+  return rowScratch.set(x, y, z);
 }
 
 /** Sheet corner radius in px — identical to the face's rounded-[0.9em] where
@@ -98,7 +105,6 @@ export interface RowGroupProps {
   rig: React.MutableRefObject<FieldRig>;
   reducedMotion: boolean;
   flash: boolean;
-  dark: boolean;
   onActivate: (row: StackRow) => void;
   ariaLabel: string;
   texts: FrameCardTexts;
@@ -112,28 +118,26 @@ export function RowGroup({
   rig,
   reducedMotion,
   flash,
-  dark,
   onActivate,
   ariaLabel,
   texts,
 }: RowGroupProps) {
   const groupRef = useRef<THREE.Group>(null);
   const size = useThree((s) => s.size);
-  const camera = useThree((s) => s.camera) as THREE.PerspectiveCamera;
-  // Deal starts at 0 only for rows in the transition's visible set.
+  // Deal starts at 0 only for rows in the transition's visible set and only
+  // within the generation window after a level/filter change.
   const animRef = useRef<{ deal: number; lift: number } | null>(null);
   if (animRef.current === null) {
+    const inGenWindow = performance.now() - rig.current.genAt < GEN_WINDOW_MS;
     const initialDeal = reducedMotion
       ? 1
-      : (rig.current.dealEligible?.has(row.key) ? 0 : 1);
+      : (rig.current.dealEligible?.has(row.key) && inGenWindow ? 0 : 1);
     animRef.current = { deal: initialDeal, lift: 0 };
     recordDealMount(row.key, initialDeal);
   }
 
-  const camDist = Math.hypot(camera.position.y, camera.position.z);
   const wpp =
-    (2 * camDist * Math.tan(((camera.fov ?? 30) * Math.PI) / 360)) /
-    size.height;
+    (2 * CAM_Z * Math.tan((CAM_FOV * Math.PI) / 360)) / size.height;
   // Cascade scale: authored against a 216px card, amplified for the big
   // frame (the pile must READ), but never let the deepest sheet's peek
   // overflow the row gap.
@@ -167,7 +171,7 @@ export function RowGroup({
         reducedMotion,
         animRef.current!,
         row.key,
-      ),
+      ).toArray(),
     [index, pitch, geo.cardH, rig, size.height, wpp, reducedMotion, row.key],
   );
 
@@ -190,19 +194,18 @@ export function RowGroup({
     const liftTarget = rig.current.hoverKey === row.key ? 1 : 0;
     anim.lift += (liftTarget - anim.lift) * Math.min(1, dt * 10);
 
-    group.position.set(
-      ...computeRowPosition(
-        index,
-        pitch,
-        geo.cardH,
-        rig.current,
-        size.height,
-        wpp,
-        reducedMotion,
-        anim,
-        row.key,
-      ),
+    const p = computeRowPosition(
+      index,
+      pitch,
+      geo.cardH,
+      rig.current,
+      size.height,
+      wpp,
+      reducedMotion,
+      anim,
+      row.key,
     );
+    group.position.set(p.x, p.y, p.z);
 
     // Sheets cascade behind the face; hover spreads the deck a little.
     const spread = 1 + anim.lift * 0.5;
@@ -214,7 +217,7 @@ export function RowGroup({
       child.position.set(
         pose.offsetX * scale * spread * wpp,
         -pose.offsetY * scale * spread * wpp,
-        -(si + 1) * SHEET_GAP_PX * spread * wpp,
+        -(si + 1) * SHEET_GAP_WORLD * spread,
       );
       child.rotation.set(
         -0.07 - si * 0.02,
@@ -268,36 +271,63 @@ export function RowGroup({
           </div>
         </Html>
       )}
-      {/* Backing sheets: the SAME paper as the face (bg-card + ring), flat
-          DOM cards — depth comes from each card's own CSS shadow, not from
-          3D lighting. */}
+      {/* Backing sheets: gray skeleton stand-ins of the dossier card (muted
+          paper + gray bars echoing the timecode/title/fields/bubbles layout),
+          bill boarded at real z-depths so scroll/camera movement creates
+          parallax between layers. Never real content, never stark white. */}
       {poses.slice(second ? 1 : 0).map((_, si) => {
         // Absolute cascade layer (0 = directly behind the face) drives the
         // deep-layer fade.
         const li = si + (second ? 1 : 0);
+        const opacity = li >= 4 ? Math.max(0.4, 1 - (li - 3) * 0.18) : 1;
         return (
           <Html
             key={`${row.key}#s${si}`}
             transform
             center
             distanceFactor={400 * wpp}
-            zIndexRange={[10, 0]}
+            zIndexRange={[10, 1]}
             style={{ pointerEvents: "none" }}
           >
             <div
               aria-hidden
-              className={`bg-card ring-1 ring-foreground/10 ${
-                dark
-                  ? "shadow-[0_26px_60px_-14px_rgba(0,0,0,0.75)]"
-                  : "shadow-[0_26px_60px_-14px_rgba(15,23,42,0.22)]"
-              }`}
+              className="relative overflow-hidden bg-muted ring-1 ring-foreground/10 shadow-[0_18px_40px_-16px_rgba(15,23,42,0.22)] dark:shadow-[0_18px_40px_-16px_rgba(0,0,0,0.7)]"
               style={{
                 width: geo.cardW,
                 height: geo.cardH,
                 borderRadius: sheetRadiusPx(geo),
-                opacity: li >= 4 ? Math.max(0.35, 1 - (li - 3) * 0.22) : 1,
+                opacity,
+                fontSize: Math.min(geo.cardW, geo.cardH) / 26,
               }}
-            />
+            >
+              {/* gray spine — the loading-version echo of the face's strand
+                  spine (0.14em accent bar down the left edge) */}
+              <span className="absolute inset-y-0 left-0 w-[0.14em] bg-foreground/15" />
+              {/* hairlines echoing the dossier section separators */}
+              <div className="absolute inset-x-[7%] top-[12%] h-px bg-foreground/[0.07]" />
+              <div className="absolute inset-x-[7%] top-[33%] h-px bg-foreground/[0.07]" />
+              <div className="absolute inset-x-[7%] top-[53%] h-px bg-foreground/[0.07]" />
+              <div className="absolute inset-x-[7%] bottom-[7.5%] h-px bg-foreground/[0.07]" />
+              {/* timecode row: square tick + mono line, frame number at right */}
+              <div className="absolute left-[7%] top-[6%] size-[1.8%] min-h-2 min-w-2 rounded-[2px] bg-foreground/15" />
+              <div className="absolute left-[12%] top-[6.5%] h-[1.6%] w-[24%] rounded-full bg-foreground/10" />
+              <div className="absolute right-[7%] top-[6.5%] h-[1.6%] w-[13%] rounded-full bg-foreground/8" />
+              {/* serif title */}
+              <div className="absolute left-[7%] top-[14%] h-[3%] w-[52%] rounded-full bg-foreground/12" />
+              {/* previously-on quote */}
+              <div className="absolute left-[7%] top-[24%] h-[1.8%] w-[64%] rounded-full bg-foreground/8" />
+              {/* archive field rows: short label + long value */}
+              <div className="absolute left-[7%] top-[37%] h-[1.8%] w-[7%] rounded-full bg-foreground/10" />
+              <div className="absolute left-[21%] top-[37%] h-[1.8%] w-[38%] rounded-full bg-foreground/8" />
+              <div className="absolute left-[7%] top-[45%] h-[1.8%] w-[7%] rounded-full bg-foreground/10" />
+              <div className="absolute left-[21%] top-[45%] h-[1.8%] w-[52%] rounded-full bg-foreground/8" />
+              {/* dialogue: user bubble, agent reply line, user bubble */}
+              <div className="absolute right-[7%] top-[57%] h-[9%] w-[48%] rounded-[1.2em] bg-foreground/10" />
+              <div className="absolute left-[7%] top-[71%] h-[1.8%] w-[36%] rounded-full bg-foreground/8" />
+              <div className="absolute right-[7%] top-[78%] h-[10%] w-[56%] rounded-[1.2em] bg-foreground/10" />
+              {/* footer frame code */}
+              <div className="absolute bottom-[4%] right-[7%] h-[1.6%] w-[12%] rounded-full bg-foreground/8" />
+            </div>
           </Html>
         );
       })}

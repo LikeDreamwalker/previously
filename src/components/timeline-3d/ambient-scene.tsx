@@ -316,6 +316,16 @@ export default function AmbientScene({
   });
   argsRef.current = { dark, strands, selected, range };
 
+  const lastDrawnRef = useRef<{
+    width: number;
+    height: number;
+    dark: boolean;
+    strands: string[];
+    selected: string | null;
+    progress: number;
+    range: { oldest: string; now: string };
+  } | null>(null);
+
   useEffect(() => {
     const canvas = canvasRef.current;
     const container = containerRef.current;
@@ -351,7 +361,22 @@ export default function AmbientScene({
       const { width, height } = sizeRef.current;
       if (width === 0 || height === 0) return;
       const { dark: d, strands: s, selected: sel, range: r } = argsRef.current;
-      drawRuler(ctx, width, height, d, s, sel, progressRef.current, r);
+      const progress = progressRef.current;
+      const last = lastDrawnRef.current;
+      if (
+        last &&
+        last.width === width &&
+        last.height === height &&
+        last.dark === d &&
+        last.strands === s &&
+        last.selected === sel &&
+        last.progress === progress &&
+        last.range === r
+      ) {
+        return;
+      }
+      lastDrawnRef.current = { width, height, dark: d, strands: s, selected: sel, progress, range: r };
+      drawRuler(ctx, width, height, d, s, sel, progress, r);
     };
     raf = requestAnimationFrame(loop);
 

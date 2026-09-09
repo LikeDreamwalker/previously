@@ -3,7 +3,7 @@
 /**
  * Rev 9 timeline cards (doc/design/v0.10.0 §R9.1) — the card is a FIXED-SIZE
  * playing card ("档案卡"): same face at every zoom level, in a few JS-side
- * responsive width tiers (`cardGeometryFor` — the 3D pile field reads the
+ * responsive width tiers (`cardGeometryFor` — the 3D card field reads the
  * same numbers, CSS-only breakpoints can't feed WebGL).
  *
  * Face layout: corner index row (color square + date + time · turn count) →
@@ -13,8 +13,7 @@
  *
  * - SliceCard: one slice per row (L0).
  * - StackCard: a day (L1) or month (L2) stack — the top card is real; the
- *   pile under it is the R3F pile field's job (pile-field.tsx). The DOM
- *   shells remain only as the no-WebGL fallback.
+ *   DOM shells underneath are the no-WebGL fallback.
  */
 import { useLocale, useTranslations } from "next-intl";
 import type { TimelineSliceEntry } from "@/lib/episodic/timeline/types";

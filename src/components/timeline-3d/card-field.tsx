@@ -23,9 +23,8 @@
  *   pile as leaving cards. Filter changes and initial mount keep the existing
  *   anchor-pile deal fallback.
  * - Card faces are drei Html (real DOM in 3D — perspective comes free from
- *   the camera); backing sheets are the SAME paper as flat DOM cards too —
- *   no 3D shading of their own, each just carries a CSS box-shadow, and the
- *   stacked shadows fake the depth.
+ *   the camera); backing sheets are real R3F meshes with paper tone + rim so
+ *   scroll-driven camera drift produces visible parallax between layers.
  *
  * Rev 12 data-flow change: slice turn content used to be hoisted into this
  * component as `Map<string, ContentSlot>` and batched via `onRangeChange`.
@@ -58,7 +57,7 @@ import {
 import { FrameCardTexts, frameCardLabel } from "./frame-card";
 import { RowGroup } from "./row-group";
 import { LeavingCard } from "./leaving-card";
-import type { DealOrigin, DealTransition, FieldRig, LeavingItem } from "./field-rig";
+import type { DealOrigin, FieldRig, LeavingItem } from "./field-rig";
 
 export interface CardFieldProps {
   /** Catalog window, already strand-filtered (oldest → newest). */
@@ -71,7 +70,6 @@ export interface CardFieldProps {
   initialAtId?: string;
   /** Identity of the current filter — a change re-plays the deal. */
   genKey?: string;
-  dark: boolean;
   reducedMotion: boolean;
   /** Written every frame: scroll progress 0..1 (0 = oldest, 1 = now). */
   progressRef: React.MutableRefObject<number>;
@@ -210,7 +208,6 @@ interface FieldSceneProps {
   onNeedOlder: () => void;
   progressRef: React.MutableRefObject<number>;
   reducedMotion: boolean;
-  dark: boolean;
   flashId: string | null;
   onActivate: (row: StackRow) => void;
   arias: Map<string, string>;
@@ -228,7 +225,6 @@ function FieldScene({
   onNeedOlder,
   progressRef,
   reducedMotion,
-  dark,
   flashId,
   onActivate,
   arias,
@@ -237,6 +233,7 @@ function FieldScene({
   onLeavingDone,
 }: FieldSceneProps) {
   const size = useThree((s) => s.size);
+  const camera = useThree((s) => s.camera);
   const pitch = framePitchFor(level, geo);
   const prevTopRef = useRef<number | null>(null);
   // The visible range is STATE (drives which RowGroups mount), mirrored in a
@@ -299,6 +296,22 @@ function FieldScene({
 
     progressRef.current = max > 0 ? rigNow.current / max : 1;
 
+    // Scroll-driven camera drift: translate the camera slightly, then TURN it
+    // back onto the card column (lookAt x=0) so the z=0 faces stay horizontally
+    // centered while sheets at different depths shift by different amounts
+    // (real parallax). A pure translation (lookAt(cx,cy,0)) would keep the axis
+    // parallel to z and drag the whole card plane sideways — don't do that.
+    if (!reducedMotion) {
+      const p = progressRef.current; // 0..1 (0 = oldest/top, 1 = newest/bottom)
+      const cx = (p - 0.5) * 2 * 0.42; // ±0.42 world units
+      const cy = (p - 0.5) * 2 * 0.14; // ±0.14 world units
+      camera.position.set(cx, cy, CAM_Z);
+      camera.lookAt(0, cy, 0);
+    } else {
+      camera.position.set(0, 0, CAM_Z);
+      camera.lookAt(0, 0, 0);
+    }
+
     // Visible-range virtualization (React state changes only when it does).
     const margin = geo.cardH * 1.2;
     const first = Math.max(
@@ -314,6 +327,11 @@ function FieldScene({
       setRange([first, last]);
     }
   });
+
+  const rowIndexMap = useMemo(
+    () => new Map(rows.map((r, i) => [r.key, i])),
+    [rows],
+  );
 
   const [first, last] = range;
   const visible = rows.slice(first, last + 1);
@@ -332,7 +350,6 @@ function FieldScene({
             rig={rig}
             reducedMotion={reducedMotion}
             flash={flashId != null && row.entries.some((e) => e.id === flashId)}
-            dark={dark}
             onActivate={onActivate}
             ariaLabel={arias.get(row.key) ?? ""}
             texts={texts}
@@ -343,7 +360,8 @@ function FieldScene({
         <LeavingCard
           key={item.id}
           item={item}
-          rows={rows}
+          rowIndexMap={rowIndexMap}
+          level={level}
           geo={geo}
           rig={rig}
           reducedMotion={reducedMotion}
@@ -355,7 +373,7 @@ function FieldScene({
   );
 }
 
-// ─── The field: DOM wrapper owns gestures, level, anchor, transition state ──
+// ─── The field: DOM wrapper owns gestures, level, anchor, deal state ──
 
 export function CardField({
   entries,
@@ -364,7 +382,6 @@ export function CardField({
   onOpenSlice,
   initialAtId,
   genKey = "",
-  dark,
   reducedMotion,
   progressRef,
 }: CardFieldProps) {
@@ -401,7 +418,6 @@ export function CardField({
     anchorIndex: 0,
     genAt: performance.now(),
     hoverKey: null,
-    transition: null,
     dealOrigins: null,
     dealEligible: null,
   });
@@ -470,13 +486,12 @@ export function CardField({
     );
   }
 
-  // Filter changes are not level transitions: clear stale transition state
+  // Filter changes are not level transitions: clear stale deal origins
   // so rows fall back to the anchor-pile deal.
   const lastGenKeyRef = useRef<string>(genKey);
   useEffect(() => {
     if (lastGenKeyRef.current !== genKey) {
       lastGenKeyRef.current = genKey;
-      rig.current.transition = null;
       rig.current.dealOrigins = null;
       setLeaving([]);
     }
@@ -491,7 +506,6 @@ export function CardField({
     ) => {
       pendingAnchorRef.current = anchorId;
       if (reducedMotion) {
-        rig.current.transition = null;
         rig.current.dealOrigins = null;
         rig.current.dealEligible = null;
         setLeaving([]);
@@ -538,15 +552,6 @@ export function CardField({
         });
       }
 
-      rig.current.transition = {
-        fromLevel,
-        toLevel,
-        fromRows,
-        fromScroll: scroll,
-        fromPitch,
-        fromCardH,
-        startedAt: performance.now(),
-      };
       rig.current.dealOrigins = dealOrigins;
       rig.current.genAt = performance.now();
       rig.current.dealEligible = visibleKeysFor(
@@ -790,7 +795,6 @@ export function CardField({
           onNeedOlder={onNeedOlder}
           progressRef={progressRef}
           reducedMotion={reducedMotion}
-          dark={dark}
           flashId={flashId}
           onActivate={onActivate}
           arias={arias}

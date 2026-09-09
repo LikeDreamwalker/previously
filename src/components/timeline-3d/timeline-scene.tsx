@@ -12,8 +12,8 @@
  * animations, and viewport virtualization.
  *
  * Owns the catalog window (§R7.4, unchanged): starts from the server's latest
- * months and prepends older windows when the field nears the top. Also owns
- * the reading panel (L0 card click → dock the slice's turn flow).
+ * months and prepends older windows when the field nears the top. L0 card
+ * clicks navigate straight to the chat at the slice (`/?at=<sliceId>`).
  *
  * The card-field R3F scene loads via next/dynamic ssr:false; the ambient
  * ruler is a Canvas 2D component also loaded ssr:false. Without WebGL the
@@ -27,10 +27,8 @@ import { useTheme } from "@teispace/next-themes";
 import { useReducedMotion } from "motion/react";
 import type { TimelineSliceEntry } from "@/lib/episodic/timeline/types";
 import {
-  getSliceContent,
   getStrandList,
   getTimelineCatalogPage,
-  type SliceContent,
   type StrandListItem,
 } from "@/lib/episodic/actions";
 import { filterByStrand } from "@/lib/timeline3d/stacks";
@@ -42,7 +40,6 @@ import {
 import { TimelineFallback } from "./timeline-fallback";
 import { StackList } from "./stack-list";
 import { StrandFilter } from "./strand-filter";
-import { ReadingPanel } from "./reading-panel";
 
 const AmbientScene = dynamic(() => import("./ambient-scene"), {
   ssr: false,
@@ -77,12 +74,6 @@ function detectWebGL(): boolean {
   } catch {
     return false;
   }
-}
-
-interface ReadingState {
-  entry: TimelineSliceEntry;
-  content: SliceContent | null;
-  contentState: "loading" | "ready" | "failed";
 }
 
 /** The bottom fade + NOW marker overlaid on the card field. */
@@ -132,7 +123,6 @@ export function TimelineScene({
 
   const [strand, setStrand] = useState<string | null>(null);
   const [strandList, setStrandList] = useState<StrandListItem[]>([]);
-  const [reading, setReading] = useState<ReadingState | null>(null);
   /** Card-field scroll progress 0..1 — the threadline reads it per frame. */
   const progressRef = useRef(1);
 
@@ -178,26 +168,9 @@ export function TimelineScene({
 
   const openSlice = useCallback(
     (sliceId: string) => {
-      const entry = entries.find((e) => e.id === sliceId);
-      if (!entry) return;
-      setReading({ entry, content: null, contentState: "loading" });
-      getSliceContent(sliceId)
-        .then((content) =>
-          setReading((cur) =>
-            cur?.entry.id === sliceId
-              ? { entry, content, contentState: content ? "ready" : "failed" }
-              : cur,
-          ),
-        )
-        .catch(() =>
-          setReading((cur) =>
-            cur?.entry.id === sliceId
-              ? { entry, content: null, contentState: "failed" }
-              : cur,
-          ),
-        );
+      router.push(`/?at=${sliceId}`);
     },
-    [entries],
+    [router],
   );
 
   const filtered = filterByStrand(entries, strand);
@@ -248,7 +221,6 @@ export function TimelineScene({
                 onOpenSlice={openSlice}
                 initialAtId={initialAtId}
                 genKey={strand ?? "core"}
-                dark={resolvedTheme !== "light"}
                 reducedMotion={reducedMotion}
                 progressRef={progressRef}
               />
@@ -260,26 +232,14 @@ export function TimelineScene({
               entries={filtered}
               hasMore={hasMore}
               onNeedOlder={loadOlder}
-              onOpenSlice={openSlice}
               initialAtId={initialAtId}
               genKey={strand ?? "core"}
-              pile3d={false}
             />
           )}
         </div>
       </div>
 
       <AtmosphereVignette />
-
-      {reading && (
-        <ReadingPanel
-          entry={reading.entry}
-          content={reading.content}
-          contentState={reading.contentState}
-          onClose={() => setReading(null)}
-          onTraverse={(sliceId) => router.push(`/?at=${sliceId}`)}
-        />
-      )}
     </div>
   );
 }

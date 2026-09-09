@@ -434,8 +434,12 @@ test.describe("Memory viz (v0.10)", () => {
       await expect(
         page.getByRole("button", { name: "Local", exact: true }),
       ).toBeVisible();
-      await page.keyboard.press("Control+.");
-      await expect(page).toHaveURL(/\/en\/timeline/);
+      // The listener mounts after the gate button under full-suite load, so
+      // press-until-navigated instead of firing once into a dead window.
+      await expect(async () => {
+        await page.keyboard.press("Control+.");
+        await expect(page).toHaveURL(/\/en\/timeline/, { timeout: 3_000 });
+      }).toPass();
       // Wait for the scene to actually render before toggling back: a
       // router.push issued while the /timeline navigation is still in flight
       // is silently dropped (observed in the full-suite run), swallowing the
@@ -443,8 +447,10 @@ test.describe("Memory viz (v0.10)", () => {
       await expect(page.locator(".tl-card-in").first()).toBeVisible({
         timeout: 30_000,
       });
-      await page.keyboard.press("Control+.");
-      await expect(page).toHaveURL(/\/en\/?$/);
+      await expect(async () => {
+        await page.keyboard.press("Control+.");
+        await expect(page).toHaveURL(/\/en\/?$/, { timeout: 3_000 });
+      }).toPass();
     });
   });
 
@@ -561,11 +567,12 @@ test.describe("Memory viz (v0.10)", () => {
         .toBe(true);
     });
 
-    test("an L0 card click opens the reading panel; Esc closes it", async ({
+    test("an L0 card click jumps to the chat at the slice", async ({
       page,
     }) => {
       test.slow();
-      await seedSlices(datasetA());
+      const slices = datasetA();
+      await seedSlices(slices);
       await page.goto("/en/timeline");
       await expect
         .poll(() => cardCount(page), { timeout: 30_000 })
@@ -584,16 +591,11 @@ test.describe("Memory viz (v0.10)", () => {
         .toBe(true);
       await clickMostVisibleCard(page);
 
-      const panel = page.locator("aside[role=dialog]");
-      await expect(panel).toBeVisible();
-      // The panel carries the slice's full turn flow — a sentinel turn proves
-      // real content loaded, not just the catalog metadata.
+      // L0 click navigates to /?at=<sliceId> and lands on the slice's seam.
+      await expect(page).toHaveURL(/\/en\/\?at=/, { timeout: 15_000 });
       await expect(
-        panel.getByText(/TURN S\d\d user question/).first(),
+        page.getByText(/TURN S\d\d user question/).first(),
       ).toBeVisible({ timeout: 15_000 });
-
-      await page.keyboard.press("Escape");
-      await expect(panel).toHaveCount(0);
     });
 
     test("the strand filter narrows the list to the strand's carriers", async ({

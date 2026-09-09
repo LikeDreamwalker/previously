@@ -333,6 +333,38 @@ export interface SliceContent {
   previously: string | null;
 }
 
+/**
+ * Single-slice content for the 3D timeline frame card.
+ *
+ * The card face only ever shows ONE fixed exchange (the slice's opening
+ * user/agent round), so the wire payload is cut down server-side: at most
+ * FRAME_TURN_COUNT turns, each truncated to FRAME_TURN_CHARS with an
+ * ellipsis. Full turn text never leaves the server for this view.
+ * `totalTurns`/`totalChars` still describe the untruncated slice.
+ */
+const FRAME_TURN_COUNT = 2;
+const FRAME_TURN_CHARS = 280;
+
+/** Cut at a word boundary near the limit and strip trailing punctuation so
+ *  the ellipsis doesn't land mid-word or after a comma. */
+function truncateFrameTurn(content: string): string {
+  if (content.length <= FRAME_TURN_CHARS) return content;
+  const cut = content.slice(0, FRAME_TURN_CHARS);
+  const lastSpace = cut.lastIndexOf(" ");
+  const base = (
+    lastSpace > FRAME_TURN_CHARS * 0.6 ? cut.slice(0, lastSpace) : cut
+  )
+    .trimEnd()
+    .replace(/[.,;:!?，。；：！？、…—-]+$/, "");
+  return `${base}…`;
+}
+
+function frameTurns(turns: Turn[]): Turn[] {
+  return turns
+    .slice(0, FRAME_TURN_COUNT)
+    .map((t) => ({ ...t, content: truncateFrameTurn(t.content) }));
+}
+
 export async function getSliceContent(
   sliceId: string,
   persona?: string,
@@ -362,7 +394,7 @@ export async function getSliceContent(
       summary: slice.summary,
       start: slice.start,
       status: slice.status,
-      turns: slice.turns,
+      turns: frameTurns(slice.turns),
       totalTurns: slice.turns.length,
       totalChars,
       open_loops: slice.open_loops,

@@ -117,6 +117,8 @@
       "webSearchSuggestedReads": "Suggested deeper reads",
       "webFetchRunning": "Fetching {url}…",
       "webFetchDone": "Fetched {url}",
+      "viewImageRunning": "Looking at image…",
+      "viewImageDone": "Looked at image",
       "listRunning": "Browsing…",
       "listDone": "Found {count} items",
       "sources": "{count} sources",
@@ -285,25 +287,12 @@
       "loading": "Loading timeline…",
       "empty": "No memory slices yet — start a conversation first."
     },
-    "hint": {
-      "browse": "Scroll through time · Ctrl+scroll to zoom · Alt+drag to orbit · click a dot to open it",
-      "browseTouch": "Swipe through time · pinch to zoom · two-finger twist to orbit",
-      "focused": "Zoom all the way in or double-click the dot to enter the chat · Esc to close",
-      "focusedTouch": "Swipe right to enter the chat"
-    },
     "turns": {
       "user": "You",
-      "agent": "Agent",
-      "close": "Close",
-      "loading": "Opening slice…",
-      "failed": "Couldn't open this slice.",
-      "open": "Open in chat"
+      "agent": "Agent"
     },
     "card": {
       "turns": "{count, plural, one {# turn} other {# turns}}",
-      "continues": "continued",
-      "decisions": "Decisions",
-      "openLoops": "Open loops",
       "tone": "TONE",
       "decided": "DECIDED",
       "open": "OPEN",

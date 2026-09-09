@@ -16,7 +16,8 @@ import type { Turn } from "@/lib/episodic/types";
  *
  * - Concurrent requests for the same slice are deduped (`inflight`).
  * - Cache survives unmount so scrolling back and forth does not re-fetch.
- * - A simple cap evicts the oldest entries when the cache grows too large.
+ * - A true LRU cap: every ready/failed hit moves its key to the newest end,
+ *   and `trimCache` evicts from the oldest end when the cache grows too large.
  * - Failures are sticky (no retry loop per card).
  */
 export interface SliceContent {
@@ -34,7 +35,7 @@ const CACHE_CAP = 200;
 
 function trimCache(): void {
   if (cache.size <= CACHE_CAP) return;
-  // Map iteration order is insertion order; evict the oldest entries.
+  // Map iteration order is insertion order; evict from the oldest end.
   const over = cache.size - CACHE_CAP;
   let removed = 0;
   for (const key of cache.keys()) {
@@ -58,6 +59,9 @@ export function useSliceTurns(id: string): SliceContent {
   useEffect(() => {
     const hit = cache.get(id);
     if (hit && hit.state !== "loading") {
+      // Move to newest end so frequently-accessed slices survive trimming.
+      cache.delete(id);
+      cache.set(id, hit);
       setSlot(hit);
       return;
     }
