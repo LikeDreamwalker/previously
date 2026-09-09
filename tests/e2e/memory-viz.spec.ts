@@ -581,21 +581,35 @@ test.describe("Memory viz (v0.10)", () => {
         .poll(() => cardCount(page), { timeout: 30_000 })
         .toBeGreaterThan(0);
 
-      // Day stack → L0, then click a slice card.
-      await clickMostVisibleCard(page);
-      await expect
-        .poll(
-          async () =>
-            (await cardLabels(page)).some((l) =>
-              /\d{2}\/\d{2} \d{2}:\d{2}/.test(l),
-            ),
-          { timeout: 10_000 },
-        )
-        .toBe(true);
-      await clickMostVisibleCard(page);
+      // Day stack → L0. Settle past the row-entrance animation first and
+      // retry the click: a force-click on a translating row can dispatch
+      // mousedown/up on different elements and swallow the click. (If a retry
+      // lands on an already-stepped L0 card it navigates to chat — also fine,
+      // the seam assertion below still validates the jump.)
+      await page.waitForTimeout(600);
+      await expect(async () => {
+        if (/\/en\/?(\?|$)/.test(page.url())) return;
+        await clickMostVisibleCard(page);
+        const labels = await cardLabels(page);
+        expect(labels.some((l) => /\d{2}\/\d{2} \d{2}:\d{2}/.test(l))).toBe(
+          true,
+        );
+      }).toPass({ timeout: 15_000 });
 
-      // L0 click navigates to /?at=<sliceId> and lands on the slice's seam.
-      await expect(page).toHaveURL(/\/en\/\?at=/, { timeout: 15_000 });
+      // Click a slice card → chat mode. The `at` anchor is consumed once and
+      // stripped from the URL (mode-switch.ts stripAtParam), so assert on the
+      // mode, not the transient query. Re-clicks must NOT spam: a duplicate
+      // router.push aborts the in-flight navigation it re-triggers, so only
+      // re-click after a generous wait confirms the click was swallowed.
+      const chatUrl = /\/en\/?(\?|$)/;
+      await page.waitForTimeout(600);
+      for (let attempt = 0; attempt < 3 && !chatUrl.test(page.url()); attempt++) {
+        await clickMostVisibleCard(page);
+        await page
+          .waitForURL(chatUrl, { timeout: 8_000 })
+          .catch(() => undefined);
+      }
+      await expect(page).toHaveURL(chatUrl);
       await expect(
         page.getByText(/TURN S\d\d user question/).first(),
       ).toBeVisible({ timeout: 15_000 });
